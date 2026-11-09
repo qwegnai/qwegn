@@ -207,11 +207,7 @@ public final class QWDispatchIO: @unchecked Sendable {
     /// Read asynchronously returning Foundation Data.
     public func readData(offset: Int64, length: Int) async throws -> Data {
         let d = try await read(offset: offset, length: length)
-        var data = Data(count: d.count)
-        data.withUnsafeMutableBytes { buf in
-            d.copyBytes(to: buf, count: d.count)
-        }
-        return data
+        return Data(d)
     }
 
     /// Synchronous read fallback using POSIX `pread` with an `EINTR` retry loop.
