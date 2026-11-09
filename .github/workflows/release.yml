@@ -1,0 +1,37 @@
+name: release
+# Tag push (vX.Y.Z) builds the distributable and publishes a GitHub Release
+# with the downloadable artifact. Mirrors `make build`: qwg + qwg-menu + the
+# metallibs the binary searches for next to itself.
+on:
+  push:
+    tags: ["v*"]
+jobs:
+  package:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (metallib + release binaries)
+        run: |
+          make metallib
+          swift build -c release --product qwg --product qwg-menu
+      - name: Assemble distributable
+        run: |
+          STAGE="qwegn-${GITHUB_REF_NAME}-macos-arm64"
+          mkdir -p "$STAGE"
+          cp .build/release/qwg .build/release/qwg-menu "$STAGE/"
+          cp Sources/QWMetal/kernel.metallib Sources/QWMetal/kernel_std.metallib "$STAGE/"
+          cp LICENSE README.md "$STAGE/"
+          cat > "$STAGE/INSTALL.txt" <<'TXT'
+          Qwegn — drop-in install
+          1) xattr -dr com.apple.quarantine qwg qwg-menu   # unsigned build
+          2) ./qwg --help
+          The binary finds kernel*.metallib next to itself.
+          TXT
+          tar -czf "$STAGE.tar.gz" "$STAGE"
+      - name: Create release with artifact
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --generate-notes \
+            "qwegn-${GITHUB_REF_NAME}-macos-arm64.tar.gz"
