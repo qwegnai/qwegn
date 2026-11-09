@@ -185,9 +185,7 @@ enum AQBanks {
                 let block = try! QWAQBlock.pack(bits: bits, group: group, values: codes,
                                                scale: scale, bias: bias)
                 let off = (r * groups + g) * bytesPerGroup
-                block.withUnsafeBytes { src in
-                    for i in 0..<bytesPerGroup { bytes[off + i] = src[i] }
-                }
+                bytes.replaceSubrange(off..<(off + bytesPerGroup), with: block)
             }
         }
         return Data(bytes)
