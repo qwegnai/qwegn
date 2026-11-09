@@ -1,0 +1,707 @@
+// qw_dequant.metalh — device-side HQ4_G32_M5 quant contract (QWP1 v2).
+// 20-byte interleaved block per 32-weight group in Walsh-Hadamard domain:
+//   struct Block_HQ4_G32 { half scale; half bias; uint32_t qs[4]; };
+// Dequantization uses the IEEE-754 0x6400 magic-bias FMA:
+//   w = fma(as_type<half2>(nibbles | 0x64006400u), half2(scale), half2(bias))
+// Activations x are rotated into the 32-point normalized Walsh-Hadamard domain.
+
+#pragma once
+#include <metal_stdlib>
+#include <metal_simdgroup>
+using namespace metal;
+// The activation basis (`QW_FWHT_ROTATED`), and every rotation in this
+// header is gated on it.
+#include "include/qw_weight_basis.metalh"
+
+struct Block_HQ4_G32 {
+    union { half scale; half d; };
+    union { half bias;  half m; };
+    uint32_t qs[4];
+};
+
+static_assert(sizeof(Block_HQ4_G32) == 20, "Block_HQ4_G32 must be 20 bytes");
+
+/// Unpacks 8 4-bit weights from one 32-bit word into four half2 pairs using
+/// the IEEE-754 0x6400 magic-bias FMA (ushort2-interleaved per HQ4_G32_M5 §3.2).
+METAL_FUNC void unpack_hq4_word8(
+    uint32_t packed,
+    half2 s2,
+    half2 b2,
+    thread half2 &w01,
+    thread half2 &w23,
+    thread half2 &w45,
+    thread half2 &w67
+) {
+    ushort2 raw = as_type<ushort2>(packed);
+
+    half2 fp01 = as_type<half2>((raw & ushort2(0x000Fu)) | ushort2(0x6400u));
+    half2 fp23 = as_type<half2>(((raw >> 4) & ushort2(0x000Fu)) | ushort2(0x6400u));
+    half2 fp45 = as_type<half2>(((raw >> 8) & ushort2(0x000Fu)) | ushort2(0x6400u));
+    half2 fp67 = as_type<half2>((raw >> 12) | ushort2(0x6400u));
+
+    w01 = fma(fp01, s2, b2);
+    w23 = fma(fp23, s2, b2);
+    w45 = fma(fp45, s2, b2);
+    w67 = fma(fp67, s2, b2);
+}
+
+METAL_FUNC void unpack_hq4_word8(
+    uint32_t packed,
+    half scale,
+    half bias,
+    thread half (&out)[8]
+) {
+    half2 w01, w23, w45, w67;
+    unpack_hq4_word8(packed, half2(scale), half2(bias), w01, w23, w45, w67);
+    out[0] = w01.x; out[1] = w01.y;
+    out[2] = w23.x; out[3] = w23.y;
+    out[4] = w45.x; out[5] = w45.y;
+    out[6] = w67.x; out[7] = w67.y;
+}
+
+METAL_FUNC void qwg_load_half8(device const half* p, thread half4 &lo, thread half4 &hi) {
+    device const half4* p4 = (device const half4*)p;
+    lo = p4[0];
+    hi = p4[1];
+}
+
+METAL_FUNC void qwg_load_half8(constant const half* p, thread half4 &lo, thread half4 &hi) {
+    constant const half4* p4 = (constant const half4*)p;
+    lo = p4[0];
+    hi = p4[1];
+}
+
+/// Staged-activation overload (C05 addendum): x lives in threadgroup memory.
+METAL_FUNC void qwg_load_half8(threadgroup const half* p, thread half4 &lo, thread half4 &hi) {
+    threadgroup const half4* p4 = (threadgroup const half4*)p;
+    lo = p4[0];
+    hi = p4[1];
+}
+
+template <typename PtrT>
+METAL_FUNC float qwg_dot_hq4_word8(uint32_t packed, half2 s2, half2 b2, PtrT xw, float acc) {
+    half2 w01, w23, w45, w67;
+    unpack_hq4_word8(packed, s2, b2, w01, w23, w45, w67);
+    half4 lo, hi;
+    qwg_load_half8(xw, lo, hi);
+    acc = fma(float(w01.x), float(lo.x), acc);
+    acc = fma(float(w01.y), float(lo.y), acc);
+    acc = fma(float(w23.x), float(lo.z), acc);
+    acc = fma(float(w23.y), float(lo.w), acc);
+    acc = fma(float(w45.x), float(hi.x), acc);
+    acc = fma(float(w45.y), float(hi.y), acc);
+    acc = fma(float(w67.x), float(hi.z), acc);
+    acc = fma(float(w67.y), float(hi.w), acc);
+    return acc;
+}
+
+/// Fold one HQ4_G32_M5 block (32 columns) against 32 rotated activations at xg.
+/// Explicit fma() accumulation in fp32 preserves context-free reduction order.
+template <typename PtrT>
+METAL_FUNC float qwg_dot_hq4_block(Block_HQ4_G32 blk, PtrT xg) {
+    half2 s2 = half2(blk.scale);
+    half2 b2 = half2(blk.bias);
+    float acc = 0.0f;
+    #pragma unroll
+    for (uint w = 0; w < 4; ++w) {
+        acc = qwg_dot_hq4_word8(blk.qs[w], s2, b2, xg + w * 8u, acc);
+    }
+    return acc;
+}
+
+/// Full row dot product over nGroups (K / 32) HQ4_G32_M5 blocks.
+template <typename PtrT>
+METAL_FUNC float qwg_gemv_hq4_row(device const Block_HQ4_G32* rowBlocks,
+                                  PtrT x,
+                                  uint nGroups) {
+    float acc = 0.0f;
+    for (uint g = 0; g < nGroups; ++g) {
+        acc += qwg_dot_hq4_block(rowBlocks[g], x + g * 32);
+    }
+    return acc;
+}
+
+METAL_FUNC float qwg_dot_hq4_block_reg(Block_HQ4_G32 blk,
+                                       thread const half4 (&lo)[4],
+                                       thread const half4 (&hi)[4]) {
+    half2 s2 = half2(blk.scale);
+    half2 b2 = half2(blk.bias);
+    float acc = 0.0f;
+    #pragma unroll
+    for (uint w = 0; w < 4; ++w) {
+        half2 w01, w23, w45, w67;
+        unpack_hq4_word8(blk.qs[w], s2, b2, w01, w23, w45, w67);
+        acc = fma(float(w01.x), float(lo[w].x), acc);
+        acc = fma(float(w01.y), float(lo[w].y), acc);
+        acc = fma(float(w23.x), float(lo[w].z), acc);
+        acc = fma(float(w23.y), float(lo[w].w), acc);
+        acc = fma(float(w45.x), float(hi[w].x), acc);
+        acc = fma(float(w45.y), float(hi[w].y), acc);
+        acc = fma(float(w67.x), float(hi[w].z), acc);
+        acc = fma(float(w67.y), float(hi[w].w), acc);
+    }
+    return acc;
+}
+
+/// 32-lane SIMD-collaborative row dot product over K / 32 HQ4_G32_M5 blocks.
+template <typename PtrT>
+METAL_FUNC float qwg_gemv_hq4_row(device const Block_HQ4_G32* blocks,
+                                  PtrT x,
+                                  uint row,
+                                  uint K,
+                                  uint lane) {
+    const uint nBlocks = K >> 5u;
+    device const Block_HQ4_G32* rowBlocks = blocks + (size_t)row * nBlocks;
+    float acc = 0.0f;
+    for (uint g = lane; g < nBlocks; g += 32u) {
+        acc += qwg_dot_hq4_block(rowBlocks[g], x + (g << 5u));
+    }
+    acc += simd_shuffle_down(acc, 16);
+    acc += simd_shuffle_down(acc, 8);
+    acc += simd_shuffle_down(acc, 4);
+    acc += simd_shuffle_down(acc, 2);
+    acc += simd_shuffle_down(acc, 1);
+    return acc;
+}
+
+/// 4-row SIMD-collaborative dot product reusing register-loaded x across 4 weight rows.
+template <typename PtrT>
+METAL_FUNC float4 qwg_gemv_hq4_rows4(device const Block_HQ4_G32* blocks,
+                                     PtrT x,
+                                     uint row0,
+                                     uint N,
+                                     uint K,
+                                     uint lane) {
+    const uint nBlocks = K >> 5u;
+    device const Block_HQ4_G32* r0 = blocks + (size_t)row0 * nBlocks;
+    device const Block_HQ4_G32* r1 = (row0 + 1u < N) ? (r0 + nBlocks) : r0;
+    device const Block_HQ4_G32* r2 = (row0 + 2u < N) ? (r0 + 2u * nBlocks) : r0;
+    device const Block_HQ4_G32* r3 = (row0 + 3u < N) ? (r0 + 3u * nBlocks) : r0;
+    float4 acc = float4(0.0f);
+    for (uint g = lane; g < nBlocks; g += 32u) {
+        PtrT xg = x + (g << 5u);
+        half4 lo[4], hi[4];
+        #pragma unroll
+        for (uint w = 0; w < 4; ++w) {
+            qwg_load_half8(xg + w * 8u, lo[w], hi[w]);
+        }
+        acc.x += qwg_dot_hq4_block_reg(r0[g], lo, hi);
+        acc.y += qwg_dot_hq4_block_reg(r1[g], lo, hi);
+        acc.z += qwg_dot_hq4_block_reg(r2[g], lo, hi);
+        acc.w += qwg_dot_hq4_block_reg(r3[g], lo, hi);
+    }
+    acc += simd_shuffle_down(acc, 16);
+    acc += simd_shuffle_down(acc, 8);
+    acc += simd_shuffle_down(acc, 4);
+    acc += simd_shuffle_down(acc, 2);
+    acc += simd_shuffle_down(acc, 1);
+    return acc;
+}
+
+/// Multi-row (M) 32-lane SIMD-collaborative dot product with identical per-row FMA tree
+/// to qwg_gemv_hq4_row (guarantees M=1 vs M=K+1 bit-exact verification parity).
+template <uint M, typename PtrT>
+METAL_FUNC void qwg_gemv_hq4_row_m(device const Block_HQ4_G32* blocks,
+                                   PtrT x,
+                                   uint row,
+                                   uint K,
+                                   uint lane,
+                                   thread float (&out)[M],
+                                   bool isAQ4 = false) {
+    const uint nBlocks = K >> 5u;
+    device const Block_HQ4_G32* rowBlocks = blocks + (size_t)row * nBlocks;
+    float acc[M];
+    #pragma unroll
+    for (uint m = 0; m < M; ++m) acc[m] = 0.0f;
+    if (isAQ4) {
+        for (uint g = lane; g < nBlocks; g += 32u) {
+            const Block_HQ4_G32 blk = rowBlocks[g];
+            const size_t colOff = (size_t)(g << 5u);
+            float acc0[M], acc1[M];
+            float4 sVec[M];
+            #pragma unroll
+            for (uint m = 0; m < M; ++m) {
+                acc0[m] = 0.0f;
+                acc1[m] = 0.0f;
+                sVec[m] = float4(0.0f);
+            }
+            #pragma unroll
+            for (uint w = 0; w < 4; ++w) {
+                const ushort2 raw = as_type<ushort2>(blk.qs[w]);
+                const half2 c0 = as_type<half2>((raw & ushort2(0x000Fu)) | ushort2(0x6400u));
+                const half2 c1 = as_type<half2>(((raw >> 4u) & ushort2(0x000Fu)) | ushort2(0x6400u));
+                const half2 c2 = as_type<half2>(((raw >> 8u) & ushort2(0x000Fu)) | ushort2(0x6400u));
+                const half2 c3 = as_type<half2>(((raw >> 12u) & ushort2(0x000Fu)) | ushort2(0x6400u));
+                const size_t wOff = colOff + (size_t)(w << 3u);
+                #pragma unroll
+                for (uint m = 0; m < M; ++m) {
+                    half4 lo, hi;
+                    qwg_load_half8(x + (size_t)m * K + wOff, lo, hi);
+                    const float4 pairSum = float4(lo) + float4(hi);
+                    sVec[m] = (w == 0u) ? pairSum : (sVec[m] + pairSum);
+                    acc0[m] = fma(float(c0.x), float(lo.x), acc0[m]);
+                    acc1[m] = fma(float(c0.y), float(hi.x), acc1[m]);
+                    acc0[m] = fma(float(c1.x), float(lo.y), acc0[m]);
+                    acc1[m] = fma(float(c1.y), float(hi.y), acc1[m]);
+                    acc0[m] = fma(float(c2.x), float(lo.z), acc0[m]);
+                    acc1[m] = fma(float(c2.y), float(hi.z), acc1[m]);
+                    acc0[m] = fma(float(c3.x), float(lo.w), acc0[m]);
+                    acc1[m] = fma(float(c3.y), float(hi.w), acc1[m]);
+                }
+            }
+            #pragma unroll
+            for (uint m = 0; m < M; ++m) {
+                const float sumX = (sVec[m].x + sVec[m].y) + (sVec[m].z + sVec[m].w);
+                acc[m] += fma(fma(-1024.0f, sumX, acc0[m] + acc1[m]), float(blk.scale), float(blk.bias) * sumX);
+            }
+        }
+    } else {
+        for (uint g = lane; g < nBlocks; g += 32u) {
+            const Block_HQ4_G32 blk = rowBlocks[g];
+            const half2 s2 = half2(blk.scale);
+            const half2 b2 = half2(blk.bias);
+            const size_t colOff = (size_t)(g << 5u);
+            float bAcc[M];
+            #pragma unroll
+            for (uint m = 0; m < M; ++m) bAcc[m] = 0.0f;
+            #pragma unroll
+            for (uint w = 0; w < 4; ++w) {
+                half2 w01, w23, w45, w67;
+                unpack_hq4_word8(blk.qs[w], s2, b2, w01, w23, w45, w67);
+                const float n0 = float(w01.x), n1 = float(w01.y),
+                            n2 = float(w23.x), n3 = float(w23.y),
+                            n4 = float(w45.x), n5 = float(w45.y),
+                            n6 = float(w67.x), n7 = float(w67.y);
+                const size_t wOff = colOff + (size_t)(w << 3u);
+                #pragma unroll
+                for (uint m = 0; m < M; ++m) {
+                    half4 lo, hi;
+                    qwg_load_half8(x + (size_t)m * K + wOff, lo, hi);
+                    bAcc[m] = fma(n0, float(lo.x), bAcc[m]);
+                    bAcc[m] = fma(n1, float(lo.y), bAcc[m]);
+                    bAcc[m] = fma(n2, float(lo.z), bAcc[m]);
+                    bAcc[m] = fma(n3, float(lo.w), bAcc[m]);
+                    bAcc[m] = fma(n4, float(hi.x), bAcc[m]);
+                    bAcc[m] = fma(n5, float(hi.y), bAcc[m]);
+                    bAcc[m] = fma(n6, float(hi.z), bAcc[m]);
+                    bAcc[m] = fma(n7, float(hi.w), bAcc[m]);
+                }
+            }
+            #pragma unroll
+            for (uint m = 0; m < M; ++m) acc[m] += bAcc[m];
+        }
+    }
+    #pragma unroll
+    for (uint m = 0; m < M; ++m) {
+        acc[m] += simd_shuffle_down(acc[m], 16);
+        acc[m] += simd_shuffle_down(acc[m], 8);
+        acc[m] += simd_shuffle_down(acc[m], 4);
+        acc[m] += simd_shuffle_down(acc[m], 2);
+        acc[m] += simd_shuffle_down(acc[m], 1);
+        out[m] = acc[m];
+    }
+}
+
+/// Batched M-input, R-weight-row HQ4/AQ4 dot product: each x load serves R rows.
+/// Every row keeps qwg_gemv_hq4_row_m's per-row FMA order, so outputs are bit-identical.
+template <uint M, uint R, typename PtrT>
+METAL_FUNC void qwg_gemv_hq4_rows_r_m(device const Block_HQ4_G32* const (&rows)[R],
+                                      PtrT x,
+                                      uint K,
+                                      uint lane,
+                                      thread float (&out)[R][M],
+                                      bool isAQ4 = false) {
+    const uint nBlocks = K >> 5u;
+    float acc[R][M];
+    #pragma unroll
+    for (uint r = 0; r < R; ++r) {
+        #pragma unroll
+        for (uint m = 0; m < M; ++m) acc[r][m] = 0.0f;
+    }
+    if (isAQ4) {
+        for (uint g = lane; g < nBlocks; g += 32u) {
+            Block_HQ4_G32 blk[R];
+            #pragma unroll
+            for (uint r = 0; r < R; ++r) blk[r] = rows[r][g];
+            const size_t colOff = (size_t)(g << 5u);
+            float acc0[R][M], acc1[R][M];
+            float4 sVec[M];
+            #pragma unroll
+            for (uint m = 0; m < M; ++m) {
+                sVec[m] = float4(0.0f);
+                #pragma unroll
+                for (uint r = 0; r < R; ++r) {
+                    acc0[r][m] = 0.0f;
+                    acc1[r][m] = 0.0f;
+                }
+            }
+            #pragma unroll
+            for (uint w = 0; w < 4; ++w) {
+                half2 c[R][4];
+                #pragma unroll
+                for (uint r = 0; r < R; ++r) {
+                    const ushort2 raw = as_type<ushort2>(blk[r].qs[w]);
+                    c[r][0] = as_type<half2>((raw & ushort2(0x000Fu)) | ushort2(0x6400u));
+                    c[r][1] = as_type<half2>(((raw >> 4u) & ushort2(0x000Fu)) | ushort2(0x6400u));
+                    c[r][2] = as_type<half2>(((raw >> 8u) & ushort2(0x000Fu)) | ushort2(0x6400u));
+                    c[r][3] = as_type<half2>(((raw >> 12u) & ushort2(0x000Fu)) | ushort2(0x6400u));
+                }
+                const size_t wOff = colOff + (size_t)(w << 3u);
+                #pragma unroll
+                for (uint m = 0; m < M; ++m) {
+                    half4 lo, hi;
+                    qwg_load_half8(x + (size_t)m * K + wOff, lo, hi);
+                    const float4 pairSum = float4(lo) + float4(hi);
+                    sVec[m] = (w == 0u) ? pairSum : (sVec[m] + pairSum);
+                    #pragma unroll
+                    for (uint r = 0; r < R; ++r) {
+                        acc0[r][m] = fma(float(c[r][0].x), float(lo.x), acc0[r][m]);
+                        acc1[r][m] = fma(float(c[r][0].y), float(hi.x), acc1[r][m]);
+                        acc0[r][m] = fma(float(c[r][1].x), float(lo.y), acc0[r][m]);
+                        acc1[r][m] = fma(float(c[r][1].y), float(hi.y), acc1[r][m]);
+                        acc0[r][m] = fma(float(c[r][2].x), float(lo.z), acc0[r][m]);
+                        acc1[r][m] = fma(float(c[r][2].y), float(hi.z), acc1[r][m]);
+                        acc0[r][m] = fma(float(c[r][3].x), float(lo.w), acc0[r][m]);
+                        acc1[r][m] = fma(float(c[r][3].y), float(hi.w), acc1[r][m]);
+                    }
+                }
+            }
+            #pragma unroll
+            for (uint m = 0; m < M; ++m) {
+                const float sumX = (sVec[m].x + sVec[m].y) + (sVec[m].z + sVec[m].w);
+                #pragma unroll
+                for (uint r = 0; r < R; ++r) {
+                    acc[r][m] += fma(fma(-1024.0f, sumX, acc0[r][m] + acc1[r][m]),
+                                     float(blk[r].scale), float(blk[r].bias) * sumX);
+                }
+            }
+        }
+    } else {
+        for (uint g = lane; g < nBlocks; g += 32u) {
+            Block_HQ4_G32 blk[R];
+            #pragma unroll
+            for (uint r = 0; r < R; ++r) blk[r] = rows[r][g];
+            const size_t colOff = (size_t)(g << 5u);
+            float bAcc[R][M];
+            #pragma unroll
+            for (uint r = 0; r < R; ++r) {
+                #pragma unroll
+                for (uint m = 0; m < M; ++m) bAcc[r][m] = 0.0f;
+            }
+            #pragma unroll
+            for (uint w = 0; w < 4; ++w) {
+                half2 wv[R][4];
+                #pragma unroll
+                for (uint r = 0; r < R; ++r) {
+                    unpack_hq4_word8(blk[r].qs[w], half2(blk[r].scale), half2(blk[r].bias),
+                                     wv[r][0], wv[r][1], wv[r][2], wv[r][3]);
+                }
+                const size_t wOff = colOff + (size_t)(w << 3u);
+                #pragma unroll
+                for (uint m = 0; m < M; ++m) {
+                    half4 lo, hi;
+                    qwg_load_half8(x + (size_t)m * K + wOff, lo, hi);
+                    #pragma unroll
+                    for (uint r = 0; r < R; ++r) {
+                        bAcc[r][m] = fma(float(wv[r][0].x), float(lo.x), bAcc[r][m]);
+                        bAcc[r][m] = fma(float(wv[r][0].y), float(lo.y), bAcc[r][m]);
+                        bAcc[r][m] = fma(float(wv[r][1].x), float(lo.z), bAcc[r][m]);
+                        bAcc[r][m] = fma(float(wv[r][1].y), float(lo.w), bAcc[r][m]);
+                        bAcc[r][m] = fma(float(wv[r][2].x), float(hi.x), bAcc[r][m]);
+                        bAcc[r][m] = fma(float(wv[r][2].y), float(hi.y), bAcc[r][m]);
+                        bAcc[r][m] = fma(float(wv[r][3].x), float(hi.z), bAcc[r][m]);
+                        bAcc[r][m] = fma(float(wv[r][3].y), float(hi.w), bAcc[r][m]);
+                    }
+                }
+            }
+            #pragma unroll
+            for (uint r = 0; r < R; ++r) {
+                #pragma unroll
+                for (uint m = 0; m < M; ++m) acc[r][m] += bAcc[r][m];
+            }
+        }
+    }
+    #pragma unroll
+    for (uint r = 0; r < R; ++r) {
+        #pragma unroll
+        for (uint m = 0; m < M; ++m) {
+            float a = acc[r][m];
+            a += simd_shuffle_down(a, 16);
+            a += simd_shuffle_down(a, 8);
+            a += simd_shuffle_down(a, 4);
+            a += simd_shuffle_down(a, 2);
+            a += simd_shuffle_down(a, 1);
+            out[r][m] = a;
+        }
+    }
+}
+
+/// Batched M-input, 2-weight-row dot product reusing x across both weight rows.
+template <uint M, typename PtrT>
+METAL_FUNC void qwg_gemv_hq4_rows2_m(device const Block_HQ4_G32* blocks,
+                                     PtrT x,
+                                     uint row0,
+                                     uint N,
+                                     uint K,
+                                     uint lane,
+                                     thread float (&out0)[M],
+                                     thread float (&out1)[M],
+                                     bool isAQ4 = false) {
+    const uint nBlocks = K >> 5u;
+    device const Block_HQ4_G32* r0 = blocks + (size_t)row0 * nBlocks;
+    device const Block_HQ4_G32* r1 = (row0 + 1u < N) ? (r0 + nBlocks) : r0;
+    float acc0[M], acc1[M];
+    #pragma unroll
+    for (uint m = 0; m < M; ++m) { acc0[m] = 0.0f; acc1[m] = 0.0f; }
+    if (isAQ4) {
+        for (uint g = lane; g < nBlocks; g += 32u) {
+            const Block_HQ4_G32 blk0 = r0[g];
+            const Block_HQ4_G32 blk1 = r1[g];
+            const size_t colOff = (size_t)(g << 5u);
+            float bAcc0_0[M], bAcc0_1[M], bAcc1_0[M], bAcc1_1[M];
+            float4 sVec[M];
+            #pragma unroll
+            for (uint m = 0; m < M; ++m) {
+                bAcc0_0[m] = 0.0f; bAcc0_1[m] = 0.0f;
+                bAcc1_0[m] = 0.0f; bAcc1_1[m] = 0.0f;
+                sVec[m] = float4(0.0f);
+            }
+            #pragma unroll
+            for (uint w = 0; w < 4; ++w) {
+                const ushort2 raw0 = as_type<ushort2>(blk0.qs[w]);
+                const half2 c0_0 = as_type<half2>((raw0 & ushort2(0x000Fu)) | ushort2(0x6400u));
+                const half2 c0_1 = as_type<half2>(((raw0 >> 4u) & ushort2(0x000Fu)) | ushort2(0x6400u));
+                const half2 c0_2 = as_type<half2>(((raw0 >> 8u) & ushort2(0x000Fu)) | ushort2(0x6400u));
+                const half2 c0_3 = as_type<half2>(((raw0 >> 12u) & ushort2(0x000Fu)) | ushort2(0x6400u));
+
+                const ushort2 raw1 = as_type<ushort2>(blk1.qs[w]);
+                const half2 c1_0 = as_type<half2>((raw1 & ushort2(0x000Fu)) | ushort2(0x6400u));
+                const half2 c1_1 = as_type<half2>(((raw1 >> 4u) & ushort2(0x000Fu)) | ushort2(0x6400u));
+                const half2 c1_2 = as_type<half2>(((raw1 >> 8u) & ushort2(0x000Fu)) | ushort2(0x6400u));
+                const half2 c1_3 = as_type<half2>(((raw1 >> 12u) & ushort2(0x000Fu)) | ushort2(0x6400u));
+
+                const size_t wOff = colOff + (size_t)(w << 3u);
+                #pragma unroll
+                for (uint m = 0; m < M; ++m) {
+                    half4 lo, hi;
+                    qwg_load_half8(x + (size_t)m * K + wOff, lo, hi);
+                    const float4 pairSum = float4(lo) + float4(hi);
+                    sVec[m] = (w == 0u) ? pairSum : (sVec[m] + pairSum);
+                    bAcc0_0[m] = fma(float(c0_0.x), float(lo.x), bAcc0_0[m]);
+                    bAcc0_1[m] = fma(float(c0_0.y), float(hi.x), bAcc0_1[m]);
+                    bAcc0_0[m] = fma(float(c0_1.x), float(lo.y), bAcc0_0[m]);
+                    bAcc0_1[m] = fma(float(c0_1.y), float(hi.y), bAcc0_1[m]);
+                    bAcc0_0[m] = fma(float(c0_2.x), float(lo.z), bAcc0_0[m]);
+                    bAcc0_1[m] = fma(float(c0_2.y), float(hi.z), bAcc0_1[m]);
+                    bAcc0_0[m] = fma(float(c0_3.x), float(lo.w), bAcc0_0[m]);
+                    bAcc0_1[m] = fma(float(c0_3.y), float(hi.w), bAcc0_1[m]);
+
+                    bAcc1_0[m] = fma(float(c1_0.x), float(lo.x), bAcc1_0[m]);
+                    bAcc1_1[m] = fma(float(c1_0.y), float(hi.x), bAcc1_1[m]);
+                    bAcc1_0[m] = fma(float(c1_1.x), float(lo.y), bAcc1_0[m]);
+                    bAcc1_1[m] = fma(float(c1_1.y), float(hi.y), bAcc1_1[m]);
+                    bAcc1_0[m] = fma(float(c1_2.x), float(lo.z), bAcc1_0[m]);
+                    bAcc1_1[m] = fma(float(c1_2.y), float(hi.z), bAcc1_1[m]);
+                    bAcc1_0[m] = fma(float(c1_3.x), float(lo.w), bAcc1_0[m]);
+                    bAcc1_1[m] = fma(float(c1_3.y), float(hi.w), bAcc1_1[m]);
+                }
+            }
+            #pragma unroll
+            for (uint m = 0; m < M; ++m) {
+                const float sumX = (sVec[m].x + sVec[m].y) + (sVec[m].z + sVec[m].w);
+                acc0[m] += fma(fma(-1024.0f, sumX, bAcc0_0[m] + bAcc0_1[m]), float(blk0.scale), float(blk0.bias) * sumX);
+                acc1[m] += fma(fma(-1024.0f, sumX, bAcc1_0[m] + bAcc1_1[m]), float(blk1.scale), float(blk1.bias) * sumX);
+            }
+        }
+    } else {
+        for (uint g = lane; g < nBlocks; g += 32u) {
+            const Block_HQ4_G32 blk0 = r0[g];
+            const Block_HQ4_G32 blk1 = r1[g];
+            const half2 s0 = half2(blk0.scale), b0 = half2(blk0.bias);
+            const half2 s1 = half2(blk1.scale), b1 = half2(blk1.bias);
+            const size_t colOff = (size_t)(g << 5u);
+            float bAcc0[M], bAcc1[M];
+            #pragma unroll
+            for (uint m = 0; m < M; ++m) { bAcc0[m] = 0.0f; bAcc1[m] = 0.0f; }
+            #pragma unroll
+            for (uint w = 0; w < 4; ++w) {
+                half2 w0_01, w0_23, w0_45, w0_67;
+                half2 w1_01, w1_23, w1_45, w1_67;
+                unpack_hq4_word8(blk0.qs[w], s0, b0, w0_01, w0_23, w0_45, w0_67);
+                unpack_hq4_word8(blk1.qs[w], s1, b1, w1_01, w1_23, w1_45, w1_67);
+                const size_t wOff = colOff + (size_t)(w << 3u);
+                #pragma unroll
+                for (uint m = 0; m < M; ++m) {
+                    half4 lo, hi;
+                    qwg_load_half8(x + (size_t)m * K + wOff, lo, hi);
+                    bAcc0[m] = fma(float(w0_01.x), float(lo.x), bAcc0[m]);
+                    bAcc0[m] = fma(float(w0_01.y), float(lo.y), bAcc0[m]);
+                    bAcc0[m] = fma(float(w0_23.x), float(lo.z), bAcc0[m]);
+                    bAcc0[m] = fma(float(w0_23.y), float(lo.w), bAcc0[m]);
+                    bAcc0[m] = fma(float(w0_45.x), float(hi.x), bAcc0[m]);
+                    bAcc0[m] = fma(float(w0_45.y), float(hi.y), bAcc0[m]);
+                    bAcc0[m] = fma(float(w0_67.x), float(hi.z), bAcc0[m]);
+                    bAcc0[m] = fma(float(w0_67.y), float(hi.w), bAcc0[m]);
+
+                    bAcc1[m] = fma(float(w1_01.x), float(lo.x), bAcc1[m]);
+                    bAcc1[m] = fma(float(w1_01.y), float(lo.y), bAcc1[m]);
+                    bAcc1[m] = fma(float(w1_23.x), float(lo.z), bAcc1[m]);
+                    bAcc1[m] = fma(float(w1_23.y), float(lo.w), bAcc1[m]);
+                    bAcc1[m] = fma(float(w1_45.x), float(hi.x), bAcc1[m]);
+                    bAcc1[m] = fma(float(w1_45.y), float(hi.y), bAcc1[m]);
+                    bAcc1[m] = fma(float(w1_67.x), float(hi.z), bAcc1[m]);
+                    bAcc1[m] = fma(float(w1_67.y), float(hi.w), bAcc1[m]);
+                }
+            }
+            #pragma unroll
+            for (uint m = 0; m < M; ++m) { acc0[m] += bAcc0[m]; acc1[m] += bAcc1[m]; }
+        }
+    }
+    #pragma unroll
+    for (uint m = 0; m < M; ++m) {
+        float2 v = float2(acc0[m], acc1[m]);
+        v += simd_shuffle_down(v, 16);
+        v += simd_shuffle_down(v, 8);
+        v += simd_shuffle_down(v, 4);
+        v += simd_shuffle_down(v, 2);
+        v += simd_shuffle_down(v, 1);
+        out0[m] = v.x;
+        out1[m] = v.y;
+    }
+}
+
+/// Register-only 32-point normalized Fast Walsh-Hadamard Transform across 32 SIMD lanes
+/// (1 scalar half per lane).
+///
+/// In the STANDARD basis this is the identity: the value passes through
+/// unchanged. The gate is here, in the helper, rather than at each call
+/// site — every rotation in the tree goes away together or none of them
+/// does, and a call site that forgot the gate would read one basis against
+/// the other.
+METAL_FUNC half simd_fwht32(half val, uint lane_id) {
+    if (!QW_FWHT_ROTATED) return val;
+    float x = float(val);
+    #pragma unroll
+    for (ushort s = 1; s < 32; s <<= 1) {
+        float partner = simd_shuffle_xor(x, s);
+        x = ((lane_id & s) == 0) ? (x + partner) : (partner - x);
+    }
+    return half(x * 0.17677669529663689f);
+}
+
+/// Register-only 32-point normalized Fast Walsh-Hadamard Transform on 8 FP32 elements
+/// per lane (4 consecutive lanes span 32 elements), rounding to FP16 only once on output.
+///
+/// In the STANDARD basis the transform is skipped and the f32 values are
+/// rounded to f16 as they are — the narrowing still happens, because the
+/// output is f16 either way.
+METAL_FUNC void fwht32_f32_to_h8(thread float (&f)[8], thread half (&v)[8], uint lane_id) {
+    if (!QW_FWHT_ROTATED) {
+        #pragma unroll
+        for (int i = 0; i < 8; ++i) v[i] = half(f[i]);
+        return;
+    }
+    // Stage 1: stride 1 (intra-thread)
+    #pragma unroll
+    for (int i = 0; i < 8; i += 2) {
+        float a = f[i], b = f[i + 1];
+        f[i] = a + b; f[i + 1] = a - b;
+    }
+    // Stage 2: stride 2 (intra-thread)
+    #pragma unroll
+    for (int i = 0; i < 8; i += 4) {
+        float a0 = f[i], a1 = f[i + 1], b0 = f[i + 2], b1 = f[i + 3];
+        f[i] = a0 + b0; f[i + 1] = a1 + b1;
+        f[i + 2] = a0 - b0; f[i + 3] = a1 - b1;
+    }
+    // Stage 3: stride 4 (intra-thread)
+    #pragma unroll
+    for (int i = 0; i < 4; ++i) {
+        float a = f[i], b = f[i + 4];
+        f[i] = a + b; f[i + 4] = a - b;
+    }
+    // Stage 4: stride 8 (cross-lane xor 1)
+    bool neg1 = (lane_id & 1u) != 0;
+    #pragma unroll
+    for (int i = 0; i < 8; ++i) {
+        float p = simd_shuffle_xor(f[i], ushort(1));
+        f[i] = neg1 ? (p - f[i]) : (f[i] + p);
+    }
+    // Stage 5: stride 16 (cross-lane xor 2)
+    bool neg2 = (lane_id & 2u) != 0;
+    constexpr float inv_sqrt32 = 0.17677669529663689f;
+    #pragma unroll
+    for (int i = 0; i < 8; ++i) {
+        float p = simd_shuffle_xor(f[i], ushort(2));
+        float res = neg2 ? (p - f[i]) : (f[i] + p);
+        v[i] = half(res * inv_sqrt32);
+    }
+}
+
+/// Register-only 32-point normalized Fast Walsh-Hadamard Transform when each lane holds
+/// 8 contiguous half elements (v[0..7]) and 4 consecutive lanes (lane_id & 3) span 32 elements.
+///
+/// In the STANDARD basis this is the identity. Half to float to half is
+/// exact, so leaving the values alone is the same as running the transform
+/// over a basis that is already standard.
+METAL_FUNC void fwht32_inplace(thread half (&v)[8], uint lane_id) {
+    if (!QW_FWHT_ROTATED) return;
+    float f[8];
+    #pragma unroll
+    for (int i = 0; i < 8; ++i) f[i] = float(v[i]);
+    fwht32_f32_to_h8(f, v, lane_id);
+}
+
+/// Register-only 32-point normalized Fast Walsh-Hadamard Transform on 8 FP32 elements
+/// per lane, emitting a hi/lo FP16 split pair (vHi, vLo) with ~2^-22 effective precision.
+///
+/// In the STANDARD basis this is the identity, split the same way the
+/// transform's result is: the whole number in the high half, nothing in the
+/// low one.
+METAL_FUNC void fwht32_f32_to_split_h8(thread float (&f)[8], thread half (&vHi)[8], thread half (&vLo)[8], uint lane_id) {
+    if (!QW_FWHT_ROTATED) {
+        // The split stays a split: the high half carries the value and the
+        // low half the residue, so the pair means the same thing it means in
+        // the rotated basis. For a value fp16 cannot hold exactly, the
+        // residue is not zero — it is what the pair exists to carry.
+        #pragma unroll
+        for (int i = 0; i < 8; ++i) {
+            vHi[i] = half(f[i]);
+            vLo[i] = half(f[i] - float(vHi[i]));
+        }
+        return;
+    }
+    #pragma unroll
+    for (int i = 0; i < 8; i += 2) {
+        float a = f[i], b = f[i + 1];
+        f[i] = a + b; f[i + 1] = a - b;
+    }
+    #pragma unroll
+    for (int i = 0; i < 8; i += 4) {
+        float a0 = f[i], a1 = f[i + 1], b0 = f[i + 2], b1 = f[i + 3];
+        f[i] = a0 + b0; f[i + 1] = a1 + b1;
+        f[i + 2] = a0 - b0; f[i + 3] = a1 - b1;
+    }
+    #pragma unroll
+    for (int i = 0; i < 4; ++i) {
+        float a = f[i], b = f[i + 4];
+        f[i] = a + b; f[i + 4] = a - b;
+    }
+    bool neg1 = (lane_id & 1u) != 0;
+    #pragma unroll
+    for (int i = 0; i < 8; ++i) {
+        float p = simd_shuffle_xor(f[i], ushort(1));
+        f[i] = neg1 ? (p - f[i]) : (f[i] + p);
+    }
+    bool neg2 = (lane_id & 2u) != 0;
+    constexpr float inv_sqrt32 = 0.17677669529663689f;
+    #pragma unroll
+    for (int i = 0; i < 8; ++i) {
+        float p = simd_shuffle_xor(f[i], ushort(2));
+        float res = (neg2 ? (p - f[i]) : (f[i] + p)) * inv_sqrt32;
+        half hi = half(res);
+        vHi[i] = hi;
+        vLo[i] = half(res - float(hi));
+    }
+}
+

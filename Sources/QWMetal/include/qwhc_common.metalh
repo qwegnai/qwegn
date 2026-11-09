@@ -1,0 +1,44 @@
+// qwhc_common.metalh — helpers shared by the HQ4 (qwhc.metal) and AQ (qwhc_aq.metal) hyper-connection kernels.
+#pragma once
+#include <metal_stdlib>
+#include <metal_simdgroup>
+using namespace metal;
+
+// One BF16 hc.inject row of the fused down+inject decode: 2 * sigmoid(y / scale).
+static inline void qwg_hc_inject_bf16_f32_impl(device const ushort* injW, device const float* xXn, device float* yInj,
+                                               uint K, float scale, uint realCH, uint rw, uint n,
+                                               uint sg, uint lane, threadgroup float* partial) {
+    const uint tid = sg * 32u + lane, K4 = K >> 2u;
+    device const ushort4* wRow4 = (device const ushort4*)(injW + (size_t)n * K);
+    float acc = 0.0f;
+    device const float4* xRow4 = (device const float4*)(xXn + rw * K);
+    for (uint k4 = tid; k4 < K4; k4 += 128u) {
+        const ushort4 u = wRow4[k4];
+        const float4 w = float4(as_type<float>(uint(u.x) << 16u), as_type<float>(uint(u.y) << 16u),
+                                as_type<float>(uint(u.z) << 16u), as_type<float>(uint(u.w) << 16u));
+        acc += dot(w, xRow4[k4]);
+    }
+    acc = simd_sum(acc);
+    if (lane == 0u) partial[sg] = acc;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid == 0u) {
+        const float y = (partial[0] + partial[1]) + (partial[2] + partial[3]);
+        yInj[rw * realCH + n] = 2.0f / (1.0f + exp(-(y / scale)));
+    }
+}
+
+// Reduces a split-K float4 partial (4 rows) across the 4 simdgroups of a 128-thread TG and writes silu(y / scale).
+static inline void qwg_hc_down_rows4_store(float4 acc, device float* yLow, uint NDown, uint rw, uint row0,
+                                           float scale, uint sg, uint lane, threadgroup float4* part4) {
+    acc = simd_sum(acc);
+    if (lane == 0u) part4[sg] = acc;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (sg == 0u && lane < 4u) {
+        const float4 s = (part4[0] + part4[1]) + (part4[2] + part4[3]);
+        const uint row = row0 + lane;
+        if (row < NDown) {
+            const float z = s[lane] / scale;
+            yLow[rw * NDown + row] = z / (1.0f + exp(-z));
+        }
+    }
+}

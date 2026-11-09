@@ -1,0 +1,10 @@
+// qw_moe_tile.metalh: the row-block size of a MoE expert's grouped-GEMM tile.
+// One rule for the tile builder and the GEMM, so the two cannot disagree.
+#pragma once
+#include <metal_stdlib>
+
+// Row block of an expert with c rows: 16 for c <= 16, 32 for c <= 32, else 64.
+inline int qw_moe_tile_block(int c, int forced) {
+    if (forced > 0) return forced;
+    return c <= 16 ? 16 : (c <= 32 ? 32 : 64);
+}

@@ -1,0 +1,220 @@
+// qw_mhc_common.metalh — mHC router helpers shared by the fused, split, and multi-row
+// router-norm kernels: controls (sigmoid pre/post + Sinkhorn mix) and the branch norm.
+#pragma once
+#include <metal_stdlib>
+#include <metal_simdgroup>
+#include "qw_geometry_constants.metalh"
+#include "qw_dequant.metalh"
+using namespace metal;
+
+// Controls from the C pre/post logits and the C*C mix logits (thread-local):
+// sigmoid pre/post, then Sinkhorn on the mix. Writes ctrl[0..C+C*C) and sPre[0..C).
+template <uint C>
+inline void qwg_mhc_controls(thread const float* tot, float totSS, uint width, float eps,
+                             float preScale, uint realIterations,
+                             device const float* routerB, device float* ctrl,
+                             threadgroup float* sPre) {
+    const float rstd = rsqrt(totSS / float(width) + ((C == 4u) ? eps : 1.0e-6f));
+    const float hcEps = (C == 4u) ? 1.0e-6f : 0.0f;
+
+    #pragma unroll
+    for (uint c = 0u; c < C; ++c) {
+        const float lPre = tot[c] * rstd + routerB[c];
+        sPre[c] = (1.0f / (1.0f + exp(-lPre))) * preScale + hcEps;
+        const float lPost = tot[C + c] * rstd + routerB[C + c];
+        ctrl[c] = 2.0f / (1.0f + exp(-lPost));
+    }
+
+    float m[C * C];
+    #pragma unroll
+    for (uint idx = 0u; idx < C * C; ++idx) {
+        m[idx] = tot[2u * C + idx] * rstd + routerB[2u * C + idx];
+    }
+
+    if (C == 4u) {
+        // Glm5NextTextHyperConnection: row-softmax + hc_eps, col-normalize, then (iters - 1) row/col steps.
+        #pragma unroll
+        for (uint i = 0u; i < C; ++i) {
+            float rm = m[i * C];
+            #pragma unroll
+            for (uint j = 1u; j < C; ++j) rm = max(rm, m[i * C + j]);
+            float rSum = 0.0f;
+            #pragma unroll
+            for (uint j = 0u; j < C; ++j) {
+                m[i * C + j] = exp(m[i * C + j] - rm);
+                rSum += m[i * C + j];
+            }
+            const float invR = 1.0f / rSum;
+            #pragma unroll
+            for (uint j = 0u; j < C; ++j) m[i * C + j] = m[i * C + j] * invR + hcEps;
+        }
+        #pragma unroll
+        for (uint j = 0u; j < C; ++j) {
+            float cSum = 0.0f;
+            #pragma unroll
+            for (uint i = 0u; i < C; ++i) cSum += m[i * C + j];
+            const float invC = 1.0f / (cSum + hcEps);
+            #pragma unroll
+            for (uint i = 0u; i < C; ++i) m[i * C + j] *= invC;
+        }
+        for (uint it = 1u; it < realIterations; ++it) {
+            #pragma unroll
+            for (uint i = 0u; i < C; ++i) {
+                float rSum = 0.0f;
+                #pragma unroll
+                for (uint j = 0u; j < C; ++j) rSum += m[i * C + j];
+                const float invR = 1.0f / (rSum + hcEps);
+                #pragma unroll
+                for (uint j = 0u; j < C; ++j) m[i * C + j] *= invR;
+            }
+            #pragma unroll
+            for (uint j = 0u; j < C; ++j) {
+                float cSum = 0.0f;
+                #pragma unroll
+                for (uint i = 0u; i < C; ++i) cSum += m[i * C + j];
+                const float invC = 1.0f / (cSum + hcEps);
+                #pragma unroll
+                for (uint i = 0u; i < C; ++i) m[i * C + j] *= invC;
+            }
+        }
+        // Store comb^T so matmul(comb.transpose(-1, -2), residual) is a direct row dot product.
+        #pragma unroll
+        for (uint i = 0u; i < C; ++i) {
+            #pragma unroll
+            for (uint j = 0u; j < C; ++j) {
+                ctrl[C + i * C + j] = float(half(m[j * C + i]));
+            }
+        }
+    } else {
+        for (uint it = 0u; it < realIterations; ++it) {
+            #pragma unroll
+            for (uint i = 0u; i < C; ++i) {
+                float rm = m[i * C];
+                #pragma unroll
+                for (uint j = 1u; j < C; ++j) rm = max(rm, m[i * C + j]);
+                float rSum = 0.0f;
+                #pragma unroll
+                for (uint j = 0u; j < C; ++j) rSum += exp(m[i * C + j] - rm);
+                const float rLog = rm + log(rSum);
+                #pragma unroll
+                for (uint j = 0u; j < C; ++j) m[i * C + j] -= rLog;
+            }
+            #pragma unroll
+            for (uint j = 0u; j < C; ++j) {
+                float cm = m[j];
+                #pragma unroll
+                for (uint i = 1u; i < C; ++i) cm = max(cm, m[i * C + j]);
+                float cSum = 0.0f;
+                #pragma unroll
+                for (uint i = 0u; i < C; ++i) cSum += exp(m[i * C + j] - cm);
+                const float cLog = cm + log(cSum);
+                #pragma unroll
+                for (uint i = 0u; i < C; ++i) m[i * C + j] -= cLog;
+            }
+        }
+        #pragma unroll
+        for (uint idx = 0u; idx < C * C; ++idx) {
+            ctrl[C + idx] = exp(m[idx]);
+        }
+    }
+}
+
+// C=4 controls on one simdgroup (same math as qwg_mhc_controls<4>): lane&15 owns mix entry
+// (i, j) = (e/4, e%4); row reductions are quad ops, column reductions xor-shuffle by 4 and 8.
+inline void qwg_mhc_controls4_simd(threadgroup const float* tots, uint width, float eps,
+                                   float preScale, uint realIterations,
+                                   device const float* routerB, device float* ctrl,
+                                   threadgroup float* sPre, uint lane, bool writeCtrl = true) {
+    const float rstd = rsqrt(tots[0] / float(width) + eps);
+    const float hcEps = 1.0e-6f;
+    if (lane < 4u) {
+        const float lPre = tots[1u + lane] * rstd + routerB[lane];
+        sPre[lane] = (1.0f / (1.0f + exp(-lPre))) * preScale + hcEps;
+        const float lPost = tots[5u + lane] * rstd + routerB[4u + lane];
+        if (writeCtrl) ctrl[lane] = 2.0f / (1.0f + exp(-lPost));
+    }
+    const uint e = lane & 15u;
+    float m = tots[9u + e] * rstd + routerB[8u + e];
+    m = exp(m - quad_max(m));
+    m = m * (1.0f / quad_sum(m)) + hcEps;
+    float cs = m + simd_shuffle_xor(m, 4u);
+    cs += simd_shuffle_xor(cs, 8u);
+    m *= 1.0f / (cs + hcEps);
+    for (uint it = 1u; it < realIterations; ++it) {
+        m *= 1.0f / (quad_sum(m) + hcEps);
+        cs = m + simd_shuffle_xor(m, 4u);
+        cs += simd_shuffle_xor(cs, 8u);
+        m *= 1.0f / (cs + hcEps);
+    }
+    if (writeCtrl && lane < 16u) ctrl[4u + (e & 3u) * 4u + (e >> 2u)] = float(half(m));
+}
+
+// Branch input: pre-weighted stream sum, RMS-normed with (1 + gamma), FWHT-rotated.
+// 256 threads (8 simdgroups); sPre must be visible to every thread.
+template <uint C>
+inline void qwg_mhc_branch_norm(device const float* sBase, device const half* normGamma,
+                                device half* dst, uint hidden, float eps,
+                                threadgroup float* sPre, uint tid, uint sg, uint lane,
+                                threadgroup float* partSS) {
+    float pre[C];
+    #pragma unroll
+    for (uint c = 0u; c < C; ++c) pre[c] = sPre[c];
+
+    float ssBranch = 0.0f;
+    float regB[16];
+    const uint nPerThread = (hidden + 255u) >> 8u;
+    if (nPerThread <= 16u) {
+        #pragma unroll
+        for (uint i = 0u; i < 16u; ++i) {
+            const uint h = tid + i * 256u;
+            if (h < hidden) {
+                float bv = 0.0f;
+                #pragma unroll
+                for (uint c = 0u; c < C; ++c) {
+                    bv = fma(pre[c], sBase[c * hidden + h], bv);
+                }
+                regB[i] = bv;
+                ssBranch = fma(bv, bv, ssBranch);
+            }
+        }
+    } else {
+        for (uint h = tid; h < hidden; h += 256u) {
+            float bv = 0.0f;
+            #pragma unroll
+            for (uint c = 0u; c < C; ++c) {
+                bv = fma(pre[c], sBase[c * hidden + h], bv);
+            }
+            ssBranch = fma(bv, bv, ssBranch);
+        }
+    }
+    ssBranch = simd_sum(ssBranch);
+    if (lane == 0u) partSS[sg] = ssBranch;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    float totBranch = 0.0f;
+    for (uint i = 0u; i < 8u; ++i) totBranch += partSS[i];
+    const float rstdBranch = rsqrt(totBranch / float(hidden) + eps);
+
+    if (nPerThread <= 16u) {
+        #pragma unroll
+        for (uint i = 0u; i < 16u; ++i) {
+            const uint h = tid + i * 256u;
+            if (h < hidden) {
+                float v = regB[i] * rstdBranch * (1.0f + float(normGamma[h]));
+                v = qwg_fwht32_lane_f32(v, lane);
+                dst[h] = half(v);
+            }
+        }
+    } else {
+        for (uint h = tid; h < hidden; h += 256u) {
+            float bv = 0.0f;
+            #pragma unroll
+            for (uint c = 0u; c < C; ++c) {
+                bv = fma(pre[c], sBase[c * hidden + h], bv);
+            }
+            float v = bv * rstdBranch * (1.0f + float(normGamma[h]));
+            v = qwg_fwht32_lane_f32(v, lane);
+            dst[h] = half(v);
+        }
+    }
+}

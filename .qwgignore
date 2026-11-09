@@ -1,0 +1,24 @@
+# .qwgignore — Exclusions for `qwg index` (.qwcache codebase memory packs).
+# Follows gitignore(5) syntax alongside .gitignore and .git/info/exclude.
+
+# Vendored third-party header templates and raw Metal shader sources
+# (Remove `Sources/QWMetal/` if indexing MSL shader bodies explicitly)
+Sources/QWMetal/
+
+# Auto-generated CLI options and hardcoded numeric lookup tables
+Sources/Apps/qwg/Generated/
+Sources/QWMetal/gdn/qwgdn_prefill_tables.h
+
+# Bundled static Web UI HTML/CSS/JS asset
+Sources/Apps/QWServer/Resources/
+
+# Test fixtures, golden data blobs, and build/verification helper scripts
+Tests/**/Fixtures/
+Tests/**/fixtures/
+Scripts/
+
+# Repository legal/governance boilerplate
+LICENSE
+CODE_OF_CONDUCT.md
+SECURITY.md
+CITATION.cff

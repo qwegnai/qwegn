@@ -1,0 +1,322 @@
+// qw_gemm_nax.metalh — the tiled NAX GEMM both containers dispatch: the
+// incumbent's `Block_HQ4_G32` banks and the size-preserving family's own.
+// The template is here so the family's twins can live beside the incumbent's
+// without either file owning the other's kernels.
+
+#pragma once
+#include <metal_stdlib>
+#include <metal_simdgroup>
+#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
+#include "mlx/backend/metal/kernels/utils.h"
+#include "mlx/backend/metal/kernels/steel/gemm/gemm.h"
+#include "mlx/backend/metal/kernels/steel/gemm/nax.h"
+#include "mlx/backend/metal/kernels/steel/gemm/loader.h"
+#include "qw_dequant.metalh"
+#include "qw_geometry_constants.metalh"
+
+using namespace metal;
+using namespace mlx::steel;
+
+/// Both 4-weight fragment halves (`sc.x + 0..3` and `sc.x + 16..19`) of a
+/// single group `gp`, unpacked directly in `half2` via the IEEE-754 `0x6400u`
+/// magic-exponent trick (`as_type<half2>(code | 0x6400u) - 1024.0h`) and `half2` FMA.
+/// Zero integer-to-float (`uitofp`) or float-to-half (`fptrunc`) conversions.
+template <int BITS>
+METAL_FUNC void qwg_aq_frag8(device const char* gp, uint bitOffset,
+                             thread half4 &lo, thread half4 &hi) {
+  const half2 sb = *(device const half2*)gp;
+  const half2 s2 = half2(sb.x);
+  const half2 b2 = half2(sb.y);
+  const half2 kBias = half2(-1024.0h);
+  device const uchar* p = (device const uchar*)(gp + 4);
+  const uint byteOff = bitOffset >> 3u;
+  if constexpr (BITS == 2) {
+    const ushort2 raw = ushort2(ushort(p[byteOff]), ushort(p[byteOff + 4u]));
+    const half2 c0 = as_type<half2>((raw & ushort2(0x0003u)) | ushort2(0x6400u)) + kBias;
+    const half2 c1 = as_type<half2>(((raw >> 2u) & ushort2(0x0003u)) | ushort2(0x6400u)) + kBias;
+    const half2 c2 = as_type<half2>(((raw >> 4u) & ushort2(0x0003u)) | ushort2(0x6400u)) + kBias;
+    const half2 c3 = as_type<half2>((raw >> 6u) | ushort2(0x6400u)) + kBias;
+    const half2 w0 = fma(c0, s2, b2);
+    const half2 w1 = fma(c1, s2, b2);
+    const half2 w2 = fma(c2, s2, b2);
+    const half2 w3 = fma(c3, s2, b2);
+    lo = half4(w0.x, w1.x, w2.x, w3.x);
+    hi = half4(w0.y, w1.y, w2.y, w3.y);
+  } else if constexpr (BITS == 3) {
+    const uint bOffHi = (bitOffset + 48u) >> 3u;
+    const uint vLo = (uint(p[byteOff]) | (uint(p[byteOff + 1u]) << 8u)) >> (bitOffset & 7u);
+    const uint vHi = (uint(p[bOffHi]) | (uint(p[bOffHi + 1u]) << 8u)) >> ((bitOffset + 48u) & 7u);
+    const ushort2 raw = ushort2(ushort(vLo), ushort(vHi));
+    const half2 c0 = as_type<half2>((raw & ushort2(0x0007u)) | ushort2(0x6400u)) + kBias;
+    const half2 c1 = as_type<half2>(((raw >> 3u) & ushort2(0x0007u)) | ushort2(0x6400u)) + kBias;
+    const half2 c2 = as_type<half2>(((raw >> 6u) & ushort2(0x0007u)) | ushort2(0x6400u)) + kBias;
+    const half2 c3 = as_type<half2>(((raw >> 9u) & ushort2(0x0007u)) | ushort2(0x6400u)) + kBias;
+    const half2 w0 = fma(c0, s2, b2);
+    const half2 w1 = fma(c1, s2, b2);
+    const half2 w2 = fma(c2, s2, b2);
+    const half2 w3 = fma(c3, s2, b2);
+    lo = half4(w0.x, w1.x, w2.x, w3.x);
+    hi = half4(w0.y, w1.y, w2.y, w3.y);
+  } else if constexpr (BITS == 4) {
+    const ushort2 raw = ushort2(*(device const ushort*)(p + byteOff),
+                                *(device const ushort*)(p + byteOff + 8u));
+    const half2 c0 = as_type<half2>((raw & ushort2(0x000Fu)) | ushort2(0x6400u)) + kBias;
+    const half2 c1 = as_type<half2>(((raw >> 4u) & ushort2(0x000Fu)) | ushort2(0x6400u)) + kBias;
+    const half2 c2 = as_type<half2>(((raw >> 8u) & ushort2(0x000Fu)) | ushort2(0x6400u)) + kBias;
+    const half2 c3 = as_type<half2>((raw >> 12u) | ushort2(0x6400u)) + kBias;
+    const half2 w0 = fma(c0, s2, b2);
+    const half2 w1 = fma(c1, s2, b2);
+    const half2 w2 = fma(c2, s2, b2);
+    const half2 w3 = fma(c3, s2, b2);
+    lo = half4(w0.x, w1.x, w2.x, w3.x);
+    hi = half4(w0.y, w1.y, w2.y, w3.y);
+  } else if constexpr (BITS == 6) {
+    const uint uLo = uint(p[byteOff]) | (uint(p[byteOff + 1u]) << 8u) | (uint(p[byteOff + 2u]) << 16u);
+    const uint uHi = uint(p[byteOff + 12u]) | (uint(p[byteOff + 13u]) << 8u) | (uint(p[byteOff + 14u]) << 16u);
+    const ushort2 r01 = ushort2(ushort(uLo), ushort(uHi));
+    const ushort2 r23 = ushort2(ushort(uLo >> 12u), ushort(uHi >> 12u));
+    const half2 c0 = as_type<half2>((r01 & ushort2(0x003Fu)) | ushort2(0x6400u)) + kBias;
+    const half2 c1 = as_type<half2>(((r01 >> 6u) & ushort2(0x003Fu)) | ushort2(0x6400u)) + kBias;
+    const half2 c2 = as_type<half2>((r23 & ushort2(0x003Fu)) | ushort2(0x6400u)) + kBias;
+    const half2 c3 = as_type<half2>(((r23 >> 6u) & ushort2(0x003Fu)) | ushort2(0x6400u)) + kBias;
+    const half2 w0 = fma(c0, s2, b2);
+    const half2 w1 = fma(c1, s2, b2);
+    const half2 w2 = fma(c2, s2, b2);
+    const half2 w3 = fma(c3, s2, b2);
+    lo = half4(w0.x, w1.x, w2.x, w3.x);
+    hi = half4(w0.y, w1.y, w2.y, w3.y);
+  } else {
+    const ushort2 rLo = as_type<ushort2>(*(device const uint*)(p + byteOff));
+    const ushort2 rHi = as_type<ushort2>(*(device const uint*)(p + byteOff + 16u));
+    const half2 cLoXZ = as_type<half2>((rLo & ushort2(0x00FFu)) | ushort2(0x6400u)) + kBias;
+    const half2 cLoYW = as_type<half2>((rLo >> 8u) | ushort2(0x6400u)) + kBias;
+    const half2 cHiXZ = as_type<half2>((rHi & ushort2(0x00FFu)) | ushort2(0x6400u)) + kBias;
+    const half2 cHiYW = as_type<half2>((rHi >> 8u) | ushort2(0x6400u)) + kBias;
+    const half2 wLoXZ = fma(cLoXZ, s2, b2);
+    const half2 wLoYW = fma(cLoYW, s2, b2);
+    const half2 wHiXZ = fma(cHiXZ, s2, b2);
+    const half2 wHiYW = fma(cHiYW, s2, b2);
+    lo = half4(wLoXZ.x, wLoYW.x, wLoXZ.y, wLoYW.y);
+    hi = half4(wHiXZ.x, wHiYW.x, wHiXZ.y, wHiYW.y);
+  }
+}
+
+template <typename T, typename U = T, const bool aligned_N = false,
+          const int BM = 64, const int BK = 64, const int BN = 64,
+          const int WM = 2, const int WN = 2, bool store32 = false, bool splitGdn = false,
+          bool gatherA = false, const int AQ_BITS = 0, const int AQ_GROUP = 0>
+METAL_FUNC void qmm_t_nax_tgp_dual_impl(
+    const device char* w,
+    const device T* x,
+    device U* y,
+    device float* y32,
+    threadgroup T* Ws,
+    int K,
+    int N,
+    int M,
+    uint3 tid [[threadgroup_position_in_grid]],
+    uint lid [[thread_index_in_threadgroup]],
+    uint simd_gid [[simdgroup_index_in_threadgroup]],
+    uint simd_lid [[thread_index_in_simdgroup]],
+    device U* z16 = nullptr,
+    const device int32_t* sortedTok = nullptr) {
+  (void)Ws;
+  (void)lid;
+  (void)simd_lid;
+  const int K_g = K / 32;
+  const int y_row = tid.y * BM;
+  const int y_col = tid.x * BN;
+  const int gdnQKV = int(QW_GDN_QKV_CH);
+  const int gdnZ = int(QW_GDN_Z_CH);
+  const int gdnQKVZ = gdnQKV + gdnZ;
+  const int gdnTotalN = gdnQKVZ + 2 * int(QW_GDN_V_HEADS);
+  const bool need_store32 = store32 && (N != gdnTotalN || (y_col + BN > gdnQKVZ));
+
+  const device Block_HQ4_G32* w_tile =
+      (AQ_BITS == 0) ? (const device Block_HQ4_G32*)w + static_cast<int64_t>(y_col) * K_g : nullptr;
+  if constexpr (!gatherA) {
+    x += y_row * static_cast<int64_t>(K);
+  }
+  if constexpr (!splitGdn) {
+    y += y_row * static_cast<int64_t>(N) + y_col;
+  }
+  if (need_store32 && y32 != nullptr) {
+    y32 += y_row * static_cast<int64_t>(N) + y_col;
+  }
+
+  constexpr short SM = BM / WM;
+  constexpr short SN = BN / WN;
+  constexpr short SK = 32;
+
+  constexpr short TM = SM / 16;
+  constexpr short TN = SN / 16;
+  constexpr short TK = SK / 16;
+
+  const short tm = SM * (simd_gid / WN);
+  const short tn = SN * (simd_gid % WN);
+
+  constexpr bool transpose_a = false;
+  constexpr bool transpose_b = true;
+
+  const short sgp_sm = min(int(SM), M - (y_row + tm));
+  const bool is_unaligned_sm = (sgp_sm != SM);
+  const short sgp_sn = aligned_N ? SN : min(int(SN), N - (y_col + tn));
+  const short tgp_bn = aligned_N ? BN : min(BN, int(N - (y_col)));
+  const bool is_unaligned_bn = aligned_N ? false : (tgp_bn != BN);
+  if (sgp_sm <= 0 || sgp_sn <= 0) return;
+
+  using AccumType = float;
+  NAXTile<AccumType, TM, TN> Dtile;
+  Dtile.clear();
+
+  if constexpr (!gatherA) {
+    x += tm * K;
+  }
+  const short2 sc = BaseNAXFrag::get_coord();
+  const ushort w_sub = ushort(sc.x >> 3);
+  const ushort shift = ushort((sc.x & 4) << 1);
+  constexpr uint aqGroupBytes = AQ_BITS > 0 ? uint(AQ_GROUP * AQ_BITS / 8 + 4) : 0u;
+  const uint aqRowBytes = AQ_BITS > 0 ? uint(K / AQ_GROUP) * aqGroupBytes : 0u;
+  const device char* w_aq_tile =
+      (AQ_BITS > 0) ? (w + static_cast<int64_t>(y_col) * aqRowBytes) : nullptr;
+
+  const device T* x_rows[TM * 2];
+  if constexpr (gatherA) {
+    STEEL_PRAGMA_UNROLL
+    for (short m = 0; m < TM; ++m) {
+      STEEL_PRAGMA_UNROLL
+      for (short i = 0; i < 2; ++i) {
+        const int r = y_row + int(tm) + int(m) * 16 + int(sc.y) + int(i) * 8;
+        const int tok = (r < M) ? sortedTok[r] : -1;
+        x_rows[m * 2 + i] = (tok >= 0) ? (x + static_cast<int64_t>(tok) * K + int(sc.x)) : nullptr;
+      }
+    }
+  }
+
+  dispatch_bool(!is_unaligned_sm, [&](auto kAlignedM) {
+    dispatch_bool(aligned_N || !is_unaligned_bn, [&](auto kAlignedN) {
+      STEEL_PRAGMA_NO_UNROLL
+      for (int k = 0; k < K; k += SK) {
+        NAXTile<T, TM, TK> Atile;
+        NAXTile<T, TN, TK> Btile;
+
+        if constexpr (gatherA) {
+          const_for_loop<0, TM, 1>([&](auto idx_row) {
+            constexpr short m = idx_row.value;
+            thread auto& a0 = Atile.template frag_at<m, 0>();
+            thread auto& a1 = Atile.template frag_at<m, 1>();
+            STEEL_PRAGMA_UNROLL
+            for (short i = 0; i < 2; ++i) {
+              const device T* xr = x_rows[m * 2 + i];
+              if (xr != nullptr) {
+                const vec<T, 4> v0 = *(const device vec<T, 4>*)(xr + k);
+                const vec<T, 4> v1 = *(const device vec<T, 4>*)(xr + k + 16);
+                a0[i * 4 + 0] = v0.x; a0[i * 4 + 1] = v0.y; a0[i * 4 + 2] = v0.z; a0[i * 4 + 3] = v0.w;
+                a1[i * 4 + 0] = v1.x; a1[i * 4 + 1] = v1.y; a1[i * 4 + 2] = v1.z; a1[i * 4 + 3] = v1.w;
+              } else {
+                a0[i * 4 + 0] = T(0); a0[i * 4 + 1] = T(0); a0[i * 4 + 2] = T(0); a0[i * 4 + 3] = T(0);
+                a1[i * 4 + 0] = T(0); a1[i * 4 + 1] = T(0); a1[i * 4 + 2] = T(0); a1[i * 4 + 3] = T(0);
+              }
+            }
+          });
+        } else if constexpr (kAlignedM.value) {
+          Atile.load(x, K);
+        } else {
+          Atile.load_safe(x, K, short2(SK, sgp_sm));
+        }
+
+        const uint aqGroupIndex = AQ_BITS > 0 ? (uint(k) / uint(AQ_GROUP)) : 0u;
+        const uint aqBitInGroup = AQ_BITS > 0
+            ? (((uint(k) & uint(AQ_GROUP - 1)) + uint(sc.x)) * uint(AQ_BITS))
+            : 0u;
+        const device char* aqGroupBase = AQ_BITS > 0
+            ? (w_aq_tile + static_cast<int64_t>(aqGroupIndex) * aqGroupBytes)
+            : nullptr;
+
+        const_for_loop<0, TN, 1>([&](auto idx_row) {
+          thread auto& f0 = Btile.template frag_at<idx_row.value, 0>();
+          thread auto& f1 = Btile.template frag_at<idx_row.value, 1>();
+          STEEL_PRAGMA_UNROLL
+          for (short i = 0; i < 2; ++i) {
+            const int r_tile = int(tn) + idx_row.value * 16 + int(sc.y) + int(i) * 8;
+            if (kAlignedN.value || r_tile < int(tgp_bn)) {
+              if constexpr (AQ_BITS == 0) {
+                const device Block_HQ4_G32& blk = w_tile[r_tile * K_g];
+                const half2 dm = *(const device half2*)(&blk);
+                const half2 s2 = half2(dm.x);
+                const half2 b2 = half2(dm.y);
+                const ushort2 raw0 = as_type<ushort2>(blk.qs[w_sub]) >> shift;
+                const ushort2 raw1 = as_type<ushort2>(blk.qs[2u + w_sub]) >> shift;
+                const half2 w01 = fma(as_type<half2>((raw0 & ushort2(0x000Fu)) | ushort2(0x6400u)), s2, b2);
+                const half2 w23 = fma(as_type<half2>(((raw0 >> 4) & ushort2(0x000Fu)) | ushort2(0x6400u)), s2, b2);
+                const half2 w45 = fma(as_type<half2>((raw1 & ushort2(0x000Fu)) | ushort2(0x6400u)), s2, b2);
+                const half2 w67 = fma(as_type<half2>(((raw1 >> 4) & ushort2(0x000Fu)) | ushort2(0x6400u)), s2, b2);
+                f0[i * 4 + 0] = w01.x; f0[i * 4 + 1] = w01.y;
+                f0[i * 4 + 2] = w23.x; f0[i * 4 + 3] = w23.y;
+                f1[i * 4 + 0] = w45.x; f1[i * 4 + 1] = w45.y;
+                f1[i * 4 + 2] = w67.x; f1[i * 4 + 3] = w67.y;
+              } else {
+                const device char* gp = aqGroupBase + static_cast<int64_t>(r_tile) * aqRowBytes;
+                half4 lo, hi;
+                qwg_aq_frag8<AQ_BITS>(gp, aqBitInGroup, lo, hi);
+                f0[i * 4 + 0] = lo.x; f0[i * 4 + 1] = lo.y;
+                f0[i * 4 + 2] = lo.z; f0[i * 4 + 3] = lo.w;
+                f1[i * 4 + 0] = hi.x; f1[i * 4 + 1] = hi.y;
+                f1[i * 4 + 2] = hi.z; f1[i * 4 + 3] = hi.w;
+              }
+            } else {
+              f0[i * 4 + 0] = T(0); f0[i * 4 + 1] = T(0);
+              f0[i * 4 + 2] = T(0); f0[i * 4 + 3] = T(0);
+              f1[i * 4 + 0] = T(0); f1[i * 4 + 1] = T(0);
+              f1[i * 4 + 2] = T(0); f1[i * 4 + 3] = T(0);
+            }
+          }
+        });
+
+        tile_matmad_nax(
+            Dtile,
+            Atile,
+            metal::bool_constant<transpose_a>{},
+            Btile,
+            metal::bool_constant<transpose_b>{});
+
+        if constexpr (!gatherA) {
+          x += SK;
+        }
+        if constexpr (AQ_BITS == 0) { w_tile += 1; }
+      }
+
+      if constexpr (splitGdn) {
+        if (y_col < gdnQKV) {
+          device U* qkv_dst = y + (y_row + tm) * static_cast<int64_t>(gdnQKV) + (y_col + tn);
+          if constexpr (kAlignedM.value) Dtile.store(qkv_dst, gdnQKV);
+          else Dtile.store_safe(qkv_dst, gdnQKV, short2(sgp_sn, sgp_sm));
+        } else if (y_col < gdnQKVZ) {
+          device U* z_dst = z16 + (y_row + tm) * static_cast<int64_t>(gdnZ) + (y_col - gdnQKV + tn);
+          if constexpr (kAlignedM.value) Dtile.store(z_dst, gdnZ);
+          else Dtile.store_safe(z_dst, gdnZ, short2(sgp_sn, sgp_sm));
+        } else if (need_store32 && y32 != nullptr) {
+          if constexpr (kAlignedM.value && kAlignedN.value) Dtile.store(y32 + tm * N + tn, N);
+          else Dtile.store_safe(y32 + tm * N + tn, N, short2(sgp_sn, sgp_sm));
+        }
+      } else {
+        if constexpr (kAlignedM.value && kAlignedN.value) {
+          Dtile.store(y + tm * N + tn, N);
+          if constexpr (store32) {
+            if (need_store32 && y32 != nullptr) Dtile.store(y32 + tm * N + tn, N);
+          }
+        } else if (kAlignedM.value && sgp_sn == SN) {
+          Dtile.store(y + tm * N + tn, N);
+          if constexpr (store32) {
+            if (need_store32 && y32 != nullptr) Dtile.store(y32 + tm * N + tn, N);
+          }
+        } else {
+          Dtile.store_safe(y + tm * N + tn, N, short2(sgp_sn, sgp_sm));
+          if constexpr (store32) {
+            if (need_store32 && y32 != nullptr) Dtile.store_safe(y32 + tm * N + tn, N, short2(sgp_sn, sgp_sm));
+          }
+        }
+      }
+    });
+  });
+}

@@ -1,0 +1,67 @@
+// qw_attn_decode.metalh — Shared helpers for the paged split-K decode
+// attention kernels (qwattn_decode.metal, qwattn_decode_batched.metal):
+// the q4 quantise/store contract and the per-head logit fold.
+
+#pragma once
+#include <metal_stdlib>
+#include <metal_simdgroup>
+#include "qw_geometry_constants.metalh"
+#include "qw_kv_paged.metalh"
+
+using namespace metal;
+
+// q4 contract, split so READ sites never touch the page (writes stay owned
+// by the epilogue / paged-write — one writer per byte, no cross-workgroup
+// write races even when both would write identical values):
+template <typename XP>   // x is a `const device half*` at new-row sites (reads
+                         // knew directly) and a thread array at epilogues.
+static inline void qwg_q4_quant8(XP x, thread half* out8,
+                                 thread uint* nib, thread float* scp, thread float* mnp) {
+    float mnv = 1e30f, mxv = -1e30f;
+    #pragma unroll
+    for (uint i = 0; i < 8u; i++) { const float v = float(x[i]);
+        mnv = fmin(mnv, v); mxv = fmax(mxv, v); }
+    // Aligned-16 reduce: xor butterflies 1,2,4,8 never flip lane bit 4, so
+    // each 16-lane group (lanes 16g..16g+15) reduces independently — the
+    // exact lane set of the 128-element quantisation group (8 dims/lane).
+    float lmn = mnv, lmx = mxv;
+    #pragma unroll
+    for (uint k = 1u; k <= 8u; k <<= 1) {
+        lmn = fmin(lmn, simd_shuffle_xor(lmn, k));
+        lmx = fmax(lmx, simd_shuffle_xor(lmx, k));
+    }
+    const float sc = float(half(fmax((lmx - lmn) / 15.0f, 1e-8f)));
+    const float mn = float(half(lmn));
+    const float inv = 1.0f / sc;
+    #pragma unroll
+    for (uint i = 0; i < 8u; i++) {
+        nib[i] = (uint)clamp(round((float(x[i]) - mn) * inv), 0.0f, 15.0f);
+        out8[i] = half(float(nib[i]) * sc + mn);
+    }
+    *scp = sc; *mnp = mn;
+}
+static inline void qwg_q4_store8(device char* pool, uint64_t pageID,
+                                 uint rowInPage, uint kvh, uint dim0,
+                                 const thread uint* nib, float sc, float mn) {
+    device uchar* d = (device uchar*)pool + pageID * QW_Q4_PGE
+                      + (uint64_t)rowInPage * QW_ROW4
+                      + (uint64_t)kvh * (QW_HEAD_DIM / 2u) + (dim0 >> 1);
+    uchar4 b4;
+    #pragma unroll
+    for (uint i = 0; i < 4u; i++)
+        b4[i] = (uchar)(nib[2u * i] | (nib[2u * i + 1u] << 4));
+    *(device uchar4*)d = b4;
+    if ((dim0 & 127u) == 0u) {   // group's dim-0 lane writes the header word
+        device half* hp = (device half*)((device char*)pool + pageID * QW_Q4_PGE
+                          + QW_Q4_HDR + (uint64_t)rowInPage * QW_Q4_GROW
+                          + (uint64_t)(kvh * 2u + (dim0 >> 7)) * 4u);
+        hp[0] = half(sc); hp[1] = half(mn);
+    }
+}
+
+/// Deterministic per-head logit: the head's 256 dims live in ONE simdgroup
+/// (lane owns dims [8l..8l+7]) → the fold is the FULL 32-lane simd_sum
+/// (compiler butterfly; fixed per binary — bit-stable across v1/v2/v3 and
+static inline float qwg_dec_logit(float v) {
+    return simd_sum(v) * 0.0625f;                    // fold + /√256 (exact)
+}

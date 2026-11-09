@@ -1,0 +1,381 @@
+// qw_dequant_f32.metalh: f32 HQ4_G32 dequant (magic-bias FMA in f32).
+// The fp16 intermediate of the magic-bias form cancels to ~1e-3 absolute error, the f32 one to ~1e-6.
+#pragma once
+#include <metal_stdlib>
+#include <metal_simdgroup_matrix>
+#include "qw_dequant.metalh"
+using namespace metal;
+
+/// Unpacks 8 nibbles of one word into four float2 pairs: w01 (cols 0,1), w23 (2,3), w45 (4,5), w67 (6,7).
+METAL_FUNC void qwg_unpack_hq4_word8_f32(uint32_t packed, float s, float b,
+                                         thread float2 &w01, thread float2 &w23,
+                                         thread float2 &w45, thread float2 &w67) {
+    ushort2 raw = as_type<ushort2>(packed);
+    half2 fp01 = as_type<half2>((raw & ushort2(0x000Fu)) | ushort2(0x6400u));
+    half2 fp23 = as_type<half2>(((raw >> 4) & ushort2(0x000Fu)) | ushort2(0x6400u));
+    half2 fp45 = as_type<half2>(((raw >> 8) & ushort2(0x000Fu)) | ushort2(0x6400u));
+    half2 fp67 = as_type<half2>((raw >> 12) | ushort2(0x6400u));
+    const float2 sv = float2(s), bv = float2(b);
+    w01 = fma(float2(fp01), sv, bv);
+    w23 = fma(float2(fp23), sv, bv);
+    w45 = fma(float2(fp45), sv, bv);
+    w67 = fma(float2(fp67), sv, bv);
+}
+
+/// Unpacks the 4 weights of one HQ4_G32 block that lane `dl` owns: block columns 4*dl .. 4*dl+3.
+/// Same nibble order as qwg_unpack_hq4_word8_f32, split across the 8 staging lanes.
+METAL_FUNC void qwg_unpack_hq4_lane4_f32(Block_HQ4_G32 blk, uint dl,
+                                         thread float2 &w01, thread float2 &w23) {
+    const float s = float(blk.scale), b = float(blk.bias);
+    const uint shift = (dl & 1u) << 3u;
+    const ushort2 raw = as_type<ushort2>(blk.qs[dl >> 1u]) >> ushort(shift);
+    const half2 fp01 = as_type<half2>((raw & ushort2(0x000Fu)) | ushort2(0x6400u));
+    const half2 fp23 = as_type<half2>(((raw >> 4u) & ushort2(0x000Fu)) | ushort2(0x6400u));
+    w01 = fma(float2(fp01), float2(s), float2(b));
+    w23 = fma(float2(fp23), float2(s), float2(b));
+}
+
+METAL_FUNC float qwg_dot_hq4_block_f32_reg(Block_HQ4_G32 blk,
+                                            thread const float4 (&lo)[4], thread const float4 (&hi)[4]) {
+    const float s = float(blk.scale), b = float(blk.bias);
+    float acc = 0.0f;
+    #pragma unroll
+    for (uint w = 0; w < 4; ++w) {
+        float2 w01, w23, w45, w67;
+        qwg_unpack_hq4_word8_f32(blk.qs[w], s, b, w01, w23, w45, w67);
+        acc = fma(w01.x, lo[w].x, acc);
+        acc = fma(w01.y, lo[w].y, acc);
+        acc = fma(w23.x, lo[w].z, acc);
+        acc = fma(w23.y, lo[w].w, acc);
+        acc = fma(w45.x, hi[w].x, acc);
+        acc = fma(w45.y, hi[w].y, acc);
+        acc = fma(w67.x, hi[w].z, acc);
+        acc = fma(w67.y, hi[w].w, acc);
+    }
+    return acc;
+}
+
+METAL_FUNC float2 qwg_dot_hq4_block_f32_reg2(Block_HQ4_G32 blk,
+                                             thread const float4 (&lo0)[4], thread const float4 (&hi0)[4],
+                                             thread const float4 (&lo1)[4], thread const float4 (&hi1)[4]) {
+    const float s = float(blk.scale), b = float(blk.bias);
+    float2 acc = float2(0.0f);
+    #pragma unroll
+    for (uint w = 0; w < 4; ++w) {
+        float2 w01, w23, w45, w67;
+        qwg_unpack_hq4_word8_f32(blk.qs[w], s, b, w01, w23, w45, w67);
+        acc = fma(float2(w01.x), float2(lo0[w].x, lo1[w].x), acc);
+        acc = fma(float2(w01.y), float2(lo0[w].y, lo1[w].y), acc);
+        acc = fma(float2(w23.x), float2(lo0[w].z, lo1[w].z), acc);
+        acc = fma(float2(w23.y), float2(lo0[w].w, lo1[w].w), acc);
+        acc = fma(float2(w45.x), float2(hi0[w].x, hi1[w].x), acc);
+        acc = fma(float2(w45.y), float2(hi0[w].y, hi1[w].y), acc);
+        acc = fma(float2(w67.x), float2(hi0[w].z, hi1[w].z), acc);
+        acc = fma(float2(w67.y), float2(hi0[w].w, hi1[w].w), acc);
+    }
+    return acc;
+}
+
+METAL_FUNC void qwg_unpack_hq4_word8_vec_f32(uint32_t packed, float s, float b,
+                                             thread float4 &wLo, thread float4 &wHi) {
+    float2 w01, w23, w45, w67;
+    qwg_unpack_hq4_word8_f32(packed, s, b, w01, w23, w45, w67);
+    wLo = float4(w01.x, w01.y, w23.x, w23.y);
+    wHi = float4(w45.x, w45.y, w67.x, w67.y);
+}
+
+template <uint LS = 32u>
+METAL_FUNC void qwg_gemv_hq4_rows4_m2_f32(device const Block_HQ4_G32* blocks,
+                                          device const float* x0,
+                                          device const float* x1,
+                                          uint row0, uint N, uint K, uint lane,
+                                          thread float4 &acc0, thread float4 &acc1) {
+    const uint nBlocks = K >> 5u;
+    device const Block_HQ4_G32* r0 = blocks + (size_t)row0 * nBlocks;
+    device const Block_HQ4_G32* r1 = (row0 + 1u < N) ? (r0 + nBlocks) : r0;
+    device const Block_HQ4_G32* r2 = (row0 + 2u < N) ? (r0 + 2u * nBlocks) : r0;
+    device const Block_HQ4_G32* r3 = (row0 + 3u < N) ? (r0 + 3u * nBlocks) : r0;
+    acc0 = float4(0.0f);
+    acc1 = float4(0.0f);
+    for (uint g = lane; g < nBlocks; g += LS) {
+        const uint col = g << 5u;
+        const Block_HQ4_G32 b0 = r0[g], b1 = r1[g], b2 = r2[g], b3 = r3[g];
+        const float s0 = float(b0.scale), z0 = float(b0.bias);
+        const float s1 = float(b1.scale), z1 = float(b1.bias);
+        const float s2 = float(b2.scale), z2 = float(b2.bias);
+        const float s3 = float(b3.scale), z3 = float(b3.bias);
+        #pragma unroll
+        for (uint w = 0u; w < 4u; ++w) {
+            device const float4* p0 = (device const float4*)(x0 + col + w * 8u);
+            device const float4* p1 = (device const float4*)(x1 + col + w * 8u);
+            const float4 xlo0 = p0[0], xhi0 = p0[1];
+            const float4 xlo1 = p1[0], xhi1 = p1[1];
+            float4 wLo, wHi;
+            qwg_unpack_hq4_word8_vec_f32(b0.qs[w], s0, z0, wLo, wHi);
+            acc0.x += dot(wLo, xlo0) + dot(wHi, xhi0);
+            acc1.x += dot(wLo, xlo1) + dot(wHi, xhi1);
+            qwg_unpack_hq4_word8_vec_f32(b1.qs[w], s1, z1, wLo, wHi);
+            acc0.y += dot(wLo, xlo0) + dot(wHi, xhi0);
+            acc1.y += dot(wLo, xlo1) + dot(wHi, xhi1);
+            qwg_unpack_hq4_word8_vec_f32(b2.qs[w], s2, z2, wLo, wHi);
+            acc0.z += dot(wLo, xlo0) + dot(wHi, xhi0);
+            acc1.z += dot(wLo, xlo1) + dot(wHi, xhi1);
+            qwg_unpack_hq4_word8_vec_f32(b3.qs[w], s3, z3, wLo, wHi);
+            acc0.w += dot(wLo, xlo0) + dot(wHi, xhi0);
+            acc1.w += dot(wLo, xlo1) + dot(wHi, xhi1);
+        }
+    }
+    if (LS == 32u) { acc0 += simd_shuffle_down(acc0, 16); acc1 += simd_shuffle_down(acc1, 16); }
+    acc0 += simd_shuffle_down(acc0, 8);  acc1 += simd_shuffle_down(acc1, 8);
+    acc0 += simd_shuffle_down(acc0, 4);  acc1 += simd_shuffle_down(acc1, 4);
+    acc0 += simd_shuffle_down(acc0, 2);  acc1 += simd_shuffle_down(acc1, 2);
+    acc0 += simd_shuffle_down(acc0, 1);  acc1 += simd_shuffle_down(acc1, 1);
+}
+
+template <uint LS = 32u>
+METAL_FUNC void qwg_gemv_hq4_rows4_m4_f32(device const Block_HQ4_G32* blocks,
+                                          device const float* x,
+                                          uint M, uint row0, uint N, uint K, uint lane,
+                                          thread float4 (&acc)[4]) {
+    const uint nBlocks = K >> 5u;
+    device const Block_HQ4_G32* r0 = blocks + (size_t)row0 * nBlocks;
+    device const Block_HQ4_G32* r1 = (row0 + 1u < N) ? (r0 + nBlocks) : r0;
+    device const Block_HQ4_G32* r2 = (row0 + 2u < N) ? (r0 + 2u * nBlocks) : r0;
+    device const Block_HQ4_G32* r3 = (row0 + 3u < N) ? (r0 + 3u * nBlocks) : r0;
+    device const float* xm0 = x;
+    device const float* xm1 = x + K;
+    device const float* xm2 = x + 2u * K;
+    device const float* xm3 = x + (size_t)min(3u, M - 1u) * K;
+    acc[0] = float4(0.0f);
+    acc[1] = float4(0.0f);
+    acc[2] = float4(0.0f);
+    acc[3] = float4(0.0f);
+    for (uint g = lane; g < nBlocks; g += LS) {
+        const uint col = g << 5u;
+        const Block_HQ4_G32 b0 = r0[g], b1 = r1[g], b2 = r2[g], b3 = r3[g];
+        const float s0 = float(b0.scale), z0 = float(b0.bias);
+        const float s1 = float(b1.scale), z1 = float(b1.bias);
+        const float s2 = float(b2.scale), z2 = float(b2.bias);
+        const float s3 = float(b3.scale), z3 = float(b3.bias);
+        #pragma unroll
+        for (uint w = 0u; w < 4u; ++w) {
+            device const float4* p0 = (device const float4*)(xm0 + col + w * 8u);
+            device const float4* p1 = (device const float4*)(xm1 + col + w * 8u);
+            device const float4* p2 = (device const float4*)(xm2 + col + w * 8u);
+            device const float4* p3 = (device const float4*)(xm3 + col + w * 8u);
+            const float4 xlo0 = p0[0], xhi0 = p0[1];
+            const float4 xlo1 = p1[0], xhi1 = p1[1];
+            const float4 xlo2 = p2[0], xhi2 = p2[1];
+            const float4 xlo3 = p3[0], xhi3 = p3[1];
+            float4 wLo, wHi;
+            qwg_unpack_hq4_word8_vec_f32(b0.qs[w], s0, z0, wLo, wHi);
+            acc[0].x += dot(wLo, xlo0) + dot(wHi, xhi0);
+            acc[1].x += dot(wLo, xlo1) + dot(wHi, xhi1);
+            acc[2].x += dot(wLo, xlo2) + dot(wHi, xhi2);
+            acc[3].x += dot(wLo, xlo3) + dot(wHi, xhi3);
+            qwg_unpack_hq4_word8_vec_f32(b1.qs[w], s1, z1, wLo, wHi);
+            acc[0].y += dot(wLo, xlo0) + dot(wHi, xhi0);
+            acc[1].y += dot(wLo, xlo1) + dot(wHi, xhi1);
+            acc[2].y += dot(wLo, xlo2) + dot(wHi, xhi2);
+            acc[3].y += dot(wLo, xlo3) + dot(wHi, xhi3);
+            qwg_unpack_hq4_word8_vec_f32(b2.qs[w], s2, z2, wLo, wHi);
+            acc[0].z += dot(wLo, xlo0) + dot(wHi, xhi0);
+            acc[1].z += dot(wLo, xlo1) + dot(wHi, xhi1);
+            acc[2].z += dot(wLo, xlo2) + dot(wHi, xhi2);
+            acc[3].z += dot(wLo, xlo3) + dot(wHi, xhi3);
+            qwg_unpack_hq4_word8_vec_f32(b3.qs[w], s3, z3, wLo, wHi);
+            acc[0].w += dot(wLo, xlo0) + dot(wHi, xhi0);
+            acc[1].w += dot(wLo, xlo1) + dot(wHi, xhi1);
+            acc[2].w += dot(wLo, xlo2) + dot(wHi, xhi2);
+            acc[3].w += dot(wLo, xlo3) + dot(wHi, xhi3);
+        }
+    }
+    #pragma unroll
+    for (uint m = 0u; m < 4u; ++m) {
+        if (LS == 32u) acc[m] += simd_shuffle_down(acc[m], 16);
+        acc[m] += simd_shuffle_down(acc[m], 8);
+        acc[m] += simd_shuffle_down(acc[m], 4);
+        acc[m] += simd_shuffle_down(acc[m], 2);
+        acc[m] += simd_shuffle_down(acc[m], 1);
+    }
+}
+
+// 4-row SIMD-collaborative dot: one x load serves 4 weight rows (f32 activations).
+template <uint LS = 32u>
+METAL_FUNC float4 qwg_gemv_hq4_rows4_f32(device const Block_HQ4_G32* blocks, device const float* x,
+                                         uint row0, uint N, uint K, uint lane) {
+    const uint nBlocks = K >> 5u;
+    device const Block_HQ4_G32* r0 = blocks + (size_t)row0 * nBlocks;
+    device const Block_HQ4_G32* r1 = (row0 + 1u < N) ? (r0 + nBlocks) : r0;
+    device const Block_HQ4_G32* r2 = (row0 + 2u < N) ? (r0 + 2u * nBlocks) : r0;
+    device const Block_HQ4_G32* r3 = (row0 + 3u < N) ? (r0 + 3u * nBlocks) : r0;
+    float4 acc = float4(0.0f);
+    for (uint g = lane; g < nBlocks; g += LS) {
+        device const float* xg = x + (g << 5u);
+        float4 lo[4], hi[4];
+        #pragma unroll
+        for (uint w = 0; w < 4; ++w) {
+            device const float4* p4 = (device const float4*)(xg + w * 8u);
+            lo[w] = p4[0];
+            hi[w] = p4[1];
+        }
+        acc.x += qwg_dot_hq4_block_f32_reg(r0[g], lo, hi);
+        acc.y += qwg_dot_hq4_block_f32_reg(r1[g], lo, hi);
+        acc.z += qwg_dot_hq4_block_f32_reg(r2[g], lo, hi);
+        acc.w += qwg_dot_hq4_block_f32_reg(r3[g], lo, hi);
+    }
+    if (LS == 32u) acc += simd_shuffle_down(acc, 16);
+    acc += simd_shuffle_down(acc, 8);
+    acc += simd_shuffle_down(acc, 4);
+    acc += simd_shuffle_down(acc, 2);
+    acc += simd_shuffle_down(acc, 1);
+    return acc;
+}
+
+METAL_FUNC float4 qwg_gemv_hq4_rows4_part_f32(device const Block_HQ4_G32* blocks, device const float* x,
+                                              uint row0, uint N, uint K, uint tid, uint nThreads) {
+    const uint nBlocks = K >> 5u;
+    device const Block_HQ4_G32* r0 = blocks + (size_t)row0 * nBlocks;
+    device const Block_HQ4_G32* r1 = (row0 + 1u < N) ? (r0 + nBlocks) : r0;
+    device const Block_HQ4_G32* r2 = (row0 + 2u < N) ? (r0 + 2u * nBlocks) : r0;
+    device const Block_HQ4_G32* r3 = (row0 + 3u < N) ? (r0 + 3u * nBlocks) : r0;
+    float4 acc = float4(0.0f);
+    for (uint g = tid; g < nBlocks; g += nThreads) {
+        device const float* xg = x + (g << 5u);
+        float4 lo[4], hi[4];
+        #pragma unroll
+        for (uint w = 0; w < 4; ++w) {
+            device const float4* p4 = (device const float4*)(xg + w * 8u);
+            lo[w] = p4[0];
+            hi[w] = p4[1];
+        }
+        acc.x += qwg_dot_hq4_block_f32_reg(r0[g], lo, hi);
+        acc.y += qwg_dot_hq4_block_f32_reg(r1[g], lo, hi);
+        acc.z += qwg_dot_hq4_block_f32_reg(r2[g], lo, hi);
+        acc.w += qwg_dot_hq4_block_f32_reg(r3[g], lo, hi);
+    }
+    return acc;
+}
+
+METAL_FUNC float qwg_gemv_hq4_row_f32(device const Block_HQ4_G32* blocks, device const float* x, uint row, uint K, uint lane) {
+    const uint nBlocks = K >> 5u;
+    device const Block_HQ4_G32* rowBlocks = blocks + (size_t)row * nBlocks;
+    float acc = 0.0f;
+    for (uint g = lane; g < nBlocks; g += 32u) {
+        device const float* xg = x + (g << 5u);
+        float4 lo[4], hi[4];
+        #pragma unroll
+        for (uint w = 0; w < 4; ++w) {
+            device const float4* p4 = (device const float4*)(xg + w * 8u);
+            lo[w] = p4[0];
+            hi[w] = p4[1];
+        }
+        acc += qwg_dot_hq4_block_f32_reg(rowBlocks[g], lo, hi);
+    }
+    acc += simd_shuffle_down(acc, 16);
+    acc += simd_shuffle_down(acc, 8);
+    acc += simd_shuffle_down(acc, 4);
+    acc += simd_shuffle_down(acc, 2);
+    acc += simd_shuffle_down(acc, 1);
+    return acc;
+}
+
+METAL_FUNC float qwg_apply_epi_f32(float y, uint epi, float scale) {
+    if (epi == 1u) { const float z = y / scale; return z / (1.0f + exp(-z)); }
+    if (epi == 2u) { return 1.0f / (1.0f + exp(-y)); }
+    if (epi == 3u) { return 2.0f / (1.0f + exp(-(y / scale))); }
+    return y;
+}
+
+template <bool IS_BF16>
+METAL_FUNC void qwg_dense_gemv_bm_fast(device const void* Wraw, device const float* X, device float* Y,
+                                       uint N, uint K, uint epi, float scale, uint M, uint2 tg, uint tid,
+                                       threadgroup float (*As)[36], threadgroup float (*Bs)[36]) {
+    device const float* W = (device const float*)Wraw;
+    device const ushort* W16 = (device const ushort*)Wraw;
+    if (N >= 16u && (K & 31u) == 0u) {
+        const uint t0 = tg.y * 32u, n0 = tg.x * 32u;
+        const uint tx = tid & 31u, ty = tid >> 5u;
+        const uint sgM = ty >> 1u, sgN = ty & 1u;
+        const uint r = tid >> 3u, c = (tid & 7u) << 2u;
+        simdgroup_float8x8 acc0 = simdgroup_float8x8(0.0f), acc1 = simdgroup_float8x8(0.0f);
+        for (uint k0 = 0u; k0 < K; k0 += 32u) {
+            const float4 xv = (t0 + r < M) ? *(device const float4*)(X + (size_t)(t0 + r) * K + k0 + c) : float4(0.0f);
+            float4 wv = float4(0.0f);
+            if (n0 + r < N) {
+                if constexpr (IS_BF16) {
+                    const ushort4 u = *(device const ushort4*)(W16 + (size_t)(n0 + r) * K + k0 + c);
+                    wv = as_type<float4>(uint4(u) << 16u);
+                } else {
+                    wv = *(device const float4*)(W + (size_t)(n0 + r) * K + k0 + c);
+                }
+            }
+            As[r][c + 0u] = xv.x; As[r][c + 1u] = xv.y; As[r][c + 2u] = xv.z; As[r][c + 3u] = xv.w;
+            Bs[r][c + 0u] = wv.x; Bs[r][c + 1u] = wv.y; Bs[r][c + 2u] = wv.z; Bs[r][c + 3u] = wv.w;
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            #pragma unroll
+            for (uint k8 = 0u; k8 < 4u; k8++) {
+                simdgroup_float8x8 a, b0, b1;
+                simdgroup_load(a,  &As[sgM * 8u][k8 * 8u], 36, ulong2(0, 0), false);
+                simdgroup_load(b0, &Bs[sgN * 16u + 0u][k8 * 8u], 36, ulong2(0, 0), true);
+                simdgroup_multiply_accumulate(acc0, a, b0, acc0);
+                simdgroup_load(b1, &Bs[sgN * 16u + 8u][k8 * 8u], 36, ulong2(0, 0), true);
+                simdgroup_multiply_accumulate(acc1, a, b1, acc1);
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+        }
+        simdgroup_store(acc0, &As[sgM * 8u][sgN * 16u + 0u], 36, ulong2(0, 0), false);
+        simdgroup_store(acc1, &As[sgM * 8u][sgN * 16u + 8u], 36, ulong2(0, 0), false);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint i = 0u; i < 4u; i++) {
+            const uint m = ty * 4u + i, row = t0 + m, col = n0 + tx;
+            if (row < M && col < N) Y[(size_t)row * N + col] = qwg_apply_epi_f32(As[m][tx], epi, scale);
+        }
+        return;
+    }
+    const uint sg = tid >> 5u, lane = tid & 31u;
+    const uint t0 = tg.x * 32u + sg * 4u, n0 = tg.y * 4u;
+    if (t0 >= M || n0 >= N) return;
+    const uint K4 = K >> 2u;
+    const uint n1 = min(n0 + 1u, N - 1u), n2 = min(n0 + 2u, N - 1u), n3 = min(n0 + 3u, N - 1u);
+    const uint t1 = min(t0 + 1u, M - 1u), t2 = min(t0 + 2u, M - 1u), t3 = min(t0 + 3u, M - 1u);
+    device const float4* X0 = (device const float4*)(X + (size_t)t0 * K);
+    device const float4* X1 = (device const float4*)(X + (size_t)t1 * K);
+    device const float4* X2 = (device const float4*)(X + (size_t)t2 * K);
+    device const float4* X3 = (device const float4*)(X + (size_t)t3 * K);
+    float4 acc0 = float4(0.0f), acc1 = float4(0.0f), acc2 = float4(0.0f), acc3 = float4(0.0f);
+    for (uint k4 = lane; k4 < K4; k4 += 32u) {
+        const float4 x0 = X0[k4], x1 = X1[k4], x2 = X2[k4], x3 = X3[k4];
+        float4 w0, w1, w2, w3;
+        if constexpr (IS_BF16) {
+            w0 = as_type<float4>(uint4(((device const ushort4*)(W16 + (size_t)n0 * K))[k4]) << 16u);
+            w1 = as_type<float4>(uint4(((device const ushort4*)(W16 + (size_t)n1 * K))[k4]) << 16u);
+            w2 = as_type<float4>(uint4(((device const ushort4*)(W16 + (size_t)n2 * K))[k4]) << 16u);
+            w3 = as_type<float4>(uint4(((device const ushort4*)(W16 + (size_t)n3 * K))[k4]) << 16u);
+        } else {
+            w0 = ((device const float4*)(W + (size_t)n0 * K))[k4];
+            w1 = ((device const float4*)(W + (size_t)n1 * K))[k4];
+            w2 = ((device const float4*)(W + (size_t)n2 * K))[k4];
+            w3 = ((device const float4*)(W + (size_t)n3 * K))[k4];
+        }
+        acc0 += float4(dot(w0, x0), dot(w1, x0), dot(w2, x0), dot(w3, x0));
+        acc1 += float4(dot(w0, x1), dot(w1, x1), dot(w2, x1), dot(w3, x1));
+        acc2 += float4(dot(w0, x2), dot(w1, x2), dot(w2, x2), dot(w3, x2));
+        acc3 += float4(dot(w0, x3), dot(w1, x3), dot(w2, x3), dot(w3, x3));
+    }
+    float4 rows4[4] = {
+        float4(simd_sum(acc0.x), simd_sum(acc0.y), simd_sum(acc0.z), simd_sum(acc0.w)),
+        float4(simd_sum(acc1.x), simd_sum(acc1.y), simd_sum(acc1.z), simd_sum(acc1.w)),
+        float4(simd_sum(acc2.x), simd_sum(acc2.y), simd_sum(acc2.z), simd_sum(acc2.w)),
+        float4(simd_sum(acc3.x), simd_sum(acc3.y), simd_sum(acc3.z), simd_sum(acc3.w))
+    };
+    if (lane == 0u) {
+        for (uint r = 0u; r < 4u && t0 + r < M; ++r) {
+            const float4 v = rows4[r];
+            const float vals[4] = { v.x, v.y, v.z, v.w };
+            for (uint c = 0u; c < 4u && n0 + c < N; ++c) {
+                Y[(size_t)(t0 + r) * N + n0 + c] = qwg_apply_epi_f32(vals[c], epi, scale);
+            }
+        }
+    }
+}

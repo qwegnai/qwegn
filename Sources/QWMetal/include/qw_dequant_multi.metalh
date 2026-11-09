@@ -1,0 +1,394 @@
+// qw_dequant_multi.metalh — size-preserving affine-quantised unpackers.
+//
+// Law L8: every (bits, group) pair keeps its NATIVE byte size. A group
+// block is half scale, half bias, then a payload of group*bits/8 bytes.
+// The payload is one continuous little-endian bit stream for EVERY width —
+// the same bytes MLX writes. The full layout, and the arithmetic each width
+// uses, are in specs/04-qwquant.md.
+
+#pragma once
+#include <metal_stdlib>
+#include <metal_simdgroup>
+#include "qw_dequant.metalh"
+#include "qw_dequant_f32.metalh"
+using namespace metal;
+
+/// The integer at `index` in a continuous little-endian bit stream.
+METAL_FUNC uint qwg_aq_read_bits(device const uchar* p, int bits, int index) {
+    const int bit = index * bits;
+    const int byte = bit >> 3;
+    const uint off = uint(bit & 7);
+    uint v = uint(p[byte]) >> off;
+    const uint taken = 8u - off;
+    if (taken < uint(bits)) { v |= uint(p[byte + 1]) << taken; }
+    return v & ((1u << uint(bits)) - 1u);
+}
+
+/// One group's dot, f16 activations: the group-factored form MLX's `qdot`
+/// uses, with the scale and the bias applied once per group.
+template <int BITS>
+METAL_FUNC float qwg_aq_dot_stream_f16(device const char* gp, uint group, device const half* xg) {
+    const float scale = float(*(device const half*)gp);
+    const float bias = float(*(device const half*)(gp + 2));
+    device const uchar* p = (device const uchar*)(gp + 4);
+    float accum = 0.0f;
+    float sumX = 0.0f;
+    for (uint i = 0; i < group; ++i) {
+        const float v = float(qwg_aq_read_bits(p, BITS, int(i)));
+        const float x = float(xg[i]);
+        accum = fma(v, x, accum);
+        sumX += x;
+    }
+    return fma(scale, accum, bias * sumX);
+}
+
+/// One group's dot, f32 activations: the group-factored form.
+template <int BITS>
+METAL_FUNC float qwg_aq_dot_stream_f32(device const char* gp, uint group, device const float* xg) {
+    const float scale = float(*(device const half*)gp);
+    const float bias = float(*(device const half*)(gp + 2));
+    device const uchar* p = (device const uchar*)(gp + 4);
+    float accum = 0.0f;
+    float sumX = 0.0f;
+    for (uint i = 0; i < group; ++i) {
+        const float v = float(qwg_aq_read_bits(p, BITS, int(i)));
+        const float x = xg[i];
+        accum = fma(v, x, accum);
+        sumX += x;
+    }
+    return fma(scale, accum, bias * sumX);
+}
+
+/// One row's dot, f32 activations.
+template <int BITS, int GROUP>
+METAL_FUNC float qwg_aq_gemv_row_f32(device const char* blocks, device const float* x,
+                                     uint row, uint cols, uint lane) {
+    const uint nGroups = cols / uint(GROUP);
+    const uint bytesPerGroup = uint(GROUP * BITS / 8 + 4);
+    device const char* rowBlocks = blocks + (size_t)row * nGroups * bytesPerGroup;
+    float acc = 0.0f;
+    for (uint g = lane; g < nGroups; g += 32u) {
+        device const char* gp = rowBlocks + (size_t)g * bytesPerGroup;
+        acc += qwg_aq_dot_stream_f32<BITS>(gp, uint(GROUP), x + (size_t)g * uint(GROUP));
+    }
+    acc += simd_shuffle_down(acc, 16);
+    acc += simd_shuffle_down(acc, 8);
+    acc += simd_shuffle_down(acc, 4);
+    acc += simd_shuffle_down(acc, 2);
+    acc += simd_shuffle_down(acc, 1);
+    return acc;
+}
+
+/// Sums 32 half activations (4x lo + 4x hi) in fp32 once per 32-column block.
+METAL_FUNC float qwg_aq_sum32(thread const half4 (&lo)[4],
+                              thread const half4 (&hi)[4]) {
+    float4 s = (float4(lo[0]) + float4(hi[0])) + (float4(lo[1]) + float4(hi[1]))
+             + (float4(lo[2]) + float4(hi[2])) + (float4(lo[3]) + float4(hi[3]));
+    return (s.x + s.y) + (s.z + s.w);
+}
+
+/// Pre-scales 32 half activations in-place once per 32-column block (for 2-bit shift-free unpack)
+/// and returns `sumX` in fp32.
+template <int BITS>
+METAL_FUNC float qwg_aq_prescale32_inplace(thread half4 (&lo)[4],
+                                           thread half4 (&hi)[4]) {
+    const float sumX = qwg_aq_sum32(lo, hi);
+    if constexpr (BITS == 2) {
+        constexpr half4 kScale = half4(1.0h, 0.25h, 0.0625h, 0.015625h);
+        #pragma unroll
+        for (uint w = 0; w < 4u; ++w) {
+            lo[w] *= kScale;
+            hi[w] *= kScale;
+        }
+    }
+    return sumX;
+}
+
+template <int BITS>
+METAL_FUNC float qwg_aq_load_prescaled32(device const half* xg,
+                                         thread half4 (&lo)[4],
+                                         thread half4 (&hi)[4]) {
+    #pragma unroll
+    for (uint w = 0; w < 4u; ++w) {
+        qwg_load_half8(xg + w * 8u, lo[w], hi[w]);
+    }
+    return qwg_aq_prescale32_inplace<BITS>(lo, hi);
+}
+
+template <typename Vec4>
+METAL_FUNC void qwg_aq_accum_pair8_2bit(ushort2 raw,
+                                        thread const Vec4 &lo,
+                                        thread const Vec4 &hi,
+                                        thread float &acc0,
+                                        thread float &acc1) {
+    const half2 kBias = half2(-1024.0h);
+    const half2 c0 = as_type<half2>((raw & ushort2(0x0003u)) | ushort2(0x6400u)) + kBias;
+    const half2 c1 = as_type<half2>((raw & ushort2(0x000Cu)) | ushort2(0x6400u)) + kBias;
+    const half2 c2 = as_type<half2>((raw & ushort2(0x0030u)) | ushort2(0x6400u)) + kBias;
+    const half2 c3 = as_type<half2>((raw & ushort2(0x00C0u)) | ushort2(0x6400u)) + kBias;
+    acc0 = fma(float(c0.x), float(lo.x), acc0);
+    acc1 = fma(float(c0.y), float(hi.x), acc1);
+    acc0 = fma(float(c1.x), float(lo.y), acc0);
+    acc1 = fma(float(c1.y), float(hi.y), acc1);
+    acc0 = fma(float(c2.x), float(lo.z), acc0);
+    acc1 = fma(float(c2.y), float(hi.z), acc1);
+    acc0 = fma(float(c3.x), float(lo.w), acc0);
+    acc1 = fma(float(c3.y), float(hi.w), acc1);
+}
+
+template <uint SHIFT, ushort MASK, typename Vec4>
+METAL_FUNC void qwg_aq_accum_pair8(ushort2 raw,
+                                   thread const Vec4 &lo,
+                                   thread const Vec4 &hi,
+                                   thread float &acc0,
+                                   thread float &acc1) {
+    const half2 c0 = as_type<half2>((raw & ushort2(MASK)) | ushort2(0x6400u));
+    const half2 c1 = as_type<half2>(((raw >> SHIFT) & ushort2(MASK)) | ushort2(0x6400u));
+    const half2 c2 = as_type<half2>(((raw >> (2u * SHIFT)) & ushort2(MASK)) | ushort2(0x6400u));
+    const half2 c3 = as_type<half2>(((raw >> (3u * SHIFT)) & ushort2(MASK)) | ushort2(0x6400u));
+    acc0 = fma(float(c0.x), float(lo.x), acc0);
+    acc1 = fma(float(c0.y), float(hi.x), acc1);
+    acc0 = fma(float(c1.x), float(lo.y), acc0);
+    acc1 = fma(float(c1.y), float(hi.y), acc1);
+    acc0 = fma(float(c2.x), float(lo.z), acc0);
+    acc1 = fma(float(c2.y), float(hi.z), acc1);
+    acc0 = fma(float(c3.x), float(lo.w), acc0);
+    acc1 = fma(float(c3.y), float(hi.w), acc1);
+}
+
+/// One 32-column slice of a group at `gp` (`rowBase + groupIndex * groupBytes`),
+/// using aligned 32-bit word loads, pre-scaled activations, and group-factored scale/bias FMA.
+template <int BITS, typename Vec4>
+METAL_FUNC float qwg_aq_slice_dot(device const char* gp,
+                                  uint byteInGroup,
+                                  thread const Vec4 (&lo)[4],
+                                  thread const Vec4 (&hi)[4],
+                                  float sumX) {
+    const half2 sb = *(device const half2*)gp;
+    device const uint* pw = (device const uint*)(gp + 4 + byteInGroup);
+    float acc0 = 0.0f;
+    float acc1 = 0.0f;
+    if constexpr (BITS == 2) {
+        const ushort2 r0 = as_type<ushort2>(pw[0]);
+        const ushort2 r1 = as_type<ushort2>(pw[1]);
+        qwg_aq_accum_pair8_2bit(r0, lo[0], lo[1], acc0, acc1);
+        qwg_aq_accum_pair8_2bit(r0 >> 8u, hi[0], hi[1], acc0, acc1);
+        qwg_aq_accum_pair8_2bit(r1, lo[2], lo[3], acc0, acc1);
+        qwg_aq_accum_pair8_2bit(r1 >> 8u, hi[2], hi[3], acc0, acc1);
+        return fma(acc0 + acc1, float(sb.x), float(sb.y) * sumX);
+    } else if constexpr (BITS == 3) {
+        const uint w0 = pw[0], w1 = pw[1], w2 = pw[2];
+        const uint v0 = w0;
+        const uint v1 = (w0 >> 24u) | (w1 << 8u);
+        const uint v2 = (w1 >> 16u) | (w2 << 16u);
+        const uint v3 = w2 >> 8u;
+        qwg_aq_accum_pair8<3u, 0x0007u>(ushort2(ushort(v0), ushort(v0 >> 12u)), lo[0], hi[0], acc0, acc1);
+        qwg_aq_accum_pair8<3u, 0x0007u>(ushort2(ushort(v1), ushort(v1 >> 12u)), lo[1], hi[1], acc0, acc1);
+        qwg_aq_accum_pair8<3u, 0x0007u>(ushort2(ushort(v2), ushort(v2 >> 12u)), lo[2], hi[2], acc0, acc1);
+        qwg_aq_accum_pair8<3u, 0x0007u>(ushort2(ushort(v3), ushort(v3 >> 12u)), lo[3], hi[3], acc0, acc1);
+    } else if constexpr (BITS == 4) {
+        #pragma unroll
+        for (uint w = 0; w < 4u; ++w) {
+            qwg_aq_accum_pair8<4u, 0x000Fu>(as_type<ushort2>(pw[w]), lo[w], hi[w], acc0, acc1);
+        }
+    } else if constexpr (BITS == 6) {
+        #pragma unroll
+        for (uint h = 0; h < 2u; ++h) {
+            const uint w0 = pw[3u * h], w1 = pw[3u * h + 1u], w2 = pw[3u * h + 2u];
+            const uint u0 = w0;
+            const uint u1 = (w0 >> 24u) | (w1 << 8u);
+            const uint u2 = (w1 >> 16u) | (w2 << 16u);
+            const uint u3 = w2 >> 8u;
+            {
+                const ushort2 r01 = ushort2(ushort(u0), ushort(u1));
+                const ushort2 r23 = ushort2(ushort(u0 >> 12u), ushort(u1 >> 12u));
+                const half2 c0 = as_type<half2>((r01 & ushort2(0x003Fu)) | ushort2(0x6400u));
+                const half2 c1 = as_type<half2>(((r01 >> 6u) & ushort2(0x003Fu)) | ushort2(0x6400u));
+                const half2 c2 = as_type<half2>((r23 & ushort2(0x003Fu)) | ushort2(0x6400u));
+                const half2 c3 = as_type<half2>(((r23 >> 6u) & ushort2(0x003Fu)) | ushort2(0x6400u));
+                acc0 = fma(float(c0.x), float(lo[2u * h].x), acc0);
+                acc1 = fma(float(c0.y), float(hi[2u * h].x), acc1);
+                acc0 = fma(float(c1.x), float(lo[2u * h].y), acc0);
+                acc1 = fma(float(c1.y), float(hi[2u * h].y), acc1);
+                acc0 = fma(float(c2.x), float(lo[2u * h].z), acc0);
+                acc1 = fma(float(c2.y), float(hi[2u * h].z), acc1);
+                acc0 = fma(float(c3.x), float(lo[2u * h].w), acc0);
+                acc1 = fma(float(c3.y), float(hi[2u * h].w), acc1);
+            }
+            {
+                const ushort2 r01 = ushort2(ushort(u2), ushort(u3));
+                const ushort2 r23 = ushort2(ushort(u2 >> 12u), ushort(u3 >> 12u));
+                const half2 c0 = as_type<half2>((r01 & ushort2(0x003Fu)) | ushort2(0x6400u));
+                const half2 c1 = as_type<half2>(((r01 >> 6u) & ushort2(0x003Fu)) | ushort2(0x6400u));
+                const half2 c2 = as_type<half2>((r23 & ushort2(0x003Fu)) | ushort2(0x6400u));
+                const half2 c3 = as_type<half2>(((r23 >> 6u) & ushort2(0x003Fu)) | ushort2(0x6400u));
+                acc0 = fma(float(c0.x), float(lo[2u * h + 1u].x), acc0);
+                acc1 = fma(float(c0.y), float(hi[2u * h + 1u].x), acc1);
+                acc0 = fma(float(c1.x), float(lo[2u * h + 1u].y), acc0);
+                acc1 = fma(float(c1.y), float(hi[2u * h + 1u].y), acc1);
+                acc0 = fma(float(c2.x), float(lo[2u * h + 1u].z), acc0);
+                acc1 = fma(float(c2.y), float(hi[2u * h + 1u].z), acc1);
+                acc0 = fma(float(c3.x), float(lo[2u * h + 1u].w), acc0);
+                acc1 = fma(float(c3.y), float(hi[2u * h + 1u].w), acc1);
+            }
+        }
+    } else {
+        #pragma unroll
+        for (uint w = 0; w < 4u; ++w) {
+            const ushort2 rLo = as_type<ushort2>(pw[2u * w]);
+            const ushort2 rHi = as_type<ushort2>(pw[2u * w + 1u]);
+            const half2 cLoXZ = as_type<half2>((rLo & ushort2(0x00FFu)) | ushort2(0x6400u));
+            const half2 cLoYW = as_type<half2>((rLo >> 8u) | ushort2(0x6400u));
+            const half2 cHiXZ = as_type<half2>((rHi & ushort2(0x00FFu)) | ushort2(0x6400u));
+            const half2 cHiYW = as_type<half2>((rHi >> 8u) | ushort2(0x6400u));
+            acc0 = fma(float(cLoXZ.x), float(lo[w].x), acc0);
+            acc0 = fma(float(cLoYW.x), float(lo[w].y), acc0);
+            acc0 = fma(float(cLoXZ.y), float(lo[w].z), acc0);
+            acc0 = fma(float(cLoYW.y), float(lo[w].w), acc0);
+            acc1 = fma(float(cHiXZ.x), float(hi[w].x), acc1);
+            acc1 = fma(float(cHiYW.x), float(hi[w].y), acc1);
+            acc1 = fma(float(cHiXZ.y), float(hi[w].z), acc1);
+            acc1 = fma(float(cHiYW.y), float(hi[w].w), acc1);
+        }
+    }
+    return fma(fma(-1024.0f, sumX, acc0 + acc1), float(sb.x), float(sb.y) * sumX);
+}
+
+template <typename Vec4>
+METAL_FUNC void qwg_aq_accum_pair8_2bit_2(ushort2 raw,
+                                          thread const Vec4 &lo0, thread const Vec4 &hi0,
+                                          thread const Vec4 &lo1, thread const Vec4 &hi1,
+                                          thread float2 &acc0, thread float2 &acc1) {
+    const half2 kBias = half2(-1024.0h);
+    const half2 c0 = as_type<half2>((raw & ushort2(0x0003u)) | ushort2(0x6400u)) + kBias;
+    const half2 c1 = as_type<half2>((raw & ushort2(0x000Cu)) | ushort2(0x6400u)) + kBias;
+    const half2 c2 = as_type<half2>((raw & ushort2(0x0030u)) | ushort2(0x6400u)) + kBias;
+    const half2 c3 = as_type<half2>((raw & ushort2(0x00C0u)) | ushort2(0x6400u)) + kBias;
+    acc0 = fma(float2(float(c0.x)), float2(float(lo0.x), float(lo1.x)), acc0);
+    acc1 = fma(float2(float(c0.y)), float2(float(hi0.x), float(hi1.x)), acc1);
+    acc0 = fma(float2(float(c1.x)), float2(float(lo0.y), float(lo1.y)), acc0);
+    acc1 = fma(float2(float(c1.y)), float2(float(hi0.y), float(hi1.y)), acc1);
+    acc0 = fma(float2(float(c2.x)), float2(float(lo0.z), float(lo1.z)), acc0);
+    acc1 = fma(float2(float(c2.y)), float2(float(hi0.z), float(hi1.z)), acc1);
+    acc0 = fma(float2(float(c3.x)), float2(float(lo0.w), float(lo1.w)), acc0);
+    acc1 = fma(float2(float(c3.y)), float2(float(hi0.w), float(hi1.w)), acc1);
+}
+
+template <uint SHIFT, ushort MASK, typename Vec4>
+METAL_FUNC void qwg_aq_accum_pair8_2(ushort2 raw,
+                                     thread const Vec4 &lo0, thread const Vec4 &hi0,
+                                     thread const Vec4 &lo1, thread const Vec4 &hi1,
+                                     thread float2 &acc0, thread float2 &acc1) {
+    const half2 c0 = as_type<half2>((raw & ushort2(MASK)) | ushort2(0x6400u));
+    const half2 c1 = as_type<half2>(((raw >> SHIFT) & ushort2(MASK)) | ushort2(0x6400u));
+    const half2 c2 = as_type<half2>(((raw >> (2u * SHIFT)) & ushort2(MASK)) | ushort2(0x6400u));
+    const half2 c3 = as_type<half2>(((raw >> (3u * SHIFT)) & ushort2(MASK)) | ushort2(0x6400u));
+    acc0 = fma(float2(float(c0.x)), float2(float(lo0.x), float(lo1.x)), acc0);
+    acc1 = fma(float2(float(c0.y)), float2(float(hi0.x), float(hi1.x)), acc1);
+    acc0 = fma(float2(float(c1.x)), float2(float(lo0.y), float(lo1.y)), acc0);
+    acc1 = fma(float2(float(c1.y)), float2(float(hi0.y), float(hi1.y)), acc1);
+    acc0 = fma(float2(float(c2.x)), float2(float(lo0.z), float(lo1.z)), acc0);
+    acc1 = fma(float2(float(c2.y)), float2(float(hi0.z), float(hi1.z)), acc1);
+    acc0 = fma(float2(float(c3.x)), float2(float(lo0.w), float(lo1.w)), acc0);
+    acc1 = fma(float2(float(c3.y)), float2(float(hi0.w), float(hi1.w)), acc1);
+}
+
+/// Unpacks one 32-column slice at `gp` once and dots against two activation rows `(lo0, hi0)` and `(lo1, hi1)`.
+template <int BITS, typename Vec4>
+METAL_FUNC float2 qwg_aq_slice_dot2(device const char* gp,
+                                    uint byteInGroup,
+                                    thread const Vec4 (&lo0)[4], thread const Vec4 (&hi0)[4],
+                                    thread const Vec4 (&lo1)[4], thread const Vec4 (&hi1)[4],
+                                    float2 sumX) {
+    const half2 sb = *(device const half2*)gp;
+    device const uint* pw = (device const uint*)(gp + 4 + byteInGroup);
+    float2 acc0 = float2(0.0f);
+    float2 acc1 = float2(0.0f);
+    if constexpr (BITS == 2) {
+        const ushort2 r0 = as_type<ushort2>(pw[0]);
+        const ushort2 r1 = as_type<ushort2>(pw[1]);
+        qwg_aq_accum_pair8_2bit_2(r0, lo0[0], lo0[1], lo1[0], lo1[1], acc0, acc1);
+        qwg_aq_accum_pair8_2bit_2(r0 >> 8u, hi0[0], hi0[1], hi1[0], hi1[1], acc0, acc1);
+        qwg_aq_accum_pair8_2bit_2(r1, lo0[2], lo0[3], lo1[2], lo1[3], acc0, acc1);
+        qwg_aq_accum_pair8_2bit_2(r1 >> 8u, hi0[2], hi0[3], hi1[2], hi1[3], acc0, acc1);
+        return fma(acc0 + acc1, float2(float(sb.x)), float2(float(sb.y)) * sumX);
+    } else if constexpr (BITS == 3) {
+        const uint w0 = pw[0], w1 = pw[1], w2 = pw[2];
+        const uint v0 = w0;
+        const uint v1 = (w0 >> 24u) | (w1 << 8u);
+        const uint v2 = (w1 >> 16u) | (w2 << 16u);
+        const uint v3 = w2 >> 8u;
+        qwg_aq_accum_pair8_2<3u, 0x0007u>(ushort2(ushort(v0), ushort(v0 >> 12u)), lo0[0], hi0[0], lo1[0], hi1[0], acc0, acc1);
+        qwg_aq_accum_pair8_2<3u, 0x0007u>(ushort2(ushort(v1), ushort(v1 >> 12u)), lo0[1], hi0[1], lo1[1], hi1[1], acc0, acc1);
+        qwg_aq_accum_pair8_2<3u, 0x0007u>(ushort2(ushort(v2), ushort(v2 >> 12u)), lo0[2], hi0[2], lo1[2], hi1[2], acc0, acc1);
+        qwg_aq_accum_pair8_2<3u, 0x0007u>(ushort2(ushort(v3), ushort(v3 >> 12u)), lo0[3], hi0[3], lo1[3], hi1[3], acc0, acc1);
+    } else if constexpr (BITS == 4) {
+        #pragma unroll
+        for (uint w = 0; w < 4u; ++w) {
+            qwg_aq_accum_pair8_2<4u, 0x000Fu>(as_type<ushort2>(pw[w]), lo0[w], hi0[w], lo1[w], hi1[w], acc0, acc1);
+        }
+    } else if constexpr (BITS == 6) {
+        #pragma unroll
+        for (uint h = 0; h < 2u; ++h) {
+            const uint w0 = pw[3u * h], w1 = pw[3u * h + 1u], w2 = pw[3u * h + 2u];
+            const uint u0 = w0;
+            const uint u1 = (w0 >> 24u) | (w1 << 8u);
+            const uint u2 = (w1 >> 16u) | (w2 << 16u);
+            const uint u3 = w2 >> 8u;
+            {
+                const ushort2 r01 = ushort2(ushort(u0), ushort(u1));
+                const ushort2 r23 = ushort2(ushort(u0 >> 12u), ushort(u1 >> 12u));
+                const half2 c0 = as_type<half2>((r01 & ushort2(0x003Fu)) | ushort2(0x6400u));
+                const half2 c1 = as_type<half2>(((r01 >> 6u) & ushort2(0x003Fu)) | ushort2(0x6400u));
+                const half2 c2 = as_type<half2>((r23 & ushort2(0x003Fu)) | ushort2(0x6400u));
+                const half2 c3 = as_type<half2>(((r23 >> 6u) & ushort2(0x003Fu)) | ushort2(0x6400u));
+                acc0 = fma(float2(float(c0.x)), float2(float(lo0[2u * h].x), float(lo1[2u * h].x)), acc0);
+                acc1 = fma(float2(float(c0.y)), float2(float(hi0[2u * h].x), float(hi1[2u * h].x)), acc1);
+                acc0 = fma(float2(float(c1.x)), float2(float(lo0[2u * h].y), float(lo1[2u * h].y)), acc0);
+                acc1 = fma(float2(float(c1.y)), float2(float(hi0[2u * h].y), float(hi1[2u * h].y)), acc1);
+                acc0 = fma(float2(float(c2.x)), float2(float(lo0[2u * h].z), float(lo1[2u * h].z)), acc0);
+                acc1 = fma(float2(float(c2.y)), float2(float(hi0[2u * h].z), float(hi1[2u * h].z)), acc1);
+                acc0 = fma(float2(float(c3.x)), float2(float(lo0[2u * h].w), float(lo1[2u * h].w)), acc0);
+                acc1 = fma(float2(float(c3.y)), float2(float(hi0[2u * h].w), float(hi1[2u * h].w)), acc1);
+            }
+            {
+                const ushort2 r01 = ushort2(ushort(u2), ushort(u3));
+                const ushort2 r23 = ushort2(ushort(u2 >> 12u), ushort(u3 >> 12u));
+                const half2 c0 = as_type<half2>((r01 & ushort2(0x003Fu)) | ushort2(0x6400u));
+                const half2 c1 = as_type<half2>(((r01 >> 6u) & ushort2(0x003Fu)) | ushort2(0x6400u));
+                const half2 c2 = as_type<half2>((r23 & ushort2(0x003Fu)) | ushort2(0x6400u));
+                const half2 c3 = as_type<half2>(((r23 >> 6u) & ushort2(0x003Fu)) | ushort2(0x6400u));
+                acc0 = fma(float2(float(c0.x)), float2(float(lo0[2u * h + 1u].x), float(lo1[2u * h + 1u].x)), acc0);
+                acc1 = fma(float2(float(c0.y)), float2(float(hi0[2u * h + 1u].x), float(hi1[2u * h + 1u].x)), acc1);
+                acc0 = fma(float2(float(c1.x)), float2(float(lo0[2u * h + 1u].y), float(lo1[2u * h + 1u].y)), acc0);
+                acc1 = fma(float2(float(c1.y)), float2(float(hi0[2u * h + 1u].y), float(hi1[2u * h + 1u].y)), acc1);
+                acc0 = fma(float2(float(c2.x)), float2(float(lo0[2u * h + 1u].z), float(lo1[2u * h + 1u].z)), acc0);
+                acc1 = fma(float2(float(c2.y)), float2(float(hi0[2u * h + 1u].z), float(hi1[2u * h + 1u].z)), acc1);
+                acc0 = fma(float2(float(c3.x)), float2(float(lo0[2u * h + 1u].w), float(lo1[2u * h + 1u].w)), acc0);
+                acc1 = fma(float2(float(c3.y)), float2(float(hi0[2u * h + 1u].w), float(hi1[2u * h + 1u].w)), acc1);
+            }
+        }
+    } else {
+        #pragma unroll
+        for (uint w = 0; w < 4u; ++w) {
+            const ushort2 rLo = as_type<ushort2>(pw[2u * w]);
+            const ushort2 rHi = as_type<ushort2>(pw[2u * w + 1u]);
+            const half2 cLoXZ = as_type<half2>((rLo & ushort2(0x00FFu)) | ushort2(0x6400u));
+            const half2 cLoYW = as_type<half2>((rLo >> 8u) | ushort2(0x6400u));
+            const half2 cHiXZ = as_type<half2>((rHi & ushort2(0x00FFu)) | ushort2(0x6400u));
+            const half2 cHiYW = as_type<half2>((rHi >> 8u) | ushort2(0x6400u));
+            acc0 = fma(float2(float(cLoXZ.x)), float2(float(lo0[w].x), float(lo1[w].x)), acc0);
+            acc0 = fma(float2(float(cLoYW.x)), float2(float(lo0[w].y), float(lo1[w].y)), acc0);
+            acc0 = fma(float2(float(cLoXZ.y)), float2(float(lo0[w].z), float(lo1[w].z)), acc0);
+            acc0 = fma(float2(float(cLoYW.y)), float2(float(lo0[w].w), float(lo1[w].w)), acc0);
+            acc1 = fma(float2(float(cHiXZ.x)), float2(float(hi0[w].x), float(hi1[w].x)), acc1);
+            acc1 = fma(float2(float(cHiYW.x)), float2(float(hi0[w].y), float(hi1[w].y)), acc1);
+            acc1 = fma(float2(float(cHiXZ.y)), float2(float(hi0[w].z), float(hi1[w].z)), acc1);
+            acc1 = fma(float2(float(cHiYW.y)), float2(float(hi0[w].w), float(hi1[w].w)), acc1);
+        }
+    }
+    return fma(fma(float2(-1024.0f), sumX, acc0 + acc1), float2(float(sb.x)), float2(float(sb.y)) * sumX);
+}
+
+// Second half of the family: f32 prescale, word8 unpack, and the rows4/rowsN GEMV bodies.
+#include "qw_dequant_multi_b.metalh"

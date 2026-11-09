@@ -1,0 +1,327 @@
+// qw_bf16_math.metalh — Shared BF16 math, Neumaier TwoSum, and HQ4_G32_M5 helpers.
+// Provides IEEE-754 RNE float->bfloat conversion, SiLU/sigmoid/softplus primitives,
+// volatile-guarded Neumaier compensated reductions, and 8-lane subgroup HQ4_G32_M5
+// Walsh-Hadamard dot products for Qwen3.8-Flash-Next kernels.
+
+#pragma once
+#include <metal_stdlib>
+#include <metal_simdgroup>
+#include "qw_dequant.metalh"
+using namespace metal;
+
+/// IEEE-754 round-to-nearest-even `float` -> `bfloat` matching `QWFlashNextOps.bf16`.
+METAL_FUNC bfloat qw_bf16(float v) {
+    if (isnan(v) || isinf(v)) return bfloat(v);
+    uint u = as_type<uint>(v);
+    u = u + 0x7FFFu + ((u >> 16) & 1u);
+    return bfloat(as_type<float>(u & 0xFFFF0000u));
+}
+
+METAL_FUNC float qw_silu(float x) {
+    return x / (1.0f + exp(-x));
+}
+
+METAL_FUNC float qw_sigmoid(float x) {
+    return 1.0f / (1.0f + exp(-x));
+}
+
+METAL_FUNC float qw_softplus(float x) {
+    return (x > 20.0f) ? x : log(1.0f + exp(x));
+}
+
+/// Register-resident Neumaier TwoSum step (`reassociate(off)` prevents `-ffast-math` cancellation).
+METAL_FUNC void qw_neu_add(thread float& sum, thread float& comp, const float term) {
+    #pragma clang fp reassociate(off) contract(off)
+    float t = sum + term;
+    float diff = (fabs(sum) >= fabs(term)) ? (sum - t) : (term - t);
+    float other = (fabs(sum) >= fabs(term)) ? term : sum;
+    float lost = diff + other;
+    sum = t;
+    comp += lost;
+}
+
+/// 32-lane butterfly reduction of a Neumaier `(acc, comp)` pair.
+METAL_FUNC float qw_neu_fold(float acc, float comp) {
+    #pragma clang fp reassociate(off) contract(off)
+    for (uint s = 1; s < 32; s <<= 1) {
+        acc  += simd_shuffle_xor(acc, s);
+        comp += simd_shuffle_xor(comp, s);
+    }
+    return acc + comp;
+}
+
+/// 32-point normalized FWHT across an 8-lane subgroup (`dl = tid & 7`, 4 elements/lane).
+METAL_FUNC float4 qw_fwht32_subgroup8(float x0, float x1, float x2, float x3, uint dl) {
+    // The STANDARD basis: the values are not rotated, so neither is this.
+    if (!QW_FWHT_ROTATED) return float4(x0, x1, x2, x3);
+    float a0 = x0 + x1, a1 = x0 - x1;
+    float a2 = x2 + x3, a3 = x2 - x3;
+    x0 = a0 + a2; x1 = a1 + a3;
+    x2 = a0 - a2; x3 = a1 - a3;
+
+    #pragma unroll
+    for (ushort s = 1; s <= 4; s <<= 1) {
+        bool neg = (dl & uint(s)) != 0;
+        float p0 = simd_shuffle_xor(x0, s);
+        float p1 = simd_shuffle_xor(x1, s);
+        float p2 = simd_shuffle_xor(x2, s);
+        float p3 = simd_shuffle_xor(x3, s);
+        x0 = neg ? (p0 - x0) : (x0 + p0);
+        x1 = neg ? (p1 - x1) : (x1 + p1);
+        x2 = neg ? (p2 - x2) : (x2 + p2);
+        x3 = neg ? (p3 - x3) : (x3 + p3);
+    }
+    constexpr float inv_sqrt32 = 0.17677669529663689f;
+    return float4(x0 * inv_sqrt32, x1 * inv_sqrt32,
+                  x2 * inv_sqrt32, x3 * inv_sqrt32);
+}
+
+/// Unpack the 4 weights owned by lane `dl` (`0..7`) from a `Block_HQ4_G32`.
+METAL_FUNC void qw_unpack_hq4_lane4(device const Block_HQ4_G32& blk, uint dl,
+                                    thread half2 &w01, thread half2 &w23) {
+    half2 s2 = half2(blk.scale);
+    half2 b2 = half2(blk.bias);
+    uint shift = (dl & 1u) << 3u;
+    ushort2 raw = as_type<ushort2>(blk.qs[dl >> 1u]) >> ushort(shift);
+    w01 = fma(as_type<half2>((raw & ushort2(0x000Fu)) | ushort2(0x6400u)), s2, b2);
+    w23 = fma(as_type<half2>(((raw >> 4u) & ushort2(0x000Fu)) | ushort2(0x6400u)), s2, b2);
+}
+
+/// 32-element dot product of one `Block_HQ4_G32` against register-cached `float4` activations.
+METAL_FUNC float qw_dot_hq4_block_f32_reg(device const Block_HQ4_G32& blk,
+                                          thread const float4 (&xlo)[4],
+                                          thread const float4 (&xhi)[4]) {
+    half2 s2 = half2(blk.scale);
+    half2 b2 = half2(blk.bias);
+    float acc = 0.0f;
+    #pragma unroll
+    for (uint w = 0; w < 4; ++w) {
+        half2 w01, w23, w45, w67;
+        unpack_hq4_word8(blk.qs[w], s2, b2, w01, w23, w45, w67);
+        float4 lo = xlo[w], hi = xhi[w];
+        acc = fma(float(w01.x), lo.x, acc);
+        acc = fma(float(w01.y), lo.y, acc);
+        acc = fma(float(w23.x), lo.z, acc);
+        acc = fma(float(w23.y), lo.w, acc);
+        acc = fma(float(w45.x), hi.x, acc);
+        acc = fma(float(w45.y), hi.y, acc);
+        acc = fma(float(w67.x), hi.z, acc);
+        acc = fma(float(w67.y), hi.w, acc);
+    }
+    return acc;
+}
+
+/// 4-row 32-lane collaborative dot product (`1` thread per `Block_HQ4_G32`, `32` blocks/iter).
+template <typename XPtrT>
+METAL_FUNC float4 qw_warp32_dot4_hq4_prerot(XPtrT xHat,
+                                            device const Block_HQ4_G32* r0,
+                                            device const Block_HQ4_G32* r1,
+                                            device const Block_HQ4_G32* r2,
+                                            device const Block_HQ4_G32* r3,
+                                            uint nBlocks,
+                                            uint ti) {
+    float4 acc = float4(0.0f);
+    for (uint g = ti; g < nBlocks; g += 32u) {
+        XPtrT xg = xHat + (g << 5u);
+        float4 xlo[4], xhi[4];
+        #pragma unroll
+        for (uint w = 0; w < 4; ++w) {
+            uint base = w << 3u;
+            xlo[w] = float4(xg[base + 0], xg[base + 1], xg[base + 2], xg[base + 3]);
+            xhi[w] = float4(xg[base + 4], xg[base + 5], xg[base + 6], xg[base + 7]);
+        }
+        acc.x += qw_dot_hq4_block_f32_reg(r0[g], xlo, xhi);
+        acc.y += qw_dot_hq4_block_f32_reg(r1[g], xlo, xhi);
+        acc.z += qw_dot_hq4_block_f32_reg(r2[g], xlo, xhi);
+        acc.w += qw_dot_hq4_block_f32_reg(r3[g], xlo, xhi);
+    }
+    for (ushort s = 16; s > 0; s >>= 1) {
+        acc += simd_shuffle_down(acc, s);
+    }
+    return acc;
+}
+
+/// 8-lane subgroup dot product of `bfloat` activations `x` against `Block_HQ4_G32` row.
+template <typename XPtrT>
+METAL_FUNC float qw_warpdot_hq4(XPtrT x,
+                                device const Block_HQ4_G32* rowBlocks,
+                                int n,
+                                uint dl) {
+    int nBlocks = n >> 5;
+    float acc = 0.0f;
+    for (int g = 0; g < nBlocks; ++g) {
+        int base = (g << 5) + int(dl << 2);
+        float4 hx = qw_fwht32_subgroup8(float(x[base + 0]), float(x[base + 1]),
+                                        float(x[base + 2]), float(x[base + 3]), dl);
+        half2 w01, w23;
+        qw_unpack_hq4_lane4(rowBlocks[g], dl, w01, w23);
+        acc = fma(float(w01.x), hx.x, acc);
+        acc = fma(float(w01.y), hx.y, acc);
+        acc = fma(float(w23.x), hx.z, acc);
+        acc = fma(float(w23.y), hx.w, acc);
+    }
+    acc += simd_shuffle_xor(acc, 1);
+    acc += simd_shuffle_xor(acc, 2);
+    acc += simd_shuffle_xor(acc, 4);
+    return acc;
+}
+
+/// 8-lane subgroup dot product over pre-rotated `float` activations `xHat`.
+METAL_FUNC float qw_warpdot_hq4_prerot(device const float* xHat,
+                                       device const Block_HQ4_G32* rowBlocks,
+                                       int n,
+                                       uint dl) {
+    int nBlocks = n >> 5;
+    float acc = 0.0f;
+    for (int g = 0; g < nBlocks; ++g) {
+        int base = (g << 5) + int(dl << 2);
+        float4 hx = *(device const float4*)(xHat + base);
+        half2 w01, w23;
+        qw_unpack_hq4_lane4(rowBlocks[g], dl, w01, w23);
+        acc = fma(float(w01.x), hx.x, acc);
+        acc = fma(float(w01.y), hx.y, acc);
+        acc = fma(float(w23.x), hx.z, acc);
+        acc = fma(float(w23.y), hx.w, acc);
+    }
+    acc += simd_shuffle_xor(acc, 1);
+    acc += simd_shuffle_xor(acc, 2);
+    acc += simd_shuffle_xor(acc, 4);
+    return acc;
+}
+
+/// Dual-row 8-lane subgroup dot product (shares `x` load and FWHT across `gate` and `up`).
+template <typename XPtrT>
+METAL_FUNC float2 qw_warpdot2_hq4(XPtrT x,
+                                  device const Block_HQ4_G32* row0Blocks,
+                                  device const Block_HQ4_G32* row1Blocks,
+                                  int n,
+                                  uint dl) {
+    int nBlocks = n >> 5;
+    float2 acc = float2(0.0f);
+    for (int g = 0; g < nBlocks; ++g) {
+        int base = (g << 5) + int(dl << 2);
+        float4 hx = qw_fwht32_subgroup8(float(x[base + 0]), float(x[base + 1]),
+                                        float(x[base + 2]), float(x[base + 3]), dl);
+        half2 w0_01, w0_23, w1_01, w1_23;
+        qw_unpack_hq4_lane4(row0Blocks[g], dl, w0_01, w0_23);
+        qw_unpack_hq4_lane4(row1Blocks[g], dl, w1_01, w1_23);
+        acc.x = fma(float(w0_01.x), hx.x, acc.x);
+        acc.x = fma(float(w0_01.y), hx.y, acc.x);
+        acc.x = fma(float(w0_23.x), hx.z, acc.x);
+        acc.x = fma(float(w0_23.y), hx.w, acc.x);
+        acc.y = fma(float(w1_01.x), hx.x, acc.y);
+        acc.y = fma(float(w1_01.y), hx.y, acc.y);
+        acc.y = fma(float(w1_23.x), hx.z, acc.y);
+        acc.y = fma(float(w1_23.y), hx.w, acc.y);
+    }
+    acc += simd_shuffle_xor(acc, 1);
+    acc += simd_shuffle_xor(acc, 2);
+    acc += simd_shuffle_xor(acc, 4);
+    return acc;
+}
+
+/// Dual-row 8-lane subgroup dot product over pre-rotated `float` activations `xHat`.
+METAL_FUNC float2 qw_warpdot2_hq4_prerot(device const float* xHat,
+                                         device const Block_HQ4_G32* row0Blocks,
+                                         device const Block_HQ4_G32* row1Blocks,
+                                         int n,
+                                         uint dl) {
+    int nBlocks = n >> 5;
+    float2 acc = float2(0.0f);
+    for (int g = 0; g < nBlocks; ++g) {
+        int base = (g << 5) + int(dl << 2);
+        float4 hx = *(device const float4*)(xHat + base);
+        half2 w0_01, w0_23, w1_01, w1_23;
+        qw_unpack_hq4_lane4(row0Blocks[g], dl, w0_01, w0_23);
+        qw_unpack_hq4_lane4(row1Blocks[g], dl, w1_01, w1_23);
+        acc.x = fma(float(w0_01.x), hx.x, acc.x);
+        acc.x = fma(float(w0_01.y), hx.y, acc.x);
+        acc.x = fma(float(w0_23.x), hx.z, acc.x);
+        acc.x = fma(float(w0_23.y), hx.w, acc.x);
+        acc.y = fma(float(w1_01.x), hx.x, acc.y);
+        acc.y = fma(float(w1_01.y), hx.y, acc.y);
+        acc.y = fma(float(w1_23.x), hx.z, acc.y);
+        acc.y = fma(float(w1_23.y), hx.w, acc.y);
+    }
+    acc += simd_shuffle_xor(acc, 1);
+    acc += simd_shuffle_xor(acc, 2);
+    acc += simd_shuffle_xor(acc, 4);
+    return acc;
+}
+
+/// 32-lane warp dot product of `bfloat` activations `x` against `Block_HQ4_G32` row.
+template <typename XPtrT>
+METAL_FUNC float qw_warp32_dot_hq4(XPtrT x,
+                                   device const Block_HQ4_G32* rowBlocks,
+                                   uint K,
+                                   uint ti) {
+    uint nBlocks = K >> 5u;
+    uint sub = ti >> 3u;
+    uint dl = ti & 7u;
+    float acc = 0.0f;
+    for (uint g = sub; g < nBlocks; g += 4u) {
+        uint base = (g << 5u) + (dl << 2u);
+        float4 hx = qw_fwht32_subgroup8(float(x[base + 0]), float(x[base + 1]),
+                                        float(x[base + 2]), float(x[base + 3]), dl);
+        half2 w01, w23;
+        qw_unpack_hq4_lane4(rowBlocks[g], dl, w01, w23);
+        acc = fma(float(w01.x), hx.x, acc);
+        acc = fma(float(w01.y), hx.y, acc);
+        acc = fma(float(w23.x), hx.z, acc);
+        acc = fma(float(w23.y), hx.w, acc);
+    }
+    for (ushort s = 1; s < 32; s <<= 1) {
+        acc += simd_shuffle_xor(acc, s);
+    }
+    return acc;
+}
+
+/// Vectorized 32-lane warp BF16 dot product (`uint4` = 8 `bfloat`s per lane step).
+template <typename XPtrT, typename XVecPtrT>
+METAL_FUNC float qw_bf16_vec_dot(device const bfloat* wRow, XPtrT x, XVecPtrT xv, uint K, uint ti) {
+    uint k8 = K >> 3u;
+    device const uint4* wr = (device const uint4*)wRow;
+    float acc = 0.0f;
+    for (uint c = ti; c < k8; c += 32u) {
+        uint4 va = wr[c], vb = xv[c];
+        uint wel[8] = {va.x & 0xFFFFu, va.x >> 16, va.y & 0xFFFFu, va.y >> 16,
+                       va.z & 0xFFFFu, va.z >> 16, va.w & 0xFFFFu, va.w >> 16};
+        uint xel[8] = {vb.x & 0xFFFFu, vb.x >> 16, vb.y & 0xFFFFu, vb.y >> 16,
+                       vb.z & 0xFFFFu, vb.z >> 16, vb.w & 0xFFFFu, vb.w >> 16};
+        #pragma unroll
+        for (int q = 0; q < 8; q++) {
+            acc += as_type<float>(wel[q] << 16) * as_type<float>(xel[q] << 16);
+        }
+    }
+    int rem = int(K & 7u);
+    if (int(ti) < rem) {
+        int k = int(k8 * 8u) + int(ti);
+        acc += float(wRow[k]) * float(x[k]);
+    }
+    return acc;
+}
+
+/// Neumaier-compensated 32-lane warp BF16 dot product for hyper-connection doors.
+template <typename XPtrT, typename XVecPtrT>
+METAL_FUNC float qw_bf16_neu_dot(device const bfloat* wRow, XPtrT x, XVecPtrT xv, uint K, uint ti) {
+    uint k8 = K >> 3u;
+    device const uint4* wr = (device const uint4*)wRow;
+    float acc = 0.0f, comp = 0.0f;
+    for (uint c = ti; c < k8; c += 32u) {
+        uint4 va = wr[c], vb = xv[c];
+        uint wel[8] = {va.x & 0xFFFFu, va.x >> 16, va.y & 0xFFFFu, va.y >> 16,
+                       va.z & 0xFFFFu, va.z >> 16, va.w & 0xFFFFu, va.w >> 16};
+        uint xel[8] = {vb.x & 0xFFFFu, vb.x >> 16, vb.y & 0xFFFFu, vb.y >> 16,
+                       vb.z & 0xFFFFu, vb.z >> 16, vb.w & 0xFFFFu, vb.w >> 16};
+        #pragma unroll
+        for (int q = 0; q < 8; q++) {
+            qw_neu_add(acc, comp, as_type<float>(wel[q] << 16) * as_type<float>(xel[q] << 16));
+        }
+    }
+    int rem = int(K & 7u);
+    if (int(ti) < rem) {
+        int k = int(k8 * 8u) + int(ti);
+        qw_neu_add(acc, comp, float(wRow[k]) * float(x[k]));
+    }
+    return qw_neu_fold(acc, comp);
+}

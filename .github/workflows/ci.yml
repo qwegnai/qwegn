@@ -1,0 +1,45 @@
+name: ci
+
+# Runs the repository's own gate: `make init` regenerates the goldens from
+# scratch, then `make ci` builds, lints, and tests. Nothing here depends on
+# model weights.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 26 or newer
+        run: |
+          # Pick the newest installed Xcode whose major version is 26 or higher.
+          best=""
+          for app in /Applications/Xcode*.app; do
+            v=$(defaults read "$app/Contents/Info" CFBundleShortVersionString 2>/dev/null || echo 0)
+            if [ "${v%%.*}" -ge 26 ] 2>/dev/null; then best="$app"; fi
+          done
+          test -n "$best" || { echo "FAIL: no Xcode 26+ on this runner"; exit 1; }
+          sudo xcode-select -s "$best/Contents/Developer"
+          xcodebuild -version
+
+      - name: Install the Metal toolchain
+        run: xcodebuild -downloadComponent MetalToolchain || true
+
+      - name: Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Init (toolchain check, venv, goldens)
+        run: make init PYTHON=python3
+
+      - name: CI gate
+        run: make ci

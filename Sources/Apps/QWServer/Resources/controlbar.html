@@ -1,0 +1,1577 @@
+<!DOCTYPE html>
+<html class="dark" lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta content="width=device-width, initial-scale=1.0" name="viewport">
+  <meta content="web_standard" name="shell-type">
+  <title>Qwegine Engine • Inference Monitor</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet">
+  <style>
+    @layer base {
+      html, body { margin: 0; padding: 0; }
+      body { overscroll-behavior: none; }
+      main > :first-child { margin-top: 0 !important; }
+      main > :last-child { margin-bottom: 0 !important; }
+    }
+    ::-webkit-scrollbar { display: none; }
+    .tabular-nums { font-variant-numeric: tabular-nums; }
+    .sparkline-glow { filter: drop-shadow(0 0 6px rgba(62, 144, 255, 0.45)); }
+  </style>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          colors: {
+            "on-error": "#690005",
+            "background": "#111318",
+            "on-primary-fixed-variant": "#00468d",
+            "secondary-fixed-dim": "#47e266",
+            "on-background": "#e2e2e9",
+            "surface-bright": "#37393f",
+            "on-secondary": "#003910",
+            "surface": "#111318",
+            "on-secondary-container": "#004615",
+            "surface-tint": "#aac7ff",
+            "error-container": "#93000a",
+            "inverse-on-surface": "#2e3036",
+            "tertiary": "#ffb868",
+            "on-tertiary-fixed-variant": "#673d00",
+            "surface-container-low": "#1a1b21",
+            "on-secondary-fixed": "#002106",
+            "inverse-surface": "#e2e2e9",
+            "secondary-container": "#09bf49",
+            "surface-dim": "#111318",
+            "tertiary-container": "#ce7f00",
+            "on-error-container": "#ffdad6",
+            "on-primary-fixed": "#001b3e",
+            "on-tertiary-fixed": "#2b1700",
+            "primary": "#aac7ff",
+            "tertiary-fixed-dim": "#ffb868",
+            "surface-container-lowest": "#0c0e13",
+            "surface-container": "#1e2025",
+            "on-secondary-fixed-variant": "#00531a",
+            "on-surface-variant": "#c0c6d6",
+            "outline": "#8b91a0",
+            "surface-variant": "#33353a",
+            "on-primary": "#003064",
+            "primary-fixed": "#d6e3ff",
+            "on-primary-container": "#002957",
+            "outline-variant": "#414754",
+            "tertiary-fixed": "#ffddbb",
+            "error": "#ffb4ab",
+            "secondary-fixed": "#6cff82",
+            "primary-container": "#3e90ff",
+            "surface-container-high": "#282a2f",
+            "secondary": "#47e266",
+            "on-surface": "#e2e2e9",
+            "primary-fixed-dim": "#aac7ff",
+            "on-tertiary": "#482900",
+            "surface-container-highest": "#33353a",
+            "inverse-primary": "#005db8",
+            "on-tertiary-container": "#3f2300"
+          },
+          borderRadius: {
+            DEFAULT: "0.125rem",
+            lg: "0.25rem",
+            xl: "0.5rem",
+            full: "0.75rem"
+          },
+          spacing: {
+            "space-md": "0.5rem",
+            "space-lg": "0.75rem",
+            "gutter": "0.5rem",
+            "space-xs": "0.25rem",
+            "space-sm": "0.375rem",
+            "space-xl": "1rem",
+            "margin": "1rem"
+          },
+          fontFamily: {
+            "label-lg": ["JetBrains Mono", "monospace"],
+            "body-sm": ["Inter", "sans-serif"],
+            "headline-sm": ["Inter", "sans-serif"],
+            "label-sm": ["JetBrains Mono", "monospace"],
+            "headline-md": ["Inter", "sans-serif"],
+            "headline-lg": ["Inter", "sans-serif"],
+            "label-md": ["JetBrains Mono", "monospace"],
+            "body-md": ["Inter", "sans-serif"],
+            "telemetry-counter": ["JetBrains Mono", "monospace"]
+          },
+          fontSize: {
+            "label-lg": ["13px", { lineHeight: "16px", fontWeight: "500" }],
+            "body-sm": ["11px", { lineHeight: "15px", fontWeight: "400" }],
+            "headline-sm": ["12px", { lineHeight: "16px", fontWeight: "600" }],
+            "label-sm": ["10px", { lineHeight: "13px", fontWeight: "400" }],
+            "headline-md": ["13px", { lineHeight: "18px", fontWeight: "600" }],
+            "headline-lg": ["15px", { lineHeight: "20px", fontWeight: "600" }],
+            "label-md": ["11px", { lineHeight: "14px", fontWeight: "500" }],
+            "body-md": ["12px", { lineHeight: "16px", fontWeight: "400" }],
+            "telemetry-counter": ["18px", { lineHeight: "22px", fontWeight: "600" }]
+          }
+        }
+      }
+    };
+  </script>
+</head>
+<body class="bg-background font-body-md text-on-surface antialiased selection:bg-primary-container selection:text-on-primary-container min-h-screen flex flex-col justify-between">
+
+  <!-- Fixed Top Header -->
+  <header class="fixed top-0 w-full z-50 bg-surface-container-lowest/80 backdrop-blur-2xl shadow-[0_1px_8px_rgba(0,0,0,0.4)] border-b border-white/[0.06]">
+    <div class="h-14 w-full px-margin flex items-center justify-between">
+      <div class="flex items-center gap-space-lg">
+        <!-- Logo + Title + Status -->
+        <div class="flex items-center gap-space-md">
+          <div class="w-8 h-8 rounded-lg bg-white/[0.07] border border-white/[0.12] flex items-center justify-center shrink-0">
+            <svg class="w-5 h-5 text-on-surface" viewBox="0 0 600 600" fill="none" stroke="currentColor" stroke-width="24" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <!-- Top Pins -->
+              <line x1="220" y1="62" x2="220" y2="108" />
+              <line x1="260" y1="62" x2="260" y2="108" />
+              <line x1="300" y1="62" x2="300" y2="108" />
+              <line x1="340" y1="62" x2="340" y2="108" />
+              <line x1="380" y1="62" x2="380" y2="108" />
+              <!-- Bottom Pins -->
+              <line x1="220" y1="492" x2="220" y2="538" />
+              <line x1="260" y1="492" x2="260" y2="538" />
+              <line x1="300" y1="492" x2="300" y2="538" />
+              <line x1="340" y1="492" x2="340" y2="538" />
+              <line x1="380" y1="492" x2="380" y2="538" />
+              <!-- Left Pins -->
+              <line x1="62" y1="220" x2="108" y2="220" />
+              <line x1="62" y1="260" x2="108" y2="260" />
+              <line x1="62" y1="300" x2="108" y2="300" />
+              <line x1="62" y1="340" x2="340" y2="340" />
+              <line x1="62" y1="380" x2="108" y2="380" />
+              <!-- Right Pins -->
+              <line x1="492" y1="220" x2="538" y2="220" />
+              <line x1="492" y1="260" x2="538" y2="260" />
+              <line x1="492" y1="300" x2="538" y2="300" />
+              <line x1="492" y1="340" x2="538" y2="340" />
+              <line x1="492" y1="380" x2="538" y2="380" />
+              <!-- Die Brackets -->
+              <path d="M 276 135 L 180 135 Q 135 135 135 180 L 135 276" />
+              <path d="M 324 135 L 420 135 Q 465 135 465 180 L 465 276" />
+              <path d="M 135 324 L 135 420 Q 135 465 180 465 L 276 465" />
+              <path d="M 465 324 L 465 420 Q 465 465 420 465 L 324 465" />
+              <!-- Letter Q -->
+              <rect x="180" y="175" width="112" height="250" rx="36" ry="36" />
+              <line x1="246" y1="336" x2="346" y2="436" />
+              <!-- Letter G -->
+              <path d="M 324 175 L 380 175 Q 412 175 412 207 L 412 268" />
+              <path d="M 324 326 L 412 326 L 412 393 Q 412 425 380 425 L 324 425" />
+            </svg>
+          </div>
+          <div class="flex flex-col">
+            <div class="flex items-center gap-space-xs">
+              <span class="font-headline-md text-headline-md tracking-tight text-on-surface">Qwegn Engine</span>
+              <span id="header-version" class="font-label-sm text-label-sm px-space-xs py-[1px] rounded bg-surface-container-high text-on-surface-variant">—</span>
+            </div>
+            <div class="flex items-center gap-space-xs">
+              <span id="daemon-pulse" class="w-1.5 h-1.5 rounded-full bg-secondary shadow-[0_0_8px_rgba(71,226,102,0.6)] animate-pulse"></span>
+              <span id="daemon-status" class="font-label-sm text-label-sm text-secondary whitespace-nowrap">—</span>
+              <span class="text-outline-variant font-label-sm text-label-sm">•</span>
+              <span id="header-port" class="font-label-sm text-label-sm text-on-surface-variant">Port —</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Navigation Tabs -->
+        <nav class="hidden lg:flex items-center gap-space-xs pl-space-md" id="main-nav">
+          <button type="button" onclick="switchTab('monitor')" id="nav-tab-monitor" class="px-space-md py-space-xs transition-colors bg-surface-container-high text-on-surface font-headline-sm rounded-lg flex items-center gap-1.5">
+            <span class="material-symbols-outlined text-[15px] text-primary">speed</span>
+            <span>Inference Monitor</span>
+          </button>
+          <button type="button" onclick="switchTab('models')" id="nav-tab-models" class="px-space-md py-space-xs font-body-md text-body-md text-on-surface-variant hover:text-on-surface hover:bg-surface-container transition-colors rounded-lg flex items-center gap-1.5">
+            <svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path d="M2.00 11.43C2.00 14.20 3.90 16.04 6.75 16.04C9.56 16.04 11.43 14.38 11.43 11.91C11.43 10.86 11.06 10.03 10.46 9.51C10.18 9.28 10.01 9.19 9.75 9.19C9.39 9.19 9.16 9.41 9.16 9.72C9.16 10.11 9.38 10.20 9.72 10.52C10.05 10.83 10.23 11.31 10.23 11.88C10.23 13.64 8.84 14.82 6.77 14.82C4.64 14.82 3.22 13.46 3.22 11.42C3.22 10.24 3.82 9.14 4.79 8.51L4.18 7.45C2.83 8.30 2.00 9.81 2.00 11.43ZM4.05 7.46C4.05 9.16 5.23 10.37 7.09 10.37C7.42 10.37 7.70 10.09 7.70 9.76C7.70 9.42 7.42 9.15 7.09 9.15C5.96 9.15 5.27 8.44 5.27 7.46C5.27 6.38 6.17 5.63 7.35 5.63C7.91 5.63 8.51 5.80 9.04 6.17L9.77 5.18C9.01 4.65 8.16 4.41 7.36 4.41C5.52 4.41 4.05 5.66 4.05 7.46ZM8.10 7.26C8.09 7.66 8.35 7.92 8.71 7.92C9.04 7.92 9.30 7.71 9.31 7.32C9.37 5.87 10.41 4.82 11.89 4.82C12.78 4.82 13.56 5.28 13.86 5.98C13.92 6.09 14.00 6.10 14.15 6.06C14.41 5.99 14.68 5.96 14.96 5.96C16.32 5.97 17.61 6.99 17.61 8.63C17.61 12.20 12.59 11.71 12.59 15.18C12.59 16.84 13.90 17.88 15.61 17.88C15.79 17.88 15.99 17.87 16.19 17.86C16.36 19.15 17.17 20.41 18.49 20.41C20.39 20.41 21.32 18.10 21.32 15.84C21.32 14.87 21.27 14.20 21.20 13.58L19.97 13.93C20.04 14.53 20.10 15.10 20.10 15.83C20.10 17.68 19.40 19.18 18.49 19.18C17.55 19.18 17.16 17.93 17.16 16.93C17.16 16.85 17.12 16.80 17.02 16.80C16.80 16.80 16.52 16.80 16.32 16.80C14.81 16.80 13.82 16.33 13.82 15.16C13.82 12.39 18.83 13.01 18.83 8.63C18.83 6.29 17.10 4.73 15.12 4.73C14.97 4.73 14.75 4.76 14.54 4.81C13.93 4.05 12.95 3.59 11.90 3.59C9.74 3.59 8.19 5.10 8.10 7.26ZM17.04 14.71C17.04 15.05 17.30 15.30 17.65 15.32C20.26 15.49 22.00 13.96 22.00 11.49C22.00 9.47 20.56 7.93 18.40 7.64L18.22 8.86C19.75 8.88 20.78 9.93 20.78 11.49C20.78 13.20 19.52 14.25 17.65 14.11C17.30 14.08 17.04 14.38 17.04 14.71ZM13.13 15.70C12.68 15.86 12.16 15.94 11.66 15.94C10.38 15.94 9.08 15.44 8.58 14.66L7.56 15.49C8.36 16.48 9.81 17.16 11.53 17.16C12.16 17.16 12.86 17.07 13.55 16.87ZM10.69 10.34L11.10 11.49C13.02 11.12 13.88 9.92 13.87 8.15C13.87 7.81 13.60 7.53 13.26 7.53C12.92 7.53 12.65 7.81 12.65 8.15C12.65 9.39 12.12 10.13 10.69 10.34Z" />
+            </svg>
+            <span>Models</span>
+          </button>
+        </nav>
+      </div>
+
+      <!-- Header Telemetry Bar & Controls -->
+      <div class="flex items-center gap-space-md">
+        <div class="hidden sm:flex items-center gap-space-md px-space-md py-space-xs rounded-lg bg-surface-container-low border border-white/[0.04]">
+          <div class="flex items-center gap-space-xs">
+            <span class="font-label-sm text-label-sm text-outline">GPU:</span>
+            <span id="hdr-gpu-val" data-card="gpu.busy_ratio" class="font-label-md text-label-md text-primary font-bold">—</span>
+          </div>
+          <span class="text-outline-variant font-label-sm text-label-sm">|</span>
+          <div class="flex items-center gap-space-xs">
+            <span class="font-label-sm text-label-sm text-outline">TPS:</span>
+            <span id="hdr-tps-val" data-card="throughput.display_decode_tokens_per_sec" class="font-label-md text-label-md text-secondary font-bold">—</span>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-space-xs">
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Workspace Content -->
+  <main class="w-full pt-14 bg-background min-h-[calc(100vh-36px)]">
+    
+    <!-- TAB 1: INFERENCE MONITOR (Main Dashboard) -->
+    <div id="view-monitor" class="tab-pane flex flex-col w-full">
+      <div class="w-full px-margin py-space-md flex flex-col gap-space-lg">
+
+        <!-- Top Hero Status & Active Model Strip -->
+        <section class="w-full rounded-xl bg-surface-container-low/70 backdrop-blur-xl p-space-lg shadow-xl relative overflow-hidden border border-white/[0.06]">
+          <div class="absolute -top-24 -right-24 w-80 h-80 rounded-full bg-primary/10 blur-3xl pointer-events-none"></div>
+          <div class="absolute -bottom-24 -left-24 w-72 h-72 rounded-full bg-secondary/10 blur-3xl pointer-events-none"></div>
+          <div class="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-space-lg relative z-10">
+            <!-- Model Identity and Hardware Targets -->
+            <div class="flex flex-wrap items-center gap-space-lg">
+              <div class="w-12 h-12 rounded-lg bg-surface-container-high/80 p-space-xs flex items-center justify-center shadow-md border border-white/[0.08]">
+                <svg class="w-8 h-8 text-primary" viewBox="0 0 600 600" fill="none" stroke="currentColor" stroke-width="24" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <!-- Top Pins -->
+                  <line x1="220" y1="62" x2="220" y2="108" />
+                  <line x1="260" y1="62" x2="260" y2="108" />
+                  <line x1="300" y1="62" x2="300" y2="108" />
+                  <line x1="340" y1="62" x2="340" y2="108" />
+                  <line x1="380" y1="62" x2="380" y2="108" />
+                  <!-- Bottom Pins -->
+                  <line x1="220" y1="492" x2="220" y2="538" />
+                  <line x1="260" y1="492" x2="260" y2="538" />
+                  <line x1="300" y1="492" x2="300" y2="538" />
+                  <line x1="340" y1="492" x2="340" y2="538" />
+                  <line x1="380" y1="492" x2="380" y2="538" />
+                  <!-- Left Pins -->
+                  <line x1="62" y1="220" x2="108" y2="220" />
+                  <line x1="62" y1="260" x2="108" y2="260" />
+                  <line x1="62" y1="300" x2="108" y2="300" />
+                  <line x1="62" y1="340" x2="340" y2="340" />
+                  <line x1="62" y1="380" x2="108" y2="380" />
+                  <!-- Right Pins -->
+                  <line x1="492" y1="220" x2="538" y2="220" />
+                  <line x1="492" y1="260" x2="538" y2="260" />
+                  <line x1="492" y1="300" x2="538" y2="300" />
+                  <line x1="492" y1="340" x2="538" y2="340" />
+                  <line x1="492" y1="380" x2="538" y2="380" />
+                  <!-- Die Brackets -->
+                  <path d="M 276 135 L 180 135 Q 135 135 135 180 L 135 276" />
+                  <path d="M 324 135 L 420 135 Q 465 135 465 180 L 465 276" />
+                  <path d="M 135 324 L 135 420 Q 135 465 180 465 L 276 465" />
+                  <path d="M 465 324 L 465 420 Q 465 465 420 465 L 324 465" />
+                  <!-- Letter Q -->
+                  <rect x="180" y="175" width="112" height="250" rx="36" ry="36" />
+                  <line x1="246" y1="336" x2="346" y2="436" />
+                  <!-- Letter G -->
+                  <path d="M 324 175 L 380 175 Q 412 175 412 207 L 412 268" />
+                  <path d="M 324 326 L 412 326 L 412 393 Q 412 425 380 425 L 324 425" />
+                </svg>
+              </div>
+              <div class="flex flex-col">
+                <div class="flex items-center gap-space-md flex-wrap">
+                  <span id="hero-model-title" class="font-headline-lg text-headline-lg tracking-tight text-on-surface flex items-center gap-space-xs">
+                    —
+                  </span>
+                  <span id="hero-chip-badge" class="font-label-sm text-label-sm px-space-md py-[2px] rounded-full bg-secondary-container/20 text-secondary font-medium tracking-wide">
+                    —
+                  </span>
+                  <div class="flex items-center gap-space-xs px-space-md py-[2px] rounded bg-surface-container-high">
+                    <span id="hero-status-dot" class="w-2 h-2 rounded-full bg-secondary shadow-[0_0_8px_rgba(71,226,102,0.8)] animate-pulse"></span>
+                    <span id="hero-endpoint-label" class="font-label-sm text-label-sm text-on-surface">—</span>
+                  </div>
+                </div>
+
+                <!-- Parameters Grid Chips -->
+                <div class="flex items-center gap-space-lg mt-space-xs flex-wrap font-label-sm text-label-sm text-on-surface-variant">
+                  <span class="flex items-center gap-space-xs">
+                    <span class="text-outline">Cores:</span>
+                    <span id="chip-cores" class="text-on-surface font-semibold">—</span>
+                  </span>
+                  <span class="text-outline-variant">•</span>
+                  <span class="flex items-center gap-space-xs">
+                    <span class="text-outline">GDN:</span>
+                    <span id="chip-gdn" class="text-secondary font-semibold">—</span>
+                  </span>
+                  <span class="text-outline-variant">•</span>
+                  <span class="flex items-center gap-space-xs">
+                    <span class="text-outline">Context:</span>
+                    <span id="chip-context" class="text-on-surface font-semibold">—</span>
+                  </span>
+                  <span class="text-outline-variant">•</span>
+                  <span class="flex items-center gap-space-xs">
+                    <span class="text-outline">KV Quant:</span>
+                    <span id="chip-kv-quant" class="text-primary font-semibold">—</span>
+                  </span>
+                  <span class="text-outline-variant">•</span>
+                  <span class="flex items-center gap-space-xs">
+                    <span class="text-outline">Speculative MTP:</span>
+                    <span id="chip-mtp" class="text-on-surface font-semibold">—</span>
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Quick Lifecycle Controls -->
+            <div class="flex items-center gap-space-md flex-wrap">
+              <div class="flex items-center bg-surface-container-high/60 rounded-lg p-[3px] border border-white/[0.04]">
+                <button data-action="unload" onclick="unloadModel()" class="px-space-md py-space-xs rounded font-label-md text-label-md text-on-surface hover:bg-surface-bright flex items-center gap-space-xs transition-colors" type="button" title="Unload model weights from memory (keeps web server alive)">
+                  <span class="material-symbols-outlined text-[15px] text-tertiary">eject</span>
+                  <span data-action-label>Unload</span>
+                </button>
+                <button data-action="load" onclick="reloadOrLoadModel()" class="px-space-md py-space-xs rounded font-label-md text-label-md text-on-surface hover:bg-surface-bright flex items-center gap-space-xs transition-colors" type="button" title="Reload or load model weights">
+                  <span class="material-symbols-outlined text-[15px] text-primary">sync</span>
+                  <span data-action-label id="hero-btn-load-text">Reload</span>
+                </button>
+              </div>
+              <button onclick="openSwitchModelModal()" class="px-space-md py-space-xs rounded-lg bg-surface-container-high hover:bg-surface-bright text-on-surface font-label-md text-label-md flex items-center gap-space-xs border border-white/[0.08] transition-colors" title="Switch active model from ~/.qwg/models" type="button">
+                <span class="material-symbols-outlined text-[15px] text-primary">swap_horiz</span>
+                <span>Switch Model</span>
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <!-- 12-Column Responsive Telemetry Grid -->
+        <div class="grid grid-cols-1 xl:grid-cols-12 gap-space-lg w-full">
+          
+          <!-- Primary Core Compute & Hardware (7 Columns) -->
+          <div class="xl:col-span-7 flex flex-col gap-space-lg">
+            
+            <!-- Compute Velocity & Real-Time Waveform -->
+            <section class="w-full rounded-xl bg-surface-container-low/70 backdrop-blur-xl p-space-lg shadow-md flex flex-col gap-space-md border border-white/[0.06]">
+              <div class="flex items-center justify-between">
+                <div class="flex items-center gap-space-sm">
+                  <span class="material-symbols-outlined text-primary text-[18px]">speed</span>
+                  <span class="font-headline-md text-headline-md text-on-surface">Compute Velocity</span>
+                </div>
+                <div class="flex items-center gap-space-md font-label-sm text-label-sm">
+                  <div class="flex items-center gap-space-xs">
+                    <span id="vel-status-dot" class="w-1.5 h-1.5 rounded-full bg-outline"></span>
+                    <span id="vel-status-text" class="text-outline font-medium">—</span>
+                  </div>
+                  <span class="text-outline-variant">•</span>
+                  <span id="model-age" class="text-outline">—</span>
+                </div>
+              </div>
+
+              <!-- The cards the server published, in the order it published them. -->
+              <div id="velocity-cards" class="grid grid-cols-1 sm:grid-cols-2 gap-space-md"></div>
+
+              <!-- Vector Sparkline Inference Activity Graph (Dual Amber Prefill + Blue Decode) -->
+              <div class="p-space-md rounded-lg bg-surface-container-lowest/80 flex flex-col gap-space-sm border border-white/[0.04]">
+                <div class="flex items-center justify-between font-label-sm text-label-sm text-outline flex-wrap gap-2">
+                  <div class="flex items-center gap-3">
+                    <span>Inference Activity (last 60 turns)</span>
+                    <!-- The legend names the series the server published. -->
+                    <span id="trace-legend" class="flex items-center gap-3"></span>
+                  </div>
+                  <div class="flex items-center gap-space-md">
+                    <span class="text-on-surface-variant">TTFT: <strong id="trace-ttft" data-card="latency.ttft_ms" class="text-primary font-semibold">—</strong></span>
+                  </div>
+                </div>
+
+                <!-- Wide Sparkline Waveform with Dual Gradient Fill -->
+                <div class="w-full h-24 relative overflow-hidden rounded bg-black/20">
+                  <svg id="sparkline-svg" class="w-full h-full" preserveAspectRatio="none" viewBox="0 0 600 100">
+                    <defs>
+                      <linearGradient id="areaGlowA" x1="0%" x2="0%" y1="0%" y2="100%">
+                        <stop offset="0%" stop-color="#ffb868" stop-opacity="0.35"></stop>
+                        <stop offset="80%" stop-color="#ffb868" stop-opacity="0.04"></stop>
+                        <stop offset="100%" stop-color="#ffb868" stop-opacity="0.00"></stop>
+                      </linearGradient>
+                      <linearGradient id="areaGlowB" x1="0%" x2="0%" y1="0%" y2="100%">
+                        <stop offset="0%" stop-color="#3e90ff" stop-opacity="0.35"></stop>
+                        <stop offset="80%" stop-color="#3e90ff" stop-opacity="0.04"></stop>
+                        <stop offset="100%" stop-color="#3e90ff" stop-opacity="0.00"></stop>
+                      </linearGradient>
+                    </defs>
+                    <!-- The first published series, in amber. -->
+                    <path id="sparkline-series-a-area" d="M 0,95 L 600,95 L 600,100 L 0,100 Z" fill="url(#areaGlowA)"></path>
+                    <path id="sparkline-series-a-path" d="M 0,95 L 600,95" fill="none" stroke="#ffb868" stroke-linecap="round" stroke-width="2" style="filter: drop-shadow(0 0 6px rgba(255,184,104,0.45));"></path>
+
+                    <!-- The second published series, in blue. -->
+                    <path id="sparkline-series-b-area" d="M 0,95 L 600,95 L 600,100 L 0,100 Z" fill="url(#areaGlowB)"></path>
+                    <path id="sparkline-series-b-path" d="M 0,95 L 600,95" fill="none" stroke="#3e90ff" stroke-linecap="round" stroke-width="2" class="sparkline-glow"></path>
+
+                    <!-- Real-time pulse points at heads -->
+                    <circle id="sparkline-series-a-dot" cx="600" cy="95" fill="#ffb868" r="3.5" class="opacity-0"></circle>
+                    <circle id="sparkline-series-b-dot" cx="600" cy="95" fill="#3e90ff" r="3.5" class="opacity-0"></circle>
+                  </svg>
+                </div>
+                <div class="flex items-center justify-end font-label-sm text-label-sm text-outline-variant">
+                  <span id="sparkline-live-indicator" class="text-secondary font-medium flex items-center gap-space-xs">
+                    <span class="w-1.5 h-1.5 rounded-full bg-secondary"></span>
+                    <span id="sparkline-live-text">Idle</span>
+                  </span>
+                </div>
+              </div>
+            </section>
+
+            <!-- Silicon & Hardware Resources -->
+            <section class="w-full rounded-xl bg-surface-container-low/70 backdrop-blur-xl p-space-lg shadow-md flex flex-col gap-space-md border border-white/[0.06]">
+              <div class="flex items-center justify-between">
+                <div class="flex items-center gap-space-sm">
+                  <span class="material-symbols-outlined text-primary text-[18px]">memory</span>
+                  <span class="font-headline-md text-headline-md text-on-surface">Silicon & Hardware Resources</span>
+                </div>
+                <div class="flex items-center gap-space-xs font-label-sm text-label-sm px-space-md py-[2px] rounded bg-surface-container-high text-on-surface-variant border border-white/[0.04]">
+                  <span id="hw-chip-badge">—</span>
+                </div>
+              </div>
+
+              <!-- The readings the server published, in the order it published them. -->
+              <div id="hardware-cards" class="grid grid-cols-1 md:grid-cols-2 gap-space-md"></div>
+            </section>
+          </div>
+
+          <!-- Secondary Telemetry / Memory & KV Caching (5 Columns) -->
+          <div class="xl:col-span-5 flex flex-col gap-space-lg">
+            
+            <!-- Context Window Capacity & KV Allocation -->
+            <section class="w-full rounded-xl bg-surface-container-low/70 backdrop-blur-xl p-space-lg shadow-md flex flex-col gap-space-md border border-white/[0.06]">
+              <div class="flex items-center justify-between">
+                <div class="flex items-center gap-space-sm">
+                  <span class="material-symbols-outlined text-secondary text-[18px]">data_usage</span>
+                  <span class="font-headline-md text-headline-md text-on-surface">Context Window Capacity</span>
+                </div>
+                <span id="ctx-used-chip" class="font-label-sm text-label-sm px-space-md py-[2px] rounded-full bg-secondary-container/20 text-secondary font-medium">
+                  —
+                </span>
+              </div>
+
+              <div class="flex items-center gap-space-lg p-space-md rounded-lg bg-surface-container/60 border border-white/[0.04]">
+                <!-- Radial SVG Meter -->
+                <div class="relative w-16 h-16 flex items-center justify-center flex-shrink-0">
+                  <svg class="w-full h-full transform -rotate-90" viewBox="0 0 36 36">
+                    <path class="text-surface-container-highest" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="currentColor" stroke-width="3.5"></path>
+                    <path id="radial-ctx-path" class="text-secondary transition-all duration-300" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="currentColor" stroke-dasharray="0, 100" stroke-linecap="round" stroke-width="3.5"></path>
+                  </svg>
+                  <span id="radial-ctx-label" class="absolute font-label-md text-label-md text-on-surface font-bold">—</span>
+                </div>
+
+                <!-- Context Distribution Numbers -->
+                <div class="flex flex-col gap-space-xs flex-grow min-w-0">
+                  <div class="flex justify-between items-baseline">
+                    <span class="font-body-sm text-body-sm text-on-surface-variant">Active Allocation</span>
+                    <span id="ctx-tokens-label" class="font-label-md text-label-md text-on-surface font-semibold">—</span>
+                  </div>
+                  <div class="w-full h-1.5 rounded-full bg-surface-container-lowest overflow-hidden">
+                    <div id="ctx-linear-bar" class="h-full bg-secondary rounded-full transition-all duration-300" style="width: 0%;"></div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- Prefix Cache -->
+            <section id="cache-section" class="w-full rounded-xl bg-surface-container-low/70 backdrop-blur-xl p-space-lg shadow-md flex flex-col gap-space-md border border-white/[0.06]">
+              <div class="flex items-center justify-between">
+                <div class="flex items-center gap-space-sm">
+                  <span class="material-symbols-outlined text-tertiary text-[18px]">bolt</span>
+                  <span class="font-headline-md text-headline-md text-on-surface">Prefix Cache</span>
+                </div>
+                <span id="cache-hit-chip" class="font-label-sm text-label-sm px-space-md py-[2px] rounded-full bg-secondary-container/20 text-secondary font-medium">
+                  —
+                </span>
+              </div>
+
+              <!-- The cache the server published, in the order it published it. -->
+              <div id="cache-cards" class="grid grid-cols-3 gap-space-sm"></div>
+            </section>
+
+            <!-- Two-Tier Cache Allocation Tiers (Unified Metal Pool) -->
+            <section id="tiers-section" class="w-full rounded-xl bg-surface-container-low/70 backdrop-blur-xl p-space-lg shadow-md flex flex-col gap-space-md border border-white/[0.06]">
+              <div class="flex items-center justify-between">
+                <div class="flex items-center gap-space-sm">
+                  <span class="material-symbols-outlined text-primary text-[18px]">layers</span>
+                  <span class="font-headline-md text-headline-md text-on-surface">Cache Allocation Tiers</span>
+                </div>
+                <span class="font-label-sm text-label-sm text-outline">Unified Metal Pool</span>
+              </div>
+
+              <!-- DRAM Tier -->
+              <div class="flex flex-col gap-space-xs">
+                <div class="flex justify-between items-center font-label-sm text-label-sm">
+                  <span class="text-on-surface">Warm RAM (DRAM)</span>
+                  <span id="tier-dram-label" data-card="cache.warm_bytes" class="text-secondary font-medium">—</span>
+                </div>
+                <span id="tier-dram-reason" data-card-reason="cache.warm_bytes" class="text-[10px] text-outline"></span>
+              </div>
+
+              <!-- NVMe Pagefile Tier -->
+              <div class="flex flex-col gap-space-xs">
+                <div class="flex justify-between items-center font-label-sm text-label-sm">
+                  <span class="text-on-surface">Cold NVMe Pagefile</span>
+                  <span id="tier-nvme-label" data-card="cache.ssd_bytes" class="text-primary font-medium">—</span>
+                </div>
+                <span id="tier-nvme-reason" data-card-reason="cache.ssd_bytes" class="text-[10px] text-outline"></span>
+              </div>
+
+              <div class="flex items-center justify-between pt-space-xs font-label-sm text-label-sm text-outline-variant">
+                <span id="tier-cache-path">Cache Path: —</span>
+              </div>
+            </section>
+          </div>
+        </div>
+
+        <!-- Recent Requests -->
+        <section class="w-full rounded-xl bg-surface-container-low/70 backdrop-blur-xl p-space-lg shadow-md flex flex-col gap-space-md mb-space-md border border-white/[0.06]">
+          <div class="flex items-center justify-between flex-wrap gap-space-md">
+            <div class="flex items-center gap-space-sm">
+              <span class="material-symbols-outlined text-primary text-[18px]">terminal</span>
+              <span class="font-headline-md text-headline-md text-on-surface">Recent Requests</span>
+              <span class="font-label-sm text-label-sm px-space-xs py-[1px] rounded bg-surface-container-high text-on-surface-variant">Last 10 turns</span>
+            </div>
+            <div class="flex items-center gap-space-md">
+              <div class="flex items-center gap-space-xs bg-surface-container-high/60 px-space-md py-[3px] rounded-lg border border-white/[0.04]">
+                <span class="material-symbols-outlined text-outline text-[14px]">filter_list</span>
+                <select id="req-filter-select" onchange="renderRecentRequestsTable()" class="bg-transparent font-label-sm text-label-sm text-on-surface-variant focus:outline-none cursor-pointer">
+                  <option value="all" class="bg-surface-container">All requests</option>
+                  <option value="success" class="bg-surface-container">Succeeded</option>
+                  <option value="error" class="bg-surface-container">Failed</option>
+                </select>
+              </div>
+              <button onclick="exportRequestsJson()" class="px-space-md py-[3px] rounded-lg bg-surface-container-high hover:bg-surface-bright text-on-surface font-label-sm text-label-sm flex items-center gap-space-xs transition-colors border border-white/[0.04]" type="button">
+                <span class="material-symbols-outlined text-[14px]">download</span>
+                <span>Export JSON</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Density Table -->
+          <div class="w-full overflow-x-auto rounded-lg border border-white/[0.04]">
+            <table class="w-full text-left font-label-sm text-label-sm border-collapse">
+              <thead>
+                <tr class="text-outline bg-surface-container-lowest/80 border-b border-white/[0.06]">
+                  <th class="py-space-sm px-space-md font-medium">Timestamp</th>
+                  <th class="py-space-sm px-space-md font-medium">Request ID</th>
+                  <th class="py-space-sm px-space-md font-medium">Model</th>
+                  <th class="py-space-sm px-space-md font-medium">Prompt / Gen</th>
+                  <th class="py-space-sm px-space-md font-medium">Tokens/sec</th>
+                  <th class="py-space-sm px-space-md font-medium">TTFT</th>
+                  <th class="py-space-sm px-space-md font-medium">Cache Tier</th>
+                  <th class="py-space-sm px-space-md font-medium text-right">Status</th>
+                </tr>
+              </thead>
+              <tbody id="req-table-body" class="divide-y divide-white/[0.02] text-on-surface">
+                <!-- Dynamically populated or empty fallback -->
+                <tr class="hover:bg-surface-container/50 transition-colors">
+                  <td colspan="8" class="py-6 text-center text-outline">Listening for incoming chat completion requests...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <!-- TAB 2: MODELS CATALOGUE -->
+    <div id="view-models" class="tab-pane hidden flex-col w-full px-margin py-space-md gap-space-lg">
+      <div class="flex items-center justify-between pb-space-sm border-b border-white/[0.06]">
+        <div class="flex items-center gap-space-sm">
+          <svg class="w-5 h-5 text-primary shrink-0" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M2.00 11.43C2.00 14.20 3.90 16.04 6.75 16.04C9.56 16.04 11.43 14.38 11.43 11.91C11.43 10.86 11.06 10.03 10.46 9.51C10.18 9.28 10.01 9.19 9.75 9.19C9.39 9.19 9.16 9.41 9.16 9.72C9.16 10.11 9.38 10.20 9.72 10.52C10.05 10.83 10.23 11.31 10.23 11.88C10.23 13.64 8.84 14.82 6.77 14.82C4.64 14.82 3.22 13.46 3.22 11.42C3.22 10.24 3.82 9.14 4.79 8.51L4.18 7.45C2.83 8.30 2.00 9.81 2.00 11.43ZM4.05 7.46C4.05 9.16 5.23 10.37 7.09 10.37C7.42 10.37 7.70 10.09 7.70 9.76C7.70 9.42 7.42 9.15 7.09 9.15C5.96 9.15 5.27 8.44 5.27 7.46C5.27 6.38 6.17 5.63 7.35 5.63C7.91 5.63 8.51 5.80 9.04 6.17L9.77 5.18C9.01 4.65 8.16 4.41 7.36 4.41C5.52 4.41 4.05 5.66 4.05 7.46ZM8.10 7.26C8.09 7.66 8.35 7.92 8.71 7.92C9.04 7.92 9.30 7.71 9.31 7.32C9.37 5.87 10.41 4.82 11.89 4.82C12.78 4.82 13.56 5.28 13.86 5.98C13.92 6.09 14.00 6.10 14.15 6.06C14.41 5.99 14.68 5.96 14.96 5.96C16.32 5.97 17.61 6.99 17.61 8.63C17.61 12.20 12.59 11.71 12.59 15.18C12.59 16.84 13.90 17.88 15.61 17.88C15.79 17.88 15.99 17.87 16.19 17.86C16.36 19.15 17.17 20.41 18.49 20.41C20.39 20.41 21.32 18.10 21.32 15.84C21.32 14.87 21.27 14.20 21.20 13.58L19.97 13.93C20.04 14.53 20.10 15.10 20.10 15.83C20.10 17.68 19.40 19.18 18.49 19.18C17.55 19.18 17.16 17.93 17.16 16.93C17.16 16.85 17.12 16.80 17.02 16.80C16.80 16.80 16.52 16.80 16.32 16.80C14.81 16.80 13.82 16.33 13.82 15.16C13.82 12.39 18.83 13.01 18.83 8.63C18.83 6.29 17.10 4.73 15.12 4.73C14.97 4.73 14.75 4.76 14.54 4.81C13.93 4.05 12.95 3.59 11.90 3.59C9.74 3.59 8.19 5.10 8.10 7.26ZM17.04 14.71C17.04 15.05 17.30 15.30 17.65 15.32C20.26 15.49 22.00 13.96 22.00 11.49C22.00 9.47 20.56 7.93 18.40 7.64L18.22 8.86C19.75 8.88 20.78 9.93 20.78 11.49C20.78 13.20 19.52 14.25 17.65 14.11C17.30 14.08 17.04 14.38 17.04 14.71ZM13.13 15.70C12.68 15.86 12.16 15.94 11.66 15.94C10.38 15.94 9.08 15.44 8.58 14.66L7.56 15.49C8.36 16.48 9.81 17.16 11.53 17.16C12.16 17.16 12.86 17.07 13.55 16.87ZM10.69 10.34L11.10 11.49C13.02 11.12 13.88 9.92 13.87 8.15C13.87 7.81 13.60 7.53 13.26 7.53C12.92 7.53 12.65 7.81 12.65 8.15C12.65 9.39 12.12 10.13 10.69 10.34Z" />
+          </svg>
+          <h2 class="font-headline-lg text-headline-lg text-on-surface">Model Catalogue (~/.qwg/models)</h2>
+        </div>
+        <button onclick="loadDiscoveredModels()" class="px-space-md py-space-xs rounded-lg bg-surface-container-high hover:bg-surface-bright text-on-surface text-label-md flex items-center gap-1.5 transition-colors">
+          <span class="material-symbols-outlined text-[15px]">refresh</span>
+          <span>Refresh</span>
+        </button>
+      </div>
+      <div id="models-cards-grid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-space-md">
+        <!-- Discovered model cards populated via JS -->
+      </div>
+    </div>
+
+
+  </main>
+
+  <!-- Sticky Bottom Footer -->
+  <footer class="w-full bg-surface-container-lowest/90 backdrop-blur-md border-t border-white/[0.06]">
+    <div class="h-9 w-full px-margin flex items-center justify-between">
+      <div class="flex items-center gap-space-md font-label-sm text-label-sm text-on-surface-variant">
+        <div class="flex items-center gap-space-xs">
+          <span class="w-1.5 h-1.5 rounded-full bg-secondary"></span>
+          <span id="ftr-metal-version">—</span>
+        </div>
+        <span class="text-outline-variant">•</span>
+        <span id="ftr-endpoint">Endpoint: —</span>
+        <span class="text-outline-variant">•</span>
+        <span id="ftr-context-budget">Context: —</span>
+      </div>
+      <div class="flex items-center gap-space-md font-label-sm text-label-sm text-on-surface-variant">
+        <div class="flex items-center gap-space-xs">
+          <span>TTFT:</span>
+          <span id="ftr-ttft" data-card="latency.ttft_ms" class="text-on-surface font-label-md text-label-md">—</span>
+        </div>
+        <span class="text-outline-variant">•</span>
+        <div class="flex items-center gap-space-xs">
+          <span>Decode:</span>
+          <span id="ftr-tok-latency" data-card="throughput.display_decode_tokens_per_sec" class="text-on-surface font-label-md text-label-md">—</span>
+        </div>
+        <span class="text-outline-variant">•</span>
+        <span id="ftr-status-ready" class="text-secondary">Ready for prompts</span>
+      </div>
+    </div>
+  </footer>
+
+  <!-- MODAL: SWITCH MODEL -->
+  <div id="modal-switch-model" class="fixed inset-0 z-50 hidden bg-black/60 backdrop-blur-md flex items-center justify-center p-4">
+    <div class="bg-surface-container-low border border-white/[0.08] rounded-xl max-w-md w-full p-space-lg shadow-2xl flex flex-col gap-space-md">
+      <div class="flex items-center justify-between pb-2 border-b border-white/[0.06]">
+        <h3 class="font-headline-md text-headline-md text-on-surface">Switch Active Model</h3>
+        <button onclick="closeSwitchModelModal()" class="text-outline hover:text-on-surface">
+          <span class="material-symbols-outlined text-[18px]">close</span>
+        </button>
+      </div>
+      <p class="font-body-sm text-body-sm text-on-surface-variant">Select an installed model from <code>~/.qwg/models</code> to switch inference context:</p>
+      <div id="modal-model-options" class="flex flex-col gap-2 max-h-60 overflow-y-auto">
+        <!-- Populated via JS -->
+      </div>
+      <div class="flex justify-end gap-2 pt-2 border-t border-white/[0.06]">
+        <button onclick="closeSwitchModelModal()" class="px-space-md py-space-xs rounded-lg bg-surface-container-high text-on-surface text-label-sm">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- CLIENT CONTROLLER SCRIPT -->
+  <script>
+    const API_BASE = window.location.origin || "http://127.0.0.1:8080";
+    let isConnected = false;
+    let publishedModel = null;
+    let modelGeneration = 0;
+    let discoveredModelsList = [];
+    let metricsEventSource = null;
+
+    // --- TAB SWITCHING ---
+    function switchTab(tabId) {
+      document.querySelectorAll(".tab-pane").forEach(el => el.classList.add("hidden"));
+      const target = document.getElementById(`view-${tabId}`);
+      if (target) target.classList.remove("hidden");
+
+      // Update Nav pill styles
+      ["monitor", "models"].forEach(t => {
+        const btn = document.getElementById(`nav-tab-${t}`);
+        if (!btn) return;
+        if (t === tabId) {
+          btn.className = "px-space-md py-space-xs transition-colors bg-surface-container-high text-on-surface font-headline-sm rounded-lg flex items-center gap-1.5";
+        } else {
+          btn.className = "px-space-md py-space-xs font-body-md text-body-md text-on-surface-variant hover:text-on-surface hover:bg-surface-container transition-colors rounded-lg flex items-center gap-1.5";
+        }
+      });
+
+      if (tabId === "models") loadDiscoveredModels();
+    }
+
+    // --- SPARKLINE WAVEFORM RENDERER ---
+    /// Draws the published trace. The client keeps no history of its
+    /// own: the server measured the samples, gaps and all. The series
+    /// are drawn in the order the server published them; the first is
+    /// amber, the second blue, and the legend names both.
+    function updateSparkline(firstSeries, secondSeries) {
+      const first = Array.isArray(firstSeries) ? firstSeries : [];
+      const second = Array.isArray(secondSeries) ? secondSeries : [];
+
+      const all = [...first, ...second].filter(v => v !== null && v !== undefined);
+      // The same scale the MenuBar draws: a floor under the data and
+      // some headroom above it, so the two renderers read alike.
+      const maxVal = Math.max(40, ...all) * 1.15;
+
+      function makePathGeo(history) {
+        // The runs of samples that exist, split by the gaps between them.
+        const runs = [];
+        let current = [];
+        const span = Math.max(1, history.length - 1);
+        history.forEach((val, idx) => {
+          if (val === null || val === undefined) {
+            if (current.length > 0) runs.push(current);
+            current = [];
+            return;
+          }
+          const x = (idx / span) * 600;
+          const y = 95 - (val / maxVal) * 85;
+          current.push({ x, y });
+        });
+        if (current.length > 0) runs.push(current);
+
+        const pathFor = (points) => {
+          if (points.length === 0) return "";
+          let d = `M ${points[0].x.toFixed(1)},${points[0].y.toFixed(1)}`;
+          for (let i = 1; i < points.length; i++) {
+            const prev = points[i - 1];
+            const curr = points[i];
+            const cpX = (prev.x + curr.x) / 2;
+            d += ` Q ${cpX.toFixed(1)},${prev.y.toFixed(1)} ${curr.x.toFixed(1)},${curr.y.toFixed(1)}`;
+          }
+          return d;
+        };
+
+        const paths = runs.map(pathFor).filter(s => s.length > 0);
+        const d = paths.join(" ");
+        const areaD = paths.map(p => `${p} L 600,100 L 0,100 Z`).join(" ");
+        const lastPoint = history.reduce((acc, val, idx) => {
+          if (val === null || val === undefined) return acc;
+          const x = (idx / Math.max(1, history.length - 1)) * 600;
+          const y = 95 - (val / maxVal) * 85;
+          return { x, y };
+        }, null);
+        return { d, areaD, lastPt: lastPoint };
+      }
+
+      /// Draws one series into its three elements.
+      function drawSeries(geometry, ids) {
+        const path = document.getElementById(ids.path);
+        const area = document.getElementById(ids.area);
+        const dot = document.getElementById(ids.dot);
+        if (path) path.setAttribute("d", geometry.d);
+        if (area) area.setAttribute("d", geometry.areaD);
+        if (dot) {
+          if (geometry.lastPt) {
+            dot.setAttribute("cx", geometry.lastPt.x.toFixed(1));
+            dot.setAttribute("cy", geometry.lastPt.y.toFixed(1));
+            dot.classList.remove("opacity-0");
+          } else {
+            dot.classList.add("opacity-0");
+          }
+        }
+      }
+
+      drawSeries(makePathGeo(first), {
+        path: "sparkline-series-a-path",
+        area: "sparkline-series-a-area",
+        dot: "sparkline-series-a-dot"
+      });
+      drawSeries(makePathGeo(second), {
+        path: "sparkline-series-b-path",
+        area: "sparkline-series-b-area",
+        dot: "sparkline-series-b-dot"
+      });
+    }
+
+    // --- FETCH ENGINE INFO ---
+    /// The engine-info answer carries the server's version and the
+    /// hardware facts. It is not a telemetry source: every reading the
+    /// dashboard shows comes from the published model. The version and
+    /// the endpoint are the server's own, not a measurement.
+    async function fetchEngineInfo() {
+      try {
+        const res = await fetch(`${API_BASE}/v1/engine/info`);
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const data = await res.json();
+
+        if (data.version) {
+          document.getElementById("header-version").textContent = data.version.startsWith("v") ? data.version : `v${data.version}`;
+        }
+        document.getElementById("ftr-endpoint").textContent = `Endpoint: ${API_BASE}`;
+
+        // The bandwidth is published only when the server measured it.
+        const bandwidth = data.hardware?.dramBwGBs;
+        const bwEl = document.getElementById("mem-dram-bw");
+        const bwNote = document.getElementById("mem-dram-bw-note");
+        if (bwEl) {
+          bwEl.textContent = typeof bandwidth === "number" ? `${Math.round(bandwidth)} GB/s` : "—";
+          if (bwNote) {
+            bwNote.textContent = typeof bandwidth === "number"
+              ? "Peak read bandwidth, as the server reports it."
+              : "Not measured on this host.";
+          }
+        }
+      } catch (err) {
+        console.warn("fetchEngineInfo error:", err);
+      }
+    }
+
+    // --- STATUS INDICATORS ---
+    /// What the page says about the engine. Two axes, both published:
+    /// the phase the server reported (loaded, loading, unloading,
+    /// failed, unloaded) and what the engine is doing (prefill, decode,
+    /// idle). A phase nobody published is unknown — never "stopped",
+    /// never "unloaded".
+    function updateStatusIndicators(lifecyclePhase, generationPhase, detail) {
+      const daemonPulse = document.getElementById("daemon-pulse");
+      const daemonStatus = document.getElementById("daemon-status");
+      const heroDot = document.getElementById("hero-status-dot");
+      const heroLabel = document.getElementById("hero-endpoint-label");
+      const ftrStatus = document.getElementById("ftr-status-ready");
+
+      const say = (dot, pulse, hero, heroText, footer, ink) => {
+        if (daemonPulse) daemonPulse.className = pulse;
+        if (daemonStatus) { daemonStatus.textContent = dot; daemonStatus.className = `font-label-sm text-label-sm ${ink}`; }
+        if (heroDot) heroDot.className = hero;
+        if (heroLabel) heroLabel.textContent = heroText;
+        if (ftrStatus) { ftrStatus.textContent = footer; ftrStatus.className = ink; }
+      };
+
+      if (!isConnected) {
+        say("Disconnected",
+            "w-1.5 h-1.5 rounded-full bg-error shadow-[0_0_8px_rgba(255,180,171,0.6)]",
+            "w-2 h-2 rounded-full bg-error shadow-[0_0_8px_rgba(255,180,171,0.8)]",
+            "Disconnected • No response",
+            "No response from the server", "text-error");
+        return;
+      }
+
+      if (lifecyclePhase === "failed") {
+        // A failure is a failure, and the server's reason is shown.
+        say("Failed",
+            "w-1.5 h-1.5 rounded-full bg-error shadow-[0_0_8px_rgba(255,180,171,0.6)]",
+            "w-2 h-2 rounded-full bg-error shadow-[0_0_8px_rgba(255,180,171,0.8)]",
+            detail ? `Failed • ${detail}` : "Failed",
+            detail || "The engine failed", "text-error");
+        return;
+      }
+
+      if (lifecyclePhase === "loading") {
+        say("Loading",
+            "w-1.5 h-1.5 rounded-full bg-tertiary shadow-[0_0_8px_rgba(255,184,104,0.9)] animate-ping",
+            "w-2 h-2 rounded-full bg-tertiary shadow-[0_0_8px_rgba(255,184,104,0.9)] animate-pulse",
+            "Loading model",
+            "Loading model weights…", "text-tertiary");
+        return;
+      }
+
+      if (lifecyclePhase === "unloading") {
+        say("Unloading",
+            "w-1.5 h-1.5 rounded-full bg-tertiary shadow-[0_0_8px_rgba(255,184,104,0.9)] animate-ping",
+            "w-2 h-2 rounded-full bg-tertiary shadow-[0_0_8px_rgba(255,184,104,0.9)] animate-pulse",
+            "Unloading model",
+            "Unloading model weights…", "text-tertiary");
+        return;
+      }
+
+      if (lifecyclePhase === "unloaded") {
+        say("Model Unloaded",
+            "w-1.5 h-1.5 rounded-full bg-tertiary shadow-[0_0_8px_rgba(255,184,104,0.6)]",
+            "w-2 h-2 rounded-full bg-tertiary shadow-[0_0_8px_rgba(255,184,104,0.8)]",
+            "Model Unloaded (Weights freed)",
+            "Weights unloaded • Waiting for model load", "text-tertiary");
+        return;
+      }
+
+      if (lifecyclePhase === "loaded") {
+        if (generationPhase === "prefill") {
+          say("Prefilling Prompt",
+              "w-1.5 h-1.5 rounded-full bg-tertiary shadow-[0_0_8px_rgba(255,184,104,0.9)] animate-ping",
+              "w-2 h-2 rounded-full bg-tertiary shadow-[0_0_8px_rgba(255,184,104,0.9)] animate-pulse",
+              "Running • Prefill Prompt Burst",
+              "Processing prompt prefill...", "text-tertiary");
+        } else if (generationPhase === "decode") {
+          say("Streaming Completion",
+              "w-1.5 h-1.5 rounded-full bg-primary shadow-[0_0_8px_rgba(62,144,255,0.9)] animate-ping",
+              "w-2 h-2 rounded-full bg-primary shadow-[0_0_8px_rgba(62,144,255,0.9)] animate-pulse",
+              "Running • Generating Stream",
+              "Generating tokens...", "text-primary");
+        } else if (generationPhase === "idle") {
+          say("Daemon Running",
+              "w-1.5 h-1.5 rounded-full bg-secondary shadow-[0_0_8px_rgba(71,226,102,0.6)] animate-pulse",
+              "w-2 h-2 rounded-full bg-secondary shadow-[0_0_8px_rgba(71,226,102,0.8)]",
+              "Connected • Idle (Ready)",
+              "Ready for prompts", "text-secondary");
+        } else {
+          say("State Unknown",
+              "w-1.5 h-1.5 rounded-full bg-outline",
+              "w-2 h-2 rounded-full bg-outline",
+              "Connected • State Unknown",
+              "Engine state unknown", "text-outline");
+        }
+        return;
+      }
+
+      // The phase was never published. Unknown is not unloaded, and it
+      // is not idle either.
+      say("State Unknown",
+          "w-1.5 h-1.5 rounded-full bg-outline",
+          "w-2 h-2 rounded-full bg-outline",
+          "Connected • State Unknown",
+          "Engine state unknown", "text-outline");
+    }
+
+    // --- SSE METRICS STREAM ---
+    /// The published model, fetched once. The stream pushes the same
+    /// thing; a page that opens before the stream lands still draws it.
+    async function fetchDashboard() {
+      const startedAt = modelGeneration;
+      try {
+        const res = await fetch(`${API_BASE}/v1/dashboard`);
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const model = await res.json();
+        // The stream pushes the model twice a second. If it published
+        // one while this fetch was in flight, the newer one wins and
+        // this answer is dropped.
+        if (modelGeneration !== startedAt) return;
+        renderDashboard(model);
+      } catch (err) {
+        console.warn("fetchDashboard error:", err);
+        // The last values described the past. They are cleared, not
+        // frozen: a stale number is not a current one. A model the
+        // stream published while this fetch was failing is newer, so
+        // it is not wiped.
+        if (modelGeneration !== startedAt) return;
+        renderDisconnected();
+      }
+    }
+
+    function initMetricsStream() {
+      if (metricsEventSource) metricsEventSource.close();
+      // The published model, pushed as it changes.
+      metricsEventSource = new EventSource(`${API_BASE}/v1/dashboard/stream`);
+
+      metricsEventSource.onmessage = (event) => {
+        try {
+          renderDashboard(JSON.parse(event.data));
+        } catch (e) {
+          console.error("Error parsing dashboard stream:", e);
+        }
+      };
+
+      metricsEventSource.onerror = () => {
+        metricsEventSource.close();
+        renderDisconnected();
+        setTimeout(initMetricsStream, 3000);
+      };
+    }
+
+    // --- THE PUBLISHED MODEL ---
+    // The dashboard draws the cards the server published. It computes no
+    // rate of its own, formats no value of its own, and keeps no copy of
+    // what the server would have said. Any client-side timing is a
+    // browser round trip measurement, never an engine card.
+
+    /// The card a row shows. The row says which card it is; the script
+    /// does not know what a card is called.
+    function cardFor(model, id) {
+      return (model.cards || []).find((c) => c.id === id) || null;
+    }
+
+    /// The text a card shows: its published value, or a dash and the
+    /// reason it has none.
+    function cardText(card) {
+      if (!card) return "—";
+      if (card.value === null || card.value === undefined) return "—";
+      return card.unit ? `${card.value} ${card.unit}` : `${card.value}`;
+    }
+
+    /// Why a card has no value, or how old a value is. A dash without a
+    /// reason is a shrug.
+    function cardReason(card) {
+      if (!card) return "";
+      if (card.value === null || card.value === undefined) return card.reason || "not measured";
+      // A reading that is a word needs its reason: "from cache" says
+      // nothing without the sentence that explains it.
+      if (card.number === null || card.number === undefined) return card.reason || "";
+      if (card.isStale) return ageText(card) || "stale";
+      return "";
+    }
+
+    /// How old a reading is, as the MenuBar says it.
+    function ageText(card) {
+      if (!card || typeof card.age !== "number") return "";
+      if (card.age < 60) return `${Math.floor(card.age)} s ago`;
+      return `${Math.floor(card.age / 60)} min ago`;
+    }
+
+    /// Writes every card into the rows that asked for it.
+    function renderCards(model) {
+      document.querySelectorAll("[data-card]").forEach((el) => {
+        const card = cardFor(model, el.getAttribute("data-card"));
+        const text = cardText(card);
+        if (el.dataset.cardUnit === "separate") {
+          el.textContent = card && card.value !== null && card.value !== undefined ? card.value : "—";
+        } else {
+          el.textContent = text;
+        }
+      });
+
+      // The reason a card has no value, and the age of one that is old.
+      document.querySelectorAll("[data-card-reason]").forEach((el) => {
+        const card = cardFor(model, el.getAttribute("data-card-reason"));
+        el.textContent = cardReason(card);
+      });
+    }
+
+    /// The cards that carry a trace are the velocity cards. The card
+    /// list decides which they are and in what order.
+    function renderVelocityCards(model) {
+      const host = document.getElementById("velocity-cards");
+      const cards = groupCards(model, "throughput");
+      if (host) {
+        host.innerHTML = "";
+        for (const card of cards) {
+          const node = document.createElement("div");
+          node.className = "p-space-md rounded-lg bg-surface-container/60 flex flex-col gap-space-xs border border-white/[0.04] transition-all";
+          node.innerHTML = `
+            <div class="flex items-center justify-between">
+              <span class="font-label-sm text-label-sm text-on-surface-variant">${card.title || ""}</span>
+            </div>
+            <span class="font-telemetry-counter text-telemetry-counter font-bold">${card.value === null || card.value === undefined ? "—" : card.value}</span>
+            <div class="flex items-center justify-between">
+              <span class="text-on-surface-variant text-[10px]">${card.unit || ""}</span>
+              <span class="font-mono text-outline text-[10px]">${cardReason(card)}</span>
+            </div>`;
+          host.appendChild(node);
+        }
+      }
+      // The trace behind the cards: the published series, gaps and all.
+      // A card keeps the slot it was published in, so a series never
+      // changes colour because the other one has no samples.
+      const slots = cards.slice(0, 2);
+      const first = slots[0] && hasSample(slots[0]) ? slots[0].series : null;
+      const second = slots[1] && hasSample(slots[1]) ? slots[1].series : null;
+      updateSparkline(first, second);
+      renderTraceLegend(slots);
+    }
+
+    /// A series with a sample in it. A series of nothing but gaps is
+    /// not a series, and the legend does not name it.
+    function hasSample(card) {
+      return Array.isArray(card.series)
+        && card.series.some((value) => value !== null && value !== undefined);
+    }
+
+    /// The legend names the series the server published, in the slots
+    /// they were published in. A series with no samples is not named:
+    /// there would be nothing to point at.
+    function renderTraceLegend(slots) {
+      const host = document.getElementById("trace-legend");
+      if (!host) return;
+      host.innerHTML = "";
+      const dots = ["bg-tertiary", "bg-primary-container"];
+      const inks = ["text-tertiary", "text-primary"];
+      slots.slice(0, 2).forEach((card, index) => {
+        if (!card || !hasSample(card)) return;
+        const node = document.createElement("span");
+        node.className = `flex items-center gap-1 text-[11px] ${inks[index]}`;
+        node.innerHTML = `
+          <span class="w-2 h-2 rounded-full ${dots[index]} inline-block"></span>
+          <span>${card.title || ""}</span>`;
+        host.appendChild(node);
+      });
+    }
+
+    /// The actions the model can perform. An action the model cannot
+    /// perform is not drawn.
+    function renderActions(model) {
+      const actions = model.actions || [];
+      const byId = new Map(actions.map((a) => [a.id, a]));
+      document.querySelectorAll("[data-action]").forEach((el) => {
+        const action = byId.get(el.getAttribute("data-action"));
+        el.hidden = !action;
+        if (!action) return;
+        el.disabled = !action.isEnabled;
+        // The reason belongs to this model. A model without a reason
+        // does not keep the last one's.
+        if (action.reason) el.title = action.reason;
+        else el.removeAttribute("title");
+        const label = el.querySelector("[data-action-label]");
+        if (label && action.title) label.textContent = action.title;
+      });
+    }
+
+    /// The engine's phase, as the server published it.
+    function renderLifecycle(model) {
+      const lifecycle = model.lifecycle || {};
+      const phase = lifecycle.phase || null;
+      const detail = lifecycle.detail || null;
+      const generation = model.generation || null;
+      isConnected = true;
+      updateStatusIndicators(phase, generation, detail);
+      const dot = document.getElementById("vel-status-dot");
+      if (dot) {
+        dot.className = phase === "loaded" ? "w-1.5 h-1.5 rounded-full bg-secondary"
+          : phase === "failed" ? "w-1.5 h-1.5 rounded-full bg-error"
+          : "w-1.5 h-1.5 rounded-full bg-outline";
+      }
+      const label = document.getElementById("vel-status-text");
+      if (label) label.textContent = phase || "unknown";
+      // The trace is live when the engine is working, and idle when it
+      // is not. The badge says which.
+      const liveText = document.getElementById("sparkline-live-text");
+      if (liveText) {
+        liveText.textContent = generation === "prefill" || generation === "decode" ? "Live" : "Idle";
+      }
+    }
+
+    /// The number a knob carries. A knob is a typed value, so the
+    /// number is found in it rather than assumed.
+    function knobNumber(knob) {
+      if (!knob) return null;
+      if (typeof knob === "number") return knob;
+      for (const key of Object.keys(knob)) {
+        const value = knob[key];
+        if (typeof value === "number") return value;
+      }
+      return null;
+    }
+
+    /// The string a knob carries, for the same reason.
+    function knobString(model, id) {
+      const knob = (model.knobs || {})[id];
+      if (!knob || typeof knob !== "object") return null;
+      const value = knob.string;
+      return typeof value === "string" ? value : null;
+    }
+
+    /// The group a card belongs to: the first part of its id. The rule
+    /// is a rule, not a list of metrics.
+    function cardGroup(card) {
+      return String(card.id || "").split(".")[0];
+    }
+
+    /// A cell for one published reading: its value, and the reason it
+    /// has none.
+    function metricCellNode(card, accent) {
+      const node = document.createElement("div");
+      node.className = "p-space-md rounded-lg bg-surface-container/60 flex flex-col gap-space-xs border border-white/[0.04]";
+      const value = card.value === null || card.value === undefined ? "—" : `${card.value}${card.unit ? ` ${card.unit}` : ""}`;
+      // A bar is drawn for a percentage, and only for a percentage: a
+      // reading that is not one has no share to show. An absent reading
+      // has no width at all — a zero-width bar would look like a
+      // measured zero.
+      const percent = card.unit === "%" && typeof card.number === "number" ? card.number : null;
+      node.innerHTML = `
+        <div class="flex justify-between items-center">
+          <span class="font-body-sm text-body-sm text-on-surface-variant">${card.title || ""}</span>
+          <span class="font-label-md text-label-md font-bold ${accent}">${value}</span>
+        </div>
+        ${percent === null ? "" : `
+        <div class="w-full h-2 rounded-full bg-surface-container-lowest overflow-hidden">
+          <div class="h-full rounded-full transition-all duration-300 bg-current ${accent}" style="width: ${Math.min(100, Math.max(0, percent))}%"></div>
+        </div>`}
+        <div class="flex justify-between items-center font-label-sm text-label-sm text-outline">
+          <span>${cardReason(card)}</span>
+        </div>`;
+      return node;
+    }
+
+    /// The readings of a group, in the order the model published them.
+    function groupCards(model, group) {
+      return (model.cards || []).filter((c) => cardGroup(c) === group);
+    }
+
+    /// The hardware readings: the engine's GPU, the device's GPU, the
+    /// CPU, the memory and the pressure.
+    function renderHardwareCards(model) {
+      const host = document.getElementById("hardware-cards");
+      if (!host) return;
+      const cards = [...groupCards(model, "gpu"), ...groupCards(model, "hardware")];
+      host.innerHTML = "";
+      for (const card of cards) {
+        host.appendChild(metricCellNode(card, cardGroup(card) === "gpu" ? "text-primary" : "text-secondary"));
+      }
+    }
+
+    /// The cache the server published, and the sections that hold it.
+    /// A model with no prefix cache has no cache cards, and no cache
+    /// section either: the dashboard does not describe a feature the
+    /// model does not have.
+    function renderCacheSections(model) {
+      const cards = groupCards(model, "cache");
+      const host = document.getElementById("cache-cards");
+      if (host) {
+        host.innerHTML = "";
+        for (const card of cards) {
+          const node = document.createElement("div");
+          node.className = "p-space-sm rounded bg-surface-container/60 flex flex-col items-center border border-white/[0.04]";
+          const value = card.value === null || card.value === undefined ? "—" : `${card.value} ${card.unit || ""}`;
+          node.innerHTML = `
+            <span class="font-label-sm text-label-sm text-secondary">${card.title || ""}</span>
+            <span class="font-label-md text-label-md text-on-surface font-bold">${value}</span>
+            <span class="font-mono text-[10px] text-outline text-center">${cardReason(card)}</span>`;
+          host.appendChild(node);
+        }
+      }
+      for (const id of ["cache-section", "tiers-section"]) {
+        const section = document.getElementById(id);
+        if (section) section.hidden = cards.length === 0;
+      }
+      // The chip: the tokens the engine reused.
+      const reused = cards.find((c) => String(c.unit || "").toLowerCase() === "tok");
+      const chip = document.getElementById("cache-hit-chip");
+      if (chip) {
+        chip.textContent = reused && reused.value !== null && reused.value !== undefined
+          ? `${reused.value} ${reused.unit || ""} reused` : "—";
+      }
+    }
+
+    /// The context window: the tokens the last turn used, and the
+    /// budget the engine runs with.
+    function renderContext(model) {
+      const card = (model.cards || []).find((c) => cardGroup(c) === "context");
+      const capacity = knobNumber((model.knobs && model.knobs.contextTokens) || null);
+      const active = card && typeof card.number === "number" ? card.number : null;
+      const label = document.getElementById("ctx-tokens-label");
+      if (label) {
+        label.textContent = active === null ? "—"
+          : `${active.toLocaleString()}${capacity === null ? " tok" : ` / ${capacity.toLocaleString()} tok`}`;
+      }
+      const chip = document.getElementById("ctx-used-chip");
+      const radialLabel = document.getElementById("radial-ctx-label");
+      const radial = document.getElementById("radial-ctx-path");
+      // The number is true even when it is over the budget: a context
+      // at 150 % of the budget is 150 %, not 100 %.
+      const percent = active !== null && capacity ? (active / capacity) * 100 : null;
+      if (chip) chip.textContent = percent === null ? "—" : `${Math.round(percent)}% Used`;
+      if (radialLabel) radialLabel.textContent = percent === null ? "—" : `${Math.round(percent)}%`;
+      // The dial and the bar are shapes: they cannot show more than
+      // the whole, so they stop at the edge.
+      const filled = percent === null ? 0 : Math.min(100, Math.max(0, percent));
+      if (radial) radial.setAttribute("stroke-dasharray", `${filled}, 100`);
+      const bar = document.getElementById("ctx-linear-bar");
+      if (bar) bar.style.width = `${filled}%`;
+    }
+
+    /// The header: the live rate and the engine's GPU.
+    /// The facts about the machine and the resident model, as the
+    /// server published them. A fact nobody established is absent.
+    function renderFacts(model) {
+      const facts = model.facts || {};
+      const metal = document.getElementById("ftr-metal-version");
+      if (metal) metal.textContent = facts.metalFamily || facts.gpuName || "—";
+      const cores = document.getElementById("chip-cores");
+      if (cores) cores.textContent = facts.hostLogicalCores ?? "—";
+      const gdn = document.getElementById("chip-gdn");
+      if (gdn) gdn.textContent = facts.gdnPrefillMode || "—";
+      const chip = document.getElementById("hw-chip-badge");
+      if (chip) chip.textContent = facts.gpuName || "—";
+      const contextKnob = knobNumber((model.knobs || {}).contextTokens || null);
+      const contextChip = document.getElementById("chip-context");
+      if (contextChip) {
+        contextChip.textContent = contextKnob === null ? "—" : `${Math.round(contextKnob / 1024)}k`;
+      }
+      const budget = document.getElementById("ftr-context-budget");
+      if (budget) {
+        budget.textContent = contextKnob === null ? "Context: —" : `Context: ${contextKnob.toLocaleString()} ctx`;
+      }
+
+      // The model the cards describe: the one that is resident.
+      const title = document.getElementById("hero-model-title");
+      if (title) {
+        title.innerHTML = model.modelId
+          ? (facts.quantization
+              ? `${model.modelId} <span class="text-outline-variant font-normal">(${facts.quantization})</span>`
+              : model.modelId)
+          : "—";
+      }
+      const badge = document.getElementById("hero-chip-badge");
+      if (badge) {
+        const parts = [facts.gpuName, facts.metalFamily].filter(Boolean);
+        badge.textContent = parts.length ? parts.join(" • ") : "—";
+      }
+
+      // The knobs the server published: what the engine runs with.
+      const kv = knobString(model, "kvMode");
+      const kvChip = document.getElementById("chip-kv-quant");
+      if (kvChip) kvChip.textContent = kv ? kv.toUpperCase() : "—";
+      const drafts = knobNumber((model.knobs || {}).mtpDrafts || null);
+      const backend = knobString(model, "mtpBackend");
+      const mtpChip = document.getElementById("chip-mtp");
+      if (mtpChip) {
+        mtpChip.textContent = drafts === null ? "—"
+          : (drafts > 0 ? `${drafts} drafts${backend ? ` (${backend})` : ""}` : "Off");
+      }
+      const cacheDir = knobString(model, "cacheDir");
+      const cachePath = document.getElementById("tier-cache-path");
+      if (cachePath) cachePath.textContent = cacheDir ? `Cache Path: ${cacheDir}` : "Cache Path: —";
+    }
+
+    /// How long ago the published model was computed. The client does
+    /// not sample; it says how old the server's sample is.
+    function renderModelAge(model) {
+      const el = document.getElementById("model-age");
+      if (!el) return;
+      const sampledAt = model.sampledAt ? Date.parse(model.sampledAt) : NaN;
+      if (Number.isNaN(sampledAt)) { el.textContent = "—"; return; }
+      const age = Math.max(0, (Date.now() - sampledAt) / 1000);
+      el.textContent = age < 1 ? "Updated just now" : `Updated ${age.toFixed(1)} s ago`;
+    }
+
+    /// The server is not answering. The last values described the past,
+    /// so every one of them is cleared rather than frozen in place: a
+    /// stale number is not a current one, and a stale trace is not a
+    /// live one.
+    function renderDisconnected() {
+      isConnected = false;
+      publishedModel = null;
+      document.querySelectorAll("[data-card]").forEach((el) => { el.textContent = "—"; });
+      document.querySelectorAll("[data-card-reason]").forEach((el) => { el.textContent = ""; });
+      for (const id of ["velocity-cards", "hardware-cards", "cache-cards"]) {
+        const host = document.getElementById(id);
+        if (host) host.innerHTML = "";
+      }
+      const legend = document.getElementById("trace-legend");
+      if (legend) legend.innerHTML = "";
+      // The trace: the paths go empty and the heads go dark.
+      for (const suffix of ["a", "b"]) {
+        for (const part of ["path", "area"]) {
+          const path = document.getElementById(`sparkline-series-${suffix}-${part}`);
+          if (path) path.setAttribute("d", "");
+        }
+        const dot = document.getElementById(`sparkline-series-${suffix}-dot`);
+        if (dot) dot.classList.add("opacity-0");
+      }
+      // The chips: a fact nobody can confirm is a dash.
+      for (const id of ["hero-model-title", "hero-chip-badge", "hw-chip-badge",
+                        "chip-cores", "chip-gdn", "chip-context", "chip-kv-quant",
+                        "chip-mtp", "ftr-metal-version", "cache-hit-chip",
+                        "ctx-tokens-label", "ctx-used-chip", "radial-ctx-label"]) {
+        const el = document.getElementById(id);
+        if (el) el.textContent = "—";
+      }
+      const budget = document.getElementById("ftr-context-budget");
+      if (budget) budget.textContent = "Context: —";
+      const cachePath = document.getElementById("tier-cache-path");
+      if (cachePath) cachePath.textContent = "Cache Path: —";
+      const traceLive = document.getElementById("sparkline-live-text");
+      if (traceLive) traceLive.textContent = "Not connected";
+      // The velocity panel's own phase: a server that stopped
+      // answering cannot say the engine is loaded.
+      const velText = document.getElementById("vel-status-text");
+      if (velText) velText.textContent = "—";
+      const velDot = document.getElementById("vel-status-dot");
+      if (velDot) velDot.className = "w-1.5 h-1.5 rounded-full bg-outline";
+      // The actions: a server that stopped answering cannot say what
+      // it would do with a request, and the last reason it gave is
+      // about a model it may no longer have.
+      document.querySelectorAll("[data-action]").forEach((el) => {
+        el.disabled = true;
+        el.title = "No response from the server";
+      });
+      const radial = document.getElementById("radial-ctx-path");
+      if (radial) radial.setAttribute("stroke-dasharray", "0, 100");
+      const bar = document.getElementById("ctx-linear-bar");
+      if (bar) bar.style.width = "0%";
+      const age = document.getElementById("model-age");
+      if (age) age.textContent = "Not connected";
+      renderRecentRequestsTable();
+      updateStatusIndicators(null, null);
+    }
+
+    /// Draws the published model.
+    function renderDashboard(model) {
+      if (!model) return;
+      modelGeneration += 1;
+      publishedModel = model;
+      renderLifecycle(model);
+      renderCards(model);
+      renderVelocityCards(model);
+      renderHardwareCards(model);
+      renderCacheSections(model);
+      renderContext(model);
+      renderFacts(model);
+      renderModelAge(model);
+      renderActions(model);
+      renderRecentRequestsTable();
+    }
+
+    // --- RECENT REQUESTS TABLE RENDERER ---
+    /// The requests the server published. The client keeps no list of
+    /// its own: a row it invented would be a request that never
+    /// happened.
+    function renderRecentRequestsTable() {
+      const tbody = document.getElementById("req-table-body");
+      if (!tbody) return;
+      const requests = (publishedModel && publishedModel.requests) || [];
+      const filter = document.getElementById("req-filter-select")?.value || "all";
+      const filtered = requests.filter((req) => {
+        const status = typeof req.status === "number" ? req.status : 0;
+        const outcome = String(req.outcome || "").toLowerCase();
+        if (filter === "success") return (status >= 200 && status < 300) || outcome === "ok";
+        if (filter === "error") return status >= 400 || outcome === "error" || outcome === "failed";
+        return true;
+      });
+
+      if (filtered.length === 0) {
+        tbody.innerHTML = `<tr class="hover:bg-surface-container/50 transition-colors"><td colspan="8" class="py-6 text-center text-outline">No requests have been recorded yet.</td></tr>`;
+        return;
+      }
+
+      const recentTenNewestFirst = filtered.slice(-10).reverse();
+
+      tbody.innerHTML = recentTenNewestFirst.map((req, idx) => {
+        const bgAlt = idx % 2 === 1 ? "bg-surface-container-lowest/20" : "";
+        // A field the request did not carry is a dash. The tier is what
+        // the server said it was — "warm_ram" or "cold_ssd"; an unknown
+        // tier is not a miss.
+        const tierBadge = req.cacheHitTier === "warm_ram"
+          ? `<span class="px-space-xs py-[1px] rounded bg-secondary-container/20 text-secondary">WARM RAM</span>`
+          : (req.cacheHitTier === "cold_ssd"
+              ? `<span class="px-space-xs py-[1px] rounded bg-primary-container/20 text-primary">COLD NVME</span>`
+              : `<span class="text-outline">—</span>`);
+
+        return `
+          <tr class="hover:bg-surface-container/50 transition-colors ${bgAlt}">
+            <td class="py-space-sm px-space-md text-on-surface-variant">${req.time || "—"}</td>
+            <td class="py-space-sm px-space-md font-semibold text-primary">${req.id || "—"}</td>
+            <td class="py-space-sm px-space-md">${req.modelId || req.model || "—"}</td>
+            <td class="py-space-sm px-space-md">${req.promptTokens ?? "—"} / ${req.generatedTokens ?? req.completionTokens ?? "—"}</td>
+            <td class="py-space-sm px-space-md text-secondary font-medium">${typeof req.decodeTps === "number" ? `${req.decodeTps.toFixed(1)} t/s` : "—"}</td>
+            <td class="py-space-sm px-space-md">${typeof req.ttftMs === "number" ? `${Math.round(req.ttftMs)}ms` : "—"}</td>
+            <td class="py-space-sm px-space-md">${tierBadge}</td>
+            <td class="py-space-sm px-space-md text-right"><span class="font-medium text-secondary">${req.outcome ?? req.status ?? "—"}</span></td>
+          </tr>
+        `;
+      }).join("");
+    }
+
+    function exportRequestsJson() {
+      const requests = (publishedModel && publishedModel.requests) || [];
+      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(requests, null, 2));
+      const a = document.createElement("a");
+      a.href = dataStr;
+      a.download = `qwegine-requests-${Date.now()}.json`;
+      a.click();
+    }
+
+    // --- MODELS CATALOGUE ---
+    async function loadDiscoveredModels() {
+      try {
+        const res = await fetch(`${API_BASE}/v1/models/discovered`);
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const data = await res.json();
+        discoveredModelsList = data.models || [];
+        renderModelsCards();
+      } catch (err) {
+        console.warn("loadDiscoveredModels error:", err);
+      }
+    }
+
+    function renderModelsCards() {
+      const container = document.getElementById("models-cards-grid");
+      if (!container) return;
+
+      if (discoveredModelsList.length === 0) {
+        container.innerHTML = `<div class="p-6 text-center text-outline col-span-full">No models found in <code>~/.qwg/models</code>. Place model directories or <code>.qwp</code> packs there to use them.</div>`;
+        return;
+      }
+
+      container.innerHTML = discoveredModelsList.filter(m => m.supported !== false).map(m => `
+        <div class="p-space-lg rounded-xl bg-surface-container-low/70 border border-white/[0.06] flex flex-col justify-between gap-3 shadow-md hover:border-white/20 transition-all">
+          <div class="flex items-start justify-between">
+            <div class="flex items-center gap-2">
+              <svg class="w-6 h-6 text-primary shrink-0" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M2.00 11.43C2.00 14.20 3.90 16.04 6.75 16.04C9.56 16.04 11.43 14.38 11.43 11.91C11.43 10.86 11.06 10.03 10.46 9.51C10.18 9.28 10.01 9.19 9.75 9.19C9.39 9.19 9.16 9.41 9.16 9.72C9.16 10.11 9.38 10.20 9.72 10.52C10.05 10.83 10.23 11.31 10.23 11.88C10.23 13.64 8.84 14.82 6.77 14.82C4.64 14.82 3.22 13.46 3.22 11.42C3.22 10.24 3.82 9.14 4.79 8.51L4.18 7.45C2.83 8.30 2.00 9.81 2.00 11.43ZM4.05 7.46C4.05 9.16 5.23 10.37 7.09 10.37C7.42 10.37 7.70 10.09 7.70 9.76C7.70 9.42 7.42 9.15 7.09 9.15C5.96 9.15 5.27 8.44 5.27 7.46C5.27 6.38 6.17 5.63 7.35 5.63C7.91 5.63 8.51 5.80 9.04 6.17L9.77 5.18C9.01 4.65 8.16 4.41 7.36 4.41C5.52 4.41 4.05 5.66 4.05 7.46ZM8.10 7.26C8.09 7.66 8.35 7.92 8.71 7.92C9.04 7.92 9.30 7.71 9.31 7.32C9.37 5.87 10.41 4.82 11.89 4.82C12.78 4.82 13.56 5.28 13.86 5.98C13.92 6.09 14.00 6.10 14.15 6.06C14.41 5.99 14.68 5.96 14.96 5.96C16.32 5.97 17.61 6.99 17.61 8.63C17.61 12.20 12.59 11.71 12.59 15.18C12.59 16.84 13.90 17.88 15.61 17.88C15.79 17.88 15.99 17.87 16.19 17.86C16.36 19.15 17.17 20.41 18.49 20.41C20.39 20.41 21.32 18.10 21.32 15.84C21.32 14.87 21.27 14.20 21.20 13.58L19.97 13.93C20.04 14.53 20.10 15.10 20.10 15.83C20.10 17.68 19.40 19.18 18.49 19.18C17.55 19.18 17.16 17.93 17.16 16.93C17.16 16.85 17.12 16.80 17.02 16.80C16.80 16.80 16.52 16.80 16.32 16.80C14.81 16.80 13.82 16.33 13.82 15.16C13.82 12.39 18.83 13.01 18.83 8.63C18.83 6.29 17.10 4.73 15.12 4.73C14.97 4.73 14.75 4.76 14.54 4.81C13.93 4.05 12.95 3.59 11.90 3.59C9.74 3.59 8.19 5.10 8.10 7.26ZM17.04 14.71C17.04 15.05 17.30 15.30 17.65 15.32C20.26 15.49 22.00 13.96 22.00 11.49C22.00 9.47 20.56 7.93 18.40 7.64L18.22 8.86C19.75 8.88 20.78 9.93 20.78 11.49C20.78 13.20 19.52 14.25 17.65 14.11C17.30 14.08 17.04 14.38 17.04 14.71ZM13.13 15.70C12.68 15.86 12.16 15.94 11.66 15.94C10.38 15.94 9.08 15.44 8.58 14.66L7.56 15.49C8.36 16.48 9.81 17.16 11.53 17.16C12.16 17.16 12.86 17.07 13.55 16.87ZM10.69 10.34L11.10 11.49C13.02 11.12 13.88 9.92 13.87 8.15C13.87 7.81 13.60 7.53 13.26 7.53C12.92 7.53 12.65 7.81 12.65 8.15C12.65 9.39 12.12 10.13 10.69 10.34Z" />
+              </svg>
+              <div>
+                <h4 class="font-headline-md text-headline-md text-on-surface font-semibold">${m.name}</h4>
+                <span class="font-label-sm text-label-sm text-outline truncate block max-w-[200px]">${m.packPath}</span>
+              </div>
+            </div>
+            <span class="px-space-xs py-[1px] rounded bg-surface-container-high text-on-surface-variant font-label-sm text-label-sm">Installed</span>
+          </div>
+          <div class="flex items-center justify-end gap-2 pt-2 border-t border-white/[0.04]">
+            <button onclick="selectAndApplyModel('${m.name}', '${m.packPath.replace(/'/g, "\\'")}')" class="px-3 py-1 rounded-lg bg-primary-container text-on-primary font-label-md hover:brightness-110">Activate</button>
+          </div>
+        </div>
+      `).join("");
+    }
+
+    async function selectAndApplyModel(name, packPath) {
+      try {
+        // Read the live settings, change only the model selection, write back.
+        const res = await fetch(`${API_BASE}/v1/settings`);
+        if (!res.ok) throw new Error(`settings read HTTP ${res.status}`);
+        const currentSettings = await res.json();
+        currentSettings.modelName = name;
+        currentSettings.modelPackPath = packPath;
+        const saveRes = await fetch(`${API_BASE}/v1/settings`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(currentSettings)
+        });
+        if (!saveRes.ok) {
+          const errData = await saveRes.json().catch(() => ({}));
+          throw new Error(errData.message || `HTTP ${saveRes.status}`);
+        }
+        const loadRes = await fetch(`${API_BASE}/v1/models/load`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model: packPath || name })
+        });
+        if (!loadRes.ok) {
+          const errData = await loadRes.json().catch(() => ({}));
+          throw new Error(errData.message || `load HTTP ${loadRes.status}`);
+        }
+        fetchDashboard();
+        fetchEngineInfo();
+      } catch (e) {
+        alert("Failed to switch model: " + e.message);
+      }
+    }
+
+    function openSwitchModelModal() {
+      const modal = document.getElementById("modal-switch-model");
+      const list = document.getElementById("modal-model-options");
+      if (!modal || !list) return;
+
+      loadDiscoveredModels().then(() => {
+        list.innerHTML = discoveredModelsList.filter(m => m.supported !== false).map(m => `
+          <div onclick="selectAndApplyModel('${m.name}', '${m.packPath.replace(/'/g, "\\'")}'); closeSwitchModelModal();" class="p-3 rounded-lg bg-surface-container hover:bg-surface-bright cursor-pointer flex items-center justify-between border border-white/[0.04] transition-colors">
+            <span class="font-headline-sm text-headline-sm text-on-surface">${m.name}</span>
+            <span class="font-label-sm text-label-sm text-primary">Select</span>
+          </div>
+        `).join("");
+        modal.classList.remove("hidden");
+      });
+    }
+
+    function closeSwitchModelModal() {
+      const modal = document.getElementById("modal-switch-model");
+      if (modal) modal.classList.add("hidden");
+    }
+
+    // --- ACTIONS: UNLOAD / RELOAD / RESTART ---
+    async function unloadModel() {
+      if (!confirm("Are you sure you want to unload active model weights from unified memory? The HTTP server will remain available.")) return;
+      try {
+        const res = await fetch(`${API_BASE}/v1/models/unload`, { method: "POST" });
+        // A rejected action is a rejected action: the status is read
+        // before anything is claimed about the engine.
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const reclaimed = typeof data.memoryReclaimedMB === "number"
+          ? ` Unified memory reclaimed: ${data.memoryReclaimedMB} MB.` : "";
+        alert(`Model unloaded successfully.${reclaimed}`);
+        // The phase comes from the server. The next published model
+        // says what happened; nothing is assumed here.
+      } catch (e) {
+        alert("Unload failed: " + e.message);
+      }
+    }
+
+    async function reloadOrLoadModel() {
+      try {
+        const res = await fetch(`${API_BASE}/v1/models/load`, { method: "POST" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        // The engine's phase is published; the next model says whether
+        // the load happened.
+      } catch (e) {
+        alert("Reload failed: " + e.message);
+      }
+    }
+
+    async function restartEngine() {
+      if (!confirm("Restart inference engine? Active connections will be re-initialized.")) return;
+      try {
+        const res = await fetch(`${API_BASE}/v1/engine/restart`, { method: "POST" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      } catch (e) {
+        alert("Restart failed: " + e.message);
+      }
+    }
+
+    // --- INITIALIZATION ---
+    window.addEventListener("DOMContentLoaded", () => {
+      // The port the page is actually talking to.
+      const port = new URL(API_BASE, window.location.href).port;
+      const portEl = document.getElementById("header-port");
+      if (portEl) portEl.textContent = port ? `Port ${port}` : "Port —";
+      // The first paint, then the stream that keeps it current. The
+      // dashboard is not polled: the server pushes the model.
+      fetchDashboard();
+      initMetricsStream();
+      fetchEngineInfo();
+      setInterval(fetchEngineInfo, 3000);
+    });
+  </script>
+</body>
+</html>
+

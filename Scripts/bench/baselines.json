@@ -1,0 +1,31 @@
+{
+  "date" : "2026-10-05T15:55:01Z",
+  "machine" : "M5 Max",
+  "metrics" : {
+    "m1_decode_tps" : {
+      "direction" : "higher",
+      "value" : 31.305187537213005
+    },
+    "m1_encode_pct" : {
+      "direction" : "lower",
+      "value" : 0.5325260678350022
+    },
+    "m1_encode_us_p50" : {
+      "direction" : "lower",
+      "value" : 167.96588897705078
+    },
+    "m1_step_p50_ms" : {
+      "direction" : "lower",
+      "value" : 31.90600872039795
+    },
+    "m1_step_p95_ms" : {
+      "direction" : "lower",
+      "value" : 32.263994216918945
+    },
+    "m1_ttft4k_ms" : {
+      "direction" : "lower",
+      "value" : 5595.450043678284
+    }
+  },
+  "schema" : 1
+}

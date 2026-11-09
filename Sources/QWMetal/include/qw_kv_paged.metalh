@@ -1,0 +1,136 @@
+#pragma once
+#include <metal_stdlib>
+#include "qw_geometry_constants.metalh"
+
+using namespace metal;
+
+// C10 page geometry in HALF units (f16 pool): one pool row = one token =
+// kvHeads(4)·headDim(256)·2 B = 2048 B = 1024 halves; page = 256 rows =
+// 512 KiB. Validated from QWModelGeometry in the Swift binder.
+#define QW_ROW   QW_FC_KV_ROW   // halves per pool row
+#define QW_PGEL  QW_FC_KV_PGEL  // halves per page
+
+// ── q8 KV pool geometry (4c; layout authority = QWKVCompressedLayout) ─────
+// A q8 page is addressed in BYTES: 256 rows × 1024 int8 = 262144 B payload at
+// page offset 0, then the per-(row,head) f16 scale array (256×4×2 = 2048 B)
+#define QW_ROW8    QW_FC_KV_ROW     // int8 bytes per q8 row (1024)
+#define QW_Q8_PAY  QW_FC_KV_PGEL    // 262144 payload B/page
+#define QW_Q8_HDR  QW_Q8_PAY        // scale-array byte offset
+#define QW_Q8_PGE  (uint64_t(QW_Q8_PAY) + 256ul * uint64_t(QW_Q8_HROW)) // page stride BYTES (payload+hdr)
+#define QW_Q8_HROW QW_FC_KV_Q8_HROW // 8 B scale row (4× f16)
+
+// 8 consecutive dims per lane (dim0 = lane*8): scale fetched once per row.
+template <typename DstP>   // destination: thread half[8] or threadgroup half*
+static inline void qwg_q8_load8(const device char* p, uint64_t page,
+                                uint rowInPage, uint kvh, uint dim0, DstP out, uint ob = 0) {
+    const float s = *(const device half*)(p + page + QW_Q8_HDR
+                        + (uint64_t)rowInPage * QW_Q8_HROW + (uint64_t)kvh * 2u);
+    const device char* e = p + page + (uint64_t)rowInPage * QW_ROW8
+                           + (uint64_t)kvh * QW_HEAD_DIM + dim0;
+    // C10 addendum: two 4-byte vector loads (8-aligned by construction)
+    // instead of eight scalar int8 loads.
+    const uchar4 v0 = *(const device uchar4*)e;
+    const uchar4 v1 = *(const device uchar4*)(e + 4u);
+    #pragma unroll
+    for (uint i = 0; i < 4u; i++) out[ob + i] = half(float((int8_t)v0[i]) * s);
+    #pragma unroll
+    for (uint i = 0; i < 4u; i++) out[ob + 4u + i] = half(float((int8_t)v1[i]) * s);
+}
+
+// Quantised store of ONE lane's 8 dims of the (row,head) segment.
+static inline void qwg_q8_store_seg(device char* p, uint64_t page, uint rowInPage,
+                                    uint kvh, uint dim0, const half x[8],
+                                    float segMax) {
+    float s = fmax(segMax / 127.0f, 1e-8f);
+    half s16 = half(s);
+    float inv = 1.0f / float(s16);
+    device char* d = p + page + (uint64_t)rowInPage * QW_ROW8
+                     + (uint64_t)kvh * QW_HEAD_DIM + dim0;
+    char4 v0, v1;
+    #pragma unroll
+    for (uint i = 0; i < 4u; i++) {
+        float q0 = round(float(x[i]) * inv);
+        float q1 = round(float(x[i + 4u]) * inv);
+        v0[i] = (char)(int)fmax(-127.0f, fmin(127.0f, q0));
+        v1[i] = (char)(int)fmax(-127.0f, fmin(127.0f, q1));
+    }
+    *(device char4*)d = v0;
+    *(device char4*)(d + 4u) = v1;
+    if (dim0 == 0u) {   // one lane per segment writes the scale (kvh base)
+        *(device half*)(p + page + QW_Q8_HDR + (uint64_t)rowInPage * QW_Q8_HROW
+                        + (uint64_t)kvh * 2u) = s16;
+    }
+}
+
+// ── q4 KV pool geometry (4c; asymmetric group-128, contract =
+// QWKVCompressedLayout.quantizeQ4/dequantizeQ4).
+#define QW_ROW4    QW_FC_KV_ROW4                                     // payload B/row (kvHeads * headDim / 2)
+#define QW_Q4_PAY  (256ul * uint64_t(QW_ROW4))                       // payload B/page
+#define QW_Q4_HDR  QW_Q4_PAY                                         // header byte offset
+#define QW_Q4_GROW QW_FC_KV_Q4_GROW                                  // header row B
+#define QW_Q4_PGE  (QW_Q4_PAY + 256ul * uint64_t(QW_Q4_GROW))        // page stride
+
+// 8 consecutive dims per lane (dim0 = lane*8; never crosses a 128-group
+// boundary): one header word, one 4-byte nibble word.
+template <typename DstP>
+static inline void qwg_q4_load8(const device uchar* p, uint64_t page,
+                                uint rowInPage, uint kvh, uint dim0, DstP out, uint ob = 0) {
+    const uint grpsPerHead = (QW_HEAD_DIM + 127u) >> 7;
+    const uint grp = kvh * grpsPerHead + (dim0 >> 7);
+    const device uchar* h = p + page + QW_Q4_HDR + (uint64_t)rowInPage * QW_Q4_GROW
+                            + (uint64_t)grp * 4u;
+    const float sc = *(const device half*)h;
+    const float mn = *(const device half*)(h + 2u);
+    const device uchar* e = p + page + (uint64_t)rowInPage * QW_ROW4
+                            + (uint64_t)kvh * (QW_HEAD_DIM >> 1) + (dim0 >> 1);
+    // C10 addendum: one 4-byte nibble-word load (4-aligned by construction).
+    const uchar4 v = *(const device uchar4*)e;
+    #pragma unroll
+    for (uint i = 0; i < 4u; i++) {
+        out[ob + 2u * i]      = half(float(v[i] & 0x0Fu) * sc + mn);  // even dim: low nibble
+        out[ob + 2u * i + 1u] = half(float(v[i] >> 4) * sc + mn);      // odd dim: high nibble
+    }
+}
+
+static inline void qwg_q4_store_seg(device uchar* p, uint64_t page, uint rowInPage,
+                                    uint kvh, uint dim0, const half x[8],
+                                    float grpMin, float grpMax) {
+    const half sc16 = half(fmax((grpMax - grpMin) / 15.0f, 1e-8f));
+    const half mn16 = half(grpMin);
+    const float sc = float(sc16), mn = float(mn16);
+    const float inv = 1.0f / sc;
+    device uchar* d = p + page + (uint64_t)rowInPage * QW_ROW4
+                      + (uint64_t)kvh * (QW_HEAD_DIM >> 1) + (dim0 >> 1);
+    uchar4 b4;
+    #pragma unroll
+    for (uint i = 0; i < 4u; i++) {
+        const uint q0 = (uint)clamp(round((float(x[2u * i])     - mn) * inv), 0.0f, 15.0f);
+        const uint q1 = (uint)clamp(round((float(x[2u * i + 1]) - mn) * inv), 0.0f, 15.0f);
+        b4[i] = (uchar)(q0 | (q1 << 4));
+    }
+    *(device uchar4*)d = b4;
+    if ((dim0 & 127u) == 0u) {
+        const uint grpsPerHead = (QW_HEAD_DIM + 127u) >> 7;
+        const uint grp = kvh * grpsPerHead + (dim0 >> 7);
+        device half* h = (device half*)(p + page + QW_Q4_HDR
+                         + (uint64_t)rowInPage * QW_Q4_GROW + (uint64_t)grp * 4u);
+        h[0] = sc16;
+        h[1] = mn16;
+    }
+}
+
+// Mode-aware pool read for the staged/tail readers: mode 0 = f16 callers
+// never reach here; 1 = q8, 2 = q4. pageID is the PHYSICAL page id (ktab /
+// vtab entry); each layout multiplies its own stride.
+#define QW_KV_LOAD8(dst, pool, pageID, rip, kvh_, d0_, MODE) \
+    if ((MODE) == 1u) { \
+        qwg_q8_load8((const device char*)(pool), uint64_t(pageID) * QW_Q8_PGE, rip, kvh_, d0_, dst); \
+    } else { \
+        qwg_q4_load8((const device uchar*)(pool), uint64_t(pageID) * QW_Q4_PGE, rip, kvh_, d0_, dst); \
+    }
+#define QW_KV_LOAD8S(dst, pool, pageID, rip, kvh_, d0_, ob, MODE) \
+    if ((MODE) == 1u) { \
+        qwg_q8_load8((const device char*)(pool), uint64_t(pageID) * QW_Q8_PGE, rip, kvh_, d0_, dst, ob); \
+    } else { \
+        qwg_q4_load8((const device uchar*)(pool), uint64_t(pageID) * QW_Q4_PGE, rip, kvh_, d0_, dst, ob); \
+    }

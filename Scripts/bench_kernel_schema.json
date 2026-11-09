@@ -1,0 +1,4 @@
+{
+  "schema": "qwg-bench-kernels/2",
+  "note": "The winner map's schema this build must write. Bump it WITH the engine's constant (QWKernelDispatchTable.currentSchema), never alone: the gate compares the report, the engine's constant and this pin, so a schema change that moves only one of them goes red."
+}

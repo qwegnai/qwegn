@@ -1,0 +1,55 @@
+// qw_weight_basis.metalh — the activation basis.
+//
+// The engine's own weights are quantised ROTATED (the packer applies the
+// 32-point WHT to their input dimension); an MLX affine checkpoint's planes
+// carry no rotation, so its activations must not be rotated. The basis is a
+// MODEL property, never a per-tensor one, and it is a BUILD-time constant —
+// specs/02-qwhal.md says why a runtime switch cost 14.5% of prefill.
+#pragma once
+#include <metal_stdlib>
+#include <metal_simdgroup>
+using namespace metal;
+
+#if defined(QW_BASIS_STANDARD)
+/// STANDARD basis: the activations are NOT rotated. A checkpoint quantised
+/// in this basis meets activations that were left alone.
+constant bool QW_FWHT_ROTATED = false;
+#else
+/// ROTATED basis: the incumbent's own format. The activations are rotated
+/// to match the weights, which were rotated when they were packed.
+constant bool QW_FWHT_ROTATED = true;
+#endif
+
+/// The 32-point normalized WHT over one value per lane — the transform
+/// every rotation in the engine is made of.
+///
+/// In the STANDARD basis the value passes through unchanged, scale and
+/// all: the 1/sqrt(32) belongs to the transform, so it belongs to the
+/// rotation. A caller that applied the scale itself would have to know
+/// which basis it was in, and that is exactly the knowledge this gate
+/// exists to remove.
+METAL_FUNC float qwg_fwht32_lane_f32(float v, uint lane_id) {
+    if (!QW_FWHT_ROTATED) return v;
+    for (ushort s = 1; s < 32; s <<= 1) {
+        const float p = simd_shuffle_xor(v, s);
+        v = ((lane_id & s) == 0u) ? (v + p) : (p - v);
+    }
+    return v * 0.17677669529663689f;
+}
+
+#ifndef QW_FC_SWIGLU_LIMIT_DEFINED
+#define QW_FC_SWIGLU_LIMIT_DEFINED
+constant float QW_FC_SWIGLU_LIMIT [[function_constant(224)]];
+constant float QW_FC_ROUTED_SCALE [[function_constant(225)]];
+#endif
+
+/// Generalized SwiGLU activation: when `QW_FC_SWIGLU_LIMIT > 0`, clamps
+/// `gate = min(gate, limit)` and `up = clamp(up, -limit, limit)` before `silu(gate) * up`.
+/// Specializes away at PSO creation time when `QW_FC_SWIGLU_LIMIT == 0`.
+METAL_FUNC float qwg_swiglu_mul(float gate, float up) {
+    if (QW_FC_SWIGLU_LIMIT > 0.0f) {
+        gate = min(gate, QW_FC_SWIGLU_LIMIT);
+        up = clamp(up, -QW_FC_SWIGLU_LIMIT, QW_FC_SWIGLU_LIMIT);
+    }
+    return (gate / (1.0f + exp(-gate))) * up;
+}

@@ -1,0 +1,52 @@
+// qw_quant_decls.metalh — the shared declarations for the load-time writers.
+//
+// Block_HQ4_G32: half scale; half bias; uint32_t qs[4];  20 bytes / 32 weights.
+// The bias is the folded magic bias, so the device-side
+// `fma(nibble | 0x6400, scale, bias)` recovers the original value. The
+// scale, the bias, the quantisation and the nibble order are the incumbent
+// Python packer's, exactly: Scripts/quantize/hq4.py.
+
+#pragma once
+#include <metal_stdlib>
+using namespace metal;
+
+#define QW_HQ4_GROUP 32
+#define QW_HQ4_BLOCK_BYTES 20
+#define QW_HQ4_MAGIC_BIAS 1024.0f
+#define QW_HQ4_BIAS_LAW (-1032.0f)
+#define QW_HQ4_SCALE_DIVISOR 7.5f
+#define QW_HQ4_MAX_SCALE 63.46875f
+
+/// bf16 -> f32, without relying on the `bfloat` type.
+METAL_FUNC float qwg_bf16_to_f32(ushort bits) {
+    return as_type<float>(uint(bits) << 16);
+}
+
+/// The orthonormal 32-point Walsh-Hadamard transform, in the packer's order.
+METAL_FUNC void qwg_fwht32_ortho_f32(thread float* v) {
+    for (uint s = 1; s < 32; s <<= 1) {
+        for (uint i = 0; i < 32; i += 2 * s) {
+            for (uint j = i; j < i + s; ++j) {
+                const float a = v[j];
+                const float b = v[j + s];
+                v[j] = a + b;
+                v[j + s] = a - b;
+            }
+        }
+    }
+    const float inv = 0.17677669529663687f;
+    for (uint i = 0; i < 32; ++i) { v[i] *= inv; }
+}
+
+/// The group's f16 scale and bias, as the Python packer computes them.
+METAL_FUNC void qwg_hq4_scale_bias(float amax, thread half& scale, thread half& bias) {
+    const float s = min(amax / QW_HQ4_SCALE_DIVISOR, QW_HQ4_MAX_SCALE);
+    scale = half(s);
+    bias = half(QW_HQ4_BIAS_LAW * float(scale));
+}
+
+/// The eight 4-bit codes of one word, in the incumbent's de-interleave.
+METAL_FUNC uint qwg_hq4_pack_word(const thread uint* q) {
+    return (q[0] << 0) | (q[1] << 16) | (q[2] << 4) | (q[3] << 20)
+         | (q[4] << 8) | (q[5] << 24) | (q[6] << 12) | (q[7] << 28);
+}

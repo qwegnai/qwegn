@@ -1,0 +1,79 @@
+// qw_geometry_constants.metalh — Runtime-specialized model geometry via
+// MTLFunctionConstantValues (populated by QWHal from QWModelGeometry).
+// Zero compile-time model constants.
+#pragma once
+#include <metal_stdlib>
+
+constant uint  QW_FC_HIDDEN       [[function_constant(0)]];
+constant uint  QW_FC_VOCAB        [[function_constant(1)]];
+constant uint  QW_FC_INTERMEDIATE [[function_constant(2)]];
+constant uint  QW_FC_NUM_LAYERS   [[function_constant(3)]];
+constant uint  QW_FC_FA_INTERVAL  [[function_constant(4)]];
+constant uint  QW_FC_Q_HEADS      [[function_constant(5)]];
+constant uint  QW_FC_KV_HEADS     [[function_constant(6)]];
+constant uint  QW_FC_HEAD_DIM     [[function_constant(7)]];
+constant uint  QW_FC_QPROJ_OUT    [[function_constant(8)]];
+constant uint  QW_FC_ROPE_DIMS    [[function_constant(9)]];
+constant float QW_FC_RMS_EPS      [[function_constant(10)]];
+constant uint  QW_FC_MAX_POS      [[function_constant(11)]];
+constant uint  QW_FC_GDN_QK_HEADS [[function_constant(12)]];
+constant uint  QW_FC_GDN_V_HEADS  [[function_constant(13)]];
+constant uint  QW_FC_GDN_HEAD_DIM [[function_constant(14)]];
+constant uint  QW_FC_GDN_QKV_CH   [[function_constant(15)]];
+constant uint  QW_FC_GDN_Z_CH     [[function_constant(16)]];
+constant uint  QW_FC_GDN_CONV_K   [[function_constant(17)]];
+constant uint  QW_FC_GQA_RATIO    [[function_constant(18)]];
+constant uint  QW_FC_GDN_V_PER_QK [[function_constant(19)]];
+constant uint  QW_FC_KV_ROW       [[function_constant(20)]];
+constant uint  QW_FC_KV_PGEL      [[function_constant(21)]];
+constant uint  QW_FC_KV_ROW4      [[function_constant(22)]];
+constant uint  QW_FC_KV_Q8_HROW   [[function_constant(23)]];
+constant uint  QW_FC_KV_Q4_GROW   [[function_constant(24)]];
+constant bool  QW_FC_HAS_Q_GATE   [[function_constant(25)]];
+constant uint  QW_FC_Q_STRIDE     [[function_constant(26)]];
+constant float QW_FC_ATTN_SCALE   [[function_constant(27)]];
+constant uint  QW_FC_MHC_STREAMS  [[function_constant(220)]];
+constant uint  QW_FC_MHC_ITERS    [[function_constant(221)]];
+constant bool  QW_FC_GDN_VEC_DECAY [[function_constant(222)]];
+constant float QW_FC_GDN_GATE_MIN [[function_constant(223)]];
+#ifndef QW_FC_SWIGLU_LIMIT_DEFINED
+#define QW_FC_SWIGLU_LIMIT_DEFINED
+constant float QW_FC_SWIGLU_LIMIT [[function_constant(224)]];
+constant float QW_FC_ROUTED_SCALE [[function_constant(225)]];
+#endif
+constant uint  QW_FC_KV_LORA_RANK [[function_constant(226)]];
+constant bool  QW_FC_INDEX_KPOOL  [[function_constant(227)]];
+
+constant uint  QW_HIDDEN       = QW_FC_HIDDEN;
+constant uint  QW_VOCAB        = QW_FC_VOCAB;
+constant uint  QW_INTERMEDIATE = QW_FC_INTERMEDIATE;
+constant uint  QW_NUM_LAYERS   = QW_FC_NUM_LAYERS;
+constant uint  QW_FA_INTERVAL  = QW_FC_FA_INTERVAL;
+constant uint  QW_Q_HEADS      = QW_FC_Q_HEADS;
+constant uint  QW_KV_HEADS     = QW_FC_KV_HEADS;
+constant uint  QW_HEAD_DIM     = QW_FC_HEAD_DIM;
+constant uint  QW_QPROJ_OUT    = QW_FC_QPROJ_OUT;
+constant uint  QW_ROPE_DIMS    = QW_FC_ROPE_DIMS;
+constant float QW_RMS_EPS      = QW_FC_RMS_EPS;
+constant uint  QW_MAX_POS      = QW_FC_MAX_POS;
+constant uint  QW_GDN_QK_HEADS = QW_FC_GDN_QK_HEADS;
+constant uint  QW_GDN_V_HEADS  = QW_FC_GDN_V_HEADS;
+constant uint  QW_GDN_HEAD_DIM = QW_FC_GDN_HEAD_DIM;
+constant uint  QW_GDN_QKV_CH   = QW_FC_GDN_QKV_CH;
+constant uint  QW_GDN_Z_CH     = QW_FC_GDN_Z_CH;
+constant uint  QW_GDN_CONV_K   = QW_FC_GDN_CONV_K;
+constant uint  QW_KV_HEAD_DIM  = QW_FC_HEAD_DIM;
+constant uint  QW_GQA_RATIO    = QW_FC_GQA_RATIO;
+constant uint  QW_GDN_V_PER_QK = QW_FC_GDN_V_PER_QK;
+constant bool  QW_HAS_Q_GATE   = QW_FC_HAS_Q_GATE;
+constant uint  QW_Q_STRIDE     = QW_FC_Q_STRIDE;
+constant float QW_ATTN_SCALE   = QW_FC_ATTN_SCALE;
+constant uint  QW_MHC_STREAMS  = QW_FC_MHC_STREAMS;
+constant uint  QW_MHC_ITERS    = QW_FC_MHC_ITERS;
+constant bool  QW_GDN_VEC_DECAY = QW_FC_GDN_VEC_DECAY;
+constant bool  QW_GDN_VECTOR_DECAY = QW_FC_GDN_VEC_DECAY;
+constant float QW_GDN_GATE_MIN = QW_FC_GDN_GATE_MIN;
+constant float QW_SWIGLU_LIMIT = QW_FC_SWIGLU_LIMIT;
+constant float QW_ROUTED_SCALE = QW_FC_ROUTED_SCALE;
+constant uint  QW_KV_LORA_RANK = QW_FC_KV_LORA_RANK;
+constant bool  QW_INDEX_KPOOL  = QW_FC_INDEX_KPOOL;

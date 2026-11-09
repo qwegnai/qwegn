@@ -1,0 +1,11 @@
+# Python oracle environment for the golden generators (Scripts/oracle, Scripts/flashnext,
+# Scripts/quantize). Pinned to the versions the goldens were produced with.
+# torch is installed from the CPU index by `make init` (see Makefile).
+torch==2.14.1
+transformers==5.17.0
+safetensors==0.8.0
+numpy==2.5.3
+Jinja2==3.1.6
+huggingface_hub==1.33.0
+# MLX: the AQ quantizer goldens (Scripts/oracle/gen_aq_fixtures.py) check against mlx.core.
+mlx==0.32.4

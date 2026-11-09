@@ -1,0 +1,102 @@
+// qw_mla_indexer.metalh — MLA indexer params and the per-row exact top-K pool
+// selection shared by the fused score+select kernel and the split score/select pair.
+#pragma once
+#include <metal_stdlib>
+using namespace metal;
+
+struct MLAIndexerParams {
+    uint T;
+    uint pos0;
+    uint qChannels;
+    uint idxHeads;
+    uint idxDim;
+    uint topKPools;
+    uint listStride;
+    uint scoreStride;
+};
+
+METAL_FUNC uint qwg_mla_float_to_sortable_u32(float f) {
+    const uint u = as_type<uint>(f);
+    return (u & 0x80000000u) ? ~u : (u | 0x80000000u);
+}
+
+// 4-pass 8-bit exact radix threshold selection over sortable uint32 keys, then
+// strictly-above collection in index order plus ties. 256 threads; rowScores must be
+// visible to the whole threadgroup on entry. Writes topK indices and the count.
+METAL_FUNC void qwg_mla_select_pools(device const float* rowScores, uint nPools, uint topKPools,
+                                     device int* dstList, device int* countOut, uint tid,
+                                     threadgroup atomic_uint* hist, threadgroup uint* tgState) {
+    if (tid == 0u) {
+        tgState[0] = 0u;
+        tgState[1] = 0u;
+        tgState[2] = topKPools;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint pass = 0u; pass < 4u; ++pass) {
+        const uint sh = 24u - pass * 8u;
+        atomic_store_explicit(&hist[tid], 0u, memory_order_relaxed);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        const uint prefix = tgState[0];
+        const uint mask = tgState[1];
+        for (uint i = tid; i < nPools; i += 256u) {
+            const uint key = qwg_mla_float_to_sortable_u32(rowScores[i]);
+            if ((key & mask) == prefix) {
+                const uint bucket = (key >> sh) & 0xFFu;
+                atomic_fetch_add_explicit(&hist[bucket], 1u, memory_order_relaxed);
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if (tid == 0u) {
+            uint kRem = tgState[2];
+            uint chosenBucket = 0u;
+            for (int b = 255; b >= 0; --b) {
+                const uint cnt = atomic_load_explicit(&hist[uint(b)], memory_order_relaxed);
+                if (cnt >= kRem) {
+                    chosenBucket = uint(b);
+                    break;
+                }
+                kRem -= cnt;
+            }
+            tgState[0] = prefix | (chosenBucket << sh);
+            tgState[1] = mask | (0xFFu << sh);
+            tgState[2] = kRem;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    // Ordered compaction: contiguous per-thread chunks + exclusive scan, so the
+    // list order (and the attention's summation order) is run-to-run deterministic.
+    const uint threshKey = tgState[0];
+    const uint chunk = (nPools + 255u) / 256u;
+    const uint b0 = min(tid * chunk, nPools), b1 = min(b0 + chunk, nPools);
+    uint above = 0u;
+    for (uint i = b0; i < b1; ++i) above += qwg_mla_float_to_sortable_u32(rowScores[i]) > threshKey ? 1u : 0u;
+    const uint lane = tid & 31u, sg = tid >> 5u;
+    uint slot = simd_prefix_exclusive_sum(above);
+    const uint sgTotal = simd_sum(above);
+    if (lane == 0u) atomic_store_explicit(&hist[sg], sgTotal, memory_order_relaxed);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint g = 0u; g < sg; ++g) slot += atomic_load_explicit(&hist[g], memory_order_relaxed);
+    for (uint i = b0; i < b1; ++i) {
+        if (qwg_mla_float_to_sortable_u32(rowScores[i]) > threshKey) {
+            if (slot < topKPools) dstList[slot] = int(i);
+            ++slot;
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (tid == 0u) {
+        uint cur = 0u;
+        for (uint g = 0u; g < 8u; ++g) cur += atomic_load_explicit(&hist[g], memory_order_relaxed);
+        for (uint i = 0u; i < nPools && cur < topKPools; ++i) {
+            const uint key = qwg_mla_float_to_sortable_u32(rowScores[i]);
+            if (key == threshKey) {
+                dstList[cur++] = int(i);
+            }
+        }
+        *countOut = int(topKPools);
+    }
+}

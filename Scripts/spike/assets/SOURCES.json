@@ -1,0 +1,13 @@
+{
+  "note_c19": "preprocessor_config.json committed at C19: the smart_resize factor/budget laws (patch 16, merge 2, temporal 2, shortest/longest_edge 65536/16777216) are checkpoint-bound constants of the QWMM port; canonically minimized to the law-bearing keys (full dict re-pullable via gen_mm_fixtures.py which dumps the live processor's to_dict() at generation time)",
+  "pinned_at": "2026-10-02",
+  "reason": "spec-17 golden law: goldens bind to the checkpoint's OWN tokenizer.json + chat_template.jinja bytes; committed (not fetched at test time) so CI is offline and reproducible",
+  "sha256": {
+    "chat_template.jinja": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041",
+    "preprocessor_config.json": "933a389f07bd60abd9fffe9e14e047c4bc820a2186d5324f544e98b2a24be64d",
+    "tokenizer.json": "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3",
+    "tokenizer_config.json": "b11349aafa7cdc6a320767cf7ceb29ed82f7eda5d65e8e0819e76f0ce947bf27"
+  },
+  "source": "https://huggingface.co/Jundot/Qwen3.8-27B-oQ4e-mtp/resolve/main/",
+  "verify": "shasum -a 256 -c not portable here; Scripts/oracle/c17_truth_probe.py prints all three and asserts the oracle loads them"
+}
