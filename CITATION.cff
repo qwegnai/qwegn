@@ -3,7 +3,7 @@ message: "If you use this software, please cite it as below."
 title: "Qwegn"
 type: software
 license: Apache-2.0
-repository-code: "https://github.com/qwegnai/qwegine"
+repository-code: "https://github.com/qwegnai/qwegn"
 authors:
   - name: "QwegnAI"
 date-released: "2026-11-09"
