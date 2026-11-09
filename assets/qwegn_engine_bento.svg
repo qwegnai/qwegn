@@ -1,266 +1,142 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 940" width="1200" height="940">
-  <defs>
-    <radialGradient id="bgGlow" cx="20%" cy="10%" r="90%">
-      <stop offset="0%" stop-color="#14192b"/>
-      <stop offset="55%" stop-color="#090c15"/>
-      <stop offset="100%" stop-color="#04060a"/>
-    </radialGradient>
-    <linearGradient id="cardGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#192136" stop-opacity="0.94"/>
-      <stop offset="100%" stop-color="#0d1220" stop-opacity="0.82"/>
-    </linearGradient>
-    <linearGradient id="cyanGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#38bdf8"/>
-      <stop offset="100%" stop-color="#0ea5e9"/>
-    </linearGradient>
-    <linearGradient id="purpleGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#c084fc"/>
-      <stop offset="100%" stop-color="#a855f7"/>
-    </linearGradient>
-    <linearGradient id="amberGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#fbbf24"/>
-      <stop offset="100%" stop-color="#f59e0b"/>
-    </linearGradient>
-    <linearGradient id="emeraldGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#34d399"/>
-      <stop offset="100%" stop-color="#10b981"/>
-    </linearGradient>
-    <linearGradient id="roseGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#fb7185"/>
-      <stop offset="100%" stop-color="#e11d48"/>
-    </linearGradient>
-    <linearGradient id="indigoGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#818cf8"/>
-      <stop offset="100%" stop-color="#6366f1"/>
-    </linearGradient>
-    <filter id="shadow" x="-4%" y="-4%" width="108%" height="112%">
-      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#000000" flood-opacity="0.5"/>
-    </filter>
-    <clipPath id="clipCard344">
-      <rect x="0" y="0" width="344" height="236" rx="16"/>
-    </clipPath>
-    <clipPath id="clipCard532">
-      <rect x="0" y="0" width="532" height="206" rx="16"/>
-    </clipPath>
-  </defs>
-  <style>
-    .title { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif; font-weight: 800; }
-    .subtitle { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif; font-weight: 400; }
-    .mono { font-family: "SF Mono", Menlo, Consolas, monospace; font-weight: 600; }
-    .badge { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; font-weight: 700; font-size: 10px; letter-spacing: 0.4px; text-transform: uppercase; }
-    .pill { font-family: "SF Mono", Menlo, Consolas, monospace; font-weight: 700; font-size: 10px; }
-    .card { stroke: #273252; stroke-width: 1.25; rx: 16; }
-  </style>
-
-  <rect width="1200" height="940" fill="url(#bgGlow)"/>
-  <g opacity="0.04" stroke="#ffffff" stroke-width="1">
-    <line x1="0" y1="168" x2="1200" y2="168"/>
-    <line x1="0" y1="422" x2="1200" y2="422"/>
-    <line x1="0" y1="676" x2="1200" y2="676"/>
-    <line x1="400" y1="0" x2="400" y2="940"/>
-    <line x1="800" y1="0" x2="800" y2="940"/>
-  </g>
-
-  <!-- HEADER & STRIKING FACTS PILL BAR -->
-  <g transform="translate(56, 26)">
-    <rect x="0" y="0" width="504" height="24" rx="12" fill="#17253b" stroke="#38bdf8" stroke-width="1"/>
-    <circle cx="14" cy="12" r="4" fill="#38bdf8"/>
-    <text x="26" y="16" fill="#38bdf8" class="badge">QWEGN v0.12.0 · PURE SWIFT 6.2 &amp; METAL 4 · 1M LSA · .QWCACHE · 321B MoE</text>
-
-    <rect x="854" y="0" width="234" height="24" rx="12" fill="#062e22" stroke="#10b981" stroke-width="1"/>
-    <text x="971" y="16" text-anchor="middle" fill="#34d399" class="badge">0 MLX · 0 LLAMA.CPP · 0 PYTORCH</text>
-
-    <text x="0" y="56" fill="#f8fafc" class="title" font-size="32">Qwegn — Apple Silicon LLM &amp; VLM Inference Engine</text>
-    <text x="0" y="79" fill="#94a3b8" class="subtitle" font-size="13.5">From-Scratch Apple10 NAX Cooperative-Tensor Kernels · 74× Faster .qwcache Repo Memory · 1M LSA · 321B NVMe/GPU Streaming</text>
-
-    <!-- 5 Striking Fact Pills (Total width = 1088) -->
-    <g transform="translate(0, 94)">
-      <rect x="0" y="0" width="208" height="26" rx="8" fill="#0d1729" stroke="#1e3a5f" stroke-width="1"/>
-      <text x="104" y="17" text-anchor="middle" fill="#38bdf8" class="pill">576 GB/s GEMV (98% DRAM)</text>
-
-      <rect x="218" y="0" width="212" height="26" rx="8" fill="#1b132e" stroke="#4c1d95" stroke-width="1"/>
-      <text x="324" y="17" text-anchor="middle" fill="#c084fc" class="pill">0 Heap &amp; 0 GPU Decode Allocs</text>
-
-      <rect x="440" y="0" width="212" height="26" rx="8" fill="#231a0b" stroke="#78350f" stroke-width="1"/>
-      <text x="546" y="17" text-anchor="middle" fill="#fbbf24" class="pill">20 Hadamard HQ &amp; AQ Formats</text>
-
-      <rect x="662" y="0" width="206" height="26" rx="8" fill="#07261e" stroke="#065f46" stroke-width="1"/>
-      <text x="765" y="17" text-anchor="middle" fill="#34d399" class="pill">189× LSA KV Traffic Cut</text>
-
-      <rect x="878" y="0" width="210" height="26" rx="8" fill="#29121d" stroke="#881337" stroke-width="1"/>
-      <text x="983" y="17" text-anchor="middle" fill="#fb7185" class="pill">31× AMX Vision (0 B Idle)</text>
-    </g>
-  </g>
-
-  <!-- ==================== ROW 1 (y = 160) ==================== -->
-
-  <!-- CARD 1: 6,389 tok/s Prefill & Apple10 NAX -->
-  <g transform="translate(56, 160)" filter="url(#shadow)" clip-path="url(#clipCard344)">
-    <rect width="344" height="236" fill="url(#cardGrad)" class="card"/>
-    <rect x="20" y="18" width="166" height="22" rx="11" fill="#0c2a3a" stroke="#0ea5e9" stroke-width="1"/>
-    <text x="103" y="33" text-anchor="middle" fill="#38bdf8" class="badge">APPLE10 NAX PREFILL</text>
-    <text x="324" y="33" text-anchor="end" fill="#7dd3fc" class="mono" font-size="11">BM64 + SLC Tiles</text>
-
-    <text x="20" y="86" fill="url(#cyanGrad)" class="title mono" font-size="40">6,389</text>
-    <text x="168" y="84" fill="#38bdf8" class="title mono" font-size="16">tok/s peak</text>
-
-    <text x="20" y="114" fill="#f1f5f9" class="title" font-size="15">Sustained Long-Prompt Ingestion</text>
-    <text x="20" y="138" fill="#cbd5e1" class="subtitle" font-size="12">• 6,005 tok/s @64K · 2,294 @1M (35B-A3B)</text>
-    <text x="20" y="158" fill="#cbd5e1" class="subtitle" font-size="12">• 2,696 tok/s (Flash-Next) · 1,749 (Loop-9B)</text>
-    <text x="20" y="178" fill="#cbd5e1" class="subtitle" font-size="12">• 968 tok/s @16K on 321B GLM (4–5× NAX MLA)</text>
-
-    <rect x="20" y="194" width="304" height="26" rx="6" fill="#091526" stroke="#1e3a5f" stroke-width="0.8"/>
-    <text x="172" y="211" text-anchor="middle" fill="#38bdf8" class="mono" font-size="10.5">absorb_q MMA 6.8× · GPU MoE Span Map 4×</text>
-  </g>
-
-  <!-- CARD 2: 74.3x Repo Memory & Two-Tier Cortex + Vault -->
-  <g transform="translate(428, 160)" filter="url(#shadow)" clip-path="url(#clipCard344)">
-    <rect width="344" height="236" fill="url(#cardGrad)" class="card"/>
-    <rect x="20" y="18" width="166" height="22" rx="11" fill="#281638" stroke="#a855f7" stroke-width="1"/>
-    <text x="103" y="33" text-anchor="middle" fill="#c084fc" class="badge">REPO MEMORY (.QWCACHE)</text>
-    <text x="324" y="33" text-anchor="end" fill="#d8b4fe" class="mono" font-size="11">99.96% @179K</text>
-
-    <text x="20" y="86" fill="url(#purpleGrad)" class="title mono" font-size="40">74.3×</text>
-    <text x="166" y="84" fill="#c084fc" class="title mono" font-size="16">Faster TTFT</text>
-
-    <text x="20" y="114" fill="#f1f5f9" class="title" font-size="15">Two-Tier Cortex + Vault .qwcache</text>
-    <text x="20" y="138" fill="#cbd5e1" class="subtitle" font-size="12">• 32.7K Cortex + &lt;0.5ms Vault (96.9% free 1M)</text>
-    <text x="20" y="158" fill="#cbd5e1" class="subtitle" font-size="12">• 0.12s (35B, 54×) · 0.24s (Flash-Next, 74×)</text>
-    <text x="20" y="178" fill="#cbd5e1" class="subtitle" font-size="12">• 0.16s post-edit · 0.45s @179.2K (395.9K tok/s)</text>
-
-    <rect x="20" y="194" width="304" height="26" rx="6" fill="#160d29" stroke="#581c87" stroke-width="0.8"/>
-    <text x="172" y="211" text-anchor="middle" fill="#c084fc" class="mono" font-size="10.5">265–464 MiB Pack · Causal Tool Recall · 0 Spill</text>
-  </g>
-
-  <!-- CARD 3: 233.4 tok/s Speculative Decode -->
-  <g transform="translate(800, 160)" filter="url(#shadow)" clip-path="url(#clipCard344)">
-    <rect width="344" height="236" fill="url(#cardGrad)" class="card"/>
-    <rect x="20" y="18" width="174" height="22" rx="11" fill="#33230c" stroke="#f59e0b" stroke-width="1"/>
-    <text x="107" y="33" text-anchor="middle" fill="#fbbf24" class="badge">5-ENGINE SPECULATIVE</text>
-    <text x="324" y="33" text-anchor="end" fill="#fde68a" class="mono" font-size="11">Up to 12.7 tok/rd</text>
-
-    <text x="20" y="86" fill="url(#amberGrad)" class="title mono" font-size="40">233.4</text>
-    <text x="168" y="84" fill="#fbbf24" class="title mono" font-size="16">tok/s decode</text>
-
-    <text x="20" y="114" fill="#f1f5f9" class="title" font-size="15">MTP-3/5 · NextN · DSpine · DFlash 2</text>
-    <text x="20" y="138" fill="#cbd5e1" class="subtitle" font-size="12">• 233.4 peak · 148.3 serial · 102.8 @1M (35B)</text>
-    <text x="20" y="158" fill="#cbd5e1" class="subtitle" font-size="12">• 142.4 (Flash-Next) · 134.5 (27B) · 93.9 (9B)</text>
-    <text x="20" y="178" fill="#cbd5e1" class="subtitle" font-size="12">• DSpine B=2..16 (4.19×) + HQ4 verify (+20%)</text>
-
-    <rect x="20" y="194" width="304" height="26" rx="6" fill="#1f1608" stroke="#78350f" stroke-width="0.8"/>
-    <text x="172" y="211" text-anchor="middle" fill="#fbbf24" class="mono" font-size="10.5">DSpine 4.19× (12.7 tok/rd) · Variational 85%</text>
-  </g>
-
-  <!-- ==================== ROW 2 (y = 414) ==================== -->
-
-  <!-- CARD 4: 321B MoE NVMe/GPU Streaming -->
-  <g transform="translate(56, 414)" filter="url(#shadow)" clip-path="url(#clipCard344)">
-    <rect width="344" height="236" fill="url(#cardGrad)" class="card"/>
-    <rect x="20" y="18" width="184" height="22" rx="11" fill="#062e22" stroke="#10b981" stroke-width="1"/>
-    <text x="112" y="33" text-anchor="middle" fill="#34d399" class="badge">321B MOE · NVME STREAMING</text>
-    <text x="324" y="33" text-anchor="end" fill="#6ee7b7" class="mono" font-size="11">0 OS Swap</text>
-
-    <text x="20" y="86" fill="url(#emeraldGrad)" class="title mono" font-size="40">321B</text>
-    <text x="150" y="84" fill="#34d399" class="title mono" font-size="16">34.8 tok/s</text>
-
-    <text x="20" y="114" fill="#f1f5f9" class="title" font-size="15">134.4 GiB Pack on 128 GB Unified RAM</text>
-    <text x="20" y="138" fill="#cbd5e1" class="subtitle" font-size="12">• 242/288 (84%) experts/layer pinned in GPU</text>
-    <text x="20" y="158" fill="#cbd5e1" class="subtitle" font-size="12">• Dynamic GPU LRU cuts SSD reads 4× (15.5/tok)</text>
-    <text x="20" y="178" fill="#cbd5e1" class="subtitle" font-size="12">• ColdEventPipeline overlaps NVMe pread + GPU</text>
-
-    <rect x="20" y="194" width="304" height="26" rx="6" fill="#062019" stroke="#065f46" stroke-width="0.8"/>
-    <text x="172" y="211" text-anchor="middle" fill="#34d399" class="mono" font-size="10.5">GLM-5.3-Flash (18B active · 3.59 bits/param)</text>
-  </g>
-
-  <!-- CARD 5: 1M Context & Training-Free LSA -->
-  <g transform="translate(428, 414)" filter="url(#shadow)" clip-path="url(#clipCard344)">
-    <rect width="344" height="236" fill="url(#cardGrad)" class="card"/>
-    <rect x="20" y="18" width="180" height="22" rx="11" fill="#064e3b" stroke="#10b981" stroke-width="1"/>
-    <text x="110" y="33" text-anchor="middle" fill="#6ee7b7" class="badge">1M CONTEXT · SPARSE LSA</text>
-    <text x="324" y="33" text-anchor="end" fill="#6ee7b7" class="mono" font-size="11">0.04 ms Radix</text>
-
-    <text x="20" y="84" fill="#f8fafc" class="title mono" font-size="34">1M · 100%</text>
-    <text x="234" y="83" fill="#34d399" class="title mono" font-size="15">Recall</text>
-
-    <text x="20" y="114" fill="#f1f5f9" class="title" font-size="15">1,048,576 Tokens · Zero Retraining</text>
-    <text x="20" y="138" fill="#cbd5e1" class="subtitle" font-size="12">• 3/3 needle (16K–1M) &amp; 4/4 repo fact recall</text>
-    <text x="20" y="158" fill="#cbd5e1" class="subtitle" font-size="12">• 512-tok GPU Ward clusters + 4-stage Radix</text>
-    <text x="20" y="178" fill="#cbd5e1" class="subtitle" font-size="12">• 189× KV reduction (K=2048 of 1M tokens)</text>
-
-    <rect x="20" y="194" width="304" height="26" rx="6" fill="#062019" stroke="#065f46" stroke-width="0.8"/>
-    <text x="172" y="211" text-anchor="middle" fill="#6ee7b7" class="mono" font-size="10.5">arXiv:2610.42147 · QLSA0001 disk trailer</text>
-  </g>
-
-  <!-- CARD 6: 31x AMX Vision & Multimodal VLM -->
-  <g transform="translate(800, 414)" filter="url(#shadow)" clip-path="url(#clipCard344)">
-    <rect width="344" height="236" fill="url(#cardGrad)" class="card"/>
-    <rect x="20" y="18" width="184" height="22" rx="11" fill="#361620" stroke="#e11d48" stroke-width="1"/>
-    <text x="112" y="33" text-anchor="middle" fill="#fb7185" class="badge">ON-DEMAND MULTIMODAL VLM</text>
-    <text x="324" y="33" text-anchor="end" fill="#fda4af" class="mono" font-size="11">0 B Idle RAM</text>
-
-    <text x="20" y="86" fill="url(#roseGrad)" class="title mono" font-size="40">31.0×</text>
-    <text x="166" y="84" fill="#fb7185" class="title mono" font-size="16">Faster ViT</text>
-
-    <text x="20" y="114" fill="#f1f5f9" class="title" font-size="15">Hardware AMX ViT &amp; Live Toggle</text>
-    <text x="20" y="138" fill="#cbd5e1" class="subtitle" font-size="12">• 79.9s → 2.57s on 3,520 patches (AMX sgemm)</text>
-    <text x="20" y="158" fill="#cbd5e1" class="subtitle" font-size="12">• 0 ms repeat-turn image LRU + salted KV hit</text>
-    <text x="20" y="178" fill="#cbd5e1" class="subtitle" font-size="12">• Live loadVision toggle without KV cache reset</text>
-
-    <rect x="20" y="194" width="304" height="26" rx="6" fill="#240d16" stroke="#881337" stroke-width="0.8"/>
-    <text x="172" y="211" text-anchor="middle" fill="#fb7185" class="mono" font-size="10.5">Flash-Next · Qwen3.6-35B · Qwen3.8-27B · GLM</text>
-  </g>
-
-  <!-- ==================== ROW 3: WIDE BENTO CARDS (y = 668) ==================== -->
-
-  <!-- CARD 7 (Left Wide 532x206): Frontier Architectures & 20 Quant Formats -->
-  <g transform="translate(56, 668)" filter="url(#shadow)" clip-path="url(#clipCard532)">
-    <rect width="532" height="206" fill="url(#cardGrad)" class="card"/>
-    <rect x="20" y="16" width="276" height="22" rx="11" fill="#1c1936" stroke="#6366f1" stroke-width="1"/>
-    <text x="158" y="31" text-anchor="middle" fill="#818cf8" class="badge">FRONTIER ARCHITECTURES &amp; QUANTIZATION</text>
-    <text x="512" y="31" text-anchor="end" fill="#a5b4fc" class="mono" font-size="11">QWModelDescriptor</text>
-
-    <text x="20" y="64" fill="#f8fafc" class="title" font-size="15">NoPE MLA · KDA &amp; GDN · Sinkhorn mHC · 2× Looped · 20 Quant Packs</text>
-
-    <!-- Left Column -->
-    <text x="20" y="92" fill="#cbd5e1" class="subtitle" font-size="11.5">• NoPE MLA (512-d latent KV + Key-Pool(4))</text>
-    <text x="20" y="114" fill="#cbd5e1" class="subtitle" font-size="11.5">• 34L KDA &amp; 36L GDN linear recurrence</text>
-    <text x="20" y="136" fill="#cbd5e1" class="subtitle" font-size="11.5">• 2/4-Stream Sinkhorn-20 mHC (-53%)</text>
-
-    <!-- Right Column -->
-    <text x="282" y="92" fill="#cbd5e1" class="subtitle" font-size="11.5">• SenseNova 32L → 56L (2× loop) + PLE</text>
-    <text x="282" y="114" fill="#cbd5e1" class="subtitle" font-size="11.5">• 20 Hadamard HQ{2..8}_G{32..256} &amp; AQ</text>
-    <text x="282" y="136" fill="#cbd5e1" class="subtitle" font-size="11.5">• Mixed per-layer packs + q4/q8/f16 KV</text>
-
-    <rect x="20" y="158" width="492" height="28" rx="6" fill="#131129" stroke="#3730a3" stroke-width="0.8"/>
-    <text x="266" y="176" text-anchor="middle" fill="#818cf8" class="mono" font-size="10.5">100% Descriptor-Driven Runtime — Zero Hardcoded Model-Name Branches</text>
-  </g>
-
-  <!-- CARD 8 (Right Wide 532x206): 16-Session Server, Agentic Coding & Menu Bar -->
-  <g transform="translate(612, 668)" filter="url(#shadow)" clip-path="url(#clipCard532)">
-    <rect width="532" height="206" fill="url(#cardGrad)" class="card"/>
-    <rect x="20" y="16" width="244" height="22" rx="11" fill="#0c2a3a" stroke="#0ea5e9" stroke-width="1"/>
-    <text x="142" y="31" text-anchor="middle" fill="#38bdf8" class="badge">16-SESSION SERVER · AGENT HARNESS</text>
-    <text x="512" y="31" text-anchor="end" fill="#7dd3fc" class="mono" font-size="11">OpenAI · Anthropic · Ollama</text>
-
-    <text x="20" y="64" fill="#f8fafc" class="title" font-size="15">Lockstep Batch KV · Shared COW Base · Tool Calling · qwg-menu</text>
-
-    <!-- Left Column -->
-    <text x="20" y="92" fill="#cbd5e1" class="subtitle" font-size="11.5">• 16 concurrent sessions + 4-way batch KV</text>
-    <text x="20" y="114" fill="#cbd5e1" class="subtitle" font-size="11.5">• Shared system+tools COW subagent prefix</text>
-    <text x="20" y="136" fill="#cbd5e1" class="subtitle" font-size="11.5">• Constrained JSON schema &amp; tool_calls</text>
-
-    <!-- Right Column -->
-    <text x="282" y="92" fill="#cbd5e1" class="subtitle" font-size="11.5">• Auto-mounts .qwg/ from agent prompts</text>
-    <text x="282" y="114" fill="#cbd5e1" class="subtitle" font-size="11.5">• Native macOS qwg-menu + Web UI (/ui)</text>
-    <text x="282" y="136" fill="#cbd5e1" class="subtitle" font-size="11.5">• Live model switcher &amp; KV/MTP telemetry</text>
-
-    <rect x="20" y="158" width="492" height="28" rx="6" fill="#091526" stroke="#1e3a5f" stroke-width="0.8"/>
-    <text x="266" y="176" text-anchor="middle" fill="#38bdf8" class="mono" font-size="10.5">/v1/chat/completions · /v1/messages · /api/chat · /v1/memory/mount</text>
-  </g>
-
-  <!-- FOOTER HARDWARE BAR -->
-  <g transform="translate(56, 890)">
-    <rect x="0" y="0" width="1088" height="32" rx="8" fill="#0d1322" stroke="#1e293b" stroke-width="1"/>
-    <text x="544" y="20" text-anchor="middle" fill="#94a3b8" class="mono" font-size="10.5">Qwegn v0.12.0 · Verified on Apple M5 Max (Mac17,6 · 18C CPU · 40C Apple10 GPU · 128 GB Unified Memory · 585 GB/s DRAM · 950 GB/s SLC · macOS 26)</text>
-  </g>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1517" width="1000" height="1517">
+<defs><linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#0b1120"/><stop offset="100%" stop-color="#04060a"/></linearGradient>
+<linearGradient id="card" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="#151d31" stop-opacity="0.97"/><stop offset="100%" stop-color="#0c1122" stop-opacity="0.95"/></linearGradient></defs>
+<rect width="1000" height="1517" fill="url(#bg)"/>
+<text x="24" y="46" font-family="Helvetica Neue,Helvetica,Arial" font-size="26" font-weight="bold" fill="#f1f5f9">QWEGN v0.12.0 · PURE SWIFT 6.2 &amp; METAL 4 · 1M LSA · .QWCACHE · 321B</text>
+<text x="24" y="78" font-family="Helvetica Neue,Helvetica,Arial" font-size="26" font-weight="bold" fill="#f1f5f9">MoE</text>
+<text x="24" y="110" font-family="Helvetica,Arial" font-size="16" fill="#7dd3fc">0 MLX · 0 LLAMA.CPP · 0 PYTORCH · Qwegn — Apple Silicon LLM &amp; VLM Inference Engine · From-Scratch Apple10 NAX</text>
+<text x="24" y="131" font-family="Helvetica,Arial" font-size="16" fill="#7dd3fc">Cooperative-Tensor Kernels · 74× Faster .qwcache Repo Memory · 1M LSA · 321B NVMe/GPU Streaming · 576 GB/s GEMV (98%</text>
+<text x="24" y="152" font-family="Helvetica,Arial" font-size="16" fill="#7dd3fc">DRAM) · 0 Heap &amp; 0 GPU Decode Allocs · 20 Hadamard HQ &amp; AQ Formats · 189× LSA KV Traffic Cut · 31× AMX Vision (0 B Idle)</text>
+<rect x="24" y="187" width="301" height="354" rx="14" fill="url(#card)" stroke="#38bdf8" stroke-opacity="0.35"/>
+<text x="42" y="213" font-family="Helvetica,Arial" font-size="15.5" font-weight="bold" fill="#38bdf8">APPLE10 NAX PREFILL</text>
+<text x="42" y="249" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">BM64 + SLC Tiles</text>
+<text x="42" y="273" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">tok/s peak</text>
+<text x="42" y="297" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">6,389</text>
+<text x="42" y="321" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Sustained Long-Prompt Ingestion</text>
+<text x="42" y="345" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">• 6,005 tok/s @64K · 2,294 @1M</text>
+<text x="42" y="369" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">(35B-A3B)</text>
+<text x="42" y="393" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">• 2,696 tok/s (Flash-Next) · 1,749</text>
+<text x="42" y="417" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">(Loop-9B)</text>
+<text x="42" y="441" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">• 968 tok/s @16K on 321B GLM</text>
+<text x="42" y="465" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">(4–5× NAX MLA)</text>
+<text x="42" y="489" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">absorb_q MMA 6.8× · GPU MoE</text>
+<text x="42" y="513" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Span Map 4×</text>
+<rect x="349" y="187" width="301" height="354" rx="14" fill="url(#card)" stroke="#c084fc" stroke-opacity="0.35"/>
+<text x="367" y="213" font-family="Helvetica,Arial" font-size="15.5" font-weight="bold" fill="#c084fc">REPO MEMORY (.QWCACHE)</text>
+<text x="367" y="249" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">99.96% @179K</text>
+<text x="367" y="273" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Faster TTFT</text>
+<text x="367" y="297" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">74.3×</text>
+<text x="367" y="321" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Two-Tier Cortex + Vault .qwcache</text>
+<text x="367" y="345" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">• 32.7K Cortex + &lt;0.5ms Vault</text>
+<text x="367" y="369" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">(96.9% free 1M)</text>
+<text x="367" y="393" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">• 0.12s (35B, 54×) · 0.24s</text>
+<text x="367" y="417" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">(Flash-Next, 74×)</text>
+<text x="367" y="441" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">• 0.16s post-edit · 0.45s @179.2K</text>
+<text x="367" y="465" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">(395.9K tok/s)</text>
+<text x="367" y="489" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">265–464 MiB Pack · Causal Tool</text>
+<text x="367" y="513" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Recall · 0 Spill</text>
+<rect x="674" y="187" width="301" height="354" rx="14" fill="url(#card)" stroke="#fbbf24" stroke-opacity="0.35"/>
+<text x="692" y="213" font-family="Helvetica,Arial" font-size="15.5" font-weight="bold" fill="#fbbf24">5-ENGINE SPECULATIVE</text>
+<text x="692" y="249" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Up to 12.7 tok/rd</text>
+<text x="692" y="273" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">tok/s decode</text>
+<text x="692" y="297" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">233.4</text>
+<text x="692" y="321" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">MTP-3/5 · NextN · DSpine · DFlash</text>
+<text x="692" y="345" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">2</text>
+<text x="692" y="369" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">• 233.4 peak · 148.3 serial · 102.8</text>
+<text x="692" y="393" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">@1M (35B)</text>
+<text x="692" y="417" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">• 142.4 (Flash-Next) · 134.5 (27B) ·</text>
+<text x="692" y="441" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">93.9 (9B)</text>
+<text x="692" y="465" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">• DSpine B=2..16 (4.19×) + HQ4</text>
+<text x="692" y="489" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">verify (+20%)</text>
+<text x="692" y="513" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">DSpine 4.19× (12.7 tok/rd) ·</text>
+<text x="692" y="537" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Variational 85%</text>
+<rect x="24" y="565" width="301" height="354" rx="14" fill="url(#card)" stroke="#34d399" stroke-opacity="0.35"/>
+<text x="42" y="591" font-family="Helvetica,Arial" font-size="15.5" font-weight="bold" fill="#34d399">321B MOE · NVME STREAMING</text>
+<text x="42" y="627" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">0 OS Swap</text>
+<text x="42" y="651" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">321B</text>
+<text x="42" y="675" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">34.8 tok/s</text>
+<text x="42" y="699" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">134.4 GiB Pack on 128 GB Unified</text>
+<text x="42" y="723" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">RAM</text>
+<text x="42" y="747" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">• 242/288 (84%) experts/layer</text>
+<text x="42" y="771" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">pinned in GPU</text>
+<text x="42" y="795" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">• Dynamic GPU LRU cuts SSD</text>
+<text x="42" y="819" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">reads 4× (15.5/tok)</text>
+<text x="42" y="843" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">• ColdEventPipeline overlaps NVMe</text>
+<text x="42" y="867" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">pread + GPU</text>
+<text x="42" y="891" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">GLM-5.3-Flash (18B active · 3.59</text>
+<text x="42" y="915" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">bits/param)</text>
+<rect x="349" y="565" width="301" height="354" rx="14" fill="url(#card)" stroke="#f87171" stroke-opacity="0.35"/>
+<text x="367" y="591" font-family="Helvetica,Arial" font-size="15.5" font-weight="bold" fill="#f87171">1M CONTEXT · SPARSE LSA</text>
+<text x="367" y="627" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">0.04 ms Radix</text>
+<text x="367" y="651" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">1M · 100%</text>
+<text x="367" y="675" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Recall</text>
+<text x="367" y="699" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">1,048,576 Tokens · Zero Retraining</text>
+<text x="367" y="723" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">• 3/3 needle (16K–1M) &amp; 4/4 repo</text>
+<text x="367" y="747" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">fact recall</text>
+<text x="367" y="771" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">• 512-tok GPU Ward clusters +</text>
+<text x="367" y="795" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">4-stage Radix</text>
+<text x="367" y="819" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">• 189× KV reduction (K=2048 of 1M</text>
+<text x="367" y="843" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">tokens)</text>
+<text x="367" y="867" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">arXiv:2610.42147 · QLSA0001 disk</text>
+<text x="367" y="891" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">trailer</text>
+<rect x="674" y="565" width="301" height="354" rx="14" fill="url(#card)" stroke="#818cf8" stroke-opacity="0.35"/>
+<text x="692" y="591" font-family="Helvetica,Arial" font-size="15.5" font-weight="bold" fill="#818cf8">ON-DEMAND MULTIMODAL VLM</text>
+<text x="692" y="627" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">0 B Idle RAM</text>
+<text x="692" y="651" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">31.0×</text>
+<text x="692" y="675" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Faster ViT</text>
+<text x="692" y="699" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Hardware AMX ViT &amp; Live Toggle</text>
+<text x="692" y="723" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">• 79.9s → 2.57s on 3,520 patches</text>
+<text x="692" y="747" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">(AMX sgemm)</text>
+<text x="692" y="771" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">• 0 ms repeat-turn image LRU +</text>
+<text x="692" y="795" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">salted KV hit</text>
+<text x="692" y="819" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">• Live loadVision toggle without KV</text>
+<text x="692" y="843" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">cache reset</text>
+<text x="692" y="867" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Flash-Next · Qwen3.6-35B ·</text>
+<text x="692" y="891" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Qwen3.8-27B · GLM</text>
+<rect x="24" y="943" width="301" height="474" rx="14" fill="url(#card)" stroke="#38bdf8" stroke-opacity="0.35"/>
+<text x="42" y="969" font-family="Helvetica,Arial" font-size="12.0" font-weight="bold" fill="#38bdf8">FRONTIER ARCHITECTURES &amp; QUANTIZATION</text>
+<text x="42" y="1005" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">QWModelDescriptor</text>
+<text x="42" y="1029" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">NoPE MLA · KDA &amp; GDN · Sinkhorn</text>
+<text x="42" y="1053" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">mHC · 2× Looped · 20 Quant Packs</text>
+<text x="42" y="1077" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">• NoPE MLA (512-d latent KV +</text>
+<text x="42" y="1101" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Key-Pool(4))</text>
+<text x="42" y="1125" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">• SenseNova 32L → 56L (2× loop) +</text>
+<text x="42" y="1149" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">PLE</text>
+<text x="42" y="1173" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">• 34L KDA &amp; 36L GDN linear</text>
+<text x="42" y="1197" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">recurrence</text>
+<text x="42" y="1221" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">• 20 Hadamard</text>
+<text x="42" y="1245" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">HQ{2..8}_G{32..256} &amp; AQ</text>
+<text x="42" y="1269" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">• 2/4-Stream Sinkhorn-20 mHC</text>
+<text x="42" y="1293" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">(-53%)</text>
+<text x="42" y="1317" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">• Mixed per-layer packs + q4/q8/f16</text>
+<text x="42" y="1341" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">KV</text>
+<text x="42" y="1365" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">100% Descriptor-Driven Runtime —</text>
+<text x="42" y="1389" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Zero Hardcoded Model-Name</text>
+<text x="42" y="1413" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Branches</text>
+<rect x="349" y="943" width="301" height="474" rx="14" fill="url(#card)" stroke="#c084fc" stroke-opacity="0.35"/>
+<text x="367" y="969" font-family="Helvetica,Arial" font-size="13.5" font-weight="bold" fill="#c084fc">16-SESSION SERVER · AGENT HARNESS</text>
+<text x="367" y="1005" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">OpenAI · Anthropic · Ollama</text>
+<text x="367" y="1029" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Lockstep Batch KV · Shared COW</text>
+<text x="367" y="1053" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Base · Tool Calling · qwg-menu</text>
+<text x="367" y="1077" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">• 16 concurrent sessions + 4-way</text>
+<text x="367" y="1101" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">batch KV</text>
+<text x="367" y="1125" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">• Auto-mounts .qwg/ from agent</text>
+<text x="367" y="1149" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">prompts</text>
+<text x="367" y="1173" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">• Shared system+tools COW</text>
+<text x="367" y="1197" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">subagent prefix</text>
+<text x="367" y="1221" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">• Native macOS qwg-menu + Web</text>
+<text x="367" y="1245" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">UI (/ui)</text>
+<text x="367" y="1269" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">• Constrained JSON schema &amp;</text>
+<text x="367" y="1293" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">tool_calls</text>
+<text x="367" y="1317" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">• Live model switcher &amp; KV/MTP</text>
+<text x="367" y="1341" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">telemetry</text>
+<text x="367" y="1365" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">/v1/chat/completions · /v1/messages</text>
+<text x="367" y="1389" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">· /api/chat · /v1/memory/mount</text>
+<rect x="674" y="943" width="301" height="474" rx="14" fill="url(#card)" stroke="#38bdf8" stroke-opacity="0.35"/>
+<text x="692" y="969" font-family="Helvetica,Arial" font-size="15.5" font-weight="bold" fill="#38bdf8">QWEGN ENGINE BENTO</text>
+<text x="692" y="1005" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Qwegn v0.12.0 · Verified on Apple</text>
+<text x="692" y="1029" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">M5 Max (Mac17,6 · 18C CPU · 40C</text>
+<text x="692" y="1053" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Apple10 GPU · 128 GB Unified</text>
+<text x="692" y="1077" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Memory · 585 GB/s DRAM · 950</text>
+<text x="692" y="1101" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">GB/s SLC · macOS 26)</text>
 </svg>
