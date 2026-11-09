@@ -4,7 +4,16 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 echo "== build"
-swift build 2>&1 | tail -3
+set +e
+swift build > /tmp/qwegine_ci_build.log 2>&1
+bstatus=$?
+set -e
+if [ "$bstatus" -ne 0 ]; then
+  echo "FAIL: swift build exit $bstatus"
+  cat /tmp/qwegine_ci_build.log
+  exit "$bstatus"
+fi
+tail -3 /tmp/qwegine_ci_build.log
 echo "== style gate (Swift + Metal + Python)"
 python3 Scripts/lint_style.py Sources Tests Scripts || { echo "FAIL: style gate"; exit 1; }
 echo "== kernel reachability (metallib vs dispatch sites)"
