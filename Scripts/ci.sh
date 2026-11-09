@@ -33,8 +33,12 @@ set +e
 swift test --no-parallel > /tmp/qwegine_ci_test.log 2>&1
 tstatus=$?
 set -e
+if [ "$tstatus" -ne 0 ]; then
+  echo "FAIL: swift test exit $tstatus"
+  cat /tmp/qwegine_ci_test.log
+  exit "$tstatus"
+fi
 tail -5 /tmp/qwegine_ci_test.log
-if [ "$tstatus" -ne 0 ]; then echo "FAIL: swift test exit $tstatus"; exit "$tstatus"; fi
 echo "== cli smoke"
 # THE SMOKE LAW (C22): exercise a REAL verb on the fixture pack — a bare
 # `qwg` root exits 64 by ArgumentParser contract (no default subcommand),
