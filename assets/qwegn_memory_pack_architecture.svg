@@ -1,128 +1,178 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 3036" width="1000" height="3036">
-<defs><linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#0b1120"/><stop offset="100%" stop-color="#04060a"/></linearGradient>
-<linearGradient id="card" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="#151d31" stop-opacity="0.97"/><stop offset="100%" stop-color="#0c1122" stop-opacity="0.95"/></linearGradient></defs>
-<rect width="1000" height="3036" fill="url(#bg)"/>
-<text x="24" y="46" font-family="Helvetica Neue,Helvetica,Arial" font-size="26" font-weight="bold" fill="#f1f5f9">TWO-TIER REPOSITORY MEMORY · LATENT SPARSE ATTENTION</text>
-<text x="24" y="78" font-family="Helvetica Neue,Helvetica,Arial" font-size="26" font-weight="bold" fill="#f1f5f9">(arXiv:2610.42147)</text>
-<text x="24" y="110" font-family="Helvetica,Arial" font-size="16" fill="#7dd3fc">Two-Tier Hierarchical Codebase Memory &amp; Off-Context Vault · 32.7K Resident Cortex · &lt;0.5 ms Causal Vault Paging · 96.9% Free</text>
-<text x="24" y="131" font-family="Helvetica,Arial" font-size="16" fill="#7dd3fc">1M Context · Prefix-Invariant Multi-Turn State</text>
-<rect x="24" y="166" width="301" height="1314" rx="14" fill="url(#card)" stroke="#1e293b" stroke-opacity="0.35"/>
-<text x="42" y="192" font-family="Helvetica,Arial" font-size="13.5" font-weight="bold" fill="#1e293b">QWEGN MEMORY PACK ARCHITECTURE</text>
-<text x="42" y="228" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">END-TO-END REPOSITORY</text>
-<text x="42" y="252" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">MEMORY DATAFLOW — FROM</text>
-<text x="42" y="276" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">WORKSPACE TO</text>
-<text x="42" y="300" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">PREFIX-INVARIANT SPARSE</text>
-<text x="42" y="324" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">DECODE</text>
-<text x="42" y="348" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">1. OFFLINE TWO-TIER INDEXING</text>
-<text x="42" y="372" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">2. PREFIX-INVARIANT CAUSAL</text>
-<text x="42" y="396" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">CONTEXT</text>
-<text x="42" y="420" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">3. PER-TOKEN RADIX LSA</text>
-<text x="42" y="444" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">SELECT</text>
-<text x="42" y="468" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Depth + Stability Order + Universal</text>
-<text x="42" y="492" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Map</text>
-<text x="42" y="516" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Pinned Cortex + Causal Turn &amp; Tool</text>
-<text x="42" y="540" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Paging</text>
-<text x="42" y="564" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Undiluted Hybrid Recurrence &amp; LSA</text>
-<text x="42" y="588" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">1. RoPE-free q_t^idx ∈ ℝ^64</text>
-<text x="42" y="612" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">projection</text>
-<text x="42" y="636" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">[0 ..&lt; N_cortex] Pinned Resident</text>
-<text x="42" y="660" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Cortex (32.7K tok)</text>
-<text x="42" y="684" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Bounded Concept Map: 100%</text>
-<text x="42" y="708" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">workspace topology</text>
-<text x="42" y="732" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Concept Map + Stable Files ·</text>
-<text x="42" y="756" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Immune to LRU eviction</text>
-<text x="42" y="780" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">2. Score 64 Ward centroids /</text>
-<text x="42" y="804" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">512-tok</text>
-<text x="42" y="828" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">0.12–0.24 s TTFT (54.4×–74.3×</text>
-<text x="42" y="852" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">faster than cold prefill)</text>
-<text x="42" y="876" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">3. 2-pass Radix top-bucket expand</text>
-<text x="42" y="900" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Tier 1 Resident Cortex: 32.7K tok</text>
-<text x="42" y="924" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">(265–464 MiB)</text>
-<text x="42" y="948" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">[N_cortex ..&lt; N_hist] Frozen</text>
-<text x="42" y="972" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Multi-Turn &amp; Tool Recall</text>
-<text x="42" y="996" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">4. Attend: Sink(4) + Top-k(2048)</text>
-<text x="42" y="1020" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">&lt;0.5 ms user + tool-step paging ·</text>
-<text x="42" y="1044" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Historical snapshots frozen</text>
-<text x="42" y="1068" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">+ Local Window(512) + Incremental</text>
-<text x="42" y="1092" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Δ</text>
-<text x="42" y="1116" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Tier 2 Off-Context Vault: Full</text>
-<text x="42" y="1140" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">sources + symbols</text>
-<text x="42" y="1164" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">99.96% cache hit up to 179.2K tok</text>
-<text x="42" y="1188" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">(0.45 s TTFT · 395.9K tok/s)</text>
-<text x="42" y="1212" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">LSA Select: 0.039 ms · Decode:</text>
-<text x="42" y="1236" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">149–164 tok/s</text>
-<text x="42" y="1260" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">[N_hist ..&lt; N_tail] Active Turn Tail +</text>
-<text x="42" y="1284" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Live Disk Delta</text>
-<text x="42" y="1308" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">→ Fast offline build: 8.6 s (35B) ·</text>
-<text x="42" y="1332" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">16.6 s (FN)</text>
-<text x="42" y="1356" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">99.87% prior prefix hit after disk</text>
-<text x="42" y="1380" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">edits (0.16 s TTFT)</text>
-<text x="42" y="1404" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">93.5–99.2% MTP accept · 0 steady</text>
-<text x="42" y="1428" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">GPU allocs</text>
-<text x="42" y="1452" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">→ 96.9% (&gt;1.01M tok) of 1M context</text>
-<text x="42" y="1476" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">left free</text>
-<rect x="349" y="166" width="301" height="1314" rx="14" fill="url(#card)" stroke="#0ea5e9" stroke-opacity="0.35"/>
-<text x="367" y="192" font-family="Helvetica,Arial" font-size="13.5" font-weight="bold" fill="#0ea5e9">QWEGN MEMORY PACK ARCHITECTURE</text>
-<rect x="674" y="166" width="301" height="1314" rx="14" fill="url(#card)" stroke="#10b981" stroke-opacity="0.35"/>
-<text x="692" y="192" font-family="Helvetica,Arial" font-size="13.5" font-weight="bold" fill="#10b981">QWEGN MEMORY PACK ARCHITECTURE</text>
-<rect x="24" y="1504" width="301" height="1218" rx="14" fill="url(#card)" stroke="#c084fc" stroke-opacity="0.35"/>
-<text x="42" y="1530" font-family="Helvetica,Arial" font-size="13.5" font-weight="bold" fill="#c084fc">QWEGN MEMORY PACK ARCHITECTURE</text>
-<rect x="349" y="1504" width="301" height="1218" rx="14" fill="url(#card)" stroke="#1e293b" stroke-opacity="0.35"/>
-<text x="367" y="1530" font-family="Helvetica,Arial" font-size="13.5" font-weight="bold" fill="#1e293b">QWEGN MEMORY PACK ARCHITECTURE</text>
-<text x="367" y="1566" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">PARADIGM COMPARISON —</text>
-<text x="367" y="1590" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">VECTOR RAG vs. STANFORD</text>
-<text x="367" y="1614" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">MEMORILLA (arXiv:2610.21375)</text>
-<text x="367" y="1638" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">vs. QWEGN TWO-TIER LSA</text>
-<text x="367" y="1662" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">MEMORY</text>
-<text x="367" y="1686" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">CHUNKED VECTOR RAG &amp; GREP</text>
-<text x="367" y="1710" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">LOOPS</text>
-<text x="367" y="1734" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">STANFORD MEMORILLA</text>
-<text x="367" y="1758" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">(arXiv:2610.21375)</text>
-<text x="367" y="1782" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">QWEGN TWO-TIER LSA MEMORY</text>
-<text x="367" y="1806" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">(arXiv:2610.42147)</text>
-<text x="367" y="1830" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Fragmented Chunks &amp; Tool Latency</text>
-<text x="367" y="1854" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Learned K=16 Soft-Token</text>
-<text x="367" y="1878" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Bottleneck</text>
-<text x="367" y="1902" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">32.7K Cortex + &lt;0.5 ms Off-Context</text>
-<text x="367" y="1926" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Vault</text>
-<text x="367" y="1950" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">✗ Severed Global Call Graphs:</text>
-<text x="367" y="1974" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">✗ Decoder-Manifold Lock-In:</text>
-<text x="367" y="1998" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">✓ Zero Training &amp; 96.9% Free 1M</text>
-<text x="367" y="2022" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Context:</text>
-<text x="367" y="2046" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Top-K chunks miss cross-module</text>
-<text x="367" y="2070" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">conformances</text>
-<text x="367" y="2094" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">~19h on 4× H100 SFT+RL per</text>
-<text x="367" y="2118" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">frozen LLM</text>
-<text x="367" y="2142" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">100% workspace map · 265–464</text>
-<text x="367" y="2166" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">MiB pack · 0 spill</text>
-<text x="367" y="2190" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">✗ Cold-Start Exploration Tax (8–25</text>
-<text x="367" y="2214" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">s):</text>
-<text x="367" y="2238" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">✗ 100:1 Lossy Bottleneck (16 vecs</text>
-<text x="367" y="2262" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">= 128 KB):</text>
-<text x="367" y="2286" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">✓ 100% Verbatim Recall &amp; 54–74×</text>
-<text x="367" y="2310" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Faster TTFT:</text>
-<text x="367" y="2334" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">5–15 search/read turns before</text>
-<text x="367" y="2358" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">writing code</text>
-<text x="367" y="2382" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Destroys verbatim syntax, types &amp;</text>
-<text x="367" y="2406" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">line numbers</text>
-<text x="367" y="2430" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">0.12–0.24 s TTFT · User +</text>
-<text x="367" y="2454" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Tool-step Vault paging</text>
-<text x="367" y="2478" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">✗ Blind Autonomous Tool Loops:</text>
-<text x="367" y="2502" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">✗ Static Query Conditioning (q₀</text>
-<text x="367" y="2526" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">only):</text>
-<text x="367" y="2550" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">✓ Prefix-Invariant up to 179.2K</text>
-<text x="367" y="2574" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Tokens:</text>
-<text x="367" y="2598" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Repeated shell searches during</text>
-<text x="367" y="2622" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">multi-step edits</text>
-<text x="367" y="2646" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Injected once at Layer 0 before</text>
-<text x="367" y="2670" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">generation</text>
-<text x="367" y="2694" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">99.96% cache hit (0.45 s TTFT ·</text>
-<text x="367" y="2718" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">395.9K tok/s)</text>
-<rect x="674" y="1504" width="301" height="1218" rx="14" fill="url(#card)" stroke="#10b981" stroke-opacity="0.35"/>
-<text x="692" y="1530" font-family="Helvetica,Arial" font-size="13.5" font-weight="bold" fill="#10b981">QWEGN MEMORY PACK ARCHITECTURE</text>
-<rect x="24" y="2746" width="301" height="190" rx="14" fill="url(#card)" stroke="#f87171" stroke-opacity="0.35"/>
-<text x="42" y="2772" font-family="Helvetica,Arial" font-size="13.5" font-weight="bold" fill="#f87171">QWEGN MEMORY PACK ARCHITECTURE</text>
-<rect x="349" y="2746" width="301" height="190" rx="14" fill="url(#card)" stroke="#fbbf24" stroke-opacity="0.35"/>
-<text x="367" y="2772" font-family="Helvetica,Arial" font-size="13.5" font-weight="bold" fill="#fbbf24">QWEGN MEMORY PACK ARCHITECTURE</text>
-<text x="24" y="3012" font-family="Helvetica,Arial" font-size="14.5" fill="#64748b">Qwegn v0.11.3 · Two-Tier Repository Memory · Pinned Resident Cortex + Causal Off-Context Vault + Tail Workspace Delta.</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 760" width="1280" height="760">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#070a12"/>
+      <stop offset="0.5" stop-color="#0d1323"/>
+      <stop offset="1" stop-color="#090d18"/>
+    </linearGradient>
+    <linearGradient id="card" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#131c31" stop-opacity="0.94"/>
+      <stop offset="1" stop-color="#0b101d" stop-opacity="0.97"/>
+    </linearGradient>
+    <linearGradient id="cyGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#0284c7"/>
+      <stop offset="1" stop-color="#38bdf8"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#34d399"/>
+      <stop offset="1" stop-color="#38bdf8"/>
+    </linearGradient>
+    <style>
+      .sans { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", system-ui, sans-serif; }
+      .mono { font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace; }
+      .ct { font-size: 13px; font-weight: 800; fill: #f1f5f9; letter-spacing: 0.3px; }
+    </style>
+  </defs>
+
+  <rect width="1280" height="760" rx="20" fill="url(#bg)" stroke="#1e293b" stroke-width="2"/>
+  <rect x="0" y="0" width="1280" height="5" fill="url(#cyGrad)" opacity="0.9"/>
+
+  <!-- HEADER -->
+  <g transform="translate(40, 28)">
+    <rect width="456" height="24" rx="12" fill="#0ea5e9" fill-opacity="0.14" stroke="#38bdf8"/>
+    <text x="228" y="16" text-anchor="middle" class="mono" font-size="10.5" font-weight="700" fill="#7dd3fc" letter-spacing="0.6">TWO-TIER REPOSITORY MEMORY · LATENT SPARSE ATTENTION (arXiv:2610.42147)</text>
+    <text x="0" y="60" class="sans" font-size="28" font-weight="800" fill="#f8fafc" letter-spacing="-0.4">Two-Tier Hierarchical Codebase Memory &amp; Off-Context Vault</text>
+    <text x="0" y="84" class="mono" font-size="12" font-weight="600" fill="#94a3b8">32.7K Resident Cortex · &lt;0.5 ms Causal Vault Paging · 96.9% Free 1M Context · Prefix-Invariant Multi-Turn State</text>
+  </g>
+
+  <!-- QWEGN MARK -->
+  <g transform="translate(1072, 28)">
+    <rect width="168" height="48" rx="12" fill="#0b1222" stroke="#334155" stroke-width="1"/>
+    <rect x="10" y="9" width="30" height="30" rx="8" fill="url(#mark)"/>
+    <text x="25" y="30" text-anchor="middle" class="sans" font-size="18" font-weight="900" fill="#04110c">Q</text>
+    <text x="50" y="27" class="sans" font-size="21" font-weight="800" fill="#f8fafc" letter-spacing="-0.3">Qwegn</text>
+    <text x="51" y="40" class="mono" font-size="8.5" font-weight="700" fill="#64748b" letter-spacing="1.6">INFERENCE ENGINE</text>
+  </g>
+
+  <!-- TOP PIPELINE: 3 STAGES -->
+  <g transform="translate(40, 128)">
+    <rect width="1200" height="302" rx="14" fill="url(#card)" stroke="#1e293b" stroke-width="1.2"/>
+    <text x="24" y="30" class="sans ct">END-TO-END REPOSITORY MEMORY DATAFLOW — FROM WORKSPACE TO PREFIX-INVARIANT SPARSE DECODE</text>
+
+    <!-- STAGE 1: OFFLINE TWO-TIER INDEXING -->
+    <g transform="translate(22, 46)">
+      <rect width="360" height="236" rx="12" fill="#0d1424" stroke="#0ea5e9" stroke-opacity="0.6"/>
+      <rect x="14" y="14" width="214" height="22" rx="11" fill="#0c2a3a" stroke="#38bdf8"/>
+      <text x="121" y="29" text-anchor="middle" class="mono" font-size="10" font-weight="700" fill="#7dd3fc">1. OFFLINE TWO-TIER INDEXING</text>
+
+      <text x="16" y="56" class="sans" font-size="13.5" font-weight="800" fill="#f8fafc">Depth + Stability Order + Universal Map</text>
+      <rect x="16" y="68" width="328" height="34" rx="6" fill="#132038" stroke="#1e3a5f"/>
+      <text x="24" y="89" class="mono" font-size="10" fill="#7dd3fc">Bounded Concept Map: 100% workspace topology</text>
+
+      <rect x="16" y="108" width="328" height="34" rx="6" fill="#132038" stroke="#1e3a5f"/>
+      <text x="24" y="129" class="mono" font-size="10" fill="#38bdf8">Tier 1 Resident Cortex: 32.7K tok (265–464 MiB)</text>
+
+      <rect x="16" y="148" width="328" height="34" rx="6" fill="#132038" stroke="#1e3a5f"/>
+      <text x="24" y="169" class="mono" font-size="10" fill="#c084fc">Tier 2 Off-Context Vault: Full sources + symbols</text>
+
+      <text x="16" y="200" class="mono" font-size="10" fill="#34d399">→ Fast offline build: 8.6 s (35B) · 16.6 s (FN)</text>
+      <text x="16" y="217" class="mono" font-size="10" fill="#34d399">→ 96.9% (&gt;1.01M tok) of 1M context left free</text>
+    </g>
+
+    <!-- Arrow 1 -> 2 -->
+    <g transform="translate(388, 154)">
+      <line x1="0" y1="10" x2="26" y2="10" stroke="#38bdf8" stroke-width="2.5"/>
+      <polygon points="24,4 34,10 24,16" fill="#38bdf8"/>
+    </g>
+
+    <!-- STAGE 2: PREFIX-INVARIANT HIERARCHICAL CONTEXT -->
+    <g transform="translate(426, 46)">
+      <rect width="388" height="236" rx="12" fill="#0d1424" stroke="#10b981" stroke-opacity="0.6"/>
+      <rect x="14" y="14" width="268" height="22" rx="11" fill="#064e3b" stroke="#10b981"/>
+      <text x="148" y="29" text-anchor="middle" class="mono" font-size="10" font-weight="700" fill="#6ee7b7">2. PREFIX-INVARIANT CAUSAL CONTEXT</text>
+
+      <text x="16" y="56" class="sans" font-size="13.5" font-weight="800" fill="#f8fafc">Pinned Cortex + Causal Turn &amp; Tool Paging</text>
+
+      <!-- Tier A Box -->
+      <rect x="16" y="68" width="356" height="50" rx="6" fill="#063628" stroke="#10b981"/>
+      <text x="24" y="85" class="mono" font-size="10" font-weight="700" fill="#6ee7b7">[0 ..&lt; N_cortex] Pinned Resident Cortex (32.7K tok)</text>
+      <text x="24" y="101" class="mono" font-size="9.5" fill="#a7f3d0">Concept Map + Stable Files · Immune to LRU eviction</text>
+      <text x="24" y="113" class="mono" font-size="9.5" fill="#34d399">0.12–0.24 s TTFT (54.4×–74.3× faster than cold prefill)</text>
+
+      <!-- Tier B Box -->
+      <rect x="16" y="124" width="356" height="50" rx="6" fill="#1e1538" stroke="#a855f7"/>
+      <text x="24" y="141" class="mono" font-size="10" font-weight="700" fill="#d8b4fe">[N_cortex ..&lt; N_hist] Frozen Multi-Turn &amp; Tool Recall</text>
+      <text x="24" y="157" class="mono" font-size="9.5" fill="#e9d5ff">&lt;0.5 ms user + tool-step paging · Historical snapshots frozen</text>
+      <text x="24" y="169" class="mono" font-size="9.5" fill="#c084fc">99.96% cache hit up to 179.2K tok (0.45 s TTFT · 395.9K tok/s)</text>
+
+      <!-- Delta Box -->
+      <rect x="16" y="180" width="356" height="44" rx="6" fill="#2e210b" stroke="#f59e0b"/>
+      <text x="24" y="198" class="mono" font-size="10" font-weight="700" fill="#fbbf24">[N_hist ..&lt; N_tail] Active Turn Tail + Live Disk Delta</text>
+      <text x="24" y="214" class="mono" font-size="9.5" fill="#fde68a">99.87% prior prefix hit after disk edits (0.16 s TTFT)</text>
+    </g>
+
+    <!-- Arrow 2 -> 3 -->
+    <g transform="translate(820, 154)">
+      <line x1="0" y1="10" x2="26" y2="10" stroke="#10b981" stroke-width="2.5"/>
+      <polygon points="24,4 34,10 24,16" fill="#10b981"/>
+    </g>
+
+    <!-- STAGE 3: PER-TOKEN DYNAMIC LSA SELECTION -->
+    <g transform="translate(858, 46)">
+      <rect width="320" height="236" rx="12" fill="#0d1424" stroke="#c084fc" stroke-opacity="0.6"/>
+      <rect x="14" y="14" width="234" height="22" rx="11" fill="#2e1065" stroke="#a855f7"/>
+      <text x="131" y="29" text-anchor="middle" class="mono" font-size="10" font-weight="700" fill="#d8b4fe">3. PER-TOKEN RADIX LSA SELECT</text>
+
+      <text x="16" y="56" class="sans" font-size="13.5" font-weight="800" fill="#f8fafc">Undiluted Hybrid Recurrence &amp; LSA</text>
+      <text x="16" y="76" class="mono" font-size="10" fill="#cbd5e1">1. RoPE-free q_t^idx ∈ ℝ^64 projection</text>
+      <text x="16" y="96" class="mono" font-size="10" fill="#cbd5e1">2. Score 64 Ward centroids / 512-tok</text>
+      <text x="16" y="116" class="mono" font-size="10" fill="#cbd5e1">3. 2-pass Radix top-bucket expand</text>
+      <text x="16" y="136" class="mono" font-size="10" fill="#34d399">4. Attend: Sink(4) + Top-k(2048)</text>
+      <text x="32" y="152" class="mono" font-size="10" fill="#34d399">+ Local Window(512) + Incremental Δ</text>
+
+      <rect x="16" y="168" width="288" height="54" rx="8" fill="#161f33" stroke="#334155"/>
+      <text x="24" y="188" class="mono" font-size="10.5" font-weight="800" fill="#38bdf8">LSA Select: 0.039 ms · Decode: 149–164 tok/s</text>
+      <text x="24" y="208" class="mono" font-size="10" font-weight="600" fill="#6ee7b7">93.5–99.2% MTP accept · 0 steady GPU allocs</text>
+    </g>
+  </g>
+
+  <!-- BOTTOM HALF: PARADIGM COMPARISON -->
+  <g transform="translate(40, 446)">
+    <rect width="1200" height="262" rx="14" fill="url(#card)" stroke="#1e293b" stroke-width="1.2"/>
+    <text x="24" y="30" class="sans ct">PARADIGM COMPARISON — VECTOR RAG vs. STANFORD MEMORILLA (arXiv:2610.21375) vs. QWEGN TWO-TIER LSA MEMORY</text>
+
+    <!-- Card 1: RAG / Grep Loops -->
+    <g transform="translate(22, 46)">
+      <rect width="368" height="198" rx="12" fill="#0d1424" stroke="#f87171" stroke-opacity="0.45"/>
+      <rect x="14" y="14" width="210" height="22" rx="11" fill="#361620" stroke="#e11d48"/>
+      <text x="119" y="29" text-anchor="middle" class="mono" font-size="10" font-weight="700" fill="#fda4af">CHUNKED VECTOR RAG &amp; GREP LOOPS</text>
+      <text x="16" y="58" class="sans" font-size="14" font-weight="800" fill="#f8fafc">Fragmented Chunks &amp; Tool Latency</text>
+      <text x="16" y="82" class="mono" font-size="10.5" fill="#fca5a5">✗ Severed Global Call Graphs:</text>
+      <text x="28" y="98" class="sans" font-size="11" fill="#94a3b8">Top-K chunks miss cross-module conformances</text>
+      <text x="16" y="120" class="mono" font-size="10.5" fill="#fca5a5">✗ Cold-Start Exploration Tax (8–25 s):</text>
+      <text x="28" y="136" class="sans" font-size="11" fill="#94a3b8">5–15 search/read turns before writing code</text>
+      <text x="16" y="158" class="mono" font-size="10.5" fill="#fca5a5">✗ Blind Autonomous Tool Loops:</text>
+      <text x="28" y="174" class="sans" font-size="11" fill="#94a3b8">Repeated shell searches during multi-step edits</text>
+    </g>
+
+    <!-- Card 2: Stanford Memorilla -->
+    <g transform="translate(416, 46)">
+      <rect width="368" height="198" rx="12" fill="#0d1424" stroke="#fbbf24" stroke-opacity="0.45"/>
+      <rect x="14" y="14" width="240" height="22" rx="11" fill="#33230c" stroke="#f59e0b"/>
+      <text x="134" y="29" text-anchor="middle" class="mono" font-size="10" font-weight="700" fill="#fde68a">STANFORD MEMORILLA (arXiv:2610.21375)</text>
+      <text x="16" y="58" class="sans" font-size="14" font-weight="800" fill="#f8fafc">Learned K=16 Soft-Token Bottleneck</text>
+      <text x="16" y="82" class="mono" font-size="10.5" fill="#fcd34d">✗ Decoder-Manifold Lock-In:</text>
+      <text x="28" y="98" class="sans" font-size="11" fill="#94a3b8">~19h on 4× H100 SFT+RL per frozen LLM</text>
+      <text x="16" y="120" class="mono" font-size="10.5" fill="#fcd34d">✗ 100:1 Lossy Bottleneck (16 vecs = 128 KB):</text>
+      <text x="28" y="136" class="sans" font-size="11" fill="#94a3b8">Destroys verbatim syntax, types &amp; line numbers</text>
+      <text x="16" y="158" class="mono" font-size="10.5" fill="#fcd34d">✗ Static Query Conditioning (q₀ only):</text>
+      <text x="28" y="174" class="sans" font-size="11" fill="#94a3b8">Injected once at Layer 0 before generation</text>
+    </g>
+
+    <!-- Card 3: Qwegn Two-Tier LSA Memory -->
+    <g transform="translate(810, 46)">
+      <rect width="368" height="198" rx="12" fill="#071f18" stroke="#10b981" stroke-width="1.5"/>
+      <rect x="14" y="14" width="272" height="22" rx="11" fill="#064e3b" stroke="#10b981"/>
+      <text x="150" y="29" text-anchor="middle" class="mono" font-size="10" font-weight="700" fill="#6ee7b7">QWEGN TWO-TIER LSA MEMORY (arXiv:2610.42147)</text>
+      <text x="16" y="58" class="sans" font-size="14" font-weight="800" fill="#f8fafc">32.7K Cortex + &lt;0.5 ms Off-Context Vault</text>
+      <text x="16" y="82" class="mono" font-size="10.5" fill="#34d399">✓ Zero Training &amp; 96.9% Free 1M Context:</text>
+      <text x="28" y="98" class="sans" font-size="11" fill="#d1fae5">100% workspace map · 265–464 MiB pack · 0 spill</text>
+      <text x="16" y="120" class="mono" font-size="10.5" fill="#34d399">✓ 100% Verbatim Recall &amp; 54–74× Faster TTFT:</text>
+      <text x="28" y="136" class="sans" font-size="11" fill="#d1fae5">0.12–0.24 s TTFT · User + Tool-step Vault paging</text>
+      <text x="16" y="158" class="mono" font-size="10.5" fill="#34d399">✓ Prefix-Invariant up to 179.2K Tokens:</text>
+      <text x="28" y="174" class="sans" font-size="11" fill="#d1fae5">99.96% cache hit (0.45 s TTFT · 395.9K tok/s)</text>
+    </g>
+  </g>
+
+  <text x="40" y="736" class="mono" font-size="11" fill="#64748b">Qwegn v0.11.3 · Two-Tier Repository Memory · Pinned Resident Cortex + Causal Off-Context Vault + Tail Workspace Delta.</text>
 </svg>

@@ -1,81 +1,141 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 963" width="1000" height="963">
-<defs><linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#0b1120"/><stop offset="100%" stop-color="#04060a"/></linearGradient>
-<linearGradient id="card" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="#151d31" stop-opacity="0.97"/><stop offset="100%" stop-color="#0c1122" stop-opacity="0.95"/></linearGradient></defs>
-<rect width="1000" height="963" fill="url(#bg)"/>
-<text x="24" y="46" font-family="Helvetica Neue,Helvetica,Arial" font-size="26" font-weight="bold" fill="#f1f5f9">QWEGN ENGINE · MODEL PROFILE</text>
-<text x="24" y="78" font-family="Helvetica,Arial" font-size="16" fill="#7dd3fc">NEEDLE RECALL: 3/3 @ 64K–1M (QSA &amp; CLUSTER) · Qwen3.8-Flash-Next (HQ8_G32 + HQ4_G64 + QSA/LSA) on Qwegn ·</text>
-<text x="24" y="99" font-family="Helvetica,Arial" font-size="16" fill="#7dd3fc">48-Layer Flagship Hybrid MoE (512 Experts · 10 Routed + 1 Shared · 12 QSA + 36 GDN · 4-Branch HC · PLE · 71.30 GiB) · Up to 1M</text>
-<text x="24" y="120" font-family="Helvetica,Arial" font-size="16" fill="#7dd3fc">Ctx</text>
-<rect x="24" y="155" width="301" height="258" rx="14" fill="url(#card)" stroke="#38bdf8" stroke-opacity="0.35"/>
-<text x="42" y="181" font-family="Helvetica,Arial" font-size="15.5" font-weight="bold" fill="#38bdf8">PREFILL &amp; CACHE</text>
-<text x="42" y="217" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">2,688</text>
-<text x="42" y="241" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">tok/s</text>
-<text x="42" y="265" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">2,696 Peak · 1,353 tok/s @1M</text>
-<text x="42" y="289" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">+12.6% over mlx-serve (2,386.5) on</text>
-<text x="42" y="313" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">the same Qwen3.8-Flash-Next</text>
-<text x="42" y="337" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">model</text>
-<text x="42" y="361" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">7 ms warm TTFT (98.7x vs 691 ms)</text>
-<rect x="349" y="155" width="301" height="258" rx="14" fill="url(#card)" stroke="#c084fc" stroke-opacity="0.35"/>
-<text x="367" y="181" font-family="Helvetica,Arial" font-size="15.5" font-weight="bold" fill="#c084fc">DECODE &amp; LATENCY</text>
-<text x="367" y="217" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">113.7</text>
-<text x="367" y="241" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">tok/s</text>
-<text x="367" y="265" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">113 ms TTFT · 45.4 tok/s @1M</text>
-<text x="367" y="289" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">2.09x faster TTFT vs mlx-serve (236</text>
-<text x="367" y="313" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">ms)</text>
-<text x="367" y="337" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">144.1 tok/s 4-stream batching</text>
-<text x="367" y="361" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">(+64.9%)</text>
-<text x="367" y="385" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">81.7 @64K · 72.3 @262K · 45.4</text>
-<text x="367" y="409" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">@1M</text>
-<rect x="674" y="155" width="301" height="258" rx="14" fill="url(#card)" stroke="#fbbf24" stroke-opacity="0.35"/>
-<text x="692" y="181" font-family="Helvetica,Arial" font-size="15.5" font-weight="bold" fill="#fbbf24">SPECULATIVE MTP</text>
-<text x="692" y="217" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">142.7</text>
-<text x="692" y="241" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">tok/s</text>
-<text x="692" y="265" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">3.49 tok/step Acceptance</text>
-<text x="692" y="289" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">106.6 tok/s novel speculation</text>
-<text x="692" y="313" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">(+29.1%</text>
-<text x="692" y="337" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">faster than mlx-serve 82.6 tok/s)</text>
-<text x="692" y="361" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Adaptive EMA + Long-Context</text>
-<text x="692" y="385" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Backoff</text>
-<rect x="24" y="437" width="301" height="426" rx="14" fill="url(#card)" stroke="#34d399" stroke-opacity="0.35"/>
-<text x="42" y="463" font-family="Helvetica,Arial" font-size="15.5" font-weight="bold" fill="#34d399">QWEGN MODEL FLASH NEXT</text>
-<text x="42" y="499" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">LONG-CONTEXT SCALING (64K →</text>
-<text x="42" y="523" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">1M Ctx)</text>
-<text x="42" y="547" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Native QSA (auto) &amp; LSA Ward</text>
-<text x="42" y="571" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">(qsa-cluster) · 3/3 Needle</text>
-<text x="42" y="595" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">• 64K Native QSA : 2,542 tok/s</text>
-<text x="42" y="619" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">prefill · 81.7 decode · Needle 3/3</text>
-<text x="42" y="643" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">• 262K Native QSA : 2,171 tok/s</text>
-<text x="42" y="667" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">prefill · 72.3 decode · Needle 3/3</text>
-<text x="42" y="691" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">• 1M Native QSA : 1,353 tok/s prefill</text>
-<text x="42" y="715" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">· 45.4 decode · Needle 3/3</text>
-<text x="42" y="739" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">• qsa-cluster : 2,280 (@64K) / 1,553</text>
-<text x="42" y="763" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">(@262K) prefill · Needle 3/3</text>
-<text x="42" y="787" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Memory @ 1M Ctx: 26.31 GiB RSS</text>
-<text x="42" y="811" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">· --lsa-mode auto keeps Native QSA</text>
-<rect x="349" y="437" width="301" height="426" rx="14" fill="url(#card)" stroke="#f87171" stroke-opacity="0.35"/>
-<text x="367" y="463" font-family="Helvetica,Arial" font-size="14.5" font-weight="bold" fill="#f87171">SMARTNESS &amp; MIXED QUANTIZATION</text>
-<text x="367" y="499" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">100% Conformance · 100%</text>
-<text x="367" y="523" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Capability · 81% Code · 3/3 Needle</text>
-<text x="367" y="547" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">• Conformance &amp; Capability :</text>
-<text x="367" y="571" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">131/131 (100%) · 18/18 (100%, 6/6</text>
-<text x="367" y="595" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">JSON)</text>
-<text x="367" y="619" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">• Code Eval &amp; Fidelity : 81/100 (HE</text>
-<text x="367" y="643" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">45 · MBPP 36) · 100% (topProb</text>
-<text x="367" y="667" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">0.966)</text>
-<text x="367" y="691" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">• Mixed HQ8_G32 + HQ4_G64 :</text>
-<text x="367" y="715" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">71.30 GiB (-5.16 GiB vs hq4g32) ·</text>
-<text x="367" y="739" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">2.62× lower KLD</text>
-<text x="367" y="763" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">• Agentic &amp; Needle (64K–1M):</text>
-<text x="367" y="787" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">87.5% (7/8, constrained tools) · 3/3</text>
-<text x="367" y="811" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">(100%) needle</text>
-<text x="367" y="835" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">llmprobe v0.6.16 · greedy ·</text>
-<text x="367" y="859" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">--reasoning off · 100 code q</text>
-<rect x="674" y="437" width="301" height="426" rx="14" fill="url(#card)" stroke="#38bdf8" stroke-opacity="0.35"/>
-<text x="692" y="463" font-family="Helvetica,Arial" font-size="15.5" font-weight="bold" fill="#38bdf8">QWEGN MODEL FLASH NEXT</text>
-<text x="692" y="499" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Qwegn Engine · Model:</text>
-<text x="692" y="523" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">~/.qwg/models/Qwen3.8-Flash-Nex</text>
-<text x="692" y="547" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">t-hq8g32-hq4g64 · Tested on Apple</text>
-<text x="692" y="571" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">M5 Max (Mac17,6 · 128 GB Unified</text>
-<text x="692" y="595" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">Memory · 40-core GPU · 585 GB/s</text>
-<text x="692" y="619" font-family="Helvetica,Arial" font-size="16.5" fill="#cbd5e1">DRAM)</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 755" width="720" height="453">
+  <defs>
+    <radialGradient id="bgGlow" cx="20%" cy="10%" r="90%">
+      <stop offset="0%" stop-color="#19152c"/>
+      <stop offset="55%" stop-color="#0c0a16"/>
+      <stop offset="100%" stop-color="#040309"/>
+    </radialGradient>
+    <linearGradient id="cardGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#192136" stop-opacity="0.92"/>
+      <stop offset="100%" stop-color="#0d1220" stop-opacity="0.78"/>
+    </linearGradient>
+    <linearGradient id="cyanGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#0ea5e9"/>
+    </linearGradient>
+    <linearGradient id="purpleGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#c084fc"/>
+      <stop offset="100%" stop-color="#a855f7"/>
+    </linearGradient>
+    <linearGradient id="amberGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#fbbf24"/>
+      <stop offset="100%" stop-color="#f59e0b"/>
+    </linearGradient>
+    <linearGradient id="emeraldGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#34d399"/>
+      <stop offset="100%" stop-color="#10b981"/>
+    </linearGradient>
+    <linearGradient id="roseGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#fb7185"/>
+      <stop offset="100%" stop-color="#e11d48"/>
+    </linearGradient>
+    <linearGradient id="slateGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#475569"/>
+      <stop offset="100%" stop-color="#64748b"/>
+    </linearGradient>
+    <filter id="shadow" x="-4%" y="-4%" width="108%" height="112%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#000000" flood-opacity="0.5"/>
+    </filter>
+    <clipPath id="clipCard340">
+      <rect x="0" y="0" width="340" height="235" rx="16"/>
+    </clipPath>
+    <clipPath id="clipCard525">
+      <rect x="0" y="0" width="525" height="235" rx="16"/>
+    </clipPath>
+  </defs>
+  <style>
+    .title { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif; font-weight: 800; }
+    .subtitle { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif; font-weight: 400; }
+    .mono { font-family: "SF Mono", Menlo, Consolas, monospace; font-weight: 600; }
+    .badge { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; font-weight: 700; font-size: 10.5px; letter-spacing: 0.4px; text-transform: uppercase; }
+    .card { stroke: #322954; stroke-width: 1.25; rx: 16; }
+  </style>
+  <rect width="1200" height="755" fill="url(#bgGlow)"/>
+  <g opacity="0.04" stroke="#ffffff" stroke-width="1">
+    <line x1="0" y1="140" x2="1200" y2="140"/>
+    <line x1="0" y1="400" x2="1200" y2="400"/>
+    <line x1="0" y1="660" x2="1200" y2="660"/>
+    <line x1="400" y1="0" x2="400" y2="755"/>
+    <line x1="800" y1="0" x2="800" y2="755"/>
+  </g>
+
+  <!-- HEADER -->
+  <g transform="translate(60, 34)">
+    <rect x="0" y="0" width="256" height="26" rx="13" fill="#281638" stroke="#a855f7" stroke-width="1"/>
+    <circle cx="14" cy="13" r="4.5" fill="#c084fc"/>
+    <text x="26" y="17" fill="#c084fc" class="badge">QWEGN ENGINE · MODEL PROFILE</text>
+    <rect x="268" y="0" width="320" height="26" rx="13" fill="#064e3b" stroke="#10b981" stroke-width="1"/>
+    <text x="428" y="17" text-anchor="middle" fill="#6ee7b7" class="badge">NEEDLE RECALL: 3/3 @ 64K–1M (QSA &amp; CLUSTER)</text>
+    <text x="0" y="62" fill="#f8fafc" class="title" font-size="31">Qwen3.8-Flash-Next (HQ8_G32 + HQ4_G64 + QSA/LSA) on Qwegn</text>
+    <text x="0" y="88" fill="#94a3b8" class="subtitle" font-size="13.5">48-Layer Flagship Hybrid MoE (512 Experts · 10 Routed + 1 Shared · 12 QSA + 36 GDN · 4-Branch HC · PLE · 71.30 GiB) · Up to 1M Ctx</text>
+  </g>
+
+  <!-- CARD 1: Prefill & Cache -->
+  <g transform="translate(60, 145)" filter="url(#shadow)" clip-path="url(#clipCard340)">
+    <rect width="340" height="235" fill="url(#cardGrad)" class="card"/>
+    <rect x="22" y="20" width="150" height="22" rx="11" fill="#0c2a3a" stroke="#0ea5e9" stroke-width="1"/>
+    <text x="97" y="35" text-anchor="middle" fill="#38bdf8" class="badge">PREFILL &amp; CACHE</text>
+    <text x="22" y="96" fill="url(#cyanGrad)" class="title mono" font-size="44">2,688</text>
+    <text x="178" y="94" fill="#38bdf8" class="title mono" font-size="18">tok/s</text>
+    <text x="22" y="128" fill="#f1f5f9" class="title" font-size="16">2,696 Peak · 1,353 tok/s @1M</text>
+    <text x="22" y="153" fill="#94a3b8" class="subtitle" font-size="12.5">+12.6% over mlx-serve (2,386.5) on</text>
+    <text x="22" y="173" fill="#94a3b8" class="subtitle" font-size="12.5">the same Qwen3.8-Flash-Next model</text>
+    <text x="22" y="206" fill="#38bdf8" class="mono" font-size="11.5">7 ms warm TTFT (98.7x vs 691 ms)</text>
+  </g>
+
+  <!-- CARD 2: Decode & TTFT -->
+  <g transform="translate(430, 145)" filter="url(#shadow)" clip-path="url(#clipCard340)">
+    <rect width="340" height="235" fill="url(#cardGrad)" class="card"/>
+    <rect x="22" y="20" width="150" height="22" rx="11" fill="#281638" stroke="#a855f7" stroke-width="1"/>
+    <text x="97" y="35" text-anchor="middle" fill="#c084fc" class="badge">DECODE &amp; LATENCY</text>
+    <text x="22" y="96" fill="url(#purpleGrad)" class="title mono" font-size="44">113.7</text>
+    <text x="174" y="94" fill="#c084fc" class="title mono" font-size="18">tok/s</text>
+    <text x="22" y="128" fill="#f1f5f9" class="title" font-size="16">113 ms TTFT · 45.4 tok/s @1M</text>
+    <text x="22" y="153" fill="#94a3b8" class="subtitle" font-size="12.5">2.09x faster TTFT vs mlx-serve (236 ms)</text>
+    <text x="22" y="173" fill="#94a3b8" class="subtitle" font-size="12.5">144.1 tok/s 4-stream batching (+64.9%)</text>
+    <text x="22" y="206" fill="#c084fc" class="mono" font-size="11.5">81.7 @64K · 72.3 @262K · 45.4 @1M</text>
+  </g>
+
+  <!-- CARD 3: Speculative MTP -->
+  <g transform="translate(800, 145)" filter="url(#shadow)" clip-path="url(#clipCard340)">
+    <rect width="340" height="235" fill="url(#cardGrad)" class="card"/>
+    <rect x="22" y="20" width="154" height="22" rx="11" fill="#33230c" stroke="#f59e0b" stroke-width="1"/>
+    <text x="99" y="35" text-anchor="middle" fill="#fbbf24" class="badge">SPECULATIVE MTP</text>
+    <text x="22" y="96" fill="url(#amberGrad)" class="title mono" font-size="44">142.7</text>
+    <text x="176" y="94" fill="#fbbf24" class="title mono" font-size="18">tok/s</text>
+    <text x="22" y="128" fill="#f1f5f9" class="title" font-size="16">3.49 tok/step Acceptance</text>
+    <text x="22" y="153" fill="#94a3b8" class="subtitle" font-size="12.5">106.6 tok/s novel speculation (+29.1%</text>
+    <text x="22" y="173" fill="#94a3b8" class="subtitle" font-size="12.5">faster than mlx-serve 82.6 tok/s)</text>
+    <text x="22" y="206" fill="#fbbf24" class="mono" font-size="11.5">Adaptive EMA + Long-Context Backoff</text>
+  </g>
+
+  <!-- CARD 4: 1M Long Context Scaling (Native QSA vs qsa-cluster) -->
+  <g transform="translate(60, 405)" filter="url(#shadow)" clip-path="url(#clipCard525)">
+    <rect width="525" height="235" fill="url(#cardGrad)" class="card"/>
+    <rect x="22" y="20" width="275" height="22" rx="11" fill="#062e22" stroke="#10b981" stroke-width="1"/>
+    <text x="159" y="35" text-anchor="middle" fill="#34d399" class="badge">LONG-CONTEXT SCALING (64K → 1M Ctx)</text>
+    <text x="22" y="68" fill="#f1f5f9" class="title" font-size="17">Native QSA (auto) &amp; LSA Ward (qsa-cluster) · 3/3 Needle</text>
+    <text x="22" y="98" fill="#38bdf8" class="mono" font-size="11.5">• 64K  Native QSA : 2,542 tok/s prefill · 81.7 decode · Needle 3/3</text>
+    <text x="22" y="123" fill="#38bdf8" class="mono" font-size="11.5">• 262K Native QSA : 2,171 tok/s prefill · 72.3 decode · Needle 3/3</text>
+    <text x="22" y="148" fill="#38bdf8" class="mono" font-size="11.5">• 1M   Native QSA : 1,353 tok/s prefill · 45.4 decode · Needle 3/3</text>
+    <text x="22" y="173" fill="#fbbf24" class="mono" font-size="11.5">• qsa-cluster     : 2,280 (@64K) / 1,553 (@262K) prefill · Needle 3/3</text>
+    <text x="22" y="204" fill="#34d399" class="mono" font-size="11.5">Memory @ 1M Ctx: 26.31 GiB RSS · --lsa-mode auto keeps Native QSA</text>
+  </g>
+
+  <!-- CARD 5: Smartness & Quantization Variants -->
+  <g transform="translate(615, 405)" filter="url(#shadow)" clip-path="url(#clipCard525)">
+    <rect width="525" height="235" fill="url(#cardGrad)" class="card"/>
+    <rect x="22" y="20" width="236" height="22" rx="11" fill="#281638" stroke="#a855f7" stroke-width="1"/>
+    <text x="140" y="35" text-anchor="middle" fill="#c084fc" class="badge">SMARTNESS &amp; MIXED QUANTIZATION</text>
+    <text x="22" y="68" fill="#f1f5f9" class="title" font-size="16.5">100% Conformance · 100% Capability · 81% Code · 3/3 Needle</text>
+    <text x="22" y="98" fill="#34d399" class="mono" font-size="11.5">• Conformance &amp; Capability : 131/131 (100%) · 18/18 (100%, 6/6 JSON)</text>
+    <text x="22" y="123" fill="#34d399" class="mono" font-size="11.5">• Code Eval &amp; Fidelity     : 81/100 (HE 45 · MBPP 36) · 100% (topProb 0.966)</text>
+    <text x="22" y="148" fill="#38bdf8" class="mono" font-size="11.5">• Mixed HQ8_G32 + HQ4_G64  : 71.30 GiB (-5.16 GiB vs hq4g32) · 2.62× lower KLD</text>
+    <text x="22" y="173" fill="#c084fc" class="mono" font-size="11.5">• Agentic &amp; Needle (64K–1M): 87.5% (7/8, constrained tools) · 3/3 (100%) needle</text>
+    <text x="22" y="204" fill="#fbbf24" class="mono" font-size="11.5">llmprobe v0.6.16 · greedy · --reasoning off · 100 code q</text>
+  </g>
+  <g transform="translate(60, 695)">
+    <rect x="0" y="0" width="1080" height="32" rx="8" fill="#0d1322" stroke="#1e293b" stroke-width="1"/>
+    <text x="540" y="20" text-anchor="middle" fill="#94a3b8" class="mono" font-size="10.5">Qwegn Engine · Model: ~/.qwg/models/Qwen3.8-Flash-Next-hq8g32-hq4g64 · Tested on Apple M5 Max (Mac17,6 · 128 GB Unified Memory · 40-core GPU · 585 GB/s DRAM)</text>
+  </g>
 </svg>
