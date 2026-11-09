@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 755" width="720" height="453">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 964" width="960" height="964">
   <defs>
     <radialGradient id="bgGlow" cx="20%" cy="10%" r="90%">
       <stop offset="0%" stop-color="#1d1429"/>
@@ -6,132 +6,109 @@
       <stop offset="100%" stop-color="#050308"/>
     </radialGradient>
     <linearGradient id="cardGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#192136" stop-opacity="0.92"/>
-      <stop offset="100%" stop-color="#0d1220" stop-opacity="0.78"/>
+      <stop offset="0%" stop-color="#192136" stop-opacity="0.95"/>
+      <stop offset="100%" stop-color="#0d1220" stop-opacity="0.88"/>
     </linearGradient>
     <linearGradient id="cyanGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#38bdf8"/>
-      <stop offset="100%" stop-color="#0ea5e9"/>
+      <stop offset="0%" stop-color="#38bdf8"/><stop offset="100%" stop-color="#0ea5e9"/>
     </linearGradient>
     <linearGradient id="purpleGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#c084fc"/>
-      <stop offset="100%" stop-color="#a855f7"/>
+      <stop offset="0%" stop-color="#c084fc"/><stop offset="100%" stop-color="#a855f7"/>
     </linearGradient>
     <linearGradient id="amberGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#fbbf24"/>
-      <stop offset="100%" stop-color="#f59e0b"/>
+      <stop offset="0%" stop-color="#fbbf24"/><stop offset="100%" stop-color="#f59e0b"/>
     </linearGradient>
-    <linearGradient id="emeraldGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#34d399"/>
-      <stop offset="100%" stop-color="#10b981"/>
-    </linearGradient>
-    <linearGradient id="roseGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#fb7185"/>
-      <stop offset="100%" stop-color="#e11d48"/>
-    </linearGradient>
-    <filter id="shadow" x="-4%" y="-4%" width="108%" height="112%">
-      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#000000" flood-opacity="0.5"/>
-    </filter>
-    <clipPath id="clipCard340">
-      <rect x="0" y="0" width="340" height="235" rx="16"/>
-    </clipPath>
-    <clipPath id="clipCard525">
-      <rect x="0" y="0" width="525" height="235" rx="16"/>
-    </clipPath>
   </defs>
   <style>
+    svg { text-rendering: geometricPrecision; -webkit-font-smoothing: antialiased; }
     .title { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif; font-weight: 800; }
-    .subtitle { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif; font-weight: 400; }
-    .mono { font-family: "SF Mono", Menlo, Consolas, monospace; font-weight: 600; }
-    .badge { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; font-weight: 700; font-size: 10.5px; letter-spacing: 0.4px; text-transform: uppercase; }
-    .card { stroke: #3a2346; stroke-width: 1.25; rx: 16; }
+    .subtitle { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif; font-weight: 500; }
+    .sans { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", "Segoe UI", system-ui, sans-serif; }
+    .mono { font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace; font-weight: 600; }
   </style>
-  <rect width="1200" height="755" fill="url(#bgGlow)"/>
+  <rect width="960" height="964" rx="20" fill="url(#bgGlow)" stroke="#1e293b" stroke-width="2"/>
   <g opacity="0.04" stroke="#ffffff" stroke-width="1">
-    <line x1="0" y1="140" x2="1200" y2="140"/>
-    <line x1="0" y1="400" x2="1200" y2="400"/>
-    <line x1="0" y1="660" x2="1200" y2="660"/>
-    <line x1="400" y1="0" x2="400" y2="755"/>
-    <line x1="800" y1="0" x2="800" y2="755"/>
+    <line x1="0" y1="150" x2="960" y2="150"/>
+    <line x1="0" y1="438" x2="960" y2="438"/>
+    <line x1="326" y1="0" x2="326" y2="964"/>
+    <line x1="634" y1="0" x2="634" y2="964"/>
   </g>
 
-  <!-- HEADER -->
-  <g transform="translate(60, 34)">
-    <rect x="0" y="0" width="256" height="26" rx="13" fill="#361620" stroke="#e11d48" stroke-width="1"/>
-    <circle cx="14" cy="13" r="4.5" fill="#fb7185"/>
-    <text x="26" y="17" fill="#fb7185" class="badge">QWEGN ENGINE · MODEL PROFILE</text>
-    <rect x="268" y="0" width="380" height="26" rx="13" fill="#064e3b" stroke="#10b981" stroke-width="1"/>
-    <text x="458" y="17" text-anchor="middle" fill="#6ee7b7" class="badge">321B TOTAL (18B ACTIVE) · 134 GiB PACK ON 128 GB MAC</text>
-    <text x="0" y="62" fill="#f8fafc" class="title" font-size="33">GLM-5.3-Flash (HQ4_G32 + HQ3_G64) on Qwegn</text>
-    <text x="0" y="88" fill="#94a3b8" class="subtitle" font-size="14">45-Layer Hybrid MoE (3 Dense + 42 MoE × 288 Experts · 34 KDA + 11 NoPE MLA · 4-Stream mHC · NextN MTP) · Up to 1M Ctx</text>
+  <g transform="translate(28, 24)">
+    <rect x="0.0" y="0.0" width="277" height="28" rx="14.0" fill="#361620" stroke="#e11d48" stroke-width="1.2"/>
+<circle cx="15.0" cy="14.0" r="4.5" fill="#fb7185"/>
+<text x="27.0" y="18.6" class="sans" font-size="13" font-weight="700" fill="#fda4af" letter-spacing="0.3">QWEGN ENGINE · MODEL PROFILE</text>
+    <rect x="289.0" y="0.0" width="426" height="28" rx="14.0" fill="#064e3b" stroke="#10b981" stroke-width="1.2"/>
+<text x="502.0" y="18.6" text-anchor="middle" class="sans" font-size="13" font-weight="700" fill="#6ee7b7" letter-spacing="0.3">321B TOTAL (18B ACTIVE) · 134 GiB PACK ON 128 GB MAC</text>
+    <text x="0" y="64" fill="#f8fafc" class="title" font-size="30">GLM-5.3-Flash (HQ4_G32 + HQ3_G64) on Qwegn</text>
+    <text x="0" y="92" fill="#cbd5e1" class="subtitle" font-size="14.5">45-Layer Hybrid MoE (3 Dense + 42 MoE × 288 Experts · 34 KDA + 11 NoPE MLA)</text>
+    <text x="0" y="114" fill="#cbd5e1" class="subtitle" font-size="14.5">4-Stream Sinkhorn-20 mHC · NextN MTP · Cold-Expert NVMe Streaming · Up to 1M Ctx</text>
   </g>
 
-  <!-- CARD 1: Prefill & Span Map -->
-  <g transform="translate(60, 145)" filter="url(#shadow)" clip-path="url(#clipCard340)">
-    <rect width="340" height="235" fill="url(#cardGrad)" class="card"/>
-    <rect x="22" y="20" width="160" height="22" rx="11" fill="#0c2a3a" stroke="#0ea5e9" stroke-width="1"/>
-    <text x="102" y="35" text-anchor="middle" fill="#38bdf8" class="badge">PREFILL &amp; SPAN MAP</text>
-    <text x="22" y="96" fill="url(#cyanGrad)" class="title mono" font-size="44">968</text>
-    <text x="148" y="94" fill="#38bdf8" class="title mono" font-size="18">tok/s</text>
-    <text x="22" y="128" fill="#f1f5f9" class="title" font-size="16">858–968 tok/s @16K (maxResident)</text>
-    <text x="22" y="153" fill="#94a3b8" class="subtitle" font-size="12.5">Apple10 NAX tensor-MMA sparse MLA (4–5×)</text>
-    <text x="22" y="173" fill="#94a3b8" class="subtitle" font-size="12.5">+ GPU span map (0.40s → 0.10s host gap)</text>
-    <text x="22" y="206" fill="#38bdf8" class="mono" font-size="11.5">absorb_q MMA (6.8×) · kda_gates MMA (3.5×)</text>
+  <g transform="translate(28, 160)">
+    <rect width="288" height="268" rx="16" fill="url(#cardGrad)" stroke="#3a2346" stroke-width="1.4"/>
+    <rect x="18.0" y="16.0" width="164" height="26" rx="13.0" fill="#0c2a3a" stroke="#0ea5e9" stroke-width="1.2"/>
+<text x="100.0" y="33.5" text-anchor="middle" class="sans" font-size="13" font-weight="700" fill="#7dd3fc" letter-spacing="0.2">PREFILL &amp; SPAN MAP</text>
+    <text x="18" y="90" fill="url(#cyanGrad)" class="title mono" font-size="44">968</text>
+    <text x="109.9" y="88" fill="#38bdf8" class="title mono" font-size="17">tok/s</text>
+    <text x="18" y="120" fill="#f8fafc" class="title" font-size="15.5">858–968 tok/s @16K</text>
+    <text x="18" y="144" fill="#cbd5e1" class="subtitle" font-size="13.5">Apple10 NAX sparse MLA (4–5×)</text>
+    <text x="18" y="165" fill="#cbd5e1" class="subtitle" font-size="13.5">+ GPU span map (0.40s → 0.10s gap)</text>
+    <line x1="18" y1="196" x2="270" y2="196" stroke="#1e293b" stroke-width="1"/>
+    <text x="18" y="218" fill="#38bdf8" class="mono" font-size="13">absorb_q MMA 6.8× (maxResident)</text>
+    <text x="18" y="238" fill="#38bdf8" class="mono" font-size="13">kda_gates MMA 3.5×</text>
+  </g>
+  <g transform="translate(336, 160)">
+    <rect width="288" height="268" rx="16" fill="url(#cardGrad)" stroke="#3a2346" stroke-width="1.4"/>
+    <rect x="18.0" y="16.0" width="176" height="26" rx="13.0" fill="#281638" stroke="#a855f7" stroke-width="1.2"/>
+<text x="106.0" y="33.5" text-anchor="middle" class="sans" font-size="13" font-weight="700" fill="#e9d5ff" letter-spacing="0.2">NVME + GPU OVERLAP</text>
+    <text x="18" y="90" fill="url(#purpleGrad)" class="title mono" font-size="44">31.6</text>
+    <text x="137.2" y="88" fill="#c084fc" class="title mono" font-size="17">tok/s</text>
+    <text x="18" y="120" fill="#f8fafc" class="title" font-size="15.5">Serial · 44.8 tok/s GPU Proxy</text>
+    <text x="18" y="144" fill="#cbd5e1" class="subtitle" font-size="13.5">242/288 experts resident per layer</text>
+    <text x="18" y="165" fill="#cbd5e1" class="subtitle" font-size="13.5">Dynamic LRU: 60 → 15.5 misses/tok</text>
+    <line x1="18" y1="196" x2="270" y2="196" stroke="#1e293b" stroke-width="1"/>
+    <text x="18" y="218" fill="#c084fc" class="mono" font-size="13">Event-pipelined SSD pread</text>
+    <text x="18" y="238" fill="#c084fc" class="mono" font-size="13">+ self-tuned delay command buf</text>
+  </g>
+  <g transform="translate(644, 160)">
+    <rect width="288" height="268" rx="16" fill="url(#cardGrad)" stroke="#3a2346" stroke-width="1.4"/>
+    <rect x="18.0" y="16.0" width="195" height="26" rx="13.0" fill="#33230c" stroke="#f59e0b" stroke-width="1.2"/>
+<text x="115.5" y="33.5" text-anchor="middle" class="sans" font-size="13" font-weight="700" fill="#fde68a" letter-spacing="0.2">NEXTN MTP &amp; MOE-SPEC</text>
+    <text x="18" y="90" fill="url(#amberGrad)" class="title mono" font-size="44">34.8</text>
+    <text x="137.2" y="88" fill="#fbbf24" class="title mono" font-size="17">tok/s</text>
+    <text x="18" y="120" fill="#f8fafc" class="title" font-size="15.5">MTP-1 · 31.1 tok/s MoE-Spec</text>
+    <text x="18" y="144" fill="#cbd5e1" class="subtitle" font-size="13.5">75–90% draft accept · Layer 45 NextN</text>
+    <text x="18" y="165" fill="#cbd5e1" class="subtitle" font-size="13.5">Deduplicated MoE + HQ3_G64 verify</text>
+    <line x1="18" y1="196" x2="270" y2="196" stroke="#1e293b" stroke-width="1"/>
+    <text x="18" y="218" fill="#fbbf24" class="mono" font-size="13">1.35× GPU verify cost</text>
+    <text x="18" y="238" fill="#fbbf24" class="mono" font-size="13">100% bit-exact greedy parity</text>
+  </g>
+  <g transform="translate(28, 446)">
+    <rect width="904" height="214" rx="16" fill="url(#cardGrad)" stroke="#3a2346" stroke-width="1.4"/>
+    <rect x="22.0" y="16.0" width="375" height="26" rx="13.0" fill="#062e22" stroke="#10b981" stroke-width="1.2"/>
+<text x="209.5" y="33.5" text-anchor="middle" class="sans" font-size="13" font-weight="700" fill="#6ee7b7" letter-spacing="0.3">NOPE MLA + KDA + 4-STREAM SINKHORN-20 mHC</text>
+    <text x="22" y="68" fill="#f8fafc" class="title" font-size="18">11 NoPE MLA (512-d Latent) + 34 KDA Linear Attention</text>
+    <text x="22" y="98" fill="#38bdf8" class="mono" font-size="14.5">• NoPE MLA     : 64:1 MQA matrix absorb · Key-Pool(4) 32H indexer (k=2048)</text>
+    <text x="22" y="122" fill="#38bdf8" class="mono" font-size="14.5">• NAX Split-K  : 2.23 → 0.44 ms/tok decode · 8.4 → 0.92 ms/tok indexer</text>
+    <text x="22" y="146" fill="#38bdf8" class="mono" font-size="14.5">• 4-Stream mHC : Split Gram-matrix router (2.94 → 1.38 ms/tok decode)</text>
+    <text x="22" y="170" fill="#38bdf8" class="mono" font-size="14.5">• KDA Linear   : 64H×128D vector-decay exp(g) + 3.5× MMA gate expansion</text>
+    <text x="22" y="194" fill="#34d399" class="mono" font-size="14.5">• Prefix Cache : Warm RAM &amp; SSD snapshots carry MLA Key-Pool(4) state</text>
+  </g>
+  <g transform="translate(28, 676)">
+    <rect width="904" height="214" rx="16" fill="url(#cardGrad)" stroke="#3a2346" stroke-width="1.4"/>
+    <rect x="22.0" y="16.0" width="396" height="26" rx="13.0" fill="#361620" stroke="#e11d48" stroke-width="1.2"/>
+<text x="220.0" y="33.5" text-anchor="middle" class="sans" font-size="13" font-weight="700" fill="#fda4af" letter-spacing="0.3">MIXED HQ4_G32 + HQ3_G64 · 100% CONFORMANCE</text>
+    <text x="22" y="68" fill="#f8fafc" class="title" font-size="18">3.59 bpp (134.37 GiB) · Fits 128 GB Unified Memory</text>
+    <text x="22" y="98" fill="#34d399" class="mono" font-size="14.5">• Routed Experts: 311.65B @ HQ3_G64 (3.50 bpw, 126.98 GiB, 94.5% bytes)</text>
+    <text x="22" y="122" fill="#34d399" class="mono" font-size="14.5">• Dense &amp; MLA   : 8.30B @ HQ4_G32_M5 (5.00 bpw, 4.83 GiB) + 2.55 GiB BF16</text>
+    <text x="22" y="146" fill="#c084fc" class="mono" font-size="14.5">• Ephemeral I/O : 24-blk Vision (1.12 GiB) &amp; cold experts streamed on demand</text>
+    <text x="22" y="170" fill="#fbbf24" class="mono" font-size="14.5">• Quality Gates : 100% Conformance · 100% Capability · 100% Fidelity (4/4)</text>
+    <text x="22" y="194" fill="#38bdf8" class="mono" font-size="14.5">• Memory Policy : maxResident (+12% decode, +7% prefill vs safe) · 0 allocs</text>
   </g>
 
-  <!-- CARD 2: Cold-Expert Streaming Decode -->
-  <g transform="translate(430, 145)" filter="url(#shadow)" clip-path="url(#clipCard340)">
-    <rect width="340" height="235" fill="url(#cardGrad)" class="card"/>
-    <rect x="22" y="20" width="178" height="22" rx="11" fill="#281638" stroke="#a855f7" stroke-width="1"/>
-    <text x="111" y="35" text-anchor="middle" fill="#c084fc" class="badge">NVME + GPU OVERLAP</text>
-    <text x="22" y="96" fill="url(#purpleGrad)" class="title mono" font-size="44">31.6</text>
-    <text x="155" y="94" fill="#c084fc" class="title mono" font-size="18">tok/s</text>
-    <text x="22" y="128" fill="#f1f5f9" class="title" font-size="16">Serial Decode · 44.8 tok/s GPU Proxy</text>
-    <text x="22" y="153" fill="#94a3b8" class="subtitle" font-size="12.5">242/288 experts resident per layer in RAM</text>
-    <text x="22" y="173" fill="#94a3b8" class="subtitle" font-size="12.5">Dynamic LRU cache: 60 → 15.5 misses/tok</text>
-    <text x="22" y="206" fill="#c084fc" class="mono" font-size="11.5">Event-pipelined SSD + self-tuned delay CB</text>
-  </g>
-
-  <!-- CARD 3: Speculative NextN MTP -->
-  <g transform="translate(800, 145)" filter="url(#shadow)" clip-path="url(#clipCard340)">
-    <rect width="340" height="235" fill="url(#cardGrad)" class="card"/>
-    <rect x="22" y="20" width="166" height="22" rx="11" fill="#33230c" stroke="#f59e0b" stroke-width="1"/>
-    <text x="105" y="35" text-anchor="middle" fill="#fbbf24" class="badge">NEXTN MTP &amp; MOE-SPEC</text>
-    <text x="22" y="96" fill="url(#amberGrad)" class="title mono" font-size="44">34.8</text>
-    <text x="155" y="94" fill="#fbbf24" class="title mono" font-size="18">tok/s</text>
-    <text x="22" y="128" fill="#f1f5f9" class="title" font-size="16">MTP-1 Overlap · 31.1 tok/s MoE-Spec</text>
-    <text x="22" y="153" fill="#94a3b8" class="subtitle" font-size="12.5">75–90% draft acceptance · Layer 45 NextN</text>
-    <text x="22" y="173" fill="#94a3b8" class="subtitle" font-size="12.5">Deduplicated MoE union + HQ3_G64 verify</text>
-    <text x="22" y="206" fill="#fbbf24" class="mono" font-size="11.5">1.35× GPU verify cost · 100% greedy parity</text>
-  </g>
-
-  <!-- CARD 4: Architecture & Kernel Breakthroughs -->
-  <g transform="translate(60, 405)" filter="url(#shadow)" clip-path="url(#clipCard525)">
-    <rect width="525" height="235" fill="url(#cardGrad)" class="card"/>
-    <rect x="22" y="20" width="305" height="22" rx="11" fill="#062e22" stroke="#10b981" stroke-width="1"/>
-    <text x="174" y="35" text-anchor="middle" fill="#34d399" class="badge">NOPE MLA + KDA + 4-STREAM SINKHORN-20 mHC</text>
-    <text x="22" y="68" fill="#f1f5f9" class="title" font-size="17">11 NoPE MLA (512-d Latent) + 34 KDA Linear Attn</text>
-    <text x="22" y="98" fill="#38bdf8" class="mono" font-size="11.5">• NoPE MLA     : 64:1 MQA matrix absorb · Key-Pool(4) 32H indexer (k=2048)</text>
-    <text x="22" y="123" fill="#38bdf8" class="mono" font-size="11.5">• NAX Split-K  : 2.23 → 0.44 ms/tok decode · 8.4 → 0.92 ms/tok indexer</text>
-    <text x="22" y="148" fill="#38bdf8" class="mono" font-size="11.5">• 4-Stream mHC : Split Gram-matrix router (2.94 → 1.38 ms/tok decode)</text>
-    <text x="22" y="173" fill="#38bdf8" class="mono" font-size="11.5">• KDA Linear   : 64H×128D vector-decay exp(g) + 3.5× MMA gate expansion</text>
-    <text x="22" y="204" fill="#34d399" class="mono" font-size="11.5">Prefix Cache   : Warm RAM &amp; SSD snapshots carry MLA Key-Pool(4) state</text>
-  </g>
-
-  <!-- CARD 5: Mixed Quantization & Conformance -->
-  <g transform="translate(615, 405)" filter="url(#shadow)" clip-path="url(#clipCard525)">
-    <rect width="525" height="235" fill="url(#cardGrad)" class="card"/>
-    <rect x="22" y="20" width="295" height="22" rx="11" fill="#361620" stroke="#e11d48" stroke-width="1"/>
-    <text x="169" y="35" text-anchor="middle" fill="#fb7185" class="badge">MIXED HQ4_G32 + HQ3_G64 · 100% CONFORMANCE</text>
-    <text x="22" y="68" fill="#f1f5f9" class="title" font-size="17">3.59 bpp (134.37 GiB) · Fits 128 GB Unified Memory</text>
-    <text x="22" y="98" fill="#34d399" class="mono" font-size="11.5">• Routed Experts: 311.65B @ HQ3_G64 (3.50 bpw, 126.98 GiB, 94.5% bytes)</text>
-    <text x="22" y="123" fill="#34d399" class="mono" font-size="11.5">• Dense &amp; MLA   : 8.30B @ HQ4_G32_M5 (5.00 bpw, 4.83 GiB) + 2.55 GiB BF16</text>
-    <text x="22" y="148" fill="#c084fc" class="mono" font-size="11.5">• Ephemeral I/O : 24-blk Vision (1.12 GiB) &amp; cold experts streamed on demand</text>
-    <text x="22" y="173" fill="#fbbf24" class="mono" font-size="11.5">• Quality Gates : 100% Conformance · 100% Capability · 100% Fidelity (4/4)</text>
-    <text x="22" y="204" fill="#38bdf8" class="mono" font-size="11.5">Memory Policy   : maxResident (+12% decode, +7% prefill vs safe) · 0 allocs</text>
-  </g>
-  <g transform="translate(60, 695)">
-    <rect x="0" y="0" width="1080" height="32" rx="8" fill="#0d1322" stroke="#1e293b" stroke-width="1"/>
-    <text x="540" y="20" text-anchor="middle" fill="#94a3b8" class="mono" font-size="10.5">Qwegn Engine · Model: ~/.qwg/models/GLM-5.3-Flash · Tested on Apple M5 Max (Mac17,6 · 128 GB Unified Memory · 40-core GPU · 585 GB/s DRAM · 13 GB/s NVMe)</text>
+  <g transform="translate(28, 904)">
+    <rect x="0" y="0" width="904" height="38" rx="9" fill="#0d1322" stroke="#1e293b" stroke-width="1.2"/>
+    <text x="452" y="24" text-anchor="middle" fill="#cbd5e1" class="mono" font-size="13">GLM-5.3-Flash · Apple M5 Max (Mac17,6 · 128 GB RAM · 40C GPU · 585 GB/s DRAM · 13 GB/s NVMe)</text>
   </g>
 </svg>

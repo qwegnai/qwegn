@@ -1,259 +1,234 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 790" width="1280" height="790">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 1464" width="960" height="1464">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#070a12"/>
-      <stop offset="0.5" stop-color="#0d1323"/>
-      <stop offset="1" stop-color="#090d18"/>
+      <stop offset="0" stop-color="#070a12"/><stop offset="0.5" stop-color="#0d1323"/><stop offset="1" stop-color="#090d18"/>
     </linearGradient>
     <linearGradient id="card" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#131c31" stop-opacity="0.94"/>
-      <stop offset="1" stop-color="#0b101d" stop-opacity="0.97"/>
+      <stop offset="0" stop-color="#131c31" stop-opacity="0.96"/><stop offset="1" stop-color="#0b101d" stop-opacity="0.98"/>
     </linearGradient>
     <linearGradient id="emGrad" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#10b981"/>
-      <stop offset="1" stop-color="#34d399"/>
+      <stop offset="0" stop-color="#10b981"/><stop offset="1" stop-color="#34d399"/>
     </linearGradient>
     <linearGradient id="cyGrad" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#0284c7"/>
-      <stop offset="1" stop-color="#38bdf8"/>
+      <stop offset="0" stop-color="#0284c7"/><stop offset="1" stop-color="#38bdf8"/>
     </linearGradient>
     <linearGradient id="coGrad" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#e11d48"/>
-      <stop offset="1" stop-color="#f87171"/>
+      <stop offset="0" stop-color="#e11d48"/><stop offset="1" stop-color="#f87171"/>
     </linearGradient>
     <linearGradient id="mark" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#34d399"/>
-      <stop offset="1" stop-color="#38bdf8"/>
+      <stop offset="0" stop-color="#34d399"/><stop offset="1" stop-color="#38bdf8"/>
     </linearGradient>
-    <style>
-      .sans { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", system-ui, sans-serif; }
-      .mono { font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace; }
-      .ct { font-size: 13px; font-weight: 800; fill: #f1f5f9; letter-spacing: 0.3px; }
-      .ax { font-size: 10.5px; font-weight: 600; fill: #64748b; }
-      .grid { stroke: #1e293b; stroke-width: 1; stroke-dasharray: 3 3; }
-      .axis { stroke: #334155; stroke-width: 1.2; }
-    </style>
   </defs>
+  <style>
+    svg { text-rendering: geometricPrecision; -webkit-font-smoothing: antialiased; }
+    .title { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif; font-weight: 800; }
+    .subtitle { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif; font-weight: 500; }
+    .sans { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", "Segoe UI", system-ui, sans-serif; }
+    .mono { font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace; font-weight: 600; }
+  </style>
 
-  <rect width="1280" height="790" rx="20" fill="url(#bg)" stroke="#1e293b" stroke-width="2"/>
-  <rect x="0" y="0" width="1280" height="5" fill="url(#emGrad)" opacity="0.9"/>
+  <rect width="960" height="1464" rx="20" fill="url(#bg)" stroke="#1e293b" stroke-width="2"/>
+  <rect x="0" y="0" width="960" height="5" fill="url(#emGrad)" opacity="0.9"/>
 
-  <!-- HEADER -->
-  <g transform="translate(40, 26)">
-    <rect width="424" height="24" rx="12" fill="#10b981" fill-opacity="0.14" stroke="#10b981"/>
-    <text x="212" y="16" text-anchor="middle" class="mono" font-size="10.5" font-weight="700" fill="#6ee7b7" letter-spacing="0.6">TWO-TIER LSA MEMORY PACK · LIVE EXPERIMENTAL VERIFICATION</text>
-    <text x="0" y="58" class="sans" font-size="28" font-weight="800" fill="#f8fafc" letter-spacing="-0.4">Two-Tier Repository Memory (.qwcache) — Live Benchmarks</text>
-    <text x="0" y="82" class="mono" font-size="12" font-weight="600" fill="#94a3b8">32.7K Resident Cortex + Off-Context Vault · Paired Interleaved A/B · Multi-Turn &amp; 179.2K Large-Volume Stress</text>
+  <g transform="translate(28, 24)">
+    <rect x="0.0" y="0.0" width="525" height="28" rx="14.0" fill="#064e3b" stroke="#10b981" stroke-width="1.2"/>
+<text x="262.5" y="18.6" text-anchor="middle" class="mono" font-size="13" font-weight="700" fill="#6ee7b7" letter-spacing="0.3">TWO-TIER LSA MEMORY PACK · LIVE EXPERIMENTAL VERIFICATION</text>
+    <text x="0" y="64" class="sans" font-size="27" font-weight="800" fill="#f8fafc">Two-Tier Repository Memory (.qwcache) — Live Benchmarks</text>
+    <text x="0" y="90" class="mono" font-size="13.5" fill="#cbd5e1">32.7K Resident Cortex + Off-Context Vault · Paired Interleaved A/B · Multi-Turn &amp; 179.2K Stress</text>
+  </g>
+  <g transform="translate(748, 20)">
+    <rect width="184" height="54" rx="12" fill="#0b1222" stroke="#334155" stroke-width="1.2"/>
+    <rect x="11" y="10" width="34" height="34" rx="9" fill="url(#mark)"/>
+    <text x="28" y="34" text-anchor="middle" class="sans" font-size="20" font-weight="900" fill="#04110c">Q</text>
+    <text x="55" y="29" class="sans" font-size="21" font-weight="800" fill="#f8fafc">Qwegn</text>
+    <text x="55" y="46" class="mono" font-size="13" font-weight="700" fill="#94a3b8">SWIFT · METAL 4</text>
   </g>
 
-  <!-- QWEGN MARK -->
-  <g transform="translate(1072, 26)">
-    <rect width="168" height="48" rx="12" fill="#0b1222" stroke="#334155" stroke-width="1"/>
-    <rect x="10" y="9" width="30" height="30" rx="8" fill="url(#mark)"/>
-    <text x="25" y="30" text-anchor="middle" class="sans" font-size="18" font-weight="900" fill="#04110c">Q</text>
-    <text x="50" y="27" class="sans" font-size="21" font-weight="800" fill="#f8fafc" letter-spacing="-0.3">Qwegn</text>
-    <text x="51" y="40" class="mono" font-size="8.5" font-weight="700" fill="#64748b" letter-spacing="1.6">INFERENCE ENGINE</text>
+  <!-- 2x2 KPI GRID -->
+  <g transform="translate(28, 134)">
+    <rect width="442" height="72" rx="12" fill="#0f172a" stroke="#10b981" stroke-opacity="0.55" stroke-width="1.2"/>
+    <text x="20" y="34" class="sans" font-size="26" font-weight="800" fill="#6ee7b7">74.3×</text>
+    <text x="422" y="32" text-anchor="end" class="sans" font-size="15" font-weight="700" fill="#f8fafc">Faster Repo TTFT</text>
+    <text x="20" y="57" class="mono" font-size="13.5" fill="#cbd5e1">17.84 s → 0.24 s (Flash-Next q4)</text>
+  </g>
+  <g transform="translate(490, 134)">
+    <rect width="442" height="72" rx="12" fill="#0f172a" stroke="#38bdf8" stroke-opacity="0.55" stroke-width="1.2"/>
+    <text x="20" y="34" class="sans" font-size="26" font-weight="800" fill="#38bdf8">395.9K</text>
+    <text x="422" y="32" text-anchor="end" class="sans" font-size="15" font-weight="700" fill="#f8fafc">Peak Eff. Prefill (tok/s)</text>
+    <text x="20" y="57" class="mono" font-size="13.5" fill="#cbd5e1">99.96% hit @179.2K tok (0.45 s TTFT)</text>
+  </g>
+  <g transform="translate(28, 218)">
+    <rect width="442" height="72" rx="12" fill="#0f172a" stroke="#c084fc" stroke-opacity="0.55" stroke-width="1.2"/>
+    <text x="20" y="34" class="sans" font-size="26" font-weight="800" fill="#c084fc">96.9%</text>
+    <text x="422" y="32" text-anchor="end" class="sans" font-size="15" font-weight="700" fill="#f8fafc">Free 1M Context</text>
+    <text x="20" y="57" class="mono" font-size="13.5" fill="#cbd5e1">32.7K Cortex (265–464 MiB · 0 spill)</text>
+  </g>
+  <g transform="translate(490, 218)">
+    <rect width="442" height="72" rx="12" fill="#0f172a" stroke="#fbbf24" stroke-opacity="0.55" stroke-width="1.2"/>
+    <text x="20" y="34" class="sans" font-size="26" font-weight="800" fill="#fbbf24">99.87%</text>
+    <text x="422" y="32" text-anchor="end" class="sans" font-size="15" font-weight="700" fill="#f8fafc">Post-Edit Prefix Hit</text>
+    <text x="20" y="57" class="mono" font-size="13.5" fill="#cbd5e1">0.16 s TTFT · 307.0K tok/s after edit</text>
   </g>
 
-  <!-- KPI ROW -->
-  <g transform="translate(40, 124)">
-    <rect width="288" height="66" rx="12" fill="#0f172a" stroke="#10b981" stroke-opacity="0.5"/>
-    <text x="18" y="31" class="sans" font-size="22" font-weight="800" fill="#6ee7b7">74.3×</text>
-    <text x="270" y="29" text-anchor="end" class="sans" font-size="12" font-weight="700" fill="#e2e8f0">Faster Repo TTFT</text>
-    <text x="18" y="52" class="mono" font-size="10.5" font-weight="600" fill="#94a3b8">17.84 s → 0.24 s (Flash-Next q4)</text>
-  </g>
-  <g transform="translate(344, 124)">
-    <rect width="288" height="66" rx="12" fill="#0f172a" stroke="#38bdf8" stroke-opacity="0.5"/>
-    <text x="18" y="31" class="sans" font-size="22" font-weight="800" fill="#38bdf8">395.9K</text>
-    <text x="270" y="29" text-anchor="end" class="sans" font-size="12" font-weight="700" fill="#e2e8f0">Peak Eff. Prefill (tok/s)</text>
-    <text x="18" y="52" class="mono" font-size="10.5" font-weight="600" fill="#94a3b8">99.96% hit @179.2K tok (0.45 s TTFT)</text>
-  </g>
-  <g transform="translate(648, 124)">
-    <rect width="288" height="66" rx="12" fill="#0f172a" stroke="#c084fc" stroke-opacity="0.5"/>
-    <text x="18" y="31" class="sans" font-size="22" font-weight="800" fill="#c084fc">96.9%</text>
-    <text x="270" y="29" text-anchor="end" class="sans" font-size="12" font-weight="700" fill="#e2e8f0">Free 1M Context</text>
-    <text x="18" y="52" class="mono" font-size="10.5" font-weight="600" fill="#94a3b8">32.7K Cortex (265–464 MiB · 0 spill)</text>
-  </g>
-  <g transform="translate(952, 124)">
-    <rect width="288" height="66" rx="12" fill="#0f172a" stroke="#fbbf24" stroke-opacity="0.5"/>
-    <text x="18" y="31" class="sans" font-size="22" font-weight="800" fill="#fbbf24">99.87%</text>
-    <text x="270" y="29" text-anchor="end" class="sans" font-size="12" font-weight="700" fill="#e2e8f0">Post-Edit Prefix Hit</text>
-    <text x="18" y="52" class="mono" font-size="10.5" font-weight="600" fill="#94a3b8">0.16 s TTFT · 307.0K tok/s after edit</text>
-  </g>
+  <!-- PANEL A: FULL-WIDTH TTFT HORIZONTAL BAR CHART -->
+  <g transform="translate(28, 308)">
+    <rect width="904" height="316" rx="16" fill="url(#card)" stroke="#1e293b" stroke-width="1.4"/>
+    <text x="22" y="32" class="sans" font-size="15.5" font-weight="800" fill="#f8fafc">PAIRED INTERLEAVED A/B TTFT (32.8K TOKENS)</text>
+    <text x="882" y="32" text-anchor="end" class="mono" font-size="13" fill="#cbd5e1">seconds (lower is better)</text>
 
-  <!-- PANEL A: PAIRED A/B TTFT LATENCY (32,790 TOKENS) -->
-  <g transform="translate(40, 206)">
-    <rect width="592" height="296" rx="14" fill="url(#card)" stroke="#1e293b" stroke-width="1.2"/>
-    <text x="20" y="30" class="sans ct">PAIRED INTERLEAVED A/B TTFT (32.8K TOKENS)</text>
-    <text x="572" y="30" text-anchor="end" class="mono ax">seconds (lower is better)</text>
+    <!-- x=240 (0s) to x=760 (20s) -> 26 px/s -->
+    <line x1="240" y1="54" x2="240" y2="262" stroke="#475569" stroke-width="1.4"/>
+    <line x1="370" y1="54" x2="370" y2="262" stroke="#1e293b" stroke-width="1" stroke-dasharray="4 4"/>
+    <line x1="500" y1="54" x2="500" y2="262" stroke="#1e293b" stroke-width="1" stroke-dasharray="4 4"/>
+    <line x1="630" y1="54" x2="630" y2="262" stroke="#1e293b" stroke-width="1" stroke-dasharray="4 4"/>
+    <line x1="760" y1="54" x2="760" y2="262" stroke="#1e293b" stroke-width="1" stroke-dasharray="4 4"/>
 
-    <!-- Grid lines for horizontal bars: x=186 to x=526 (width 340 represents 20.0 s -> 17.0 px/s) -->
-    <line x1="186" y1="54" x2="186" y2="246" class="axis"/>
-    <line x1="271" y1="54" x2="271" y2="246" class="grid"/>
-    <line x1="356" y1="54" x2="356" y2="246" class="grid"/>
-    <line x1="441" y1="54" x2="441" y2="246" class="grid"/>
-    <line x1="526" y1="54" x2="526" y2="246" class="grid"/>
-    <text x="186" y="264" text-anchor="middle" class="mono ax">0 s</text>
-    <text x="271" y="264" text-anchor="middle" class="mono ax">5.0 s</text>
-    <text x="356" y="264" text-anchor="middle" class="mono ax">10.0 s</text>
-    <text x="441" y="264" text-anchor="middle" class="mono ax">15.0 s</text>
-    <text x="526" y="264" text-anchor="middle" class="mono ax">20.0 s</text>
-
-    <!-- Group 1: Qwen3.6-35B-A3B-hq4g32 (kv=q4) -->
-    <text x="20" y="76" class="sans" font-size="12.5" font-weight="800" fill="#f8fafc">Qwen3.6-35B-A3B</text>
-    <text x="20" y="92" class="mono" font-size="10" fill="#64748b">kv=q4 · 264.6 MiB cache</text>
-    <text x="20" y="107" class="mono" font-size="9.5" fill="#64748b">32.7K Cortex tokens</text>
-
-    <!-- Bar 1a: Cold 6.53s -> 111.0 px -->
-    <rect x="186" y="62" width="111.0" height="20" rx="4" fill="url(#coGrad)"/>
-    <text x="305" y="76" class="mono" font-size="11" font-weight="700" fill="#fca5a5">6.53 s (Cold 32.8K prefill)</text>
-
-    <!-- Bar 1b: Mounted 0.12s -> min visible 6 px -->
-    <rect x="186" y="88" width="6" height="20" rx="3" fill="url(#emGrad)"/>
-    <text x="200" y="102" class="mono" font-size="11.5" font-weight="800" fill="#34d399">0.12 s (Mounted .qwcache)</text>
-    <rect x="394" y="87" width="96" height="20" rx="10" fill="#064e3b" stroke="#10b981"/>
-    <text x="442" y="101" text-anchor="middle" class="mono" font-size="10" font-weight="800" fill="#6ee7b7">54.4× FASTER</text>
-
-    <!-- Bar 1c: Live Workspace Edit 0.40s -> 10 px -->
-    <rect x="186" y="114" width="10" height="20" rx="3" fill="url(#cyGrad)"/>
-    <text x="204" y="128" class="mono" font-size="11" font-weight="700" fill="#38bdf8">0.40 s (+1,464-tok live delta · 16.3×)</text>
-
-    <line x1="20" y1="148" x2="572" y2="148" stroke="#1e293b" stroke-width="1"/>
-
-    <!-- Group 2: Qwen3.8-Flash-Next-hq8g32-hq4g64 (kv=q4) -->
-    <text x="20" y="176" class="sans" font-size="12.5" font-weight="800" fill="#f8fafc">Qwen3.8-Flash-Next</text>
-    <text x="20" y="192" class="mono" font-size="10" fill="#64748b">kv=q4 · 464.2 MiB cache</text>
-    <text x="20" y="207" class="mono" font-size="9.5" fill="#64748b">32.7K Cortex tokens</text>
-
-    <!-- Bar 2a: Cold 17.84s -> 303.3 px -->
-    <rect x="186" y="162" width="303.3" height="20" rx="4" fill="url(#coGrad)"/>
-    <text x="496" y="176" class="mono" font-size="11" font-weight="700" fill="#fca5a5">17.84 s</text>
-
-    <!-- Bar 2b: Mounted 0.24s -> 6 px -->
-    <rect x="186" y="188" width="6" height="20" rx="3" fill="url(#emGrad)"/>
-    <text x="200" y="202" class="mono" font-size="11.5" font-weight="800" fill="#34d399">0.24 s (Mounted .qwcache)</text>
-    <rect x="394" y="187" width="96" height="20" rx="10" fill="#064e3b" stroke="#10b981"/>
-    <text x="442" y="201" text-anchor="middle" class="mono" font-size="10" font-weight="800" fill="#6ee7b7">74.3× FASTER</text>
-
-    <!-- Bar 2c: 179.2K Warm-RAM Hit 0.45s -> 8 px -->
-    <rect x="186" y="214" width="8" height="20" rx="3" fill="url(#cyGrad)"/>
-    <text x="202" y="228" class="mono" font-size="11" font-weight="700" fill="#38bdf8">0.45 s (@179.2K tok · 99.96% hit)</text>
-
-    <text x="20" y="284" class="mono" font-size="10" fill="#94a3b8">Offline index build once: 8.6 s (Qwen3.6-35B-A3B q4) · 16.6 s (Qwen3.8-Flash-Next q4)</text>
-  </g>
-
-  <!-- PANEL B: EFFECTIVE PREFILL THROUGHPUT (LOG10 SCALE) & DECODE -->
-  <g transform="translate(648, 206)">
-    <rect width="592" height="296" rx="14" fill="url(#card)" stroke="#1e293b" stroke-width="1.2"/>
-    <text x="20" y="30" class="sans ct">EFFECTIVE PREFILL THROUGHPUT (LOG₁₀) &amp; DECODE</text>
-    <text x="572" y="30" text-anchor="end" class="mono ax">tok/s (higher is better)</text>
-
-    <!-- Log10 scale from 1,000 (10^3) at x=176 to 1,000,000 (10^6) at x=506 -> 110 px per decade -->
-    <line x1="176" y1="54" x2="176" y2="246" class="axis"/>
-    <line x1="286" y1="54" x2="286" y2="246" class="grid"/>
-    <line x1="396" y1="54" x2="396" y2="246" class="grid"/>
-    <line x1="506" y1="54" x2="506" y2="246" class="grid"/>
-    <text x="176" y="264" text-anchor="middle" class="mono ax">1K tok/s</text>
-    <text x="286" y="264" text-anchor="middle" class="mono ax">10K tok/s</text>
-    <text x="396" y="264" text-anchor="middle" class="mono ax">100K tok/s</text>
-    <text x="506" y="264" text-anchor="middle" class="mono ax">1M tok/s</text>
+    <text x="240" y="282" text-anchor="middle" class="mono" font-size="13" fill="#cbd5e1">0 s</text>
+    <text x="370" y="282" text-anchor="middle" class="mono" font-size="13" fill="#cbd5e1">5.0 s</text>
+    <text x="500" y="282" text-anchor="middle" class="mono" font-size="13" fill="#cbd5e1">10.0 s</text>
+    <text x="630" y="282" text-anchor="middle" class="mono" font-size="13" fill="#cbd5e1">15.0 s</text>
+    <text x="760" y="282" text-anchor="middle" class="mono" font-size="13" fill="#cbd5e1">20.0 s</text>
 
     <!-- Group 1: Qwen3.6-35B-A3B -->
-    <text x="20" y="76" class="sans" font-size="12.5" font-weight="800" fill="#f8fafc">Qwen3.6-35B-A3B</text>
-    <text x="20" y="92" class="mono" font-size="10" fill="#34d399">Decode: 148.9–163.9 tok/s</text>
-    <text x="20" y="107" class="mono" font-size="9.5" fill="#64748b">0 heap/GPU allocs</text>
+    <text x="22" y="84" class="sans" font-size="15.5" font-weight="800" fill="#f8fafc">Qwen3.6-35B-A3B</text>
+    <text x="22" y="106" class="mono" font-size="13" fill="#94a3b8">kv=q4 · 264.6 MiB cache</text>
+    <text x="22" y="126" class="mono" font-size="13" fill="#94a3b8">32.7K Cortex tokens</text>
 
-    <!-- Cold: 5,020 tok/s -> log10(5020)=3.701 -> 0.701 * 110 = 77.1 px -->
-    <rect x="176" y="62" width="77.1" height="20" rx="4" fill="url(#coGrad)"/>
-    <text x="261" y="76" class="mono" font-size="11" font-weight="700" fill="#fca5a5">5,020 tok/s (Cold 32.8K)</text>
+    <rect x="240" y="66" width="169.8" height="22" rx="4" fill="url(#coGrad)"/>
+    <text x="420" y="82" class="mono" font-size="13.5" font-weight="700" fill="#fca5a5">6.53 s (Cold 32.8K prefill)</text>
 
-    <!-- Mounted: 290,645 tok/s -> log10(290645)=5.463 -> 2.463 * 110 = 271.0 px -->
-    <rect x="176" y="88" width="271.0" height="20" rx="4" fill="url(#emGrad)"/>
-    <text x="455" y="102" class="mono" font-size="11" font-weight="800" fill="#6ee7b7">290.6K (57.9×)</text>
+    <rect x="240" y="96" width="8" height="22" rx="3" fill="url(#emGrad)"/>
+    <text x="258" y="112" class="mono" font-size="14" font-weight="800" fill="#34d399">0.12 s (Mounted .qwcache)</text>
+    <rect x="560.0" y="96.0" width="128" height="24" rx="12.0" fill="#064e3b" stroke="#10b981" stroke-width="1.2"/>
+<text x="624.0" y="112.5" text-anchor="middle" class="mono" font-size="13" font-weight="700" fill="#6ee7b7" letter-spacing="0.2">54.4× FASTER</text>
 
-    <!-- Multi-Turn T2: 310,837 tok/s -> log10(310837)=5.493 -> 2.493 * 110 = 274.2 px -->
-    <rect x="176" y="114" width="274.2" height="20" rx="4" fill="url(#cyGrad)"/>
-    <text x="458" y="128" class="mono" font-size="11" font-weight="700" fill="#38bdf8">310.8K (Turn 2)</text>
+    <rect x="240" y="126" width="12" height="22" rx="3" fill="url(#cyGrad)"/>
+    <text x="262" y="142" class="mono" font-size="13.5" font-weight="700" fill="#38bdf8">0.40 s (+1,464-tok live delta · 16.3×)</text>
 
-    <line x1="20" y1="148" x2="572" y2="148" stroke="#1e293b" stroke-width="1"/>
+    <line x1="22" y1="162" x2="882" y2="162" stroke="#1e293b" stroke-width="1"/>
 
     <!-- Group 2: Qwen3.8-Flash-Next -->
-    <text x="20" y="176" class="sans" font-size="12.5" font-weight="800" fill="#f8fafc">Qwen3.8-Flash-Next</text>
-    <text x="20" y="192" class="mono" font-size="10" fill="#34d399">Decode: 75.8–149.2 tok/s</text>
-    <text x="20" y="207" class="mono" font-size="9.5" fill="#64748b">0 heap/GPU allocs</text>
+    <text x="22" y="194" class="sans" font-size="15.5" font-weight="800" fill="#f8fafc">Qwen3.8-Flash-Next</text>
+    <text x="22" y="216" class="mono" font-size="13" fill="#94a3b8">kv=q4 · 464.2 MiB cache</text>
+    <text x="22" y="236" class="mono" font-size="13" fill="#94a3b8">32.7K Cortex tokens</text>
 
-    <!-- Cold: 1,838 tok/s -> log10(1838)=3.264 -> 0.264 * 110 = 29.1 px -->
-    <rect x="176" y="162" width="29.1" height="20" rx="4" fill="url(#coGrad)"/>
-    <text x="213" y="176" class="mono" font-size="11" font-weight="700" fill="#fca5a5">1,838 tok/s (Cold 32.8K)</text>
+    <rect x="240" y="176" width="463.8" height="22" rx="4" fill="url(#coGrad)"/>
+    <text x="714" y="192" class="mono" font-size="13.5" font-weight="700" fill="#fca5a5">17.84 s (Cold)</text>
 
-    <!-- Mounted: 138,391 tok/s -> log10(138391)=5.141 -> 2.141 * 110 = 235.5 px -->
-    <rect x="176" y="188" width="235.5" height="20" rx="4" fill="url(#emGrad)"/>
-    <text x="419" y="202" class="mono" font-size="11" font-weight="800" fill="#6ee7b7">138.4K (75.3×)</text>
+    <rect x="240" y="206" width="8" height="22" rx="3" fill="url(#emGrad)"/>
+    <text x="258" y="222" class="mono" font-size="14" font-weight="800" fill="#34d399">0.24 s (Mounted .qwcache)</text>
+    <rect x="560.0" y="206.0" width="128" height="24" rx="12.0" fill="#064e3b" stroke="#10b981" stroke-width="1.2"/>
+<text x="624.0" y="222.6" text-anchor="middle" class="mono" font-size="13" font-weight="700" fill="#6ee7b7" letter-spacing="0.2">74.3× FASTER</text>
 
-    <!-- 179.2K Warm-RAM Hit: 395,875 tok/s -> log10(395875)=5.598 -> 2.598 * 110 = 285.7 px -->
-    <rect x="176" y="214" width="285.7" height="20" rx="4" fill="url(#cyGrad)"/>
-    <text x="468" y="228" class="mono" font-size="11" font-weight="700" fill="#38bdf8">395.9K (@179K)</text>
+    <rect x="240" y="236" width="12" height="22" rx="3" fill="url(#cyGrad)"/>
+    <text x="262" y="252" class="mono" font-size="13.5" font-weight="700" fill="#38bdf8">0.45 s (@179.2K tok · 99.96% hit)</text>
 
-    <text x="20" y="284" class="mono" font-size="10" fill="#94a3b8">Sustained raw GPU chunked prefill on +130.2K new tokens: 2,041.0 tok/s (Flash-Next q4)</text>
+    <text x="22" y="304" class="mono" font-size="13" fill="#94a3b8">Offline index build once: 8.6 s (Qwen3.6-35B-A3B q4) · 16.6 s (Qwen3.8-Flash-Next q4)</text>
   </g>
 
-  <!-- PANEL C: END-TO-END SCENARIO MATRIX -->
-  <g transform="translate(40, 518)">
-    <rect width="1200" height="216" rx="14" fill="url(#card)" stroke="#1e293b" stroke-width="1.2"/>
-    <text x="24" y="30" class="sans ct">END-TO-END VERIFICATION MATRIX (CROSS-TIER RECALL · INTERACTIVE REPL · AGENTIC TOOL LOOPS · 179.2K STRESS)</text>
+  <!-- PANEL B: FULL-WIDTH LOG10 PREFILL THROUGHPUT -->
+  <g transform="translate(28, 640)">
+    <rect width="904" height="316" rx="16" fill="url(#card)" stroke="#1e293b" stroke-width="1.4"/>
+    <text x="22" y="32" class="sans" font-size="15.5" font-weight="800" fill="#f8fafc">EFFECTIVE PREFILL THROUGHPUT (LOG₁₀) &amp; DECODE</text>
+    <text x="882" y="32" text-anchor="end" class="mono" font-size="13" fill="#cbd5e1">tok/s (higher is better)</text>
 
-    <!-- Card S1 -->
-    <g transform="translate(20, 46)">
-      <rect width="276" height="152" rx="10" fill="#0d1424" stroke="#334155"/>
-      <rect x="12" y="12" width="160" height="20" rx="10" fill="#2e1065" stroke="#a855f7"/>
-      <text x="92" y="25.5" text-anchor="middle" class="mono" font-size="9.5" font-weight="700" fill="#d8b4fe">EXP 1 · CORTEX + VAULT</text>
-      <text x="14" y="52" class="sans" font-size="13.5" font-weight="800" fill="#f8fafc">Cross-Tier Exact Recall</text>
-      <text x="14" y="74" class="mono" font-size="10" fill="#fca5a5">• Cold (No Memory): 0/4 (0%)</text>
-      <text x="22" y="89" class="sans" font-size="10.5" fill="#94a3b8">No access to workspace invariants</text>
-      <text x="14" y="110" class="mono" font-size="10" fill="#34d399">• Mounted Two-Tier: 4/4 (100%)</text>
-      <text x="22" y="125" class="sans" font-size="10.5" fill="#cbd5e1">3 Cortex facts + 1 Vault source</text>
-      <text x="22" y="140" class="sans" font-size="10.5" fill="#cbd5e1">paged in &lt;0.5 ms (0.47 s TTFT)</text>
+    <!-- Log10 scale from 10^3 at x=240 to 10^6 at x=720 -> 160 px/decade -->
+    <line x1="240" y1="54" x2="240" y2="262" stroke="#475569" stroke-width="1.4"/>
+    <line x1="400" y1="54" x2="400" y2="262" stroke="#1e293b" stroke-width="1" stroke-dasharray="4 4"/>
+    <line x1="560" y1="54" x2="560" y2="262" stroke="#1e293b" stroke-width="1" stroke-dasharray="4 4"/>
+    <line x1="720" y1="54" x2="720" y2="262" stroke="#1e293b" stroke-width="1" stroke-dasharray="4 4"/>
+
+    <text x="240" y="282" text-anchor="middle" class="mono" font-size="13" fill="#cbd5e1">1K tok/s</text>
+    <text x="400" y="282" text-anchor="middle" class="mono" font-size="13" fill="#cbd5e1">10K tok/s</text>
+    <text x="560" y="282" text-anchor="middle" class="mono" font-size="13" fill="#cbd5e1">100K tok/s</text>
+    <text x="720" y="282" text-anchor="middle" class="mono" font-size="13" fill="#cbd5e1">1M tok/s</text>
+
+    <!-- Group 1: 35B -->
+    <text x="22" y="84" class="sans" font-size="15.5" font-weight="800" fill="#f8fafc">Qwen3.6-35B-A3B</text>
+    <text x="22" y="106" class="mono" font-size="13" fill="#34d399">Decode: 148.9–163.9 tok/s</text>
+    <text x="22" y="126" class="mono" font-size="13" fill="#94a3b8">0 heap/GPU allocs</text>
+
+    <rect x="240" y="66" width="112.1" height="22" rx="4" fill="url(#coGrad)"/>
+    <text x="362" y="82" class="mono" font-size="13.5" font-weight="700" fill="#fca5a5">5,020 tok/s (Cold 32.8K)</text>
+
+    <rect x="240" y="96" width="394.1" height="22" rx="4" fill="url(#emGrad)"/>
+    <text x="644" y="112" class="mono" font-size="14" font-weight="800" fill="#6ee7b7">290.6K tok/s (57.9×)</text>
+
+    <rect x="240" y="126" width="398.8" height="22" rx="4" fill="url(#cyGrad)"/>
+    <text x="649" y="142" class="mono" font-size="13.5" font-weight="700" fill="#38bdf8">310.8K tok/s (Turn 2)</text>
+
+    <line x1="22" y1="162" x2="882" y2="162" stroke="#1e293b" stroke-width="1"/>
+
+    <!-- Group 2: Flash-Next -->
+    <text x="22" y="194" class="sans" font-size="15.5" font-weight="800" fill="#f8fafc">Qwen3.8-Flash-Next</text>
+    <text x="22" y="216" class="mono" font-size="13" fill="#34d399">Decode: 75.8–149.2 tok/s</text>
+    <text x="22" y="236" class="mono" font-size="13" fill="#94a3b8">0 heap/GPU allocs</text>
+
+    <rect x="240" y="176" width="42.3" height="22" rx="4" fill="url(#coGrad)"/>
+    <text x="292" y="192" class="mono" font-size="13.5" font-weight="700" fill="#fca5a5">1,838 tok/s (Cold 32.8K)</text>
+
+    <rect x="240" y="206" width="342.6" height="22" rx="4" fill="url(#emGrad)"/>
+    <text x="592" y="222" class="mono" font-size="14" font-weight="800" fill="#6ee7b7">138.4K tok/s (75.3×)</text>
+
+    <rect x="240" y="236" width="415.6" height="22" rx="4" fill="url(#cyGrad)"/>
+    <text x="666" y="252" class="mono" font-size="13.5" font-weight="700" fill="#38bdf8">395.9K tok/s (@179K)</text>
+
+    <text x="22" y="304" class="mono" font-size="13" fill="#94a3b8">Sustained raw GPU chunked prefill on +130.2K new tokens: 2,041.0 tok/s (Flash-Next q4)</text>
+  </g>
+
+  <!-- PANEL C: 2x2 END-TO-END SCENARIO MATRIX -->
+  <g transform="translate(28, 972)">
+    <rect width="904" height="432" rx="16" fill="url(#card)" stroke="#1e293b" stroke-width="1.4"/>
+    <text x="22" y="32" class="sans" font-size="15.5" font-weight="800" fill="#f8fafc">END-TO-END VERIFICATION MATRIX (CORTEX + VAULT · REPL · TOOL LOOPS · 179.2K STRESS)</text>
+
+    <!-- S1 -->
+    <g transform="translate(20, 48)">
+      <rect width="422" height="172" rx="10" fill="#0d1424" stroke="#334155"/>
+      <rect x="16.0" y="14.0" width="214" height="24" rx="12.0" fill="#2e1065" stroke="#a855f7" stroke-width="1.2"/>
+<text x="123.0" y="30.6" text-anchor="middle" class="mono" font-size="13" font-weight="700" fill="#e9d5ff" letter-spacing="0.2">EXP 1 · CORTEX + VAULT</text>
+      <text x="16" y="60" class="sans" font-size="16" font-weight="800" fill="#f8fafc">Cross-Tier Exact Recall</text>
+      <text x="16" y="85" class="mono" font-size="13.5" fill="#fca5a5">• Cold (No Memory): 0/4 (0%)</text>
+      <text x="26" y="106" class="sans" font-size="13.5" fill="#94a3b8">No access to workspace invariants</text>
+      <text x="16" y="131" class="mono" font-size="13.5" fill="#34d399">• Mounted Two-Tier: 4/4 (100%)</text>
+      <text x="26" y="152" class="sans" font-size="13.5" fill="#cbd5e1">3 Cortex + 1 Vault paged in &lt;0.5 ms (0.47 s TTFT)</text>
     </g>
 
-    <!-- Card S2 -->
-    <g transform="translate(314, 46)">
-      <rect width="276" height="152" rx="10" fill="#0d1424" stroke="#334155"/>
-      <rect x="12" y="12" width="150" height="20" rx="10" fill="#064e3b" stroke="#10b981"/>
-      <text x="87" y="25.5" text-anchor="middle" class="mono" font-size="9.5" font-weight="700" fill="#6ee7b7">EXP 2 · INTERACTIVE REPL</text>
-      <text x="14" y="52" class="sans" font-size="13.5" font-weight="800" fill="#f8fafc">Multi-Turn Prefix Reuse</text>
-      <text x="14" y="74" class="mono" font-size="10" fill="#34d399">• Pinned 32.7K Cortex in Warm RAM</text>
-      <text x="14" y="92" class="mono" font-size="10" fill="#38bdf8">• 100% prior turn prefix preserved</text>
-      <text x="14" y="110" class="mono" font-size="10" fill="#c084fc">• Follow-up TTFT: 0.12–0.17 s</text>
-      <text x="14" y="126" class="sans" font-size="10.5" fill="#cbd5e1">• 310.8K–332.0K tok/s prefill</text>
-      <text x="14" y="141" class="mono" font-size="9.5" fill="#6ee7b7">• 155.9 tok/s decode · 0 SSD spill</text>
+    <!-- S2 -->
+    <g transform="translate(462, 48)">
+      <rect width="422" height="172" rx="10" fill="#0d1424" stroke="#334155"/>
+      <rect x="16.0" y="14.0" width="231" height="24" rx="12.0" fill="#064e3b" stroke="#10b981" stroke-width="1.2"/>
+<text x="131.5" y="30.6" text-anchor="middle" class="mono" font-size="13" font-weight="700" fill="#6ee7b7" letter-spacing="0.2">EXP 2 · INTERACTIVE REPL</text>
+      <text x="16" y="60" class="sans" font-size="16" font-weight="800" fill="#f8fafc">Multi-Turn Prefix Reuse</text>
+      <text x="16" y="85" class="mono" font-size="13.5" fill="#34d399">• Pinned 32.7K Cortex in Warm RAM</text>
+      <text x="16" y="108" class="mono" font-size="13.5" fill="#38bdf8">• 100% prior turn prefix preserved</text>
+      <text x="16" y="131" class="mono" font-size="13.5" fill="#c084fc">• Follow-up TTFT: 0.12–0.17 s (310.8K–332.0K/s)</text>
+      <text x="16" y="154" class="mono" font-size="13.5" fill="#6ee7b7">• 155.9 tok/s decode · 0 SSD spill</text>
     </g>
 
-    <!-- Card S3 -->
-    <g transform="translate(608, 46)">
-      <rect width="276" height="152" rx="10" fill="#0d1424" stroke="#334155"/>
-      <rect x="12" y="12" width="166" height="20" rx="10" fill="#33230c" stroke="#f59e0b"/>
-      <text x="95" y="25.5" text-anchor="middle" class="mono" font-size="9.5" font-weight="700" fill="#fbbf24">EXP 3 · TOOL &amp; EDIT GUARD</text>
-      <text x="14" y="52" class="sans" font-size="13.5" font-weight="800" fill="#f8fafc">Tool Loops &amp; Live Disk Edits</text>
-      <text x="14" y="74" class="mono" font-size="10" fill="#34d399">• User + Tool-step Vault paging</text>
-      <text x="14" y="92" class="mono" font-size="10" fill="#38bdf8">• Historical turns frozen in place</text>
-      <text x="14" y="110" class="mono" font-size="10" fill="#fbbf24">• Post-Edit Hit: 48,842 / 48,908</text>
-      <text x="14" y="126" class="sans" font-size="10.5" fill="#cbd5e1">• 99.87% hit · 0.16 s TTFT</text>
-      <text x="14" y="141" class="sans" font-size="10.5" fill="#cbd5e1">• 307.0K tok/s · 149.2 tok/s decode</text>
+    <!-- S3 -->
+    <g transform="translate(20, 236)">
+      <rect width="422" height="172" rx="10" fill="#0d1424" stroke="#334155"/>
+      <rect x="16.0" y="14.0" width="240" height="24" rx="12.0" fill="#33230c" stroke="#f59e0b" stroke-width="1.2"/>
+<text x="136.0" y="30.6" text-anchor="middle" class="mono" font-size="13" font-weight="700" fill="#fde68a" letter-spacing="0.2">EXP 3 · TOOL &amp; EDIT GUARD</text>
+      <text x="16" y="60" class="sans" font-size="16" font-weight="800" fill="#f8fafc">Tool Loops &amp; Live Disk Edits</text>
+      <text x="16" y="85" class="mono" font-size="13.5" fill="#34d399">• User + Tool Vault paging · history frozen</text>
+      <text x="16" y="108" class="mono" font-size="13.5" fill="#fbbf24">• Post-Edit Hit: 48,842 / 48,908 (99.87%)</text>
+      <text x="16" y="131" class="mono" font-size="13.5" fill="#38bdf8">• 0.16 s TTFT · 307.0K tok/s after edit</text>
+      <text x="16" y="154" class="mono" font-size="13.5" fill="#cbd5e1">• 149.2 tok/s decode · 0 s base rebuild</text>
     </g>
 
-    <!-- Card S4 -->
-    <g transform="translate(902, 46)">
-      <rect width="276" height="152" rx="10" fill="#0d1424" stroke="#334155"/>
-      <rect x="12" y="12" width="166" height="20" rx="10" fill="#0c2a3a" stroke="#0ea5e9"/>
-      <text x="95" y="25.5" text-anchor="middle" class="mono" font-size="9.5" font-weight="700" fill="#38bdf8">EXP 4 · 179.2K VOLUME</text>
-      <text x="14" y="52" class="sans" font-size="13.5" font-weight="800" fill="#f8fafc">Large-Volume Stress &amp; Hit</text>
-      <text x="14" y="74" class="mono" font-size="10" fill="#34d399">• +130,191-tok suffix prefill</text>
-      <text x="14" y="92" class="mono" font-size="10" fill="#38bdf8">• 2,041.0 tok/s raw GPU compute</text>
-      <text x="14" y="110" class="mono" font-size="10" fill="#c084fc">• Next Turn: 179,099 / 179,173 hit</text>
-      <text x="14" y="126" class="sans" font-size="10.5" fill="#cbd5e1">• 99.96% Warm-RAM hit (0.45 s TTFT)</text>
-      <text x="14" y="141" class="mono" font-size="9.5" fill="#6ee7b7">• 395,874.9 tok/s effective prefill</text>
+    <!-- S4 -->
+    <g transform="translate(462, 236)">
+      <rect width="422" height="172" rx="10" fill="#0d1424" stroke="#334155"/>
+      <rect x="16.0" y="14.0" width="205" height="24" rx="12.0" fill="#0c2a3a" stroke="#0ea5e9" stroke-width="1.2"/>
+<text x="118.5" y="30.6" text-anchor="middle" class="mono" font-size="13" font-weight="700" fill="#7dd3fc" letter-spacing="0.2">EXP 4 · 179.2K VOLUME</text>
+      <text x="16" y="60" class="sans" font-size="16" font-weight="800" fill="#f8fafc">Large-Volume Stress &amp; Hit</text>
+      <text x="16" y="85" class="mono" font-size="13.5" fill="#34d399">• +130,191-tok suffix @ 2,041.0 tok/s raw GPU</text>
+      <text x="16" y="108" class="mono" font-size="13.5" fill="#c084fc">• Next Turn: 179,099 / 179,173 hit (99.96%)</text>
+      <text x="16" y="131" class="mono" font-size="13.5" fill="#38bdf8">• 0.45 s Warm-RAM TTFT at 179.2K tokens</text>
+      <text x="16" y="154" class="mono" font-size="13.5" fill="#6ee7b7">• 395,874.9 tok/s effective prefill</text>
     </g>
   </g>
 
-  <text x="40" y="764" class="mono" font-size="11" fill="#64748b">Qwegn v0.11.3 · Apple M5 Max (Mac17,6 · 40-core Apple10 GPU · 128 GB Unified Memory · macOS 26) · Fresh release binary · Greedy (temp=0).</text>
+  <text x="480" y="1436" text-anchor="middle" class="mono" font-size="13" fill="#94a3b8">Qwegn v0.11.3 · Apple M5 Max (Mac17,6 · 40C GPU · 128 GB RAM · macOS 26) · Greedy (temp=0)</text>
 </svg>

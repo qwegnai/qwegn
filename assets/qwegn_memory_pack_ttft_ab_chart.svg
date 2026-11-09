@@ -1,102 +1,91 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 460" width="1200" height="460">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 500" width="960" height="500">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#070a12"/>
-      <stop offset="0.5" stop-color="#0d1323"/>
-      <stop offset="1" stop-color="#090d18"/>
+      <stop offset="0" stop-color="#070a12"/><stop offset="0.5" stop-color="#0d1323"/><stop offset="1" stop-color="#090d18"/>
     </linearGradient>
     <linearGradient id="coV" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#f87171"/>
-      <stop offset="1" stop-color="#be123c"/>
+      <stop offset="0" stop-color="#f87171"/><stop offset="1" stop-color="#be123c"/>
     </linearGradient>
     <linearGradient id="emV" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#34d399"/>
-      <stop offset="1" stop-color="#059669"/>
+      <stop offset="0" stop-color="#34d399"/><stop offset="1" stop-color="#059669"/>
     </linearGradient>
     <linearGradient id="cyV" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#38bdf8"/>
-      <stop offset="1" stop-color="#0284c7"/>
+      <stop offset="0" stop-color="#38bdf8"/><stop offset="1" stop-color="#0284c7"/>
     </linearGradient>
-    <style>
-      .sans { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", system-ui, sans-serif; }
-      .mono { font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace; }
-      .ax { font-size: 11.5px; font-weight: 600; fill: #64748b; }
-      .grid { stroke: #1e293b; stroke-width: 1; stroke-dasharray: 4 4; }
-      .axis { stroke: #334155; stroke-width: 1.5; }
-    </style>
   </defs>
+  <style>
+    svg { text-rendering: geometricPrecision; -webkit-font-smoothing: antialiased; }
+    .title { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif; font-weight: 800; }
+    .subtitle { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif; font-weight: 500; }
+    .sans { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", "Segoe UI", system-ui, sans-serif; }
+    .mono { font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace; font-weight: 600; }
+  </style>
 
-  <rect width="1200" height="460" rx="16" fill="url(#bg)" stroke="#1e293b" stroke-width="2"/>
+  <rect width="960" height="500" rx="18" fill="url(#bg)" stroke="#1e293b" stroke-width="2"/>
 
-  <!-- Title -->
-  <text x="600" y="36" text-anchor="middle" class="sans" font-size="18" font-weight="800" fill="#f8fafc">Paired A/B Time-To-First-Token (TTFT in Seconds — Lower is Better)</text>
+  <text x="480" y="38" text-anchor="middle" class="sans" font-size="20" font-weight="800" fill="#f8fafc">Paired A/B Time-To-First-Token (TTFT in Seconds — Lower is Better)</text>
+  <text x="28" y="226" text-anchor="middle" transform="rotate(-90 28 226)" class="sans" font-size="14" font-weight="700" fill="#cbd5e1">TTFT (seconds)</text>
 
-  <!-- Y-Axis Label -->
-  <text x="32" y="220" text-anchor="middle" transform="rotate(-90 32 220)" class="sans" font-size="13" font-weight="700" fill="#94a3b8">TTFT (seconds)</text>
+  <!-- Chart Area: x=86 to x=918, y=92 (20 s) to y=364 (0 s) -> 272 px for 20 s (13.6 px/s) -->
+  <line x1="86" y1="364" x2="918" y2="364" stroke="#475569" stroke-width="1.5"/>
+  <line x1="86" y1="92" x2="86" y2="364" stroke="#475569" stroke-width="1.5"/>
 
-  <!-- Chart Area: x=96 to x=1140, y=80 (20 s) to y=352 (0 s) -> height=272 px for 20 s (13.6 px/s) -->
-  <line x1="96" y1="352" x2="1140" y2="352" class="axis"/>
-  <line x1="96" y1="80" x2="96" y2="352" class="axis"/>
+  <text x="74" y="369" text-anchor="end" class="mono" font-size="13" fill="#cbd5e1">0 s</text>
+  <line x1="86" y1="309.6" x2="918" y2="309.6" stroke="#1e293b" stroke-width="1" stroke-dasharray="4 4"/>
+  <text x="74" y="314.6" text-anchor="end" class="mono" font-size="13" fill="#cbd5e1">4 s</text>
+  <line x1="86" y1="255.2" x2="918" y2="255.2" stroke="#1e293b" stroke-width="1" stroke-dasharray="4 4"/>
+  <text x="74" y="260.2" text-anchor="end" class="mono" font-size="13" fill="#cbd5e1">8 s</text>
+  <line x1="86" y1="200.8" x2="918" y2="200.8" stroke="#1e293b" stroke-width="1" stroke-dasharray="4 4"/>
+  <text x="74" y="205.8" text-anchor="end" class="mono" font-size="13" fill="#cbd5e1">12 s</text>
+  <line x1="86" y1="146.4" x2="918" y2="146.4" stroke="#1e293b" stroke-width="1" stroke-dasharray="4 4"/>
+  <text x="74" y="151.4" text-anchor="end" class="mono" font-size="13" fill="#cbd5e1">16 s</text>
+  <line x1="86" y1="92.0" x2="918" y2="92.0" stroke="#1e293b" stroke-width="1" stroke-dasharray="4 4"/>
+  <text x="74" y="97.0" text-anchor="end" class="mono" font-size="13" fill="#cbd5e1">20 s</text>
 
-  <!-- Y Grid Lines -->
-  <text x="82" y="356" text-anchor="end" class="mono ax">0 s</text>
-  <line x1="96" y1="297.6" x2="1140" y2="297.6" class="grid"/>
-  <text x="82" y="301.6" text-anchor="end" class="mono ax">4 s</text>
-  <line x1="96" y1="243.2" x2="1140" y2="243.2" class="grid"/>
-  <text x="82" y="247.2" text-anchor="end" class="mono ax">8 s</text>
-  <line x1="96" y1="188.8" x2="1140" y2="188.8" class="grid"/>
-  <text x="82" y="192.8" text-anchor="end" class="mono ax">12 s</text>
-  <line x1="96" y1="134.4" x2="1140" y2="134.4" class="grid"/>
-  <text x="82" y="138.4" text-anchor="end" class="mono ax">16 s</text>
-  <line x1="96" y1="80.0" x2="1140" y2="80.0" class="grid"/>
-  <text x="82" y="84.0" text-anchor="end" class="mono ax">20 s</text>
+  <line x1="493" y1="66" x2="493" y2="432" stroke="#334155" stroke-width="1.4" stroke-dasharray="6 4"/>
 
-  <!-- 6 Columns centered at x = 190, 355, 520 | 715, 880, 1045 (165 px spacing, bar width = 76) -->
-  <line x1="618" y1="66" x2="618" y2="412" stroke="#334155" stroke-width="1.2" stroke-dasharray="6 4"/>
+  <text x="288" y="72" text-anchor="middle" class="sans" font-size="14" font-weight="800" fill="#f1f5f9">Qwen3.6-35B-A3B-hq4g32 (q4 · 264.6 MiB)</text>
+  <text x="706" y="72" text-anchor="middle" class="sans" font-size="14" font-weight="800" fill="#f1f5f9">Qwen3.8-Flash-Next-hq8g32-hq4g64 (q4 · 464.2 MiB)</text>
 
-  <!-- Model Group Headers -->
-  <text x="355" y="64" text-anchor="middle" class="sans" font-size="13" font-weight="800" fill="#cbd5e1">Qwen3.6-35B-A3B-hq4g32 (kv=q4 · 264.6 MiB)</text>
-  <text x="880" y="64" text-anchor="middle" class="sans" font-size="13" font-weight="800" fill="#cbd5e1">Qwen3.8-Flash-Next-hq8g32-hq4g64 (kv=q4 · 464.2 MiB)</text>
+  <!-- Bar 1: 35B Cold 6.53 s -->
+  <rect x="124" y="275.2" width="68" height="88.8" rx="6" fill="url(#coV)"/>
+  <text x="158" y="264" text-anchor="middle" class="mono" font-size="14.5" font-weight="800" fill="#fca5a5">6.53 s</text>
+  <text x="158" y="392" text-anchor="middle" class="sans" font-size="13.5" font-weight="700" fill="#f8fafc">35B Cold (A)</text>
+  <text x="158" y="414" text-anchor="middle" class="mono" font-size="13" fill="#94a3b8">32.8K Prefill</text>
 
-  <!-- Bar 1: 35B Cold (6.53 s -> h=88.8, y=263.2) -->
-  <rect x="152" y="263.2" width="76" height="88.8" rx="6" fill="url(#coV)"/>
-  <text x="190" y="253" text-anchor="middle" class="mono" font-size="13" font-weight="800" fill="#fca5a5">6.53 s</text>
-  <text x="190" y="378" text-anchor="middle" class="sans" font-size="12" font-weight="700" fill="#e2e8f0">35B-A3B Cold (A)</text>
-  <text x="190" y="396" text-anchor="middle" class="mono" font-size="10.5" fill="#94a3b8">32.8K Full Prefill</text>
+  <!-- Bar 2: 35B .qwcache 0.12 s -->
+  <rect x="254" y="358" width="68" height="6" rx="3" fill="url(#emV)"/>
+  <rect x="227.0" y="290.0" width="122" height="24" rx="12.0" fill="#064e3b" stroke="#10b981" stroke-width="1.2"/>
+<text x="288.0" y="306.6" text-anchor="middle" class="mono" font-size="13" font-weight="700" fill="#6ee7b7" letter-spacing="0.1">54.4× FASTER</text>
+  <text x="288" y="346" text-anchor="middle" class="mono" font-size="14.5" font-weight="800" fill="#34d399">0.12 s</text>
+  <text x="288" y="392" text-anchor="middle" class="sans" font-size="13.5" font-weight="700" fill="#6ee7b7">35B .qwcache (B)</text>
+  <text x="288" y="414" text-anchor="middle" class="mono" font-size="13" fill="#94a3b8">Cortex Hit</text>
 
-  <!-- Bar 2: 35B .qwcache (0.12 s -> h=6 visible, y=346) -->
-  <rect x="317" y="346" width="76" height="6" rx="3" fill="url(#emV)"/>
-  <rect x="303" y="294" width="104" height="22" rx="11" fill="#064e3b" stroke="#10b981"/>
-  <text x="355" y="309" text-anchor="middle" class="mono" font-size="10.5" font-weight="800" fill="#6ee7b7">54.4× FASTER</text>
-  <text x="355" y="336" text-anchor="middle" class="mono" font-size="13" font-weight="800" fill="#34d399">0.12 s</text>
-  <text x="355" y="378" text-anchor="middle" class="sans" font-size="12" font-weight="700" fill="#6ee7b7">35B-A3B .qwcache (B)</text>
-  <text x="355" y="396" text-anchor="middle" class="mono" font-size="10.5" fill="#94a3b8">Pinned Cortex Hit</text>
+  <!-- Bar 3: 35B Live Delta 0.40 s -->
+  <rect x="384" y="356" width="68" height="8" rx="4" fill="url(#cyV)"/>
+  <text x="418" y="344" text-anchor="middle" class="mono" font-size="14.5" font-weight="800" fill="#38bdf8">0.40 s</text>
+  <text x="418" y="392" text-anchor="middle" class="sans" font-size="13.5" font-weight="700" fill="#7dd3fc">35B + Edit</text>
+  <text x="418" y="414" text-anchor="middle" class="mono" font-size="13" fill="#94a3b8">+1,464 Δ</text>
 
-  <!-- Bar 3: 35B + Live Delta (0.40 s -> h=8.0, y=344.0) -->
-  <rect x="482" y="344.0" width="76" height="8.0" rx="4" fill="url(#cyV)"/>
-  <text x="520" y="333" text-anchor="middle" class="mono" font-size="13" font-weight="800" fill="#38bdf8">0.40 s</text>
-  <text x="520" y="378" text-anchor="middle" class="sans" font-size="12" font-weight="700" fill="#7dd3fc">35B-A3B + Live Edit</text>
-  <text x="520" y="396" text-anchor="middle" class="mono" font-size="10.5" fill="#94a3b8">+1,464-tok Tail Delta</text>
+  <!-- Bar 4: Flash-Next Cold 17.84 s -->
+  <rect x="534" y="121.4" width="68" height="242.6" rx="6" fill="url(#coV)"/>
+  <text x="568" y="110" text-anchor="middle" class="mono" font-size="14.5" font-weight="800" fill="#fca5a5">17.84 s</text>
+  <text x="568" y="392" text-anchor="middle" class="sans" font-size="13.5" font-weight="700" fill="#f8fafc">FN Cold (A)</text>
+  <text x="568" y="414" text-anchor="middle" class="mono" font-size="13" fill="#94a3b8">32.8K Prefill</text>
 
-  <!-- Bar 4: Flash-Next Cold (17.84 s -> h=242.6, y=109.4) -->
-  <rect x="677" y="109.4" width="76" height="242.6" rx="6" fill="url(#coV)"/>
-  <text x="715" y="99" text-anchor="middle" class="mono" font-size="13" font-weight="800" fill="#fca5a5">17.84 s</text>
-  <text x="715" y="378" text-anchor="middle" class="sans" font-size="12" font-weight="700" fill="#e2e8f0">Flash-Next Cold (A)</text>
-  <text x="715" y="396" text-anchor="middle" class="mono" font-size="10.5" fill="#94a3b8">32.8K Full Prefill</text>
+  <!-- Bar 5: Flash-Next .qwcache 0.24 s -->
+  <rect x="664" y="358" width="68" height="6" rx="3" fill="url(#emV)"/>
+  <rect x="637.0" y="290.0" width="122" height="24" rx="12.0" fill="#064e3b" stroke="#10b981" stroke-width="1.2"/>
+<text x="698.0" y="306.6" text-anchor="middle" class="mono" font-size="13" font-weight="700" fill="#6ee7b7" letter-spacing="0.1">74.3× FASTER</text>
+  <text x="698" y="346" text-anchor="middle" class="mono" font-size="14.5" font-weight="800" fill="#34d399">0.24 s</text>
+  <text x="698" y="392" text-anchor="middle" class="sans" font-size="13.5" font-weight="700" fill="#6ee7b7">FN .qwcache (B)</text>
+  <text x="698" y="414" text-anchor="middle" class="mono" font-size="13" fill="#94a3b8">Cortex Hit</text>
 
-  <!-- Bar 5: Flash-Next .qwcache (0.24 s -> h=6 visible, y=346) -->
-  <rect x="842" y="346" width="76" height="6" rx="3" fill="url(#emV)"/>
-  <rect x="828" y="294" width="104" height="22" rx="11" fill="#064e3b" stroke="#10b981"/>
-  <text x="880" y="309" text-anchor="middle" class="mono" font-size="10.5" font-weight="800" fill="#6ee7b7">74.3× FASTER</text>
-  <text x="880" y="336" text-anchor="middle" class="mono" font-size="13" font-weight="800" fill="#34d399">0.24 s</text>
-  <text x="880" y="378" text-anchor="middle" class="sans" font-size="12" font-weight="700" fill="#6ee7b7">Flash-Next .qwcache (B)</text>
-  <text x="880" y="396" text-anchor="middle" class="mono" font-size="10.5" fill="#94a3b8">Pinned Cortex Hit</text>
+  <!-- Bar 6: Flash-Next @179.2K 0.45 s -->
+  <rect x="794" y="355.5" width="68" height="8.5" rx="4" fill="url(#cyV)"/>
+  <text x="828" y="344" text-anchor="middle" class="mono" font-size="14.5" font-weight="800" fill="#38bdf8">0.45 s</text>
+  <text x="828" y="392" text-anchor="middle" class="sans" font-size="13.5" font-weight="700" fill="#7dd3fc">FN @179.2K</text>
+  <text x="828" y="414" text-anchor="middle" class="mono" font-size="13" fill="#94a3b8">99.96% (395.9K/s)</text>
 
-  <!-- Bar 6: Flash-Next @179.2K Warm-RAM Hit (0.45 s -> h=8.5, y=343.5) -->
-  <rect x="1007" y="343.5" width="76" height="8.5" rx="4" fill="url(#cyV)"/>
-  <text x="1045" y="333" text-anchor="middle" class="mono" font-size="13" font-weight="800" fill="#38bdf8">0.45 s</text>
-  <text x="1045" y="378" text-anchor="middle" class="sans" font-size="12" font-weight="700" fill="#7dd3fc">Flash-Next @179.2K</text>
-  <text x="1045" y="396" text-anchor="middle" class="mono" font-size="10.5" fill="#94a3b8">99.96% Hit (395.9K tok/s)</text>
-
-  <text x="600" y="438" text-anchor="middle" class="mono" font-size="11" fill="#64748b">Qwegn v0.11.3 · Apple M5 Max (128 GB) · Paired Interleaved A/B (min of 2 alternating rounds) &amp; 179.2K Large-Volume Prefix Hit.</text>
+  <text x="480" y="468" text-anchor="middle" class="mono" font-size="13" fill="#94a3b8">Qwegn v0.11.3 · Apple M5 Max (128 GB) · Paired Interleaved A/B (min of 2 rounds) &amp; 179.2K Large-Volume Prefix Hit</text>
 </svg>

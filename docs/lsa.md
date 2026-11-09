@@ -3,11 +3,19 @@
 Qwegn implements a general, model-agnostic **Latent Sparse Attention (LSA)** subsystem (`QWLSAOperator`) that scales full-attention layers up to **1,048,576 (1M) tokens** on a single Apple Silicon Mac without model retraining, alongside native **NoPE Multi-head Latent Attention (MLA)** with trained **Key-Pool(4)** sparse indexing for `GLM-5.3-Flash`.
 
 <p align="center">
-  <img src="../assets/qwegn_lsa_scaling_qwen36_35b_a3b.svg" alt="Qwegn LSA vs Dense scaling, 64K to 1M tokens: Qwen3.6-35B-A3B" width="1024">
-  <img src="../assets/qwegn_lsa_scaling_sensenova_loop_9b.svg" alt="Qwegn LSA vs Dense scaling, 64K to 1M tokens: SenseNova-Loop-9B" width="1024">
-  <img src="../assets/qwegn_lsa_scaling_qwen38_27b.svg" alt="Qwegn LSA vs Dense scaling, 64K to 1M tokens: Qwen3.8-27B" width="1024">
-  <img src="../assets/qwegn_lsa_scaling_flash_next.svg" alt="Qwegn LSA vs Dense scaling, 64K to 1M tokens: Qwen3.8-Flash-Next" width="1024">
-  <img src="../assets/qwegn_lsa_scaling_glm53_flash.svg" alt="Qwegn NoPE MLA, KDA & 321B Cold-Expert Streaming: GLM-5.3-Flash" width="1024">
+  <img src="../assets/qwegn_lsa_scaling_qwen36_35b_a3b.svg" alt="Qwegn LSA vs Dense scaling, 64K to 1M tokens: Qwen3.6-35B-A3B" width="100%">
+</p>
+<p align="center">
+  <img src="../assets/qwegn_lsa_scaling_sensenova_loop_9b.svg" alt="Qwegn LSA vs Dense scaling, 64K to 1M tokens: SenseNova-Loop-9B" width="100%">
+</p>
+<p align="center">
+  <img src="../assets/qwegn_lsa_scaling_qwen38_27b.svg" alt="Qwegn LSA vs Dense scaling, 64K to 1M tokens: Qwen3.8-27B" width="100%">
+</p>
+<p align="center">
+  <img src="../assets/qwegn_lsa_scaling_flash_next.svg" alt="Qwegn LSA vs Dense scaling, 64K to 1M tokens: Qwen3.8-Flash-Next" width="100%">
+</p>
+<p align="center">
+  <img src="../assets/qwegn_lsa_scaling_glm53_flash.svg" alt="Qwegn NoPE MLA, KDA & 321B Cold-Expert Streaming: GLM-5.3-Flash" width="100%">
 </p>
 
 ## How Qwegn LSA Works
@@ -99,8 +107,10 @@ Open **Settings (`⌘,`)** in `qwg-menu` under **Memory & Context → Latent Spa
 Building on **Latent Sparse Attention** (`arXiv:2610.42147`), Qwegn supports precomputing an entire code repository or documentation tree into a persistent, pinned **Tier-0 Base Memory Pack** (`<root>/.qwg/manifest.json` + `<root>/.qwg/<pack>_<model>_<kv>.qwcache`) that sits underneath the per-session LRU prefix cache (`~/.qwg/cache/*.qwcache`). Full architectural analysis, comparisons against Vector RAG and Stanford SNAP Memorilla (`arXiv:2610.21375`), and experimental verification are detailed in the [**LSA Codebase Memory Whitepaper**](lsa-codebase-memory-whitepaper.md).
 
 <p align="center">
-  <img src="../assets/qwegn_memory_pack_architecture.svg" alt="Qwegn Memory Pack Architecture and Paradigm Comparison" width="1024">
-  <img src="../assets/qwegn_memory_pack_experiments.svg" alt="Qwegn Memory Pack Live Experimental Benchmarks" width="1024">
+  <img src="../assets/qwegn_memory_pack_architecture.svg" alt="Qwegn Memory Pack Architecture and Paradigm Comparison" width="100%">
+</p>
+<p align="center">
+  <img src="../assets/qwegn_memory_pack_experiments.svg" alt="Qwegn Memory Pack Live Experimental Benchmarks" width="100%">
 </p>
 
 #### Measured Repository Memory Pack Performance (`27,472` Indexed Tokens)

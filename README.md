@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/qwegn_engine_bento.svg" alt="Qwegn" width="820">
+  <img src="assets/qwegn_engine_bento.svg" alt="Qwegn" width="100%">
 </p>
 
 <h1 align="center">Qwegn</h1>
@@ -82,14 +82,41 @@ Full tables, paired A/B repository memory benchmarks, and thermal protocol: [doc
 
 ## Supported models
 
-| | |
-| :---: | :---: |
-| <img src="assets/qwegn_model_glm53_flash.svg" alt="GLM-5.3-Flash" width="720"> | <img src="assets/qwegn_model_qwen36_35b_a3b.svg" alt="Qwen3.6-35B-A3B" width="720"> |
-| **GLM-5.3-Flash** · 45L MoE (`321B` total / `18B` active, 288 experts, 8 + 1 active), 11 NoPE MLA (512D latent KV + Key-Pool(4)) + 34 KDA, 4-stream Sinkhorn mHC, NextN MTP, vision (`HQ4_G32_M5 + HQ3_G64`) | **Qwen3.6-35B-A3B** · 40L MoE (256 experts, 8 + 1 active), 10 QSA + 30 GDN, MoE MTP-3, vision |
-| <img src="assets/qwegn_model_flash_next.svg" alt="Qwen3.8-Flash-Next" width="720"> | <img src="assets/qwegn_model_qwen38_27b.svg" alt="Qwen3.8-27B" width="720"> |
-| **Qwen3.8-Flash-Next** · 48L MoE (512 experts, 10 + 1 active), 12 QSA + 36 GDN, 4-branch HC, PLE, MTP, vision (`HQ8_G32 + HQ4_G64`) | **Qwen3.8-27B** (+ DSpine-b16 & DFlash 2) · 64L dense hybrid, 5120 hidden, 24Q / 4KV GQA, MTP-3/5, 5-layer DSpine (`134.5 tok/s` / `4.19×`) & DFlash 2 drafters, vision |
-| <img src="assets/qwegn_model_sensenova_loop_9b.svg" alt="SenseNova-Loop-9B" width="720"> | <img src="assets/qwegn_memory_pack_experiments.svg" alt="QWMemoryPack Live Benchmarks" width="720"> |
-| **SenseNova-Loop-9B-Preview** · 32 physical → 56 effective layers (2× loop), 2-stream Sinkhorn mHC, MTP-3 | **QWMemoryPack (`.qwcache`)** · Two-tier COW repository memory (`55.2×–66.0×` TTFT speedup, `0.04 ms` per-token LSA selection, live `<memory_delta>`) |
+<p align="center">
+  <img src="assets/qwegn_model_glm53_flash.svg" alt="GLM-5.3-Flash" width="100%">
+</p>
+
+**GLM-5.3-Flash** · 45L MoE (`321B` total / `18B` active, 288 experts, 8 + 1 active), 11 NoPE MLA (512D latent KV + Key-Pool(4)) + 34 KDA, 4-stream Sinkhorn mHC, NextN MTP, vision (`HQ4_G32_M5 + HQ3_G64`)
+
+<p align="center">
+  <img src="assets/qwegn_model_qwen36_35b_a3b.svg" alt="Qwen3.6-35B-A3B" width="100%">
+</p>
+
+**Qwen3.6-35B-A3B** · 40L MoE (256 experts, 8 + 1 active), 10 QSA + 30 GDN, MoE MTP-3, vision
+
+<p align="center">
+  <img src="assets/qwegn_model_flash_next.svg" alt="Qwen3.8-Flash-Next" width="100%">
+</p>
+
+**Qwen3.8-Flash-Next** · 48L MoE (512 experts, 10 + 1 active), 12 QSA + 36 GDN, 4-branch HC, PLE, MTP, vision (`HQ8_G32 + HQ4_G64`)
+
+<p align="center">
+  <img src="assets/qwegn_model_qwen38_27b.svg" alt="Qwen3.8-27B" width="100%">
+</p>
+
+**Qwen3.8-27B** (+ DSpine-b16 & DFlash 2) · 64L dense hybrid, 5120 hidden, 24Q / 4KV GQA, MTP-3/5, 5-layer DSpine (`134.5 tok/s` / `4.19×`) & DFlash 2 drafters, vision
+
+<p align="center">
+  <img src="assets/qwegn_model_sensenova_loop_9b.svg" alt="SenseNova-Loop-9B" width="100%">
+</p>
+
+**SenseNova-Loop-9B-Preview** · 32 physical → 56 effective layers (2× loop), 2-stream Sinkhorn mHC, MTP-3
+
+<p align="center">
+  <img src="assets/qwegn_memory_pack_experiments.svg" alt="QWMemoryPack Live Benchmarks" width="100%">
+</p>
+
+**QWMemoryPack (`.qwcache`)** · Two-tier COW repository memory (`54.4×–74.3×` TTFT speedup, `0.04 ms` per-token LSA selection, live `<|memory_delta|>`)
 
 Standard `llama`, `qwen2`, `qwen3`, `qwen3_moe`, `qwen3_5_text` and `mistral` checkpoints also run on the unified runtime. Their model configs are adopted automatically, and per-model profiles are stored in `~/.qwg/profiles/`.
 
