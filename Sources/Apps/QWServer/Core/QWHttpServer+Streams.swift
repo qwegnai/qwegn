@@ -201,10 +201,10 @@ extension QWHttpServer {
 
         let fm = FileManager.default
         // Resolved from the package's resources (see Sources/Apps/QWServer/Resources),
-        // never from the caller's working directory.
-        let localPath = Bundle.module.url(forResource: (relative as NSString).deletingPathExtension,
-                                          withExtension: (relative as NSString).pathExtension)?.path
-            ?? (fm.currentDirectoryPath as NSString).appendingPathComponent(relative)
+        // installed bundle locations, and never from the caller's working directory unless last resort.
+        let stem = (relative as NSString).deletingPathExtension
+        let ext = (relative as NSString).pathExtension
+        let localPath = Self.resolveStaticUIResourcePath(stem: stem, ext: ext, relative: relative, fm: fm)
 
         if fm.fileExists(atPath: localPath), let data = try? Data(contentsOf: URL(fileURLWithPath: localPath)) {
             let contentType = relative.hasSuffix(".svg") ? "image/svg+xml" : (relative.hasSuffix(".js") ? "application/javascript" : "text/html; charset=utf-8")
@@ -216,5 +216,25 @@ extension QWHttpServer {
             let body = "<html><body style='background:#111318;color:#e2e2e9;font-family:sans-serif;padding:24px;'><h2>QWEGN Controlbar</h2><p>The control bar UI is not installed at <code>\(localPath)</code>.</p><p>Build it: <code>make build</code></p></body></html>"
             sendRawData(connection, status: 503, contentType: "text/html; charset=utf-8", data: Data(body.utf8))
         }
+    }
+
+    private static func resolveStaticUIResourcePath(stem: String, ext: String, relative: String, fm: FileManager) -> String {
+        let execDir = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().deletingLastPathComponent()
+        let bundleCandidates = [
+            Bundle.main.resourceURL?.appendingPathComponent("qwegine_QWServer.bundle"),
+            execDir.appendingPathComponent("qwegine_QWServer.bundle"),
+            execDir.deletingLastPathComponent().appendingPathComponent("share/qwegn/qwegine_QWServer.bundle"),
+            URL(fileURLWithPath: "/usr/local/share/qwegn/qwegine_QWServer.bundle"),
+            URL(fileURLWithPath: "/Applications/Qwegn.app/Contents/Resources/qwegine_QWServer.bundle"),
+        ].compactMap { $0 }
+        for bURL in bundleCandidates {
+            if let b = Bundle(url: bURL), let hit = b.url(forResource: stem, withExtension: ext) {
+                return hit.path
+            }
+        }
+        if let hit = Bundle.module.url(forResource: stem, withExtension: ext) {
+            return hit.path
+        }
+        return (fm.currentDirectoryPath as NSString).appendingPathComponent(relative)
     }
 }

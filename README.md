@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/Swift-6.2-orange.svg" alt="Swift 6.2">
   <img src="https://img.shields.io/badge/platform-macOS%2026%20(Apple%20Silicon)-lightgrey.svg" alt="macOS 26, Apple Silicon">
   <a href="https://github.com/qwegnai/qwegn/actions/workflows/ci.yml"><img src="https://github.com/qwegnai/qwegn/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/Release-v0.12.0-green.svg" alt="Release v0.12.0"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/Release-v0.13.1-green.svg" alt="Release v0.13.1"></a>
 </p>
 
 **Qwegn** (`qwg`) is a from-scratch LLM/VLM inference engine for Apple Silicon,
@@ -21,24 +21,14 @@ or Metal-buffer allocations in steady-state decode, from dense 9B models up to a
 Requires macOS 26+ on Apple Silicon (M-series; M5 recommended for NAX cooperative
 tensors), Xcode 26+ and Python 3.13 for the build. One-line dev loop: `make init && make ci`.
 
-## News
-
-- **2026-11-09 — v0.12.0:** Native **DSpine** block-causal speculative decoding (`Qwen3.8-27B-DSpine-b16-hq4g32`, `1.63 GB`, `--mtp-backend dspine`) with 6 custom fused Metal 4 kernels (`qwdspine.metal`: fused 5-layer RMSNorm+Concat, low-rank `5×5120 → 1024 → 4096` feature bridge, `256`-dim KV cache, causal depthwise `Conv1d(k=3) + SiLU`, and learned positional embeddings) and widened **`M <= 16` (`D <= 15`)** row-paired target verification: **`134.5 tok/s` peak (`4.19×` vs `32.1 tok/s` serial at $B=8$)**, **up to `12.70` accepted tokens/round (`83.3%` accept at $B=16$)**, and **`100.5 tok/s` (`3.09×` serial) 3-workload geometric mean** at default $B=6$ (`D=5`) with 100% bit-exact SHA-256 greedy parity.
-- **2026-11-09 — v0.11.3:** Prefix-invariant multi-turn LSA Memory across live disk edits (`99.87%` Warm-RAM hit, `159.3 ms` TTFT, `307.0K tok/s` prefill after file modification), autonomous `assistant -> tool` Vault paging, bounded `10.4K`-token Cortex concept map (`-54.7%` overhead), and `179.2K`-token large-volume validation (`2,041.0 tok/s` sustained GPU chunked prefill on `+130.2K` new tokens; **`99.96%` Warm-RAM hit, `452.6 ms` TTFT, `395,874.9 tok/s` effective prefill at `179,173` tokens**).
-- **2026-11-08 — v0.11.1:** Verified full 7-experiment Two-Tier LSA Cortex (`32,742` tokens, `264.61 MiB` `35B-A3B` / `464.54 MiB` `Flash-Next` — **`23.7×` smaller `.qwcache`**) + Off-Context Vault (`287` files, `< 0.5 ms` compound-identifier recall) whitepaper benchmark suite: **`54.4×` faster TTFT (`6.53 s → 0.12 s`, `290.6K tok/s`) on `Qwen3.6-35B-A3B`**, **`74.3×` faster TTFT (`17.84 s → 0.24 s`, `138.4K tok/s`) on `Qwen3.8-Flash-Next`**, **`100%` (`4/4`) Cortex + Vault recall**, **`0.40 s` live `<|memory_delta|>` TTFT**, and **`150.5–163.9 tok/s` (`+53%`) multi-turn decode** with `96.9%` (`1,015,834` tokens) of the 1M context window free.
-- **2026-11-08 — v0.11.0:** Two-Tier Hierarchical LSA Cortex (`32.7K` tokens, `265 MiB` `35B-A3B` / `465 MiB` `Flash-Next` — **`23.7×` smaller `.qwcache`**) + Sub-Millisecond Off-Context Vault Recall (`QWMemoryVault`, `< 0.5 ms`) + Elastic Context Budget Guard: indexes 100% of repository files (`293` files + AST symbol map) while leaving **`96.9%` (`>1,015,000` tokens) of the 1M context window free** for coding agents, preserving **100% `[warm_ram]` prefix hits** across multi-turn `qwg repl` and `qwg serve` sessions, and boosting multi-turn decode throughput by **`+53%` (`147.5–163.7 tok/s`)**.
-- **2026-11-08 — v0.10.4:** 8-row speculative verification ring & dynamic wide Prompt-Lookup Decoding (`draftCapacity = 7`, `8`-slot GDN/PLE rollback ring, 4-row chunked `encodeHQ4Gemv`/`encodeHQ4F32V4Argmax`, chain-pass suppression on copy rounds), accelerating `Qwen3.8-Flash-Next` Predictable (Copy) throughput from `129.3 → 156.3 tok/s` (`3.37 → 5.49 tok/step`, `1.87×`) on native HQ and `126.1 → 158.8 tok/s` (`3.31 → 5.49 tok/step`, `1.74×`) on MLX packs at `100%` Engine Fidelity.
-- **2026-11-08 — v0.10.3:** Unified engine harness generality & deep-module refactoring: shared `QWEngineBootstrap` admission, unified `QWSafeTensorsContainer.readFloats` (with parallel MLX affine dequantization), parallel multi-layer `.qwp`/`.safetensors` `QWLSASidecar` Weight-SVD synthesis, generalized `QWKVCompressedLayout`, $O(1)$ root-hash prefix cache filtering, and deterministic `ColdEventPipeline` / `QWEngineLifecycleActor` lifecycle draining.
-- **2026-11-08 — v0.10.2:** Multi-turn `.qwcache` memory-pack retention across `qwg repl` and `qwg serve`: pinned shared-base protection, incremental COW KV page accounting, `QLSADLT1` delta LSA snapshots (`467.4 MiB` $\to$ `~6.4 KB` per turn), and pre-`<think>` checkpoint advancement (`0.17–0.29 s` TTFT across multi-turn 1M-token sessions).
-- **2026-11-08 — v0.10.1:** Pruned 125 dead/superseded Metal kernels (`846` $\to$ `721` in `kernel.metallib`), hardened `Scripts/lint_kernels.py` against stale inventory/comment masking, and added `.gitignore`/`.git/info/exclude`/`.qwgignore` filtering in `qwg index`.
-- **2026-11-08 — v0.10.0:** Unified Codebase & Knowledge Memory Packs (`qwg index`, `<repo>/.qwg/*.qwcache`) delivering `55.2×–66.0×` faster repository TTFT (`0.08–0.17 s`), live `<|memory_delta|>` working-tree overlays without base rebuilds, and automatic repository discovery & `kvMode` enforcement across `qwg repl`, `qwg run`, and `qwg serve`.
-- **2026-11-08 — v0.9.7:** Vision head support (`qwen4_exp` / `Qwen3.8-Flash-Next` and `Qwen3.6-35B-A3B`) with live in-place residency toggle (`loadVision`), `31.0×` faster AMX `cblas_sgemm` ViT encoding (`79.9s` $\to$ `2.57s`), and `0 ms` repeat-turn encoded image LRU cache. Full history in [CHANGELOG.md](CHANGELOG.md).
-
 ## Quick Start
+
+Install from the release `.pkg` (`Qwegn-<version>-macos-arm64.pkg` places `qwg` in `/usr/local/bin/`, `Qwegn.app` in `/Applications/`, and `uninstall.sh` in `/usr/local/share/qwegn/`), or build from source:
 
 ```bash
 make init     # verify toolchain, create .venv-oracle, generate unit-test goldens
-make build    # .build/release/qwg and .build/release/qwg-menu
+make build    # .build/release/qwg and .build/release/Qwegn.app
+make pkg      # dist/Qwegn-<version>-macos-arm64.pkg
 make ci       # metallibs + linters + tests
 ```
 
@@ -171,6 +161,7 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 
 | Command | Description |
 | :--- | :--- |
+| `qwg init` | Creates or rebuilds (`--python`) the quantizer Python environment in `~/Library/Application Support/Qwegn/venv/`. |
 | `qwg plan` | Reports Apple Silicon GPU capabilities and verifies whether a context budget fits in unified memory. |
 | `qwg pull` | Downloads a Hugging Face checkpoint (`org/model`) into a local directory using parallel HTTP range requests. |
 | `qwg quantize` | Converts a BF16 safetensors checkpoint into a page-aligned quantized `.qwp` pack. |

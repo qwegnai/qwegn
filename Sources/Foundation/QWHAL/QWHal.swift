@@ -31,7 +31,9 @@ extension QWDeviceCaps {
         var apple9 = false, apple10 = false, apple11 = false
         if #available(macOS 14.0, *) { apple9 = dev.supportsFamily(.apple9) }
         if #available(macOS 15.0, *) { apple10 = dev.supportsFamily(.apple10) }
-        if #available(macOS 26.0, *) { apple11 = dev.supportsFamily(.apple11) }
+        if #available(macOS 26.0, *), let f11 = MTLGPUFamily(rawValue: 1011) {
+            apple11 = dev.supportsFamily(f11)
+        }
         return QWDeviceCaps(
             name: dev.name,
             familyApple9: apple9,
@@ -258,23 +260,27 @@ public final class QWHal: @unchecked Sendable {
         caps = QWDeviceCaps.probe(dev)
     }
 
-    /// Bundled metallib lookup: env override -> bundle -> build dir walk-up.
+    /// Bundled metallib lookup: env override -> bundle -> build dir walk-up -> installed Qwegn.app.
     /// The basis picks the file: two builds of the same sources, one per basis.
-    private static func defaultMetallibPath(basis: QWWeightBasis) -> String {
+    public static func defaultMetallibPath(basis: QWWeightBasis,
+                                           appBundleURL: URL? = nil,
+                                           searchDirs: [URL]? = nil) -> String {
         if let env = ProcessInfo.processInfo.environment["QW_METALLIB"] { return env }
         // A bundle that ships one library per basis names them after the
         // basis; the incumbent's generic "default" is the last resort, and a
         // bundle holding the wrong one is refused by the basis check below.
         let resource = basis.metallibFileName.replacingOccurrences(of: ".metallib", with: "")
-        if let b = Bundle.main.url(forResource: resource, withExtension: "metallib") {
-            return b.path
-        }
-        if let b = Bundle.main.url(forResource: "default", withExtension: "metallib") {
-            return b.path
+        if searchDirs == nil, appBundleURL == nil {
+            if let b = Bundle.main.url(forResource: resource, withExtension: "metallib") {
+                return b.path
+            }
+            if let b = Bundle.main.url(forResource: "default", withExtension: "metallib") {
+                return b.path
+            }
         }
         let name = basis.metallibFileName
         let execDir = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().deletingLastPathComponent()
-        let startDirs = [execDir, URL(fileURLWithPath: FileManager.default.currentDirectoryPath)]
+        let startDirs = searchDirs ?? [execDir, URL(fileURLWithPath: FileManager.default.currentDirectoryPath)]
         for rel in ["Sources/QWMetal/\(name)",
                     ".build/release/\(name)",
                     ".build/debug/\(name)",
@@ -288,10 +294,22 @@ public final class QWHal: @unchecked Sendable {
                 }
             }
         }
-        // The basis's own file name: the search above is the same list for
-        // both bases, and a standard-basis HAL that fell back to the
-        // incumbent's library would be refused by the basis check rather
-        // than run the model in the wrong basis.
+        var bundleDirs: [URL] = []
+        if let explicitApp = appBundleURL {
+            bundleDirs.append(explicitApp.appendingPathComponent("Contents/Resources", isDirectory: true))
+        } else if let envApp = ProcessInfo.processInfo.environment["QWEGN_APP_BUNDLE"], !envApp.isEmpty {
+            bundleDirs.append(URL(fileURLWithPath: envApp.expandingTildePath).appendingPathComponent("Contents/Resources", isDirectory: true))
+        }
+        bundleDirs.append(contentsOf: [
+            URL(fileURLWithPath: "/Applications/Qwegn.app/Contents/Resources", isDirectory: true),
+            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications/Qwegn.app/Contents/Resources", isDirectory: true),
+            execDir.deletingLastPathComponent().appendingPathComponent("share/qwegn", isDirectory: true),
+            URL(fileURLWithPath: "/usr/local/share/qwegn", isDirectory: true),
+        ])
+        for dir in bundleDirs {
+            let cand = dir.appendingPathComponent(name)
+            if FileManager.default.fileExists(atPath: cand.path) { return cand.path }
+        }
         return name
     }
 

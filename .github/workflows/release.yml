@@ -1,37 +1,101 @@
 name: release
-# Tag push (vX.Y.Z) builds the distributable and publishes a GitHub Release
-# with the downloadable artifact. Mirrors `make build`: qwg + qwg-menu + the
-# metallibs the binary searches for next to itself.
+# Tag push (vX.Y.Z) builds the macOS .pkg installer (main artifact) and the
+# portable .tar.gz archive (power users), optionally signing and notarizing
+# when Apple Developer ID secrets are configured, and attaches both to the
+# GitHub Release.
 on:
   push:
     tags: ["v*"]
+
+permissions:
+  contents: write
+
 jobs:
   package:
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
+
+      - name: Select Xcode 26 or newer
+        run: |
+          best=""
+          for app in /Applications/Xcode*.app; do
+            v=$(defaults read "$app/Contents/Info" CFBundleShortVersionString 2>/dev/null || echo 0)
+            if [ "${v%%.*}" -ge 26 ] 2>/dev/null; then best="$app"; fi
+          done
+          test -n "$best" || { echo "FAIL: no Xcode 26+ on this runner"; exit 1; }
+          sudo xcode-select -s "$best/Contents/Developer"
+          xcodebuild -version
+
+      - name: Install the Metal toolchain
+        run: xcodebuild -downloadComponent MetalToolchain || true
+
+      - name: Import Apple Developer ID certificate (if configured)
+        if: ${{ secrets.APPLE_CERTIFICATE_P12 != '' }}
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/qwegn-release.keychain-db"
+          KEYCHAIN_PW="$(uuidgen)"
+          echo "SIGN_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+          echo "$APPLE_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign:,productsign: \
+            -s -k "$KEYCHAIN_PW" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          rm -f "$RUNNER_TEMP/cert.p12"
+
       - name: Build (metallib + release binaries)
         run: |
           make metallib
-          swift build -c release --product qwg --product qwg-menu
-      - name: Assemble distributable
+          swift build -c release --product qwg
+          swift build -c release --product qwg-menu
+
+      - name: Build macOS .pkg installer and portable .tar.gz
+        env:
+          APPLE_DEVELOPER_ID_APP: ${{ secrets.APPLE_DEVELOPER_ID_APP }}
+          APPLE_DEVELOPER_ID_INSTALLER: ${{ secrets.APPLE_DEVELOPER_ID_INSTALLER }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          ./Scripts/build_pkg.sh --skip-build --version "$VERSION" --output .
+
           STAGE="qwegn-${GITHUB_REF_NAME}-macos-arm64"
           mkdir -p "$STAGE"
-          cp .build/release/qwg .build/release/qwg-menu "$STAGE/"
+          BIN_DIR="$(swift build -c release --show-bin-path)"
+          cp "$BIN_DIR/qwg" "$STAGE/"
+          ./Scripts/build_app.sh --skip-build --version "$VERSION" --output "$STAGE"
           cp Sources/QWMetal/kernel.metallib Sources/QWMetal/kernel_std.metallib "$STAGE/"
+          if [ -d "$BIN_DIR/qwegine_QWServer.bundle" ]; then
+            ditto "$BIN_DIR/qwegine_QWServer.bundle" "$STAGE/qwegine_QWServer.bundle"
+          fi
           cp LICENSE README.md "$STAGE/"
           cat > "$STAGE/INSTALL.txt" <<'TXT'
-          Qwegn — drop-in install
-          1) xattr -dr com.apple.quarantine qwg qwg-menu   # unsigned build
+          Qwegn — portable archive (for standard install, use the .pkg installer)
+          1) xattr -dr com.apple.quarantine qwg Qwegn.app   # if unsigned
           2) ./qwg --help
-          The binary finds kernel*.metallib next to itself.
+          The CLI finds kernel*.metallib next to itself or inside Qwegn.app.
           TXT
           tar -czf "$STAGE.tar.gz" "$STAGE"
-      - name: Create release with artifact
+
+      - name: Create release with .pkg and .tar.gz artifacts
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          VERSION="${GITHUB_REF_NAME#v}"
           gh release create "$GITHUB_REF_NAME" \
             --generate-notes \
+            "Qwegn-${VERSION}-macos-arm64.pkg" \
             "qwegn-${GITHUB_REF_NAME}-macos-arm64.tar.gz"
+
+      - name: Clean up temporary signing keychain
+        if: always() && env.SIGN_KEYCHAIN != ''
+        run: security delete-keychain "$SIGN_KEYCHAIN" || true

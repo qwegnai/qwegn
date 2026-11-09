@@ -53,6 +53,50 @@ public enum QWPaths {
     public static var menuLockFilePath: String {
         rootDirectoryURL.appendingPathComponent("qwg-menu.lock", isDirectory: false).path
     }
+
+    /// Per-user Application Support folder (`~/Library/Application Support/Qwegn`).
+    public static var applicationSupportDirectoryURL: URL {
+        if let env = ProcessInfo.processInfo.environment["QWEGN_APP_SUPPORT_DIR"], !env.isEmpty {
+            return URL(fileURLWithPath: env.expandingTildePath, isDirectory: true)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Qwegn", isDirectory: true)
+    }
+
+    /// Lazy Python virtual environment for `qwg quantize` (`~/Library/Application Support/Qwegn/venv`).
+    public static var pythonVenvDirectoryURL: URL {
+        if let env = ProcessInfo.processInfo.environment["QWEGN_VENV_DIR"], !env.isEmpty {
+            return URL(fileURLWithPath: env.expandingTildePath, isDirectory: true)
+        }
+        return applicationSupportDirectoryURL.appendingPathComponent("venv", isDirectory: true)
+    }
+
+    public static var pythonVenvExecutableURL: URL {
+        pythonVenvDirectoryURL.appendingPathComponent("bin/python", isDirectory: false)
+    }
+
+    /// Support root holding `Scripts/quantize/pack.py` (repo root in dev, `/usr/local/share/qwegn` in `.pkg`).
+    public static var supportDirectoryURL: URL {
+        let fm = FileManager.default
+        if let env = ProcessInfo.processInfo.environment["QWEGINE_ROOT"], !env.isEmpty {
+            return URL(fileURLWithPath: env.expandingTildePath, isDirectory: true)
+        }
+        let execDir = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().deletingLastPathComponent()
+        var d = execDir
+        for _ in 0..<8 {
+            if fm.fileExists(atPath: d.appendingPathComponent("Scripts/quantize/pack.py").path) { return d }
+            d = d.deletingLastPathComponent()
+        }
+        let candidates = [
+            execDir.deletingLastPathComponent().appendingPathComponent("share/qwegn", isDirectory: true),
+            URL(fileURLWithPath: "/usr/local/share/qwegn", isDirectory: true),
+            URL(fileURLWithPath: "/Applications/Qwegn.app/Contents/Resources", isDirectory: true),
+        ]
+        for cand in candidates where fm.fileExists(atPath: cand.appendingPathComponent("Scripts/quantize/pack.py").path) {
+            return cand
+        }
+        return URL(fileURLWithPath: fm.currentDirectoryPath, isDirectory: true)
+    }
 }
 
 public enum QWEngineInstanceError: Error, LocalizedError, CustomStringConvertible, Equatable {

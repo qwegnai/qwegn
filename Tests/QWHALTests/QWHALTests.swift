@@ -85,4 +85,25 @@ final class QWHALTests: XCTestCase {
         out = buf.contents().load(as: Float.self)
         XCTAssertEqual(out, 1.0)
     }
+
+    func testDefaultMetallibPathResolvesInsideAppBundle() throws {
+        if ProcessInfo.processInfo.environment["QW_METALLIB"] != nil { return }
+        let fm = FileManager.default
+        let tmp = fm.temporaryDirectory.appendingPathComponent("qwhal_bundle_\(UUID().uuidString)", isDirectory: true)
+        defer { try? fm.removeItem(at: tmp) }
+        let emptyBin = tmp.appendingPathComponent("usr/local/bin", isDirectory: true)
+        let appBundle = tmp.appendingPathComponent("Applications/Qwegn.app", isDirectory: true)
+        let appRes = appBundle.appendingPathComponent("Contents/Resources", isDirectory: true)
+        try fm.createDirectory(at: emptyBin, withIntermediateDirectories: true)
+        try fm.createDirectory(at: appRes, withIntermediateDirectories: true)
+        let rotLib = appRes.appendingPathComponent("kernel.metallib")
+        let stdLib = appRes.appendingPathComponent("kernel_std.metallib")
+        try Data([0x4D, 0x54, 0x4C, 0x42]).write(to: rotLib)
+        try Data([0x4D, 0x54, 0x4C, 0x42]).write(to: stdLib)
+
+        let resolvedRot = QWHal.defaultMetallibPath(basis: .rotated, appBundleURL: appBundle, searchDirs: [emptyBin])
+        let resolvedStd = QWHal.defaultMetallibPath(basis: .standard, appBundleURL: appBundle, searchDirs: [emptyBin])
+        XCTAssertEqual(resolvedRot, rotLib.path)
+        XCTAssertEqual(resolvedStd, stdLib.path)
+    }
 }

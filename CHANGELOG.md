@@ -10,6 +10,26 @@ The single source of the version is `QWVersion.current` in
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-11-09
+
+### Fixed
+- **macOS `.pkg` installer welcome/conclusion HTML character encoding (`Scripts/build_pkg.sh`).**
+  - Replaced raw UTF-8 em-dashes (`—`, which macOS `Installer.app` misdecoded as `â€”` under Latin-1 HTML defaults) with strict 7-bit ASCII colons and explicit `<meta http-equiv="Content-Type" content="text/html; charset=utf-8">` / `<meta charset="utf-8">` headers, plus a build-time and `QWCliTests` non-ASCII guard.
+- **GitHub Actions `macos-26` release & CI runner compatibility (`.github/workflows/release.yml`, `Scripts/build_pkg.sh`, `Scripts/build_app.sh`, `QWHal.swift`).**
+  - Added `permissions: contents: write` and Xcode 26+ / `MetalToolchain` setup to `release.yml`, split single-valued `swift build -c release --product qwg` and `--product qwg-menu` invocations so SwiftPM builds both binaries, and switched `QWDeviceCaps.probe` to `MTLGPUFamily(rawValue: 1011)` so `QWHAL` compiles cleanly against both Xcode 26.6 (`macos-26` runner) and Xcode 27+ SDKs.
+
+### Changed
+- **Removed bloated `## News` section from `README.md`** (release history remains in `CHANGELOG.md`).
+
+## [0.13.0] - 2026-11-09
+
+### Added
+- **macOS `.pkg` installer (`Qwegn-<version>-macos-arm64.pkg`), `Qwegn.app` bundle, `/usr/local/share/qwegn/uninstall.sh`, and lazy Python environment (`qwg quantize` / `qwg init --python`).**
+  - Added `Scripts/build_app.sh` and `Scripts/gen_app_icon.swift` to package `qwg-menu` into a native `/Applications/Qwegn.app` bundle (`Info.plist`, `AppIcon.icns`, `qwegine_QWServer.bundle`, and bundled `kernel.metallib` / `kernel_std.metallib`), and updated `QWHal.defaultMetallibPath` and `QWHttpServer` static UI lookup to resolve bundled Metal libraries and web UI resources from `/Applications/Qwegn.app` and `/usr/local/share/qwegn/`.
+  - Added `Scripts/build_pkg.sh` (`make pkg`, package identifier `ai.qwegn.pkg`) and `Scripts/uninstall.sh`, installing `/usr/local/bin/qwg`, `/Applications/Qwegn.app`, and `/usr/local/share/qwegn/` (`uninstall.sh`, quantizer Python modules, `requirements.txt`, `LICENSE`, `README.md`), with `postinstall` and Installer conclusion screens noting `/usr/local/share/qwegn/uninstall.sh` (`pkgutil --forget ai.qwegn.pkg` while preserving `~/.qwg`).
+  - Added `QWCli.ensurePythonEnvironment` (`~/Library/Application Support/Qwegn/venv/`) and `qwg init --python` so `qwg quantize` lazily creates its Python virtual environment on first use (`"Creating Python environment…"`) without embedding absolute-path venvs inside the `.pkg`.
+  - Updated `.github/workflows/release.yml` to build and attach both `Qwegn-<version>-macos-arm64.pkg` (main installer) and `qwegn-<tag>-macos-arm64.tar.gz` (portable archive), with optional Apple Developer ID signing and notarization via GitHub secrets.
+
 ## [0.12.0] - 2026-11-09
 
 ### Added

@@ -261,5 +261,132 @@ func multimodalInputOptionsValidation() throws {
     try validImg.validate()
 }
 
+@Test("lazy Python venv: created once with one status line, reused silently, rebuilt on demand")
+func lazyPythonVenvLifecycle() throws {
+    let fm = FileManager.default
+    let tmp = fm.temporaryDirectory.appendingPathComponent("qwg_venv_test_\(UUID().uuidString)", isDirectory: true)
+    defer { try? fm.removeItem(at: tmp) }
+    let venvDir = tmp.appendingPathComponent("Application Support/Qwegn/venv", isDirectory: true)
+    let supportRoot = tmp.appendingPathComponent("share/qwegn", isDirectory: true)
+    try fm.createDirectory(at: supportRoot, withIntermediateDirectories: true)
+
+    setenv("QWEGN_SKIP_PIP_INSTALL", "1", 1)
+    defer { unsetenv("QWEGN_SKIP_PIP_INSTALL") }
+
+    var lines: [String] = []
+    let py1 = try QWCli.ensurePythonEnvironment(
+        venvDir: venvDir, supportRoot: supportRoot, rebuild: false,
+        onProgress: { lines.append($0) }
+    )
+    #expect(lines == ["Creating Python environment…"])
+    #expect(fm.isExecutableFile(atPath: py1.path))
+    #expect(fm.fileExists(atPath: venvDir.appendingPathComponent(".requirements.stamp").path))
+
+    // Second call reuses the existing venv silently.
+    let py2 = try QWCli.ensurePythonEnvironment(
+        venvDir: venvDir, supportRoot: supportRoot, rebuild: false,
+        onProgress: { lines.append($0) }
+    )
+    #expect(py2 == py1)
+    #expect(lines.count == 1)
+
+    // quantizePlan threads the resolved venv python into argv[0].
+    let plan = QWCli.quantizePlan(
+        repo: "org/model",
+        outPack: tmp.appendingPathComponent("out-pack"),
+        quant: "q4g",
+        scriptsDir: supportRoot.appendingPathComponent("Scripts"),
+        pythonURL: py1
+    )
+    #expect(plan.command.first == py1.path)
+
+    // Rebuild (qwg init --python) recreates the venv and emits the status line once.
+    let sentinel = venvDir.appendingPathComponent("stale_marker")
+    try Data("x".utf8).write(to: sentinel)
+    _ = try QWCli.ensurePythonEnvironment(
+        venvDir: venvDir, supportRoot: supportRoot, rebuild: true,
+        onProgress: { lines.append($0) }
+    )
+    #expect(lines == ["Creating Python environment…", "Creating Python environment…"])
+    #expect(!fm.fileExists(atPath: sentinel.path))
+}
+
+@Test("uninstall.sh removes staged pkg files and preserves ~/.qwg")
+func uninstallScriptRemovesPkgFilesAndKeepsUserDotQwg() throws {
+    let fm = FileManager.default
+    var root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+    for _ in 0..<6 {
+        if fm.fileExists(atPath: root.appendingPathComponent("Scripts/uninstall.sh").path) { break }
+        root = root.deletingLastPathComponent()
+    }
+    let uninstall = root.appendingPathComponent("Scripts/uninstall.sh")
+    #expect(fm.isExecutableFile(atPath: uninstall.path))
+
+    let tmp = fm.temporaryDirectory.appendingPathComponent("qwg_uninstall_test_\(UUID().uuidString)", isDirectory: true)
+    defer { try? fm.removeItem(at: tmp) }
+    let fakeRoot = tmp.appendingPathComponent("sysroot", isDirectory: true)
+    let fakeHome = tmp.appendingPathComponent("home", isDirectory: true)
+    let cli = fakeRoot.appendingPathComponent("usr/local/bin/qwg")
+    let app = fakeRoot.appendingPathComponent("Applications/Qwegn.app/Contents/MacOS")
+    let share = fakeRoot.appendingPathComponent("usr/local/share/qwegn")
+    let userModels = fakeHome.appendingPathComponent(".qwg/models")
+    for d in [cli.deletingLastPathComponent(), app, share, userModels] {
+        try fm.createDirectory(at: d, withIntermediateDirectories: true)
+    }
+    try Data("#!/bin/sh\nexit 0\n".utf8).write(to: cli)
+    let sentinel = userModels.appendingPathComponent("keep.qwp")
+    try Data("weights".utf8).write(to: sentinel)
+    try fm.copyItem(at: uninstall, to: share.appendingPathComponent("uninstall.sh"))
+
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/bin/bash")
+    p.arguments = [share.appendingPathComponent("uninstall.sh").path, "--root", fakeRoot.path, "--skip-pkgutil"]
+    var env = ProcessInfo.processInfo.environment
+    env["HOME"] = fakeHome.path
+    p.environment = env
+    p.standardOutput = Pipe()
+    p.standardError = Pipe()
+    try p.run()
+    p.waitUntilExit()
+    #expect(p.terminationStatus == 0)
+    #expect(!fm.fileExists(atPath: cli.path))
+    #expect(!fm.fileExists(atPath: fakeRoot.appendingPathComponent("Applications/Qwegn.app").path))
+    #expect(!fm.fileExists(atPath: share.path))
+    #expect(fm.fileExists(atPath: sentinel.path))
+}
+
+@Test("build_pkg.sh installer HTML resources are strict 7-bit ASCII with UTF-8 meta")
+func buildPkgScriptIsStrictASCII() throws {
+    let fm = FileManager.default
+    var root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+    for _ in 0..<6 {
+        if fm.fileExists(atPath: root.appendingPathComponent("Scripts/build_pkg.sh").path) { break }
+        root = root.deletingLastPathComponent()
+    }
+    let scriptURL = root.appendingPathComponent("Scripts/build_pkg.sh")
+    let data = try Data(contentsOf: scriptURL)
+    let nonASCII = data.filter { $0 >= 0x80 }
+    #expect(nonASCII.isEmpty, "build_pkg.sh must remain pure 7-bit ASCII so Installer.app never renders mojibake")
+    let text = String(decoding: data, as: UTF8.self)
+    #expect(text.contains("<meta charset=\"utf-8\">"))
+}
+
+@Test("release.yml grants contents:write, installs MetalToolchain, and uploads .pkg + .tar.gz")
+func releaseWorkflowHasWritePermissionsAndMetalToolchain() throws {
+    let fm = FileManager.default
+    var root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+    for _ in 0..<6 {
+        if fm.fileExists(atPath: root.appendingPathComponent(".github/workflows/release.yml").path) { break }
+        root = root.deletingLastPathComponent()
+    }
+    let yml = try String(contentsOf: root.appendingPathComponent(".github/workflows/release.yml"), encoding: .utf8)
+    #expect(yml.contains("contents: write"))
+    #expect(yml.contains("MetalToolchain"))
+    #expect(!yml.contains("--product qwg --product qwg-menu"))
+    #expect(yml.contains("Qwegn-${VERSION}-macos-arm64.pkg"))
+    #expect(yml.contains("qwegn-${GITHUB_REF_NAME}-macos-arm64.tar.gz"))
+}
+
+
 
 

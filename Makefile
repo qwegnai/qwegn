@@ -55,10 +55,14 @@ goldens: ## Regenerate the synthetic golden fixtures the tests read (needs the v
 
 # ---------------------------------------------------------------- build --
 
-build: metallib ## Build the qwg CLI and the menu bar app (release)
+build: metallib ## Build the qwg CLI and Qwegn.app menu bar bundle (release)
 	@swift build -c release --product qwg
 	@swift build -c release --product qwg-menu
-	@echo "built: .build/release/qwg, .build/release/qwg-menu"
+	@./Scripts/build_app.sh --skip-build >/dev/null
+	@echo "built: .build/release/qwg, .build/release/Qwegn.app"
+
+pkg: build ## Build the macOS .pkg installer in dist/
+	@./Scripts/build_pkg.sh --skip-build
 
 metallib: ## Compile Sources/QWMetal/*.metal into kernel.metallib
 	@./Scripts/build_metallib.sh
@@ -99,5 +103,5 @@ release: ci ## Release gate: ci must pass on a clean tree
 # ---------------------------------------------------------------- clean --
 
 clean: ## Remove regenerable build outputs (keeps the venv)
-	@rm -rf .build Sources/QWMetal/kernel.metallib Scripts/spike/out
+	@rm -rf .build dist Sources/QWMetal/kernel.metallib Sources/QWMetal/kernel_std.metallib Scripts/spike/out
 	@echo "clean: done (run 'make init' to regenerate)"

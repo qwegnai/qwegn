@@ -205,12 +205,99 @@ public enum QWCli {
     }
 
     public static func quantizePlan(repo: String, outPack: URL,
-                                    quant: String, scriptsDir: URL) -> QuantizePlan {
-        let py = scriptsDir.deletingLastPathComponent().appendingPathComponent(".venv-oracle/bin/python")
+                                    quant: String, scriptsDir: URL,
+                                    pythonURL: URL? = nil) -> QuantizePlan {
+        let py = pythonURL ?? scriptsDir.deletingLastPathComponent().appendingPathComponent(".venv-oracle/bin/python")
         let packPy = scriptsDir.appendingPathComponent("quantize/pack.py")
         return QuantizePlan(
             command: [py.path, packPy.path, "--model", repo, "--out", outPack.path, "--quant", quant],
             provenanceLine: "source=\(repo) quant=\(quant) → \(outPack.lastPathComponent) (packer embeds source sha256)")
+    }
+
+    /// Creates or rebuilds the lazy Python venv in `~/Library/Application Support/Qwegn/venv/`.
+    @discardableResult
+    public static func ensurePythonEnvironment(
+        venvDir: URL = QWPaths.pythonVenvDirectoryURL,
+        supportRoot: URL = QWPaths.supportDirectoryURL,
+        rebuild: Bool = false,
+        onProgress: (String) -> Void = { print($0) }
+    ) throws -> URL {
+        let fm = FileManager.default
+        let py = venvDir.appendingPathComponent("bin/python")
+        let pip = venvDir.appendingPathComponent("bin/pip")
+        let stamp = venvDir.appendingPathComponent(".requirements.stamp")
+        if !rebuild, fm.isExecutableFile(atPath: py.path), fm.fileExists(atPath: stamp.path) {
+            return py
+        }
+        onProgress("Creating Python environment…")
+        if rebuild, fm.fileExists(atPath: venvDir.path) {
+            try fm.removeItem(at: venvDir)
+        }
+        try fm.createDirectory(at: venvDir.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let bootstrap = try findBootstrapPython(fm: fm)
+        try runProcess(executable: bootstrap, arguments: ["-m", "venv", venvDir.path])
+        if ProcessInfo.processInfo.environment["QWEGN_SKIP_PIP_INSTALL"] != "1" {
+            try runProcess(executable: pip.path, arguments: ["install", "-q", "--upgrade", "pip"])
+            let reqFile = supportRoot.appendingPathComponent("requirements.txt")
+            var installedFromReqs = false
+            if fm.fileExists(atPath: reqFile.path),
+               let reqText = try? String(contentsOf: reqFile, encoding: .utf8) {
+                let torchVer = reqText.split(separator: "\n")
+                    .first(where: { $0.hasPrefix("torch==") })
+                    .map { String($0.dropFirst("torch==".count)).trimmingCharacters(in: .whitespacesAndNewlines) }
+                let torchIdx = ProcessInfo.processInfo.environment["TORCH_INDEX"] ?? "https://download.pytorch.org/whl/cpu"
+                do {
+                    if let tv = torchVer, !tv.isEmpty {
+                        try runProcess(executable: pip.path,
+                                       arguments: ["install", "-q", "--index-url", torchIdx, "torch==\(tv)"])
+                    }
+                    try runProcess(executable: pip.path, arguments: ["install", "-q", "-r", reqFile.path])
+                    installedFromReqs = true
+                } catch {
+                    installedFromReqs = false
+                }
+            }
+            if !installedFromReqs {
+                try runProcess(executable: pip.path, arguments: ["install", "-q", "numpy", "safetensors", "torch"])
+            }
+        }
+        try Data("ok\n".utf8).write(to: stamp, options: .atomic)
+        return py
+    }
+
+    private static func findBootstrapPython(fm: FileManager) throws -> String {
+        if let env = ProcessInfo.processInfo.environment["QWEGN_BOOTSTRAP_PYTHON"],
+           !env.isEmpty, fm.isExecutableFile(atPath: env) {
+            return env
+        }
+        let names = ["python3.13", "python3.12", "python3.11", "python3"]
+        let dirs = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]
+            + (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map(String.init)
+        for name in names {
+            for dir in dirs where !dir.isEmpty {
+                let cand = (dir as NSString).appendingPathComponent(name)
+                if fm.isExecutableFile(atPath: cand) { return cand }
+            }
+        }
+        throw NSError(domain: "QWCli.python", code: 1,
+                      userInfo: [NSLocalizedDescriptionKey: "Python 3.11+ not found (install python3 or set QWEGN_BOOTSTRAP_PYTHON)"])
+    }
+
+    private static func runProcess(executable: String, arguments: [String]) throws {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: executable)
+        p.arguments = arguments
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = pipe
+        try p.run()
+        let out = pipe.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        guard p.terminationStatus == 0 else {
+            let msg = String(data: out, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            throw NSError(domain: "QWCli.python", code: Int(p.terminationStatus),
+                          userInfo: [NSLocalizedDescriptionKey: "Command failed (\(executable) \(arguments.joined(separator: " "))): \(msg)"])
+        }
     }
 
     /// Splits a file byte range into `parts` chunks (at most 1 chunk per 4 MiB).

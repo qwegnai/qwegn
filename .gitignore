@@ -59,3 +59,4 @@ models/
 !/docs/quantization.md
 !/docs/tuning.md
 !/docs/menu-bar-app.md
+Scripts/publish_release.sh

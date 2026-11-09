@@ -1,9 +1,10 @@
-# Menu Bar App (`qwg-menu`)
+# Menu Bar App (`Qwegn.app`)
 
-`qwg-menu` places a live status and telemetry item in the macOS menu bar and manages the `qwg serve` lifecycle:
+`Qwegn.app` (`qwg-menu`) places a live status and telemetry item in the macOS menu bar and manages the `qwg serve` lifecycle:
 
 ```bash
-.build/release/qwg-menu
+open /Applications/Qwegn.app          # installed via Qwegn-<version>-macos-arm64.pkg
+open .build/release/Qwegn.app         # built from source via make build
 ```
 
 - **Status Indicator**: Gray (`offline`), Amber (`idle / unloaded`), Cyan (`loading weights`), Green (`ready`), Blue (`prefilling`), Purple (`decoding`), Red (`error`).

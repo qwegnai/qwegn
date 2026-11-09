@@ -20,7 +20,26 @@ struct Qwg: AsyncParsableCommand {
         commandName: "qwg",
         abstract: "QWEngine — native Swift+Metal inference for Qwen3.8-27B and Qwen3.8-Flash-Next.",
         version: QWVersion.current,
-        subcommands: [Inspect.self, Plan.self, Quantize.self, LsaConvert.self, Index.self, Pull.self, Run.self, Repl.self, Bench.self, Serve.self, Telemetry.self])
+        subcommands: [Init.self, Inspect.self, Plan.self, Quantize.self, LsaConvert.self, Index.self, Pull.self, Run.self, Repl.self, Bench.self, Serve.self, Telemetry.self])
+}
+
+// MARK: - Init
+
+struct Init: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "init",
+        abstract: "Create or rebuild the Python environment in ~/Library/Application Support/Qwegn/venv/.")
+    @Flag(name: .customLong("python"), help: "Create or rebuild the Python environment for quantize.") var python: Bool = false
+
+    func validate() throws {
+        guard python else {
+            throw ValidationError("Pass --python to create or rebuild the Python environment.")
+        }
+    }
+
+    func run() throws {
+        _ = try QWCli.ensurePythonEnvironment(supportRoot: Quantize.repoRoot(), rebuild: true)
+    }
 }
 
 // MARK: - Plan
@@ -87,9 +106,10 @@ struct Quantize: ParsableCommand {
             throw ValidationError("Only q4g output is supported; Q8 mirrors are not used by the engine.")
         }
         let repoRoot = Self.repoRoot()
+        let py = try QWCli.ensurePythonEnvironment(supportRoot: repoRoot)
         let scripts = repoRoot.appendingPathComponent("Scripts")
         let plan = QWCli.quantizePlan(repo: model, outPack: URL(fileURLWithPath: outPack),
-                                      quant: quant, scriptsDir: scripts)
+                                      quant: quant, scriptsDir: scripts, pythonURL: py)
         print("provenance: \(plan.provenanceLine)")
         let p = Process()
         p.executableURL = URL(fileURLWithPath: plan.command[0])
@@ -107,15 +127,7 @@ struct Quantize: ParsableCommand {
     }
 
     static func repoRoot() -> URL {
-        if let env = ProcessInfo.processInfo.environment["QWEGINE_ROOT"] {
-            return URL(fileURLWithPath: env)
-        }
-        var d = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().deletingLastPathComponent()
-        for _ in 0..<8 {
-            if FileManager.default.fileExists(atPath: d.appendingPathComponent("Scripts/quantize/pack.py").path) { return d }
-            d = d.deletingLastPathComponent()
-        }
-        return URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        QWPaths.supportDirectoryURL
     }
 }
 
@@ -602,16 +614,18 @@ struct LsaConvert: ParsableCommand {
         let settings = QWSettingsManager.shared.loadSettings()
         let resolvedPack = settings.resolveModelReference(model).packPath
         let targetPath = resolvedPack.isEmpty ? model.expandingTildePath : resolvedPack
-        let scriptPath = Quantize.repoRoot().appendingPathComponent("Scripts/convert_lsa_sidecar.py").path
+        let supportRoot = Quantize.repoRoot()
+        let scriptPath = supportRoot.appendingPathComponent("Scripts/convert_lsa_sidecar.py").path
         if FileManager.default.fileExists(atPath: scriptPath) && method.lowercased() != "svd-native" {
+            let py = try QWCli.ensurePythonEnvironment(supportRoot: supportRoot)
             var args = [scriptPath, "--model", targetPath, "--method", method.lowercased(),
                         "--index-dim", "\(indexDim)", "--recommended-budget", "\(recommendedBudget)"]
             if let out { args += ["--out", out.expandingTildePath] }
             if let calibrationFile { args += ["--calibration-file", calibrationFile.expandingTildePath] }
             if let importPath { args += ["--import-path", importPath.expandingTildePath] }
             let p = Process()
-            p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            p.arguments = ["python3"] + args
+            p.executableURL = py
+            p.arguments = args
             p.standardOutput = FileHandle.standardOutput
             p.standardError = FileHandle.standardError
             try p.run()
