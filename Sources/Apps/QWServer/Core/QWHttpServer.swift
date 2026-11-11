@@ -516,6 +516,7 @@ public final class QWHttpServer: @unchecked Sendable {
                         mtpBackend: config.mtpBackend,
                         gdnPrefillMode: config.gdnPrefill,
                         prefillScratchEviction: config.evictPrefillScratch,
+                        lsaMode: config.lsaConfig.mode.rawValue,
                         hostLogicalCores: hw.logicalCores,
                         isLoaded: isLoaded
                     )

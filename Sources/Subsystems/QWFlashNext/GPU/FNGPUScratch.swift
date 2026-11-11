@@ -99,7 +99,9 @@ public final class FNGPUScratch {
         let pairP = isPrefill ? T * TK : 1
         expOff = try i32(isPrefill ? NE + 1 : 1); sortedPair = try i32(pairP); sortedTok = try i32(pairP); invPerm = try i32(pairP)
         gu = try f16(isPrefill ? T * TK * 2 * I : 1)
-        xe16 = try f16(1); tileE = try i32(pairP); tileR = try i32(pairP); tileCount = try i32(1)
+        let tcInts = isPrefill ? QWGemm.MoETilePlan(
+            experts: NE, pairs: pairP, gateUpRows: 2 * I, downRows: H).scratchInts : 1
+        xe16 = try f16(1); tileE = try i32(pairP); tileR = try i32(pairP); tileCount = try i32(tcInts)
         dnHi = try f16(isPrefill ? T * TK * I : 1); dnLo = dnHi; dnAcc = try f16(isPrefill ? T * TK * H : 1)
         downPair = dnAcc
         naxX16 = try f16(isPrefill ? T * W : 1); naxY16 = naxX16

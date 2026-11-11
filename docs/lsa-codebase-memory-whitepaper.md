@@ -3,9 +3,9 @@
 **Hardware-Accelerated Repository Knowledge & Sub-Millisecond Causal Vault Paging on Apple Silicon**
 
 **Authors:** Qwegn Systems Architecture Team  
-**Engine Version:** `Qwegn v0.11.3` (Pure Swift 6.2 & Metal 4)  
-**Evaluation Platform:** Apple M5 Max (`Mac17,6`, 18-core CPU, 40-core Apple10 NAX GPU, 128 GB Unified Memory, 585 GB/s DRAM, 950 GB/s SLC, macOS 26)  
-**Evaluated Models:** `Qwen3.6-35B-A3B-hq4g32` (35B Hybrid GDN + GQA Sparse MoE, 3B active) & `Qwen3.8-Flash-Next-hq8g32-hq4g64` (Hybrid 36L GDN + 12L Full GQA MoE, 512 experts)
+**Engine Version:** `Qwegn v0.14.1` (Pure Swift 6.2 & Metal 4)  
+**Evaluation Platform:** Apple M5 Max (`Mac17,6`, 18-core CPU, 40-core Apple10 NAX GPU, 128 GB Unified Memory, 585 GB/s DRAM, 950 GB/s SLC, macOS 26+)  
+**Evaluated Models:** `Qwen3.6-35B-A3B-hq4g32` (35B Hybrid GDN + GQA MoE), `Qwen3.8-Flash-Next-hq8g32-hq4g64` (`+ VQ2_G32` PLE, 48L Hybrid QSA + GDN MoE), `Qwen3.8-27B-hq4g32` (64L Dense Hybrid GQA + GDN), & `GLM-5.3-Flash-shvq4g32-shvq2g64-shvq3g64` (321B Hybrid NoPE MLA + KDA MoE, 100.6 GiB UMA)
 
 ![Two-Tier LSA Codebase Memory Architecture](../assets/qwegn_memory_pack_architecture.svg)
 
@@ -21,7 +21,7 @@ We present **Two-Tier Latent Sparse Attention (LSA) Codebase Memory Packs (`.qwc
 2. **Tier 2 — Off-Context Source Vault (`< 0.5 ms` Causal Paging):** All remaining workspace files reside in an indexed off-context vault with pre-extracted symbol tables. On both **user queries** and **autonomous agent tool-call steps**, a bounded-window (`4 KB`) lexical and compound-identifier router pages matching source bodies (`<= 8,192` tokens) into the turn suffix in under `0.5 ms` on CPU—with zero extra model round-trips.
 3. **Prefix-Invariant Multi-Turn State & Tail Workspace Delta:** Recalled Vault snapshots are frozen at the historical turn where they enter the dialogue, and live working-tree edits are attached strictly at the active turn tail. Combined with byte-level UTF-8 incremental prefix matching and copy-on-write (COW) GPU KV slots, **100% of prior conversation and Cortex KV state remains valid across multi-turn sessions, autonomous tool loops, live file edits on disk (`99.87%` cache hit), and `179.2K`-token large-volume contexts (`99.96%` cache hit)**.
 
-Across paired interleaved A/B benchmarks and multi-turn stress evaluations on `Qwen3.6-35B-A3B` and `Qwen3.8-Flash-Next`, Two-Tier `.qwcache` packs build offline in **`8.6 s`–`16.6 s`**, accelerate Time-To-First-Token (TTFT) by **`54.4×` (`6.53 s → 0.12 s`, `290.6K tok/s`)** and **`74.3×` (`17.84 s → 0.24 s`, `138.4K tok/s`)**, achieve **100% (`4/4`) cross-tier verbatim recall**, preserve **`99.87%` prefix hits (`0.16 s` TTFT, `307.0K tok/s`) immediately after live disk edits**, sustain **`2,041.0 tok/s` raw GPU chunked prefill** across `+130.2K`-token bursts, and deliver **`0.45 s` TTFT (`395.9K tok/s` effective prefill, `99.96%` hit) at `179,173` tokens**.
+Across paired interleaved A/B benchmarks and multi-turn stress evaluations on `Qwen3.6-35B-A3B` and `Qwen3.8-Flash-Next`, Two-Tier `.qwcache` packs build offline in **`8.6 s`–`16.6 s`**, accelerate Time-To-First-Token (TTFT) by **`54.4×` (`6.53 s → 0.12 s`, `290.6K tok/s`)** and **`74.3×` (`17.84 s → 0.24 s`, `138.4K tok/s`)**, achieve **100% (`4/4`) cross-tier verbatim recall**, preserve **`99.87%` prefix hits (`0.16 s` TTFT, `307.0K tok/s`) immediately after live disk edits**, sustain **`2,041.0 tok/s` raw GPU chunked prefill** across `+130.2K`-token bursts, and deliver **`0.45 s` TTFT (`395.9K tok/s` effective prefill, `99.96%` hit) at `179,173` tokens**. Extending the evaluation across `64K` to `1,048,576` (`1M`) tokens under both `Ward-512` ([arXiv:2610.42147]) and capacity-balanced spherical `e-means` macro-clustering ($C_{\text{macro}} = 4096$, [arXiv:2611.09501]) confirms **100% (`3/3`) 3-needle passkey recall at every sparse context rung up to `1M` tokens**, with **`13.88×` prefill / `4.48×` decode speedup over dense at `524K` (`105.6 tok/s` @1M) on `Qwen3.6-35B-A3B`**, **`+39.8%` prefill (`1,887.6 tok/s`) and `+55.3%` decode (`63.74 tok/s`) at `1M` on `Qwen3.8-Flash-Next`**, **`+3.2%–9.0%` prefill (`830.6–914.3 tok/s`) across `64K–1M` on `Qwen3.8-27B`**, and **`+19.8%` decode (`26.63 tok/s`, zero decay from `16K` to `160K`) on the `321B` UMA-resident `GLM-5.3-Flash` SHVQ pack**.
 
 ---
 
@@ -114,11 +114,21 @@ $$\text{Speedup}_{\text{prefill}} \approx \frac{T_{\text{prefill}}(N_c + N_s)}{T
 
 When $N_c = 32{,}742$ and $N_s = 48$, GPU forward-pass compute drops by $683\times$, yielding a **`54.4×` TTFT speedup on `Qwen3.6-35B-A3B`** and **`74.3×` TTFT speedup on `Qwen3.8-Flash-Next`**.
 
+### 2.6 Capacity-Balanced `e-means` Macro-Clustering & Spherical Quantization ([arXiv:2611.09501])
+
+While `Ward-512` clustering ($64$ buckets per $512$-token superblock $\Rightarrow 131{,}072$ centroids at $1\text{M}$ tokens) takes only `0.062 ms` on narrow $d_{\text{idx}} = 64$, 2-KV-head GQA layers (`Qwen3.6-35B-A3B`), Stage-1 index scoring becomes memory-bandwidth-bound on wider indexers such as `Qwen3.8-Flash-Next` ($d_{\text{idx}} = 128$, 16 QSA index heads $\Rightarrow 262{,}144$ pooled 4-token blocks at $1\text{M}$), `GLM-5.3-Flash` (64 128D NoPE MLA index heads), and `Qwen3.8-27B` prefill (16 24Q GQA layers).
+
+Qwegn addresses both index-scoring bandwidth and 128 GB unified-memory capacity through **capacity-balanced spherical `e-means`** ([arXiv:2611.09501]):
+
+1. **Coarse `4,096`-Token Macro-Clusters (`QWCoarsePoolIndex`, `--lsa-cluster-block 4096`, `QW_MLA_EMEANS=1`):** Every completed $C_{\text{macro}} = 4{,}096$-token window ($1{,}024$ 4-token pool blocks) is partitioned on-GPU into $M = 64$ capacity-balanced spherical clusters with uniform occupancy ($\approx 16$ pool blocks / $64$ tokens per cluster), yielding only **$16{,}384$ macro-centroids at $1\text{M}$ tokens** (**$8\times$ fewer than `Ward-512`** and **$16\times$ fewer than $262{,}144$ raw 4-token blocks**).
+2. **Deterministic Single-TG Collection & Exact Overflow Fallback:** Stage 1 scores the $16{,}384$ macro-centroids and deterministically gathers candidate pool indices via single-threadgroup `qwg_emeans_collect` (breaking equal-score ties by ascending cluster ID) into a bounded candidate buffer ($\le 14{,}336$ pool blocks) before fine Top-$K$ scoring. If `candState.overflow` triggers, the kernel falls back on-device without CPU sync to exact flat Top-$K$; below $41\text{K}$ tokens (`probeClusters == 0`), Stage 1 is bypassed completely for zero short-context overhead.
+3. **Spherical Weight & PLE Compression (`SHVQ` & `VQ2_G32`):** The same balanced spherical `e-means` codebooks compress `GLM-5.3-Flash` (`321B` MoE) from `134.37 GiB` (`3.59 bpp`) to **`100.63 GiB` (`2.69 bpp`, 100% resident in 128 GB UMA)** and `Qwen3.8-Flash-Next` 4-gram PLE tables from `50.86 GiB` to **`27.13 GiB` (`QNGRAM v3 VQ2_G32`, `-46.7%`)**, enabling `1M`-token `q4` KV residency on a single 128 GB Mac.
+
 ---
 
 ## 3. Empirical Evaluation
 
-All benchmarks were executed on an idle **Apple M5 Max (`Mac17,6`, 40-core Apple10 GPU, 128 GB Unified Memory)** using the release binary (`Qwegn v0.11.3`) with paired interleaved A/B rounds (`A1 → B1 → A2 → B2`), min-of-N latency, and greedy (`temp=0`) decoding.
+All benchmarks were executed on an idle **Apple M5 Max (`Mac17,6`, 40-core Apple10 NAX GPU, 128 GB Unified Memory)** using release builds (`Qwegn v0.11.3–v0.14.1`) with quiet-GPU admission (`0% / 0%` baseline utilization), paired interleaved A/B rounds where applicable, and greedy (`temp=0`) decoding.
 
 ![Empirical Evaluation Summary](../assets/qwegn_memory_pack_experiments.svg)
 
@@ -199,13 +209,59 @@ To validate server behavior under realistic autonomous coding workloads and extr
 
 ---
 
+### 3.6 Experiment 5 — Long-Context Scaling (`64K → 1M` Tokens): Without LSA vs LSA (`Ward-512`) vs Capacity-Balanced `e-means`
+
+To characterize raw prefill throughput ("performance profile"), decode throughput, unified-memory footprint, and multi-needle retrieval fidelity beyond resident `.qwcache` hits, we evaluated 44 quiet-GPU (`0% / 0%` idle admission, `0` steady-state GPU allocations) runs from `16K` / `64K` up to `1,039,928` (`1M`) tokens across all four flagship architectures (`--kv-mode q4 --temperature 0 --no-profile --no-load-vision`, 3 hidden passkeys at `10%`, `50%`, and `90%` depth):
+
+![Qwegn 64K to 1M Long-Context Scaling Overview](../assets/qwegn_lsa_emeans_overview.svg)
+
+| Model Pack | Context (`tok`) | Without LSA (Prefill / Decode) | LSA `Ward-512` (Prefill / Decode · TTFT) | **LSA + `e-means-4096` (Prefill / Decode · TTFT)** | RSS / Dynamic Arena | 3-Needle Recall (No LSA / Ward / `e-means`) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`Qwen3.6-35B-A3B-hq4g32`** | `64K` (`63,959`) | `2,538 / 99.2 tok/s` | **`6,141.7`** / `126.18 tok/s` (`10.41 s`) | `5,716.5` / **`136.84 tok/s`** (`11.19 s`) | `23.94 GiB` | `0/3` · **`3/3`** · **`3/3`** |
+| *(40L MoE: 10 GQA + 30 GDN,* | `160K` (`159,956`) | `1,128.6 / 67.20 tok/s` | **`4,913.8 / 131.13 tok/s`** (`32.55 s`) | `4,283.0 / 122.52 tok/s` (`37.35 s`) | `24.59 GiB` | `2/3` · **`3/3`** · **`3/3`** |
+| *`d_idx=64`, `mtp=1`)* | `262K` (`257,953`) | `581 / 50.1 tok/s` | **`3,805.2 / 118.26 tok/s`** (`67.79 s`) | `3,526.3 / 102.12 tok/s` (`73.15 s`) | `25.25 GiB` | `0/3` · **`3/3`** · **`3/3`** |
+| | `524K` (`517,944`) | `231 / 23.2 tok/s` | **`3,207.1 / 103.92 tok/s`** (`161.50 s`) | `3,126.1 / 93.44 tok/s` (`165.68 s`) | `26.99 GiB` | `0/3` · **`3/3`** · **`3/3`** |
+| | **`1M` (`1,039,928`)** | — | **`2,317.0 / 105.56 tok/s`** (`448.83 s`) | `2,315.1 / 88.47 tok/s` (`449.20 s`) | **`30.53 GiB`** (`-180 MiB`) | — · **`3/3`** · **`3/3`** |
+| **`Qwen3.8-Flash-Next-hq8g32-hq4g64`** | `64K` (`63,959`) | **`2,279.9 / 72.67 tok/s`** *(QSA)* | `2,155.4 / 56.66 tok/s` (`29.67 s`) | `2,183.8 / 72.45 tok/s` (`29.29 s`) | `109.7 GiB` *(GPU PLE)* | **`3/3` · `3/3` · `3/3`** |
+| *(48L MoE: 12 QSA + 36 GDN,* | `160K` (`159,956`) | **`2,157.6`** / `66.78 tok/s` *(QSA)* | `1,741.2 / 40.41 tok/s` (`91.87 s`) | `2,041.0` / **`70.93 tok/s`** (`78.37 s`) | `110.9 GiB` *(GPU PLE)* | **`3/3` · `3/3` · `3/3`** |
+| *`d_idx=128`, `VQ2` PLE)* | `262K` (`257,953`) | `2,051.8` / **`68.57 tok/s`** *(QSA)* | `1,522.1 / 32.38 tok/s` (`169.47 s`) | **`2,057.6`** / `63.54 tok/s` (`125.36 s`) | `112.2 GiB` / `13.8 GiB`† | **`3/3` · `3/3` · `3/3`** |
+| | `524K` (`517,944`†) | `1,721.9 / 54.49 tok/s` *(QSA)* | `976.2 / 18.70 tok/s` (`530.55 s`) | **`1,969.6 / 68.10 tok/s`** (`262.97 s`) | `16.85 GiB`† | **`3/3` · `3/3` · `3/3`** |
+| | **`1M` (`1,039,928`†)** | `1,350.3 / 41.05 tok/s` (`770.1 s`) | — | **`1,887.6 / 63.74 tok/s`** (`550.93 s`) | `23.00 GiB`† | **`3/3`** · — · **`3/3`** |
+| **`Qwen3.8-27B-hq4g32`** | `64K` (`63,959`) | `672 / 42.1 tok/s` | `884.8 / 53.97 tok/s` (`72.28 s`) | **`914.3 / 56.18 tok/s`** (`69.95 s`) | `18.15 GiB` | `3/3` · **`3/3`** · **`3/3`** |
+| *(64L Dense Hybrid: 16 GQA +* | `160K` (`159,956`) | `467.4 / 25.91 tok/s` | `831.9` / **`47.11 tok/s`** (`192.28 s`) | **`907.0`** / `40.70 tok/s` (`176.36 s`) | `19.98 GiB` | `3/3` · **`3/3`** · **`3/3`** |
+| *48 GDN, `mtp=3`)* | `262K` (`257,953`) | `351.0 / 25.30 tok/s` | `830.2` / **`43.11 tok/s`** (`310.72 s`) | **`896.5`** / `42.09 tok/s` (`287.72 s`) | `21.82 GiB` | `3/3` · **`3/3`** · **`3/3`** |
+| | `524K` (`517,944`) | — | `831.2` / **`41.07 tok/s`** (`623.13 s`) | **`891.0`** / `36.08 tok/s` (`581.32 s`) | `26.66 GiB` | — · **`3/3`** · **`3/3`** |
+| | **`1M` (`1,039,928`)** | — | `804.6` / **`36.49 tok/s`** (`1,292.5 s`) | **`830.6`** / `35.56 tok/s` (`1,252.0 s`) | **`36.35 GiB`** (`-270 MiB`) | — · **`3/3`** · **`3/3`** |
+| **`GLM-5.3-Flash-shvq4g32-shvq2g64-shvq3g64`** | `16K` (`15,962`) | `128.6 / 26.62 tok/s` *(`exactFlat`)* | — | `128.2 / 26.65 tok/s` *(`<41K` bypass)* | `103.18 GiB` | **`3/3`** · — · **`3/3`** |
+| *(321B SHVQ `100.63 GiB`,* | `64K` (`64,011`) | `123.2 / 24.26 tok/s` *(`exactFlat`)* | — | `122.6` / **`25.61 tok/s`** (`522.22 s`) | `103.38 GiB` | **`3/3`** · — · **`3/3`** |
+| *11 NoPE MLA + 34 KDA)* | `160K` (`159,957`) | `118.6 / 22.23 tok/s` *(`exactFlat`)* | — | `118.2` / **`26.63 tok/s`** (`1,353.8 s`) | `104.03 GiB` | **`3/3`** · — · **`3/3`** |
+| | **`1M` (`1,048,576`)** | `102.27 GiB` plan / `107.18 GiB` RSS | — | **100% UMA resident (`3,696 B/tok` KV)** | `107.18 GiB` | `0` SSD misses · `0` swap |
+
+*†At `524K` and `1M` on `Qwen3.8-Flash-Next`, `--stream-ngrams` streams `VQ2_G32` PLE from NVMe (`-27.30 GiB` GPU RAM saved; dynamic KV + index arena reported).*
+
+![Qwen3.6-35B-A3B 64K-1M Scaling](../assets/qwegn_lsa_scaling_qwen36_35b_a3b.svg)
+
+![Qwen3.8-Flash-Next 64K-1M Scaling](../assets/qwegn_lsa_scaling_flash_next.svg)
+
+![Qwen3.8-27B 64K-1M Scaling](../assets/qwegn_lsa_scaling_qwen38_27b.svg)
+
+![GLM-5.3-Flash 321B SHVQ 16K-1M Scaling](../assets/qwegn_lsa_scaling_glm53_flash.svg)
+
+#### Key Findings from `64K → 1M` Scaling
+- **100% (`3/3`) Multi-Needle Fidelity Across All Sparse Regimes:** Every `Ward-512` and `e-means-4096` run from `64K` to `1M` tokens recovered **`3/3` (`100%`)** exact passkeys, whereas dense softmax under YaRN RoPE degraded to `0/3` (`64K`, `262K`, `524K`) and `2/3` (`160K`) on `Qwen3.6-35B-A3B`.
+- **`e-means-4096` Accelerates Bandwidth-Bound Indexers by up to `+55.3%`:** On `Qwen3.8-Flash-Next` ($d_{\text{idx}}=128$), reducing `1M` Stage-1 candidates from `262,144` raw QSA blocks (`131,072` `Ward-512` buckets) to `16,384` balanced `e-means` macro-centroids cuts `1M` TTFT by **`3.65 minutes` (`770.1 s → 550.9 s`, `+39.8%` prefill)** and boosts decode by **`+55.3%` (`41.05 → 63.74 tok/s`)** (`3.64×` faster decode than `Ward-512` at `524K`). On `GLM-5.3-Flash` (`64` 128D MLA index heads), `QW_MLA_EMEANS=1` completely eliminates decode throughput decay from `16K` (`26.65 tok/s`) to `160K` (**`26.63 tok/s` vs `22.23 tok/s` `exactFlat`, `+19.8%`**). On `Qwen3.8-27B`, `e-means-4096` lifts prefill across every rung from `64K` (`914.3 tok/s`) to `1M` (`830.6 tok/s`, `-40.5 s` TTFT, `-270 MiB` RSS).
+- **Hardware-Proportional Default Selection:** On `Qwen3.6-35B-A3B` ($d_{\text{idx}}=64$, 10 GQA layers, 2 KV heads), `Ward-512`'s `0.062 ms` 4-stage Radix selector remains optimal above `128K` (**`2,317.0 tok/s` prefill / `105.56 tok/s` decode at `1M`**, **`13.88×` prefill / `4.48×` decode vs dense at `524K`**), validating Qwegn's descriptor-driven defaults (`512` on `QWLSAOperator`, `4096` on `qsa-cluster`, `<41K` flat bypass).
+
+---
+
 ## 4. References
 
 Only papers directly implemented in the Qwegn Engine runtime or evaluated as an architectural baseline in this document are listed below, together with the sections in which they are referenced:
 
 | Citation ID | Paper Title & Authors | Role in Qwegn Engine / Whitepaper | Referenced in Sections |
 | :--- | :--- | :--- | :--- |
-| **[arXiv:2610.42147]** | *Latent Sparse Attention: Training-Free 1M-Token Context Scaling via Hierarchical Ward Clustering and Low-Rank Index Projections* (2026) | Core **LSA Sidecar (`QLSA`)** algorithm implemented in Qwegn's GPU attention subsystem ($d_{\text{idx}}=64$, $C=512$ Ward clusters, 4-stage GPU Radix top-$K=2048$ selection) used to index and attend over `.qwcache` memory packs. | **Abstract**, **§2.2**, **§2.5**, **§3.1**, **§3.3** |
+| **[arXiv:2610.42147]** | *Latent Sparse Attention: Training-Free 1M-Token Context Scaling via Hierarchical Ward Clustering and Low-Rank Index Projections* (2026) | Core **LSA Sidecar (`QLSA`)** algorithm implemented in Qwegn's GPU attention subsystem ($d_{\text{idx}}=64$, $C=512$ Ward clusters, 4-stage GPU Radix top-$K=2048$ selection) used to index and attend over `.qwcache` memory packs and `1M` contexts. | **Abstract**, **§2.2**, **§2.5**, **§3.1**, **§3.3**, **§3.6** |
+| **[arXiv:2611.09501]** | *e-means: Capacity-Balanced Spherical Clustering and Vector Quantization for Long-Context Attention and MoE Compression* (2026) | Core **Coarse Pool Macro-Clustering (`QWCoarsePoolIndex`, $C_{\text{macro}}=4096$)**, **`SHVQ{2,3,4}`** spherical Hadamard weight codebooks (`100.6 GiB` `321B` UMA residency), and **`QNGRAM v3 VQ2_G32`** 2-bit PLE compression (`27.1 GiB`). | **Abstract**, **§2.6**, **§3.6** |
 | **[arXiv:2610.26693]** | *Variational Multi-Token Prediction for Lossless Speculative Decoding in Hybrid Language Models* (2026) | Core **Variational MTP** multi-token speculative verification cascade driving Qwegn's `149–164 tok/s` decode throughput over pinned `.qwcache` prefixes. | **§3.4**, **§3.5** |
 | **[arXiv:2610.34440]** | *Expert-Byte Adaptive Speculative Depth for Mixture-of-Experts Language Models* (2026) | Adaptive speculative draft depth controller used during multi-turn `.qwcache` decoding on `Qwen3.6-35B-A3B` and `Qwen3.8-Flash-Next`. | **§3.2**, **§3.4** |
 | **[arXiv:2602.16052]** | *MoE-Spec: Expert-Deduplicated Verification for Speculative Decoding in Sparse Mixture-of-Experts* (2026) | Expert-deduplicated GPU verification path preserving `149–164 tok/s` decode speed when verifying MTP draft tokens against the pinned `.qwcache` Cortex. | **§3.2**, **§3.4**, **§3.5** |

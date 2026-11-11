@@ -61,10 +61,12 @@ public struct QWModelLocation: Sendable {
 public struct QWHQFormat: Decodable, Sendable, Equatable, Hashable {
     public let bits: Int
     public let group: Int
+    public let vq: String?
 
-    public init(bits: Int, group: Int) {
+    public init(bits: Int, group: Int, vq: String? = nil) {
         self.bits = bits
         self.group = group
+        self.vq = vq
     }
 }
 
@@ -117,8 +119,12 @@ public struct QWQTensorEntry: Decodable, Sendable {
     public var hqBits: Int { hq?.bits ?? 4 }
     public var hqGroup: Int { hq?.group ?? QWQuant.group }
     public var isIncumbentHQ4: Bool { hq == nil }
+    public var isSHVQ: Bool { hq?.vq == "shvq1" }
     public var hqBlockBytes: Int {
         if let hq {
+            if hq.vq == "shvq1" {
+                return QWSHVQBlock.bytes(bits: hq.bits, group: hq.group)
+            }
             return QWAQBlock.bytes(bits: hq.bits, group: hq.group)
         }
         return QWQuant.blockBytes
@@ -353,12 +359,15 @@ public enum QWQuant {
             return out
         }
 
-        /// Dequantizes a 2D `HQ{2,3,4,6,8}_G{32,64,128,256}` slab in the rotated bit-stream layout.
+        /// Dequantizes a 2D `HQ{2,3,4,6,8}_G{32,64,128,256}` or `SHVQ` slab in the rotated layout.
         public static func dequantHQBlockSlab(
-            base: UnsafeRawPointer, nRows: Int, kCols: Int, bits: Int, group: Int
+            base: UnsafeRawPointer, nRows: Int, kCols: Int, bits: Int, group: Int,
+            isSHVQ: Bool = false
         ) -> [Float] {
             let g = kCols / group
-            let blkBytes = QWAQBlock.bytes(bits: bits, group: group)
+            let blkBytes = isSHVQ
+                ? QWSHVQBlock.bytes(bits: bits, group: group)
+                : QWAQBlock.bytes(bits: bits, group: group)
             var out = [Float](repeating: 0, count: nRows * kCols)
             out.withUnsafeMutableBufferPointer { outBuf in
                 let dstBase = outBuf.baseAddress!
@@ -368,7 +377,11 @@ public enum QWQuant {
                     for gg in 0..<g {
                         let blkPtr = base.advanced(by: (r * g + gg) * blkBytes)
                         let rawBuf = UnsafeRawBufferPointer(start: blkPtr, count: blkBytes)
-                        QWAQBlock.unpack(group: rawBuf, bits: bits, group: group, into: &groupBuf)
+                        if isSHVQ {
+                            QWSHVQBlock.unpack(group: rawBuf, bits: bits, group: group, into: &groupBuf)
+                        } else {
+                            QWAQBlock.unpack(group: rawBuf, bits: bits, group: group, into: &groupBuf)
+                        }
                         let rowDst = dstBase.advanced(by: r * kCols + gg * group)
                         for i in 0..<group {
                             rowDst[i] = groupBuf[i]
@@ -384,7 +397,7 @@ public enum QWQuant {
             return out
         }
 
-        /// Dequantizes a 2D `HQ4_G32_M5` or `HQ{2,3,4,6,8}_G{32,64,128,256}` tensor into fp32 floats.
+        /// Dequantizes a 2D `HQ4_G32_M5`, `HQ`, or `SHVQ` tensor into fp32 floats.
         public func dequantQ4g(_ name: String) throws -> [Float] {
             let e = try entry(name)
             guard let hq4 = e.hq4Off else { throw QWQuantError.notQuantPlane(name) }
@@ -399,11 +412,12 @@ public enum QWQuant {
             if e.isIncumbentHQ4 {
                 return Self.dequantHQ4Slab(base: ptr, nRows: n, kCols: K)
             }
-            return Self.dequantHQBlockSlab(base: ptr, nRows: n, kCols: K, bits: e.hqBits, group: e.hqGroup)
+            return Self.dequantHQBlockSlab(base: ptr, nRows: n, kCols: K,
+                                           bits: e.hqBits, group: e.hqGroup, isSHVQ: e.isSHVQ)
         }
 
 
-        /// One expert of a 3-D HQ expert stack `[E, R, C]`; expert `e` starts at `hq4_off + e*e_hq4`.
+        /// One expert of a 3-D HQ/SHVQ expert stack `[E, R, C]`; expert `e` starts at `hq4_off + e*e_hq4`.
         public func dequantExpertQ4g(_ name: String, expert: Int) throws -> [Float] {
             let e = try entry(name)
             guard let hq4 = e.hq4Off, let count = e.experts, let per = e.eHq4, e.shape.count == 3 else {
@@ -421,7 +435,8 @@ public enum QWQuant {
             if e.isIncumbentHQ4 {
                 return Self.dequantHQ4Slab(base: ptr, nRows: rows, kCols: cols)
             }
-            return Self.dequantHQBlockSlab(base: ptr, nRows: rows, kCols: cols, bits: e.hqBits, group: grp)
+            return Self.dequantHQBlockSlab(base: ptr, nRows: rows, kCols: cols,
+                                           bits: e.hqBits, group: grp, isSHVQ: e.isSHVQ)
         }
 
         /// HQ8_G32_M5 rot-domain dequant: `float(q) * float16(scale)` per
@@ -443,6 +458,21 @@ public enum QWQuant {
                     for j in 0..<QWQuant.group {
                         out[row + j] = Float(q[row + j]) * scale
                     }
+                }
+            }
+            return out
+        }
+
+        /// HQ8_G32_M5 standard-domain dequant with inverse 32-point orthonormal FWHT.
+        public func dequantHQ8(_ name: String) throws -> [Float] {
+            var out = try dequantHQ8Rot(name)
+            let count = out.count
+            out.withUnsafeMutableBufferPointer { buf in
+                guard let base = buf.baseAddress else { return }
+                var off = 0
+                while off + 32 <= count {
+                    QWQuant.fwht32OrthoBlock(base.advanced(by: off))
+                    off += 32
                 }
             }
             return out

@@ -251,6 +251,27 @@ extension QWEngineDriver {
         activeEnc = enc
     }
 
+    /// Rotates `enc` to a fresh compute encoder on `activeCB` (preserving stage profiling when enabled).
+    func rotateActiveEncoder(_ enc: inout any MTLComputeCommandEncoder, stage: String = "moe.experts_nax") throws {
+        if (Self.decodeProfileEnabled || Self.prefillProfileEnabled),
+           let p = decodeTel.profiler, p.hasSegmentCapacity,
+           let cb = activeCB {
+            enc.endEncoding()
+            guard let next = try? p.makeEncoder(commandBuffer: cb, stage: stage) else {
+                throw QWEngineDriverError.state("profile encoder rotation failed")
+            }
+            hal.touchKeepAlive(next)
+            activeEnc = next
+            enc = next
+            return
+        }
+        guard let cb = activeCB else {
+            throw QWEngineDriverError.state("rotateActiveEncoder requires activeCB")
+        }
+        try hal.rotateEncoder(cb, &enc)
+        activeEnc = enc
+    }
+
     private func beginDecodeProfileStep() {
         guard Self.decodeProfileEnabled, decodeTel.profiler == nil else { return }
         guard QWGPUStageProfiler<String>.isSupported(on: hal.device) else {
@@ -347,7 +368,7 @@ extension QWEngineDriver {
 
     func stageColdExpertsSpan(
         moe: MoEW, s: MoEScratch, startRow: Int, totalRows: Int,
-        onBeforeIO: ((any MTLComputeCommandEncoder, Int) throws -> Void)? = nil,
+        onBeforeIO: ((inout any MTLComputeCommandEncoder, any MTLCommandBuffer, Int) throws -> Void)? = nil,
         onAfterGateUpIO: ((any MTLComputeCommandEncoder, Int) throws -> Void)? = nil
     ) throws -> (nextRow: Int, stagedCount: Int) {
         guard let streamer = moe.coldStreamer,
@@ -365,8 +386,9 @@ extension QWEngineDriver {
             guard let resPair = hal.begin() else {
                 throw QWEngineDriverError.state("cold expert resident overlap cmdbuffer")
             }
-            try onBeforeIO(resPair.1, totalRows)
-            hal.end(resPair.0, resPair.1)
+            var resEnc = resPair.1
+            try onBeforeIO(&resEnc, resPair.0, totalRows)
+            hal.end(resPair.0, resEnc)
             resCB = resPair.0
         }
         let tWait0 = Date()
@@ -387,8 +409,9 @@ extension QWEngineDriver {
             guard let resPair = hal.begin() else {
                 throw QWEngineDriverError.state("cold expert resident overlap cmdbuffer")
             }
-            try onBeforeIO(resPair.1, prep.nextRow)
-            hal.end(resPair.0, resPair.1)
+            var resEnc = resPair.1
+            try onBeforeIO(&resEnc, resPair.0, prep.nextRow)
+            hal.end(resPair.0, resEnc)
             resCB = resPair.0
         }
         var coldGuCB: (any MTLCommandBuffer)?
@@ -456,7 +479,7 @@ extension QWEngineDriver {
     /// misses into the GPU-chosen slots, `coldGateUp` commits once gate/up lands. Returns the staged count.
     func stageColdExpertsMapped(
         moe: MoEW, s: MoEScratch, rows: Int,
-        resident: (any MTLComputeCommandEncoder, QWTensorValue) throws -> Void,
+        resident: (inout any MTLComputeCommandEncoder, any MTLCommandBuffer, QWTensorValue) throws -> Void,
         coldGateUp: (any MTLComputeCommandEncoder) throws -> Void
     ) throws -> Int {
         guard let streamer = moe.coldStreamer, let curCB = activeCB, let curEnc = activeEnc,
@@ -480,10 +503,12 @@ extension QWEngineDriver {
                                     experts: streamer.totalExperts, residentExperts: streamer.residentExperts)
         hal.end(curCB, curEnc)
         stepCBs?.append(curCB)
-        guard let (resCB, resEnc) = hal.begin() else {
+        guard let resPair = hal.begin() else {
             throw QWEngineDriverError.state("span map resident cmdbuffer")
         }
-        try resident(resEnc, mapped)
+        let resCB = resPair.0
+        var resEnc = resPair.1
+        try resident(&resEnc, resCB, mapped)
         hal.end(resCB, resEnc)
 
         let tWait0 = Date()

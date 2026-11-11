@@ -131,7 +131,7 @@ extension QWEngineDriver {
         let naxI32 = 5 * K
         let naxF16 = 3 * K * I + H + ISh
         let naxF32 = K * H
-        return naxF32 * 4 + naxI32 * 4 + naxF16 * 2 + (E + 2) * 4
+        return naxF32 * 4 + naxI32 * 4 + naxF16 * 2 + (E + 64) * 4
     }
 
     /// Exact 256-byte-aligned suballocator footprint of `makeMoEScratch(rows:geometry:)`.
@@ -153,9 +153,11 @@ extension QWEngineDriver {
             + aligned(rows * 4)
             + aligned(rows * K * H * 4)
         if isPrefill {
+            let tcInts = QWGemm.MoETilePlan(
+                experts: E, pairs: rows * K, gateUpRows: 2 * I, downRows: H).scratchInts
             total += aligned((E + 1) * 4)
                 + 5 * aligned(rows * K * 4)
-                + aligned(4)
+                + aligned(tcInts * 4)
                 + aligned(rows * K * 2 * I * 2)
                 + aligned(rows * K * I * 2)
                 + aligned(rows * K * H * 4)
@@ -172,6 +174,8 @@ extension QWEngineDriver {
         let E = geometry.numExperts, K = geometry.expertsPerTok
         let ISh = geometry.sharedExpertIntermediate
         let isPrefill = rows > 8 && geometry.supportsGroupedNAXMoEPrefill
+        let tcInts = isPrefill ? QWGemm.MoETilePlan(
+            experts: E, pairs: rows * K, gateUpRows: 2 * I, downRows: H).scratchInts : 0
         let s = MoEScratch(
             xRot32: try alloc(rows * H, .f32),
             xPlain32: try alloc(rows * H, .f32),
@@ -190,7 +194,7 @@ extension QWEngineDriver {
             invPerm: isPrefill ? try alloc(rows * K, .i32) : nil,
             tileE: isPrefill ? try alloc(rows * K, .i32) : nil,
             tileR: isPrefill ? try alloc(rows * K, .i32) : nil,
-            tileCount: isPrefill ? try alloc(1, .i32) : nil,
+            tileCount: isPrefill ? try alloc(tcInts, .i32) : nil,
             gu16: isPrefill ? try alloc(rows * K * 2 * I, .f16) : nil,
             dnHi: isPrefill ? try alloc(rows * K * I, .f16) : nil,
             dnAcc: try alloc(rows * K * H, .f32),
@@ -321,11 +325,12 @@ extension QWEngineDriver {
                 format: .nativeAffine(bits: bits, groupSize: groupSize), declineReason: nil)
         case .qwp1, nil:
             if let pack {
-                var denseSpec: (bits: Int, group: Int, incumbent: Bool)?
-                var expSpec: (bits: Int, group: Int, incumbent: Bool)?
-                var expDownSpec: (bits: Int, group: Int, incumbent: Bool)?
+                var denseSpec: (bits: Int, group: Int, incumbent: Bool, shvq: Bool)?
+                var expSpec: (bits: Int, group: Int, incumbent: Bool, shvq: Bool)?
+                var expDownSpec: (bits: Int, group: Int, incumbent: Bool, shvq: Bool)?
                 for (name, entry) in pack.tensors where entry.hq4Off != nil {
-                    let spec = (bits: entry.hqBits, group: entry.hqGroup, incumbent: entry.isIncumbentHQ4)
+                    let spec = (bits: entry.hqBits, group: entry.hqGroup,
+                                incumbent: entry.isIncumbentHQ4, shvq: entry.isSHVQ)
                     if entry.shape.count == 3 || (name.contains(".experts.") && !name.contains("shared_expert")) {
                         if name.contains("down_proj") {
                             if expDownSpec == nil { expDownSpec = spec }
@@ -336,7 +341,7 @@ extension QWEngineDriver {
                         if denseSpec == nil { denseSpec = spec }
                     }
                 }
-                let d = denseSpec ?? (bits: 4, group: 32, incumbent: true)
+                let d = denseSpec ?? (bits: 4, group: 32, incumbent: true, shvq: false)
                 let e = expSpec ?? expDownSpec ?? d
                 let ed = expDownSpec ?? e
                 if !(d.incumbent && e.incumbent && ed.incumbent) {
@@ -345,7 +350,9 @@ extension QWEngineDriver {
                                          expertBits: e.bits, expertGroupSize: e.group,
                                          denseIncumbent: d.incumbent, expertIncumbent: e.incumbent,
                                          expertDownBits: ed.bits, expertDownGroupSize: ed.group,
-                                         expertDownIncumbent: ed.incumbent),
+                                         expertDownIncumbent: ed.incumbent,
+                                         denseSHVQ: d.shvq, expertSHVQ: e.shvq,
+                                         expertDownSHVQ: ed.shvq),
                         declineReason: nil)
                 }
             }

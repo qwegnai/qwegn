@@ -361,6 +361,22 @@ public final class QWHal: @unchecked Sendable {
         cb.commit()
     }
 
+    /// Ends `enc` and opens a fresh compute command encoder on `cb` with matching `dispatchType`
+    /// so GPU-written indirect dispatch counts are visible to the AGX command processor.
+    public func rotateEncoder(_ cb: any MTLCommandBuffer,
+                              _ enc: inout any MTLComputeCommandEncoder) throws {
+        let mode: ComputeDispatchMode = (enc.dispatchType == .concurrent) ? .concurrent : .serial
+        enc.endEncoding()
+        let next: (any MTLComputeCommandEncoder)?
+        switch mode {
+        case .serial: next = cb.makeComputeCommandEncoder()
+        case .concurrent: next = cb.makeComputeCommandEncoder(dispatchType: .concurrent)
+        }
+        guard let next else { throw QWHalError.noDevice }
+        touchKeepAlive(next)
+        enc = next
+    }
+
     /// Like `begin(_:)`, but the command buffer first waits on the GPU for `event` to reach `value`,
     /// so host-side staging can finish while later command buffers are already committed.
     public func begin(_ mode: ComputeDispatchMode, waitingFor event: any MTLSharedEvent,

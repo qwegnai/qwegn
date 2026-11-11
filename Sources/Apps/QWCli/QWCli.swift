@@ -24,7 +24,7 @@ public enum QWCli {
             case .invalidKVMode(let mode):
                 return "Invalid KV cache mode '\(mode)' (supported: f16, q8, q4)"
             case .unpriceableKVMode(let mode):
-                return "Invalid KV cache mode '\(mode)' for the admission plan (it prices f16 and q8)"
+                return "Invalid KV cache mode '\(mode)' for the admission plan (it prices f16, q8, and q4)"
             case .invalidContextBudget(let tokens, let max):
                 return "Invalid context budget \(tokens) tokens (must be positive and <= \(max))"
             case .inputFileNotFound(let path):
@@ -140,13 +140,14 @@ public enum QWCli {
     /// Generates the `qwg plan` JSON admission report pricing every resident component against the cap.
     public static func admissionPlanReport(configURL: URL,
                                            contextTokens: Int,
-                                           kvMode: String = "f16",
+                                           kvMode: String = "q4",
                                            scratchMB: Int,
                                            capGB: Double?) throws -> String {
         let kv: QWAdmissionDtype
-        switch kvMode {
+        switch kvMode.lowercased() {
         case "f16": kv = .f16
         case "q8":  kv = .q8
+        case "q4":  kv = .q4
         default: throw CLIError.unpriceableKVMode(kvMode)
         }
         let descriptor = try QWModelDescriptor.decode(configJSON: try Data(contentsOf: configURL))
@@ -206,11 +207,20 @@ public enum QWCli {
 
     public static func quantizePlan(repo: String, outPack: URL,
                                     quant: String, scriptsDir: URL,
-                                    pythonURL: URL? = nil) -> QuantizePlan {
+                                    pythonURL: URL? = nil,
+                                    denseQuant: String? = nil,
+                                    expertQuant: String? = nil,
+                                    expertDownQuant: String? = nil,
+                                    ngramQuant: String? = nil) -> QuantizePlan {
         let py = pythonURL ?? scriptsDir.deletingLastPathComponent().appendingPathComponent(".venv-oracle/bin/python")
         let packPy = scriptsDir.appendingPathComponent("quantize/pack.py")
+        var cmd = [py.path, packPy.path, "--model", repo, "--out", outPack.path, "--quant", quant]
+        if let dq = denseQuant { cmd += ["--dense-quant", dq] }
+        if let eq = expertQuant { cmd += ["--expert-quant", eq] }
+        if let edq = expertDownQuant { cmd += ["--expert-down-quant", edq] }
+        if let nq = ngramQuant { cmd += ["--ngram-quant", nq] }
         return QuantizePlan(
-            command: [py.path, packPy.path, "--model", repo, "--out", outPack.path, "--quant", quant],
+            command: cmd,
             provenanceLine: "source=\(repo) quant=\(quant) → \(outPack.lastPathComponent) (packer embeds source sha256)")
     }
 

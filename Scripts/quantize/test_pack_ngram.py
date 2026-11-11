@@ -67,11 +67,15 @@ class NgramHeaderContractTests(unittest.TestCase):
         self.assertEqual(
             bytes(self._header(2, 2, 100)[0:45]).hex(),
             "514e4752414d000002000000020000001900000000000000a00064000000000000100000000000000000000040")
+        self.assertEqual(
+            bytes(self._header(3, 3, 90)[0:45]).hex(),
+            "514e4752414d000003000000030000001900000000000000a0005a000000000000100000000000000000000040")
 
     def test_the_row_size_law(self):
         self.assertEqual(_row_bytes("bf16", 160), 320)
         self.assertEqual(_row_bytes("q8", 160), 170)
         self.assertEqual(_row_bytes("q4", 160), 100)
+        self.assertEqual(_row_bytes("vq2", 160), 90)
         with self.assertRaises(ValueError):
             _row_bytes("q5", 160)
         with self.assertRaises(ValueError):
@@ -97,7 +101,8 @@ class NgramHeaderContractTests(unittest.TestCase):
         self.assertEqual(_NG_VERSION["bf16"], 1)
         self.assertEqual(_NG_VERSION["q8"], 2)
         self.assertEqual(_NG_VERSION["q4"], 2)
-        self.assertEqual(_NG_DTYPE, {"bf16": 0, "q8": 1, "q4": 2})
+        self.assertEqual(_NG_VERSION["vq2"], 3)
+        self.assertEqual(_NG_DTYPE, {"bf16": 0, "q8": 1, "q4": 2, "vq2": 3})
 
 
 class NgramV2WriterTests(unittest.TestCase):
@@ -186,6 +191,32 @@ class NgramV2WriterTests(unittest.TestCase):
             self.assertEqual(aud["dtype"], 2)
             self.assertEqual(aud["rowBytes"], 100)
             self.assertEqual(aud["rowsPerSector"], 40)
+
+    def test_vq2_writes_the_v3_header_codebook_and_beats_q4_error(self):
+        from pack_ngram import _NG_VQ2_CB_BYTES, _NG_VQ2_CB_OFF, decode_vq2_rows
+        with tempfile.TemporaryDirectory() as temp:
+            _, files, _, out, res = self._build(temp, "vq2", rows=(120, 80, 100))
+            self.assertEqual(res["version"], 3)
+            self.assertEqual(res["dtype"], 3)
+            self.assertEqual(res["row_bytes"], 90)
+            self.assertEqual(res["rows_per_sector"], 45)
+            aud = audit_ngram_bin(out)
+            self.assertEqual(aud["version"], 3)
+            self.assertEqual(aud["dtype"], 3)
+            self.assertEqual(aud["entryCount"], 300)
+            self.assertEqual(aud["table_sha256"], res["table_sha256"])
+            raw = out.read_bytes()
+            cb = np.frombuffer(raw[_NG_VQ2_CB_OFF:_NG_VQ2_CB_OFF + _NG_VQ2_CB_BYTES], dtype="<f2")
+            row0 = decode_vq2_rows(raw[_NG_SECTOR:_NG_SECTOR + 90], cb, 1, 160)[0]
+            src0 = files["model.ple.ple_embedding.ngram_embedding.shard_1.weight"][0].float().numpy()
+            rel = float(np.linalg.norm(row0 - src0) / np.linalg.norm(src0))
+            self.assertLess(rel, 0.11)
+            # Corrupting codebook[0] to non-zero must be caught by audit_ngram_bin.
+            bad = bytearray(raw)
+            bad[_NG_VQ2_CB_OFF] = 1
+            out.write_bytes(bytes(bad))
+            with self.assertRaisesRegex(ValueError, "codebook\\[0\\]"):
+                audit_ngram_bin(out)
 
     def test_the_quantised_rows_are_reconstructible(self):
         # The Q8 row decodes back to the source values within the law the

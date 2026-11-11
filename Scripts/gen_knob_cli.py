@@ -59,9 +59,10 @@ CLI_COMMANDS = {
         "mtpDrafts", "mtpBackend",
         "mtpRelaxedMargin", "mtpRelaxedMinProb", "mtpDraftStrategy", "mtpQuadraticSeeding", "mtpAdaptiveDepth",
         "mtpEntropyThreshold",
-        "dflashDraftPackPath", "dflashSelectorTopK", "osReserveGiB", "prefillChunkRows",
+        "dflashDraftPackPath", "dflashSelectorTopK", "memoryPolicy", "osReserveGiB",
+        "residentExpertsPerLayer", "moeSpecBudget", "prefillChunkRows",
         "temperature", "topP", "topK", "repetitionPenalty", "seed", "prefixCacheEnabled",
-        "cacheDir",
+        "cacheDir", "loadVision", "streamNgrams",
     ],
     "qwg repl": [
         "contextTokens", "maxTokens", "kvMode", "enableThinking", "reasoningEffort",
@@ -70,8 +71,10 @@ CLI_COMMANDS = {
         "mtpDrafts",
         "mtpBackend", "mtpRelaxedMargin", "mtpRelaxedMinProb", "mtpDraftStrategy", "mtpQuadraticSeeding",
         "mtpAdaptiveDepth", "mtpEntropyThreshold",
-        "dflashDraftPackPath", "dflashSelectorTopK", "osReserveGiB",
+        "dflashDraftPackPath", "dflashSelectorTopK", "memoryPolicy", "osReserveGiB",
+        "residentExpertsPerLayer", "moeSpecBudget",
         "prefillChunkRows", "temperature", "topP", "topK", "repetitionPenalty", "seed",
+        "loadVision", "streamNgrams",
     ],
     "qwg serve": [
         "contextTokens", "kvMode",
@@ -80,11 +83,12 @@ CLI_COMMANDS = {
         "mtpRelaxedMargin", "mtpRelaxedMinProb", "mtpDraftStrategy", "mtpQuadraticSeeding", "mtpAdaptiveDepth",
         "mtpEntropyThreshold",
         "dflashDraftPackPath",
-        "dflashSelectorTopK", "gdnPrefill", "evictPrefillScratch", "prefillChunkRows",
+        "dflashSelectorTopK", "memoryPolicy", "osReserveGiB", "residentExpertsPerLayer", "moeSpecBudget",
+        "gdnPrefill", "evictPrefillScratch", "prefillChunkRows",
         "maxConcurrentSessions",
         "warmCacheLimitGiB", "ssdCacheLimitGiB", "cacheDir", "logLevel", "temperature",
         "topP", "topK", "maxTokens", "repetitionPenalty", "seed", "enableThinking",
-        "reasoningEffort", "systemPrompt", "lazyLoad",
+        "reasoningEffort", "systemPrompt", "lazyLoad", "loadVision", "streamNgrams",
     ],
     "qwg plan": ["contextTokens", "kvMode"],
 }
@@ -116,21 +120,26 @@ CLI_HELP = {
     "ssdCacheLimitGiB": "Cold SSD prefix cache capacity in GiB (0 disables it).",
     "cacheDir": "Directory for the SSD prefix cache.",
     "cacheEntryLimit": "How many prefix-cache entries to keep.",
+    "memoryPolicy": "Unified-memory residency policy: maxResident or safe.",
     "osReserveGiB": "OS RAM reserve in GiB, subtracted from physical memory.",
+    "residentExpertsPerLayer": "Resident hot experts per MoE layer in unified memory (0 sizes automatically from memory policy).",
+    "moeSpecBudget": "MoE-Spec routed expert budget per verify layer (0 is lossless, 1...8 caps cold SSD reads).",
     "evictPrefillScratch": "Evict the prefill scratchpad from RAM: auto, always or never.",
     "lsaMode": "Latent Sparse Attention mode: off, auto, sidecar, svd or qsa-cluster (arXiv:2610.42147).",
     "lsaBudget": "LSA active key budget k in tokens (512...8192, default 2048).",
-    "lsaClusterBlock": "LSA dynamic Ward cluster block size L in tokens (256...1024, default 512).",
+    "lsaClusterBlock": "LSA cluster block size L in tokens (256...4096, default 512; 4096 enables e-means).",
     "lsaSidecarPath": "Explicit path to a .qlsa (QLSA0001) projection sidecar file.",
     "lazyLoad": "Load the model on the first request instead of at startup.",
+    "loadVision": "Load the vision tower into memory for multimodal processing.",
+    "streamNgrams": "Stream PLE N-gram table from SSD (~64 MB cache) instead of loading into RAM.",
     "logLevel": "Log level: debug, info, warn, error or none.",
     "kvMode": "KV cache quantization: f16, q8 or q4.",
     "gdnPrefill": "GDN prefill algorithm: chunked, regres or naive.",
     "mtpAdaptiveDepth": "Let the MTP depth follow the draft's own confidence.",
     "mtpEntropyThreshold": "Entropy threshold for an adaptive MTP depth.",
     "ropeScalingFactor": "RoPE scaling factor (YaRN).",
-    "dflashDraftPackPath": "Path to the DFlash 2 drafter model pack.",
-    "dflashSelectorTopK": "DFlash 2 candidate selector top-K.",
+    "dflashDraftPackPath": "Path to the DFlash 2 / DSpine drafter model pack.",
+    "dflashSelectorTopK": "DFlash 2 / DSpine candidate selector top-K.",
     "splitKTokensPerSplit": "Tokens per split in a split-K GEMV.",
 }
 
@@ -451,8 +460,13 @@ def emit(knobs):
             # enumeration has always been read without regard to case. A
             # free-form string — a path, a prompt — is left exactly as typed.
             transform = ""
-            if kind == "string" and knob["kind"].get("allowed"):
-                transform = ", transform: { $0.lowercased() }"
+            allowed = knob["kind"].get("allowed") or []
+            if kind == "string" and allowed:
+                if all(v == v.lower() for v in allowed):
+                    transform = ", transform: { $0.lowercased() }"
+                else:
+                    vocab = ", ".join(swift_literal(v) for v in allowed)
+                    transform = ", transform: { s in [%s].first { $0.lowercased() == s.lowercased() } ?? s }" % vocab
             lines.append("    @Option(name: [%s], help: %s%s)" % (names, swift_literal(help_text), transform))
             lines.append("    public var %s: %s?" % (name, swift_type(knob["kind"])))
             lines.append("")

@@ -387,6 +387,39 @@ func releaseWorkflowHasWritePermissionsAndMetalToolchain() throws {
     #expect(yml.contains("qwegn-${GITHUB_REF_NAME}-macos-arm64.tar.gz"))
 }
 
+@Test("admissionPlanReport prices q4 (default), q8, and f16 on dense and MoE configs")
+func admissionPlanReportPricesQ4Q8F16() throws {
+    let fm = FileManager.default
+    var root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+    for _ in 0..<6 {
+        if fm.fileExists(atPath: root.appendingPathComponent("Tests/QWCoreTests/Fixtures/qwen3_published_configs.json").path) { break }
+        root = root.deletingLastPathComponent()
+    }
+    let catalogData = try Data(contentsOf: root.appendingPathComponent("Tests/QWCoreTests/Fixtures/qwen3_published_configs.json"))
+    let catalog = try #require(JSONSerialization.jsonObject(with: catalogData) as? [String: Any])
+    let tmp = fm.temporaryDirectory.appendingPathComponent("qwg_plan_test_\(UUID().uuidString)", isDirectory: true)
+    try fm.createDirectory(at: tmp, withIntermediateDirectories: true)
+    defer { try? fm.removeItem(at: tmp) }
+
+    for key in ["Qwen/Qwen3-8B", "Qwen/Qwen3-30B-A3B"] {
+        let entry = try #require(catalog[key])
+        let cfg = tmp.appendingPathComponent("\(key.replacingOccurrences(of: "/", with: "_")).json")
+        try JSONSerialization.data(withJSONObject: entry).write(to: cfg)
+        func kvBytes(_ mode: String) throws -> Int {
+            let json = try QWCli.admissionPlanReport(configURL: cfg, contextTokens: 65_536, kvMode: mode, scratchMB: 256, capGB: 128)
+            let obj = try #require(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+            let comps = try #require(obj["components"] as? [String: Any])
+            return try #require(comps["kv_bytes"] as? Int)
+        }
+        let f16 = try kvBytes("f16")
+        let q8 = try kvBytes("q8")
+        let q4 = try kvBytes("q4")
+        #expect(f16 == q8 * 2)
+        #expect(q8 == q4 * 2)
+        #expect(q4 > 0)
+    }
+}
+
 
 
 

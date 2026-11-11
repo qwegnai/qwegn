@@ -292,6 +292,104 @@ public struct FNNgramEmbedding: Sendable {
         }
     }
 
+    @inlinable
+    public func writeTokenRowIds(into base: UnsafeMutablePointer<UInt32>, tokens: [Int64], startPos: Int, t: Int) {
+        let hc = (ngram - 1) * headsPerNgram
+        let ng = ngram, hpn = headsPerNgram, eosTok = eos
+        let mults = multipliers, hds = heads
+        let idx = startPos + t
+        let outRow = base.advanced(by: t * hc)
+        if ng == 3 {
+            let s0 = tokens[idx]
+            var hitEos = false
+            let s1: Int64
+            if idx - 1 >= 0 {
+                let v = tokens[idx - 1]
+                if v == eosTok { hitEos = true; s1 = eosTok } else { s1 = v }
+            } else { hitEos = true; s1 = eosTok }
+            let s2: Int64
+            if !hitEos && idx - 2 >= 0 {
+                let v = tokens[idx - 2]
+                s2 = (v == eosTok) ? eosTok : v
+            } else { s2 = eosTok }
+            let m0 = s0 &* mults[0]
+            let mix2 = m0 ^ (s1 &* mults[1])
+            let mix3 = mix2 ^ (s2 &* mults[2])
+            for g in 0..<2 {
+                let mixed = (g == 0) ? mix2 : mix3
+                let start = g * hpn
+                for head in start..<(start + hpn) {
+                    let size = Int64(hds.sizes[head])
+                    let offset = Int64(hds.offsets[head])
+                    var residue = mixed % size
+                    if residue < 0 { residue += size }
+                    outRow[head] = UInt32(residue + offset)
+                }
+            }
+            return
+        }
+        if ng == 4 {
+            let s0 = tokens[idx]
+            var hitEos = false
+            let s1: Int64
+            if idx - 1 >= 0 {
+                let v = tokens[idx - 1]
+                if v == eosTok { hitEos = true; s1 = eosTok } else { s1 = v }
+            } else { hitEos = true; s1 = eosTok }
+            let s2: Int64
+            if !hitEos && idx - 2 >= 0 {
+                let v = tokens[idx - 2]
+                if v == eosTok { hitEos = true; s2 = eosTok } else { s2 = v }
+            } else { hitEos = true; s2 = eosTok }
+            let s3: Int64
+            if !hitEos && idx - 3 >= 0 {
+                let v = tokens[idx - 3]
+                s3 = (v == eosTok) ? eosTok : v
+            } else { s3 = eosTok }
+            let m0 = s0 &* mults[0]
+            let mix2 = m0 ^ (s1 &* mults[1])
+            let mix3 = mix2 ^ (s2 &* mults[2])
+            let mix4 = mix3 ^ (s3 &* mults[3])
+            for g in 0..<3 {
+                let mixed = (g == 0) ? mix2 : ((g == 1) ? mix3 : mix4)
+                let start = g * hpn
+                for head in start..<(start + hpn) {
+                    let size = Int64(hds.sizes[head])
+                    let offset = Int64(hds.offsets[head])
+                    var residue = mixed % size
+                    if residue < 0 { residue += size }
+                    outRow[head] = UInt32(residue + offset)
+                }
+            }
+            return
+        }
+        withUnsafeTemporaryAllocation(of: Int64.self, capacity: ng) { shifted in
+            shifted[0] = tokens[idx]
+            var hitEos = false
+            for s in 1..<ng {
+                let srcIdx = idx - s
+                if !hitEos && srcIdx >= 0 {
+                    let v = tokens[srcIdx]
+                    if v == eosTok { hitEos = true; shifted[s] = eosTok } else { shifted[s] = v }
+                } else {
+                    shifted[s] = eosTok
+                }
+            }
+            for n in 2...ng {
+                var mixed = shifted[0] &* mults[0]
+                for pos in 1..<n { mixed ^= shifted[pos] &* mults[pos] }
+                let start = (n - 2) * hpn
+                for head in start..<(start + hpn) {
+                    let size = Int64(hds.sizes[head])
+                    let offset = Int64(hds.offsets[head])
+                    var residue = mixed % size
+                    if residue < 0 { residue += size }
+                    outRow[head] = UInt32(residue + offset)
+                }
+            }
+        }
+    }
+
     public func embedRange(into base: UnsafeMutablePointer<Float>, tokens: [Int64], startPos: Int, count: Int) {
         let addr = Int(bitPattern: base)
         DispatchQueue.concurrentPerform(iterations: count) { t in

@@ -611,9 +611,14 @@ public final class QWLSASidecar: @unchecked Sendable {
                 throw QWLSASidecarError.tensorMissing("layers.\(layer).self_attn.k_proj.weight")
             }
             let entry = try pack.entry(kProjName)
-            let kProjFull = entry.rawOff != nil
-                ? try pack.rawBf16(kProjName)
-                : try pack.dequantQ4g(kProjName)
+            let kProjFull: [Float]
+            if entry.rawOff != nil {
+                kProjFull = try pack.rawBf16(kProjName)
+            } else if entry.hq4Off != nil {
+                kProjFull = try pack.dequantQ4g(kProjName)
+            } else {
+                kProjFull = try pack.dequantHQ8(kProjName)
+            }
             let kNormCandidates = [
                 "model.language_model.layers.\(layer).self_attn.k_norm.weight",
                 "model.layers.\(layer).self_attn.k_norm.weight",

@@ -160,7 +160,8 @@ extension QWGemm {
         if weight.isIncumbentContainer {
             name = "qwg_gemv_q4g_f32_v4"
         } else {
-            guard let aqName = QWGemmAQ.f32V4KernelName(bits: weight.bits, group: weight.groupSize) else {
+            guard let aqName = QWGemmAQ.f32V4KernelName(bits: weight.bits, group: weight.groupSize,
+                                                        isSHVQ: weight.isSHVQ) else {
                 throw QWGemmError.badWeights("no affine-quantised f32 v4 kernel for \(weight.bits)-bit group \(weight.groupSize)")
             }
             name = aqName
@@ -191,7 +192,8 @@ extension QWGemm {
             if weight.isIncumbentContainer {
                 name = "qwg_gemv_q4g_f32_v4_am2"
             } else {
-                guard let aqName = QWGemmAQ.f32V4Argmax2KernelName(bits: weight.bits, group: weight.groupSize) else {
+                guard let aqName = QWGemmAQ.f32V4Argmax2KernelName(bits: weight.bits, group: weight.groupSize,
+                                                                   isSHVQ: weight.isSHVQ) else {
                     throw QWGemmError.badWeights("no affine-quantised f32 v4_am2 kernel for \(weight.bits)-bit group \(weight.groupSize)")
                 }
                 name = aqName
@@ -208,7 +210,8 @@ extension QWGemm {
         if weight.isIncumbentContainer {
             name = "qwg_gemv_q4g_f32_v4_am"
         } else {
-            guard let aqName = QWGemmAQ.f32V4ArgmaxKernelName(bits: weight.bits, group: weight.groupSize) else {
+            guard let aqName = QWGemmAQ.f32V4ArgmaxKernelName(bits: weight.bits, group: weight.groupSize,
+                                                              isSHVQ: weight.isSHVQ) else {
                 throw QWGemmError.badWeights("no affine-quantised f32 v4_am kernel for \(weight.bits)-bit group \(weight.groupSize)")
             }
             name = aqName
@@ -277,16 +280,27 @@ extension QWGemm {
                                  threadsPerThreadgroup: MTLSize(width: 1024, height: 1, depth: 1))
     }
 
-    /// HQ4 rot-domain GEMM, f32 activations, weight-stationary: 64 token rows x 32 output rows per threadgroup.
+    /// HQ4/SHVQ4 f32 GEMM: Apple10 HQ8-G32 and SHVQ4-G32/G64 use 32-token tiles at 32 rows, or 33--63 rows when K >= 2N, for epi 0--3.
     /// epi: 0 none, 1 silu(y / scale), 2 sigmoid, 3 silu(y / scale) + H_32.
     public static func encodeHQ4F32BM(_ enc: any MTLComputeCommandEncoder, hal: QWHal, weight: QWWeightView,
                                       x: QWTensorValue, y: QWTensorValue, rows: Int,
                                       epi: UInt32 = 0, scale: Float = 1) throws {
+        let smallRows = rows == 32 || (rows > 32 && rows < 64 && weight.k / 2 >= weight.n)
+        let smallAQ8 = smallRows && epi <= 3 && !weight.isIncumbentContainer &&
+            !weight.isSHVQ && weight.bits == 8 && weight.groupSize == 32 && hal.caps.familyApple10
+        let smallSHVQ4 = smallRows && epi <= 3 && !weight.isIncumbentContainer &&
+            weight.isSHVQ && weight.bits == 4 && (weight.groupSize == 32 || weight.groupSize == 64) && hal.caps.familyApple10
+        let smallTile = smallAQ8 || smallSHVQ4
         let name: String
-        if weight.isIncumbentContainer {
+        if smallAQ8 {
+            name = "qwg_gemm_aq8_g32_f32_bm32"
+        } else if smallSHVQ4 {
+            name = "qwg_gemm_shvq4_g\(weight.groupSize)_f32_bm32"
+        } else if weight.isIncumbentContainer {
             name = "qwg_gemm_q4g_f32_bm"
         } else {
-            guard let aqName = QWGemmAQ.f32BMKernelName(bits: weight.bits, group: weight.groupSize) else {
+            guard let aqName = QWGemmAQ.f32BMKernelName(bits: weight.bits, group: weight.groupSize,
+                                                        isSHVQ: weight.isSHVQ) else {
                 throw QWGemmError.badWeights("no affine-quantised f32 bm kernel for \(weight.bits)-bit group \(weight.groupSize)")
             }
             name = aqName
@@ -295,8 +309,9 @@ extension QWGemm {
         enc.bindTensors(weight.blocks, x, y, startIndex: 0)
         enc.setUInt32s(rows, weight.n, weight.k, Int(epi), startIndex: 3)
         enc.setPod(scale, index: 7)
-        enc.dispatchThreadgroups(MTLSize(width: (weight.n + 31) / 32, height: (rows + 63) / 64, depth: 1),
-                                 threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
+        let tileRows = smallTile ? 32 : 64
+        enc.dispatchThreadgroups(MTLSize(width: (weight.n + 31) / 32, height: (rows + tileRows - 1) / tileRows, depth: 1),
+                                 threadsPerThreadgroup: MTLSize(width: smallTile ? 128 : 256, height: 1, depth: 1))
     }
 
     /// Embedding gather from a raw-bf16 table: out[c*hidden + d] = bf16(table[token*hidden + d])
@@ -321,7 +336,8 @@ extension QWGemm {
         if weight.isIncumbentContainer {
             name = "qwg_gemm_q4g_nax_f32"
         } else {
-            guard let aqName = QWGemmAQ.naxF32KernelName(bits: weight.bits, group: weight.groupSize) else {
+            guard let aqName = QWGemmAQ.naxF32KernelName(bits: weight.bits, group: weight.groupSize,
+                                                         isSHVQ: weight.isSHVQ) else {
                 throw QWGemmError.badWeights("no affine-quantised nax f32 kernel for \(weight.bits)-bit group \(weight.groupSize)")
             }
             name = aqName

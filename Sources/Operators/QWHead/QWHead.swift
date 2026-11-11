@@ -29,16 +29,16 @@ public enum QWHeadError: Error, CustomStringConvertible {
 public struct QWHeadWeight: Sendable {
     public let view: QWWeightView
     public init?(blocks: QWTensorValue, n: Int, k: Int, bits: Int = 4, groupSize: Int = 32,
-                 isRotated: Bool, isIncumbentContainer: Bool? = nil) {
+                 isRotated: Bool, isIncumbentContainer: Bool? = nil, isSHVQ: Bool = false) {
         guard let v = QWWeightView(blocks: blocks, n: n, k: k, bits: bits,
                                    groupSize: groupSize, isRotated: isRotated,
-                                   isIncumbentContainer: isIncumbentContainer) else { return nil }
+                                   isIncumbentContainer: isIncumbentContainer, isSHVQ: isSHVQ) else { return nil }
         self.view = v
     }
     public init?(nibbles: QWTensorValue, scales: QWTensorValue? = nil, mins: QWTensorValue? = nil,
-                 n: Int, k: Int, isRotated: Bool, isIncumbentContainer: Bool? = nil) {
+                 n: Int, k: Int, isRotated: Bool, isIncumbentContainer: Bool? = nil, isSHVQ: Bool = false) {
         self.init(blocks: nibbles, n: n, k: k, isRotated: isRotated,
-                  isIncumbentContainer: isIncumbentContainer)
+                  isIncumbentContainer: isIncumbentContainer, isSHVQ: isSHVQ)
     }
 }
 
@@ -159,7 +159,7 @@ public final class QWHead {
               y.shape.dtype == .f32, y.shape.elementCount >= m * view.n else {
             throw QWHeadError.badShape("batched HQ4_G32 head x/y shape-dtype mismatch")
         }
-        if !view.isIncumbentContainer && !(view.bits == 4 && view.groupSize == 32) {
+        if !view.isIncumbentContainer && (view.isSHVQ || !(view.bits == 4 && view.groupSize == 32)) {
             var r0 = 0
             while r0 < m {
                 let chunk = min(4, m - r0)
@@ -171,7 +171,7 @@ public final class QWHead {
                                            shape: QWTensorShape([chunk, view.n], .f32))
                 try QWGemmAQ.encode(enc, hal: hal, blocks: view.blocks, x: xSlice, y: ySlice,
                                     n: view.n, k: view.k, bits: view.bits, group: view.groupSize,
-                                    rows: chunk)
+                                    rows: chunk, isSHVQ: view.isSHVQ)
                 r0 += chunk
             }
             return
@@ -214,7 +214,8 @@ public final class QWHead {
         let view = weight.view
         if !view.isIncumbentContainer {
             try QWGemmAQ.encode(enc, hal: hal, blocks: view.blocks, x: x, y: y,
-                                n: view.n, k: view.k, bits: view.bits, group: view.groupSize)
+                                n: view.n, k: view.k, bits: view.bits, group: view.groupSize,
+                                isSHVQ: view.isSHVQ)
             return
         }
         let plan = QWGemm.plan(QWGemmShape(m: 1, n: view.n, k: view.k),
@@ -235,7 +236,8 @@ public final class QWHead {
         }
         if !w.view.isIncumbentContainer {
             try QWGemmAQ.encode(enc, hal: hal, blocks: w.view.blocks, x: x, y: y,
-                                n: N, k: K, bits: w.view.bits, group: w.view.groupSize)
+                                n: N, k: K, bits: w.view.bits, group: w.view.groupSize,
+                                isSHVQ: w.view.isSHVQ)
             return
         }
         let S = splits
@@ -346,7 +348,8 @@ public final class QWHead {
             enc.setComputePipelineState(psoGemvArgmax)
         } else {
             guard let name = QWGemmAQ.headArgmaxKernelName(bits: w.view.bits,
-                                                           group: w.view.groupSize) else {
+                                                           group: w.view.groupSize,
+                                                           isSHVQ: w.view.isSHVQ) else {
                 throw QWHeadError.badShape("no affine-quantised head kernel for "
                                            + "\(w.view.bits)-bit group \(w.view.groupSize)")
             }

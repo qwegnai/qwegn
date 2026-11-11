@@ -1,5 +1,6 @@
 import XCTest
 import Foundation
+import Metal
 import QWCore
 import QWHAL
 import QWAlloc
@@ -135,12 +136,23 @@ final class FNMetalMoESpanMapTests: XCTestCase {
         let gate = try alloc(tokens, .f32)
         arena.copyIn(gate, from: Data(count: tokens * 4))
 
+        let tilePlan = QWGemm.MoETilePlan(experts: experts, pairs: pairs, gateUpRows: guRows, downRows: hidden)
         let expOff = try alloc(experts + 1, .i32), sortedPair = try alloc(pairs, .i32)
         let sortedTok = try alloc(pairs, .i32), invPerm = try alloc(pairs, .i32)
-        let tileE = try alloc(pairs, .i32), tileR = try alloc(pairs, .i32), tileCount = try alloc(1, .i32)
+        let tileE = try alloc(pairs, .i32), tileR = try alloc(pairs, .i32)
+        let tileCount = try alloc(tilePlan.scratchInts, .i32)
         let gu16 = try alloc(pairs * guRows, .f16), dnHi = try alloc(pairs * inter, .f16)
         let dnAcc16 = try alloc(pairs * hidden, .f16)
 
+        func stepRot(_ f: (any MTLCommandBuffer, inout any MTLComputeCommandEncoder) throws -> Void) throws {
+            guard let pair = Self.hal.begin() else { throw XCTSkip("no command buffer") }
+            let cb = pair.0
+            var enc = pair.1
+            try f(cb, &enc)
+            Self.hal.end(cb, enc)
+            cb.waitUntilCompleted()
+            XCTAssertNil(cb.error, "step failed: \(String(describing: cb.error))")
+        }
         func coldBanks() throws -> (QWWeightView, QWWeightView, QWTensorValue, QWTensorValue) {
             let gu = try alloc(coldE * guSlabBytes / 2, .f16)
             let dn = try alloc(coldE * dnSlabBytes / 2, .f16)
@@ -159,12 +171,13 @@ final class FNMetalMoESpanMapTests: XCTestCase {
         func group(_ enc: any MTLComputeCommandEncoder, _ idsT: QWTensorValue) throws {
             try QWGemm.encodeMoEGroupPairsF32(enc, hal: Self.hal, ids: idsT, expertOff: expOff, sortedPairIdx: sortedPair,
                                               sortedTok: sortedTok, experts: experts, totalPairs: pairs, routes: routes,
-                                              invPerm: invPerm, tileE: tileE, tileR: tileR, tileCount: tileCount)
+                                              invPerm: invPerm, tileE: tileE, tileR: tileR, tileCount: tileCount,
+                                              tilePlan: tilePlan)
         }
         func gateUp(_ enc: any MTLComputeCommandEncoder, _ cold: QWWeightView, _ f: QWGemm.MoETileFilter) throws {
             try QWGemm.encodeMoEGateUpNax(enc, hal: Self.hal, xe: x16, bank: resGUView, expertOff: expOff, tileE: tileE,
                                           tileR: tileR, tileCount: tileCount, gu16: gu16, rowsPerExpert: guRows,
-                                          pairs: pairs, sortedTok: sortedTok, coldBank: cold, tileFilter: f)
+                                          tilePlan: tilePlan, sortedTok: sortedTok, coldBank: cold, tileFilter: f)
         }
         func silu(_ enc: any MTLComputeCommandEncoder) throws {
             try QWGemm.encodeSiluMulSplitF16(enc, hal: Self.hal, gu: gu16, outHi: dnHi, outLo: dnHi,
@@ -173,7 +186,7 @@ final class FNMetalMoESpanMapTests: XCTestCase {
         func down(_ enc: any MTLComputeCommandEncoder, _ cold: QWWeightView, _ f: QWGemm.MoETileFilter) throws {
             try QWGemm.encodeMoENaxSplitF32(enc, hal: Self.hal, xHi: dnHi, xLo: dnHi, bank: resDnView, expertOff: expOff,
                                             tileE: tileE, tileR: tileR, tileCount: tileCount, y32: dnAcc16,
-                                            rowsPerExpert: hidden, pairs: pairs, coldBank: cold, tileFilter: f)
+                                            rowsPerExpert: hidden, tilePlan: tilePlan, coldBank: cold, tileFilter: f)
         }
         func reduce(_ enc: any MTLComputeCommandEncoder, _ out: QWTensorValue) throws {
             try QWGemm.encodeMoEDownReduceCombineF32(enc, hal: Self.hal, dnAcc: dnAcc16, invPerm: invPerm, weights: wts,
@@ -203,8 +216,10 @@ final class FNMetalMoESpanMapTests: XCTestCase {
         let (coldGUA, coldDnA, guA, dnA) = try coldBanks()
         stage(stagedA, gu: guA, dn: dnA)
         let outA = try alloc(tokens * hidden, .f32)
-        try step { enc in
-            try group(enc, idsAT); try gateUp(enc, coldGUA, .all); try silu(enc); try down(enc, coldDnA, .all)
+        try stepRot { cb, enc in
+            try group(enc, idsAT)
+            try Self.hal.rotateEncoder(cb, &enc)
+            try gateUp(enc, coldGUA, .all); try silu(enc); try down(enc, coldDnA, .all)
             try reduce(enc, outA)
         }
 
@@ -215,13 +230,17 @@ final class FNMetalMoESpanMapTests: XCTestCase {
         let mapped = try alloc(pairs, .i32)
         let mapBuf = try XCTUnwrap(Self.hal.device.makeBuffer(bytes: slotMap, length: 4 * experts, options: .storageModeShared))
         let (coldGUB, coldDnB, guB, dnB) = try coldBanks()
-        guard let (routeCB, routeEnc) = Self.hal.begin(), let (resCB, resEnc) = Self.hal.begin() else {
+        guard let (routeCB, routeEnc) = Self.hal.begin(), let resPair = Self.hal.begin() else {
             throw XCTSkip("no command buffer")
         }
+        let resCB = resPair.0
+        var resEnc = resPair.1
         try QWGemm.encodeMoESpanIds(routeEnc, hal: Self.hal, ids: rawIds, slotMap: mapBuf, out: mapped, count: pairs,
                                     experts: experts, residentExperts: residentE)
         Self.hal.end(routeCB, routeEnc)
-        try group(resEnc, mapped); try gateUp(resEnc, coldGUB, .residentOnly); try silu(resEnc)
+        try group(resEnc, mapped)
+        try Self.hal.rotateEncoder(resCB, &resEnc)
+        try gateUp(resEnc, coldGUB, .residentOnly); try silu(resEnc)
         try down(resEnc, coldDnB, .residentOnly)
         Self.hal.end(resCB, resEnc)
         routeCB.waitUntilCompleted()
@@ -251,8 +270,10 @@ final class FNMetalMoESpanMapTests: XCTestCase {
         // Negative control: the cold experts must contribute, or the comparison above proves nothing.
         let (coldGUZ, coldDnZ, _, _) = try coldBanks()
         let outZ = try alloc(tokens * hidden, .f32)
-        try step { enc in
-            try group(enc, idsAT); try gateUp(enc, coldGUZ, .all); try silu(enc); try down(enc, coldDnZ, .all)
+        try stepRot { cb, enc in
+            try group(enc, idsAT)
+            try Self.hal.rotateEncoder(cb, &enc)
+            try gateUp(enc, coldGUZ, .all); try silu(enc); try down(enc, coldDnZ, .all)
             try reduce(enc, outZ)
         }
         let z = read(outZ)

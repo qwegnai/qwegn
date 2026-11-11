@@ -248,10 +248,12 @@ public enum FNGPULoader {
             if let pack = loader.pack {
                 let qkv = try span(pack, gp + "in_proj_qkv.weight"), z = try span(pack, gp + "in_proj_z.weight")
                 let out = try span(pack, gp + "out_proj.weight")
-                if qkv.off + qkv.bytes == z.off && qkv.bits == z.bits && qkv.group == z.group && qkv.isIncumbent == z.isIncumbent {
+                if qkv.off + qkv.bytes == z.off && qkv.bits == z.bits && qkv.group == z.group
+                    && qkv.isIncumbent == z.isIncumbent && qkv.isSHVQ == z.isSHVQ {
                     let combined = try bankFrom(arena, pack,
                                                 Span(off: qkv.off, bytes: qkv.bytes + z.bytes, rows: convDim + valDim, cols: hidden,
-                                                     bits: qkv.bits, group: qkv.group, isIncumbent: qkv.isIncumbent),
+                                                     bits: qkv.bits, group: qkv.group, isIncumbent: qkv.isIncumbent,
+                                                     isSHVQ: qkv.isSHVQ),
                                                 n: convDim + valDim, k: hidden)
                     let qkvBytes = convDim * combined.rowBytes, zBytes = valDim * combined.rowBytes
                     qkvView = combined.subview(blocks: combined.blocks.slice(byteOffset: 0, count: qkvBytes / 2, dtype: .f16), n: convDim, k: hidden)!

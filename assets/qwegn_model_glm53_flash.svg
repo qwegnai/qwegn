@@ -38,51 +38,51 @@
     <rect x="0.0" y="0.0" width="277" height="28" rx="14.0" fill="#361620" stroke="#e11d48" stroke-width="1.2"/>
 <circle cx="15.0" cy="14.0" r="4.5" fill="#fb7185"/>
 <text x="27.0" y="18.6" class="sans" font-size="13" font-weight="700" fill="#fda4af" letter-spacing="0.3">QWEGN ENGINE · MODEL PROFILE</text>
-    <rect x="289.0" y="0.0" width="426" height="28" rx="14.0" fill="#064e3b" stroke="#10b981" stroke-width="1.2"/>
-<text x="502.0" y="18.6" text-anchor="middle" class="sans" font-size="13" font-weight="700" fill="#6ee7b7" letter-spacing="0.3">321B TOTAL (18B ACTIVE) · 134 GiB PACK ON 128 GB MAC</text>
-    <text x="0" y="64" fill="#f8fafc" class="title" font-size="30">GLM-5.3-Flash (HQ4_G32 + HQ3_G64) on Qwegn</text>
+    <rect x="289.0" y="0.0" width="452" height="28" rx="14.0" fill="#064e3b" stroke="#10b981" stroke-width="1.2"/>
+<text x="515.0" y="18.6" text-anchor="middle" class="sans" font-size="13" font-weight="700" fill="#6ee7b7" letter-spacing="0.3">321B TOTAL (18B ACTIVE) · 100.6 GiB RESIDENT ON 128 GB</text>
+    <text x="0" y="64" fill="#f8fafc" class="title" font-size="29">GLM-5.3-Flash (SHVQ4_G32 + SHVQ2/3_G64) on Qwegn</text>
     <text x="0" y="92" fill="#cbd5e1" class="subtitle" font-size="14.5">45-Layer Hybrid MoE (3 Dense + 42 MoE × 288 Experts · 34 KDA + 11 NoPE MLA)</text>
-    <text x="0" y="114" fill="#cbd5e1" class="subtitle" font-size="14.5">4-Stream Sinkhorn-20 mHC · NextN MTP · Cold-Expert NVMe Streaming · Up to 1M Ctx</text>
+    <text x="0" y="114" fill="#cbd5e1" class="subtitle" font-size="14.5">4-Stream Sinkhorn-20 mHC · NextN MTP · 100% UMA Resident SHVQ (-25.1% Bytes) · 0 Swap</text>
   </g>
 
   <g transform="translate(28, 160)">
     <rect width="288" height="268" rx="16" fill="url(#cardGrad)" stroke="#3a2346" stroke-width="1.4"/>
     <rect x="18.0" y="16.0" width="164" height="26" rx="13.0" fill="#0c2a3a" stroke="#0ea5e9" stroke-width="1.2"/>
-<text x="100.0" y="33.5" text-anchor="middle" class="sans" font-size="13" font-weight="700" fill="#7dd3fc" letter-spacing="0.2">PREFILL &amp; SPAN MAP</text>
-    <text x="18" y="90" fill="url(#cyanGrad)" class="title mono" font-size="44">968</text>
+<text x="100.0" y="33.5" text-anchor="middle" class="sans" font-size="13" font-weight="700" fill="#7dd3fc" letter-spacing="0.2">PREFILL &amp; PREFIX</text>
+    <text x="18" y="90" fill="url(#cyanGrad)" class="title mono" font-size="44">618</text>
     <text x="109.9" y="88" fill="#38bdf8" class="title mono" font-size="17">tok/s</text>
-    <text x="18" y="120" fill="#f8fafc" class="title" font-size="15.5">858–968 tok/s @16K</text>
+    <text x="18" y="120" fill="#f8fafc" class="title" font-size="15.5">618 @4.2K · 968 @16K HQ</text>
     <text x="18" y="144" fill="#cbd5e1" class="subtitle" font-size="13.5">Apple10 NAX sparse MLA (4–5×)</text>
-    <text x="18" y="165" fill="#cbd5e1" class="subtitle" font-size="13.5">+ GPU span map (0.40s → 0.10s gap)</text>
+    <text x="18" y="165" fill="#cbd5e1" class="subtitle" font-size="13.5">18 ms warm prefix cache (147.1×)</text>
     <line x1="18" y1="196" x2="270" y2="196" stroke="#1e293b" stroke-width="1"/>
-    <text x="18" y="218" fill="#38bdf8" class="mono" font-size="13">absorb_q MMA 6.8× (maxResident)</text>
+    <text x="18" y="218" fill="#38bdf8" class="mono" font-size="13">absorb_q MMA 6.8× · bm32 tiles</text>
     <text x="18" y="238" fill="#38bdf8" class="mono" font-size="13">kda_gates MMA 3.5×</text>
   </g>
   <g transform="translate(336, 160)">
     <rect width="288" height="268" rx="16" fill="url(#cardGrad)" stroke="#3a2346" stroke-width="1.4"/>
-    <rect x="18.0" y="16.0" width="176" height="26" rx="13.0" fill="#281638" stroke="#a855f7" stroke-width="1.2"/>
-<text x="106.0" y="33.5" text-anchor="middle" class="sans" font-size="13" font-weight="700" fill="#e9d5ff" letter-spacing="0.2">NVME + GPU OVERLAP</text>
-    <text x="18" y="90" fill="url(#purpleGrad)" class="title mono" font-size="44">31.6</text>
+    <rect x="18.0" y="16.0" width="184" height="26" rx="13.0" fill="#281638" stroke="#a855f7" stroke-width="1.2"/>
+<text x="110.0" y="33.5" text-anchor="middle" class="sans" font-size="13" font-weight="700" fill="#e9d5ff" letter-spacing="0.2">100% UMA RESIDENT</text>
+    <text x="18" y="90" fill="url(#purpleGrad)" class="title mono" font-size="44">36.2</text>
     <text x="137.2" y="88" fill="#c084fc" class="title mono" font-size="17">tok/s</text>
-    <text x="18" y="120" fill="#f8fafc" class="title" font-size="15.5">Serial · 44.8 tok/s GPU Proxy</text>
-    <text x="18" y="144" fill="#cbd5e1" class="subtitle" font-size="13.5">242/288 experts resident per layer</text>
-    <text x="18" y="165" fill="#cbd5e1" class="subtitle" font-size="13.5">Dynamic LRU: 60 → 15.5 misses/tok</text>
+    <text x="18" y="120" fill="#f8fafc" class="title" font-size="15.5">Median · 38.4 tok/s Peak</text>
+    <text x="18" y="144" fill="#cbd5e1" class="subtitle" font-size="13.5">288/288 experts resident per layer</text>
+    <text x="18" y="165" fill="#cbd5e1" class="subtitle" font-size="13.5">0 SSD misses/tok · 99.6 GiB RSS</text>
     <line x1="18" y1="196" x2="270" y2="196" stroke="#1e293b" stroke-width="1"/>
-    <text x="18" y="218" fill="#c084fc" class="mono" font-size="13">Event-pipelined SSD pread</text>
-    <text x="18" y="238" fill="#c084fc" class="mono" font-size="13">+ self-tuned delay command buf</text>
+    <text x="18" y="218" fill="#c084fc" class="mono" font-size="13">ShvqTgLut&lt;2|3&gt; SRAM codebook</text>
+    <text x="18" y="238" fill="#c084fc" class="mono" font-size="13">+ indirect MoE NAX dispatch</text>
   </g>
   <g transform="translate(644, 160)">
     <rect width="288" height="268" rx="16" fill="url(#cardGrad)" stroke="#3a2346" stroke-width="1.4"/>
     <rect x="18.0" y="16.0" width="195" height="26" rx="13.0" fill="#33230c" stroke="#f59e0b" stroke-width="1.2"/>
-<text x="115.5" y="33.5" text-anchor="middle" class="sans" font-size="13" font-weight="700" fill="#fde68a" letter-spacing="0.2">NEXTN MTP &amp; MOE-SPEC</text>
-    <text x="18" y="90" fill="url(#amberGrad)" class="title mono" font-size="44">34.8</text>
+<text x="115.5" y="33.5" text-anchor="middle" class="sans" font-size="13" font-weight="700" fill="#fde68a" letter-spacing="0.2">NEXTN SPECULATIVE</text>
+    <text x="18" y="90" fill="url(#amberGrad)" class="title mono" font-size="44">44.0</text>
     <text x="137.2" y="88" fill="#fbbf24" class="title mono" font-size="17">tok/s</text>
-    <text x="18" y="120" fill="#f8fafc" class="title" font-size="15.5">MTP-1 · 31.1 tok/s MoE-Spec</text>
-    <text x="18" y="144" fill="#cbd5e1" class="subtitle" font-size="13.5">75–90% draft accept · Layer 45 NextN</text>
-    <text x="18" y="165" fill="#cbd5e1" class="subtitle" font-size="13.5">Deduplicated MoE + HQ3_G64 verify</text>
+    <text x="18" y="120" fill="#f8fafc" class="title" font-size="15.5">1.67× Spec · 3.69 tok/step</text>
+    <text x="18" y="144" fill="#cbd5e1" class="subtitle" font-size="13.5">Layer 45 NextN + prompt lookup</text>
+    <text x="18" y="165" fill="#cbd5e1" class="subtitle" font-size="13.5">5/5 deterministic verify SHA-256</text>
     <line x1="18" y1="196" x2="270" y2="196" stroke="#1e293b" stroke-width="1"/>
-    <text x="18" y="218" fill="#fbbf24" class="mono" font-size="13">1.35× GPU verify cost</text>
-    <text x="18" y="238" fill="#fbbf24" class="mono" font-size="13">100% bit-exact greedy parity</text>
+    <text x="18" y="218" fill="#fbbf24" class="mono" font-size="13">2/2 AIME25 · 3/3 JSON schema</text>
+    <text x="18" y="238" fill="#fbbf24" class="mono" font-size="13">34.8 tok/s on 134 GiB NVMe pack</text>
   </g>
   <g transform="translate(28, 446)">
     <rect width="904" height="214" rx="16" fill="url(#cardGrad)" stroke="#3a2346" stroke-width="1.4"/>
@@ -97,18 +97,18 @@
   </g>
   <g transform="translate(28, 676)">
     <rect width="904" height="214" rx="16" fill="url(#cardGrad)" stroke="#3a2346" stroke-width="1.4"/>
-    <rect x="22.0" y="16.0" width="396" height="26" rx="13.0" fill="#361620" stroke="#e11d48" stroke-width="1.2"/>
-<text x="220.0" y="33.5" text-anchor="middle" class="sans" font-size="13" font-weight="700" fill="#fda4af" letter-spacing="0.3">MIXED HQ4_G32 + HQ3_G64 · 100% CONFORMANCE</text>
-    <text x="22" y="68" fill="#f8fafc" class="title" font-size="18">3.59 bpp (134.37 GiB) · Fits 128 GB Unified Memory</text>
-    <text x="22" y="98" fill="#34d399" class="mono" font-size="14.5">• Routed Experts: 311.65B @ HQ3_G64 (3.50 bpw, 126.98 GiB, 94.5% bytes)</text>
-    <text x="22" y="122" fill="#34d399" class="mono" font-size="14.5">• Dense &amp; MLA   : 8.30B @ HQ4_G32_M5 (5.00 bpw, 4.83 GiB) + 2.55 GiB BF16</text>
-    <text x="22" y="146" fill="#c084fc" class="mono" font-size="14.5">• Ephemeral I/O : 24-blk Vision (1.12 GiB) &amp; cold experts streamed on demand</text>
-    <text x="22" y="170" fill="#fbbf24" class="mono" font-size="14.5">• Quality Gates : 100% Conformance · 100% Capability · 100% Fidelity (4/4)</text>
-    <text x="22" y="194" fill="#38bdf8" class="mono" font-size="14.5">• Memory Policy : maxResident (+12% decode, +7% prefill vs safe) · 0 allocs</text>
+    <rect x="22.0" y="16.0" width="424" height="26" rx="13.0" fill="#361620" stroke="#e11d48" stroke-width="1.2"/>
+<text x="234.0" y="33.5" text-anchor="middle" class="sans" font-size="13" font-weight="700" fill="#fda4af" letter-spacing="0.3">SPHERICAL SHVQ4_G32 + SHVQ2/3_G64 · 100% RESIDENT</text>
+    <text x="22" y="68" fill="#f8fafc" class="title" font-size="18">2.69 bpp (100.63 GiB, -33.74 GiB vs HQ4+HQ3) · 100% in 128 GB UMA</text>
+    <text x="22" y="98" fill="#34d399" class="mono" font-size="14.5">• Expert Gate/Up: 207.77B @ SHVQ2_G64 (2.25 bpw, 64.66% params, SRAM LUT)</text>
+    <text x="22" y="122" fill="#34d399" class="mono" font-size="14.5">• Expert Down   : 103.88B @ SHVQ3_G64 (3.25 bpw, 32.33% params, SRAM LUT)</text>
+    <text x="22" y="146" fill="#c084fc" class="mono" font-size="14.5">• Dense &amp; MLA   : 8.30B @ SHVQ4_G32 (4.50 bpw, 2.58%) + 1.37B BF16 (0.43%)</text>
+    <text x="22" y="170" fill="#fbbf24" class="mono" font-size="14.5">• Quality Gates : 2/2 AIME25 (0 wrong on core) · 3/3 JSON schema &amp; marker</text>
+    <text x="22" y="194" fill="#38bdf8" class="mono" font-size="14.5">• UMA Admission : QWResidencyAdmission auto-clamps warm cache · 0 allocs</text>
   </g>
 
   <g transform="translate(28, 904)">
     <rect x="0" y="0" width="904" height="38" rx="9" fill="#0d1322" stroke="#1e293b" stroke-width="1.2"/>
-    <text x="452" y="24" text-anchor="middle" fill="#cbd5e1" class="mono" font-size="13">GLM-5.3-Flash · Apple M5 Max (Mac17,6 · 128 GB RAM · 40C GPU · 585 GB/s DRAM · 13 GB/s NVMe)</text>
+    <text x="452" y="24" text-anchor="middle" fill="#cbd5e1" class="mono" font-size="13">Qwegn v0.14.0 · GLM-5.3-Flash-shvq4g32-shvq2g64-shvq3g64 · Apple M5 Max (128 GB · 585 GB/s)</text>
   </g>
 </svg>

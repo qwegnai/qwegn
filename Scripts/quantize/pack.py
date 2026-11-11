@@ -53,6 +53,13 @@ from pack_ngram import (
     scan_ple_and_router,
     write_ple_location_file,
 )
+from shvq import (
+    any_block_bytes,
+    dequant_any_blocks,
+    format_any_quant_spec,
+    parse_any_quant_spec,
+    quant_any_blocks,
+)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "oracle"))
 from emit_pack_identity import MODEL_ID, geo_v2  # noqa: E402
@@ -234,24 +241,29 @@ def pack_file(tensors, out_path: Path, provenance: dict,
                     f"{name}: unexpected rank-{len(shape)} shape {shape} — "
                     f"refuse to guess a layout")
             if kind is False or kind is None:
-                bits, req_group, is_m5 = (4, 32, True)
+                bits, req_group, is_m5, is_shvq = (4, 32, True, False)
             elif isinstance(kind, str):
-                bits, req_group, is_m5 = parse_quant_spec(kind)
-            else:
+                bits, req_group, is_m5, is_shvq = parse_any_quant_spec(kind)
+            elif len(kind) == 3:
                 bits, req_group, is_m5 = kind
+                is_shvq = False
+            else:
+                bits, req_group, is_m5, is_shvq = kind
             if is_expert:
                 E3, N3, K3 = shape
-                blocks, eff_group = quant_hq_blocks(
-                    w.reshape(E3 * N3, K3), bits=bits, group=req_group, is_m5=is_m5)
-                use_m5 = (bits == 4 and eff_group == 32 and is_m5)
-                bbytes = BLOCK_BYTES if use_m5 else hq_block_bytes(bits, eff_group)
+                blocks, eff_group = quant_any_blocks(
+                    w.reshape(E3 * N3, K3), bits=bits, group=req_group, is_m5=is_m5, is_shvq=is_shvq)
+                use_m5 = (not is_shvq) and (bits == 4 and eff_group == 32 and is_m5)
+                bbytes = any_block_bytes(bits, eff_group, is_m5=use_m5, is_shvq=is_shvq)
                 e_hq4 = N3 * (K3 // eff_group) * bbytes
                 pad_q4g()
                 entry = {
                     "shape": shape, "experts": E3,
                     "e_hq4": e_hq4, "hq4_off": off,
                 }
-                if not use_m5:
+                if is_shvq:
+                    entry["hq"] = {"bits": bits, "group": eff_group, "vq": "shvq1"}
+                elif not use_m5:
                     entry["hq"] = {"bits": bits, "group": eff_group}
                 f.write(memoryview(np.ascontiguousarray(blocks)))
                 pad_q4g()
@@ -262,17 +274,19 @@ def pack_file(tensors, out_path: Path, provenance: dict,
                     blocks_e = blocks.reshape(E3, N3, K3 // eff_group, bbytes)
                     for i in range(E3):
                         np.save(sd / f"{name}.e{i}.dq4.npy",
-                                dequant_hq_blocks(
-                                    blocks_e[i], bits=bits, group=eff_group, is_m5=use_m5
+                                dequant_any_blocks(
+                                    blocks_e[i], bits=bits, group=eff_group, is_m5=use_m5, is_shvq=is_shvq
                                 ).astype(np.float32))
                 continue
             N, K = w.shape
             assert K % GROUP == 0, f"{name}: K={K} not group-aligned"
-            blocks, eff_group = quant_hq_blocks(w, bits=bits, group=req_group, is_m5=is_m5)
-            use_m5 = (bits == 4 and eff_group == 32 and is_m5)
+            blocks, eff_group = quant_any_blocks(w, bits=bits, group=req_group, is_m5=is_m5, is_shvq=is_shvq)
+            use_m5 = (not is_shvq) and (bits == 4 and eff_group == 32 and is_m5)
             pad_q4g()
             entry = {"shape": [N, K], "hq4_off": off}
-            if not use_m5:
+            if is_shvq:
+                entry["hq"] = {"bits": bits, "group": eff_group, "vq": "shvq1"}
+            elif not use_m5:
                 entry["hq"] = {"bits": bits, "group": eff_group}
             f.write(memoryview(np.ascontiguousarray(blocks)))
             pad_q4g()
@@ -300,8 +314,8 @@ def pack_file(tensors, out_path: Path, provenance: dict,
                         rn_, kn_ = ref["shape"]
                         hq_meta = ref.get("hq")
                         if hq_meta:
-                            length = rn_ * (kn_ // hq_meta["group"]) * hq_block_bytes(
-                                hq_meta["bits"], hq_meta["group"])
+                            length = rn_ * (kn_ // hq_meta["group"]) * any_block_bytes(
+                                hq_meta["bits"], hq_meta["group"], is_shvq=(hq_meta.get("vq") == "shvq1"))
                         else:
                             length = rn_ * (kn_ // GROUP) * BLOCK_BYTES
                         entry = {"shape": ref["shape"], "hq4_off": off}
@@ -381,13 +395,13 @@ def quantize_model(source: Path, destination: Path,
     from safetensors.torch import load_file
     from verify import audit_pack, read_header
 
-    dense_spec = parse_quant_spec(dense_quant or quant, default_group=group_size)
-    expert_spec = parse_quant_spec(expert_quant or quant, default_group=group_size)
-    expert_down_spec = parse_quant_spec(
+    dense_spec = parse_any_quant_spec(dense_quant or quant, default_group=group_size)
+    expert_spec = parse_any_quant_spec(expert_quant or quant, default_group=group_size)
+    expert_down_spec = parse_any_quant_spec(
         expert_down_quant or expert_quant or quant, default_group=group_size)
-    dense_fmt = format_quant_spec(*dense_spec)
-    expert_fmt = format_quant_spec(*expert_spec)
-    expert_down_fmt = format_quant_spec(*expert_down_spec)
+    dense_fmt = format_any_quant_spec(*dense_spec)
+    expert_fmt = format_any_quant_spec(*expert_spec)
+    expert_down_fmt = format_any_quant_spec(*expert_down_spec)
     if hybrid_hq8_from is not None:
         quant_recorded = "hq8_hq4_hybrid_v1"
     elif dense_fmt == expert_fmt == expert_down_fmt:
@@ -479,7 +493,8 @@ def quantize_model(source: Path, destination: Path,
         reuse_qwp = Path(reuse_ngram_from) / "model.qwp"
         if reuse_qwp.is_file():
             reuse_prov = read_header(reuse_qwp)[0].get("provenance", {})
-            if (reuse_prov.get("source") == str(source)
+            if ((reuse_prov.get("source") == str(source)
+                 or (reuse_prov.get("source_revision") and reuse_prov.get("source_revision") == source.name))
                     and reuse_prov.get("sha256_source")):
                 sha256_source_hex = reuse_prov["sha256_source"]
                 print(f"reusing sha256_source from {reuse_qwp}", flush=True)
@@ -562,6 +577,13 @@ def quantize_model(source: Path, destination: Path,
                 else:
                     stats[dense_fmt] = stats.get(dense_fmt, 0) + 1
                     yield name, arr, dense_spec
+            del tensors
+            try:
+                import torch as _tmps
+                if _tmps.backends.mps.is_available():
+                    _tmps.mps.empty_cache()
+            except Exception:
+                pass
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=f".{destination.name}-",
@@ -670,9 +692,9 @@ if __name__ == "__main__":
                     help="override quantization format for MoE expert stacks (e.g. hq2_g128)")
     ap.add_argument("--expert-down-quant", default=None,
                     help="override quantization format for MoE expert down_proj (e.g. hq3_g128)")
-    ap.add_argument("--ngram-quant", default="bf16", choices=["bf16", "q8", "q4"],
+    ap.add_argument("--ngram-quant", default="bf16", choices=["bf16", "q8", "q4", "vq2", "vq2_g32"],
                     help="the QNGRAM row format of the PLE n-gram table: bf16 "
-                         "(v1, the source bytes verbatim), q8 or q4 (v2)")
+                         "(v1), q8 or q4 (v2), or vq2_g32 (v3 e-means)")
     ap.add_argument("--l1-hot", type=int, default=0,
                     help="the QNGRAM header's l1Hot field: how many hot rows "
                          "the writer recorded")

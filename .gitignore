@@ -53,6 +53,7 @@ models/
 
 # Public user manual (tracked; everything else under docs/ stays private,
 # including docs/open-source-standards.md — the owner's internal release standard).
+!/docs/settings-reference.md
 !/docs/lsa.md
 !/docs/lsa-codebase-memory-whitepaper.md
 !/docs/benchmarks.md

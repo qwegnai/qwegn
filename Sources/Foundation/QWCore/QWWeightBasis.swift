@@ -40,12 +40,14 @@ public enum QWWeightFormat: Sendable, Hashable {
     /// inflation re-quantises the dequantised weights, and the quantiser
     /// rotates them.
     case hq4G32
-    /// Rotated `Block_AQ{b}_G{G}` container in a `.qwp` pack when the dense or
+    /// Rotated `Block_AQ{b}_G{G}` or `SHVQ{b}_G{G}` container in a `.qwp` pack when the dense or
     /// expert `(bits, group)` pair or container layout differs from the incumbent `(4, 32)`.
     case hqBlock(bits: Int, groupSize: Int, expertBits: Int? = nil, expertGroupSize: Int? = nil,
                  denseIncumbent: Bool = false, expertIncumbent: Bool = false,
                  expertDownBits: Int? = nil, expertDownGroupSize: Int? = nil,
-                 expertDownIncumbent: Bool? = nil)
+                 expertDownIncumbent: Bool? = nil,
+                 denseSHVQ: Bool = false, expertSHVQ: Bool = false,
+                 expertDownSHVQ: Bool? = nil)
     /// The size-preserving affine container: `Block_AQ{b}_G{G}`, the
     /// checkpoint's own bytes, with the weights in the STANDARD basis. An
     /// MLX affine checkpoint's planes carry no rotation, so a checkpoint
@@ -66,7 +68,7 @@ public enum QWWeightFormat: Sendable, Hashable {
     public var bits: Int {
         switch self {
         case .hq4G32: return 4
-        case .hqBlock(let bits, _, _, _, _, _, _, _, _): return bits
+        case .hqBlock(let bits, _, _, _, _, _, _, _, _, _, _, _): return bits
         case .nativeAffine(let bits, _): return bits
         }
     }
@@ -75,7 +77,7 @@ public enum QWWeightFormat: Sendable, Hashable {
     public var groupSize: Int {
         switch self {
         case .hq4G32: return 32
-        case .hqBlock(_, let groupSize, _, _, _, _, _, _, _): return groupSize
+        case .hqBlock(_, let groupSize, _, _, _, _, _, _, _, _, _, _): return groupSize
         case .nativeAffine(_, let groupSize): return groupSize
         }
     }
@@ -83,7 +85,7 @@ public enum QWWeightFormat: Sendable, Hashable {
     /// The bits one routed expert gate/up weight takes.
     public var expertBits: Int {
         switch self {
-        case .hqBlock(let bits, _, let eb, _, _, _, _, _, _): return eb ?? bits
+        case .hqBlock(let bits, _, let eb, _, _, _, _, _, _, _, _, _): return eb ?? bits
         default: return bits
         }
     }
@@ -91,7 +93,7 @@ public enum QWWeightFormat: Sendable, Hashable {
     /// The group one scale and one bias cover in routed expert gate/up weights.
     public var expertGroupSize: Int {
         switch self {
-        case .hqBlock(_, let groupSize, _, let eg, _, _, _, _, _): return eg ?? groupSize
+        case .hqBlock(_, let groupSize, _, let eg, _, _, _, _, _, _, _, _): return eg ?? groupSize
         default: return groupSize
         }
     }
@@ -99,7 +101,7 @@ public enum QWWeightFormat: Sendable, Hashable {
     /// The bits one routed expert down_proj weight takes.
     public var expertDownBits: Int {
         switch self {
-        case .hqBlock(let bits, _, let eb, _, _, _, let edb, _, _): return edb ?? eb ?? bits
+        case .hqBlock(let bits, _, let eb, _, _, _, let edb, _, _, _, _, _): return edb ?? eb ?? bits
         default: return expertBits
         }
     }
@@ -107,7 +109,7 @@ public enum QWWeightFormat: Sendable, Hashable {
     /// The group one scale and one bias cover in routed expert down_proj weights.
     public var expertDownGroupSize: Int {
         switch self {
-        case .hqBlock(_, let groupSize, _, let eg, _, _, _, let edg, _): return edg ?? eg ?? groupSize
+        case .hqBlock(_, let groupSize, _, let eg, _, _, _, let edg, _, _, _, _): return edg ?? eg ?? groupSize
         default: return expertGroupSize
         }
     }
@@ -116,7 +118,7 @@ public enum QWWeightFormat: Sendable, Hashable {
     public var denseIsIncumbentContainer: Bool {
         switch self {
         case .hq4G32: return true
-        case .hqBlock(_, _, _, _, let denseIncumbent, _, _, _, _): return denseIncumbent
+        case .hqBlock(_, _, _, _, let denseIncumbent, _, _, _, _, _, _, _): return denseIncumbent
         case .nativeAffine: return false
         }
     }
@@ -125,7 +127,7 @@ public enum QWWeightFormat: Sendable, Hashable {
     public var expertIsIncumbentContainer: Bool {
         switch self {
         case .hq4G32: return true
-        case .hqBlock(_, _, _, _, _, let expertIncumbent, _, _, _): return expertIncumbent
+        case .hqBlock(_, _, _, _, _, let expertIncumbent, _, _, _, _, _, _): return expertIncumbent
         case .nativeAffine: return false
         }
     }
@@ -134,9 +136,27 @@ public enum QWWeightFormat: Sendable, Hashable {
     public var expertDownIsIncumbentContainer: Bool {
         switch self {
         case .hq4G32: return true
-        case .hqBlock(_, _, _, _, _, let expertIncumbent, _, _, let edInc): return edInc ?? expertIncumbent
+        case .hqBlock(_, _, _, _, _, let expertIncumbent, _, _, let edInc, _, _, _): return edInc ?? expertIncumbent
         case .nativeAffine: return false
         }
+    }
+
+    /// Whether dense 2D weights use `SHVQ{2,3,4}_G{32,64,128,256}` blocks.
+    public var denseIsSHVQ: Bool {
+        if case .hqBlock(_, _, _, _, _, _, _, _, _, let ds, _, _) = self { return ds }
+        return false
+    }
+
+    /// Whether routed expert gate/up weights use `SHVQ{2,3,4}_G{32,64,128,256}` blocks.
+    public var expertIsSHVQ: Bool {
+        if case .hqBlock(_, _, _, _, _, _, _, _, _, _, let es, _) = self { return es }
+        return false
+    }
+
+    /// Whether routed expert down_proj weights use `SHVQ{2,3,4}_G{32,64,128,256}` blocks.
+    public var expertDownIsSHVQ: Bool {
+        if case .hqBlock(_, _, _, _, _, _, _, _, _, _, let es, let eds) = self { return eds ?? es }
+        return false
     }
 
     /// Whether this container is the size-preserving family.
@@ -145,7 +165,7 @@ public enum QWWeightFormat: Sendable, Hashable {
         return false
     }
 
-    /// Whether dense 2D weights use `qwg_*_aq{b}_g{G}_*` kernels instead of `qwg_*_q4g_*`.
+    /// Whether dense 2D weights use `qwg_*_aq*` / `qwg_*_shvq*` kernels instead of `qwg_*_q4g_*`.
     public var usesDenseAQKernels: Bool {
         !denseIsIncumbentContainer
     }
@@ -154,16 +174,21 @@ public enum QWWeightFormat: Sendable, Hashable {
     public var name: String {
         switch self {
         case .hq4G32: return "HQ4_G32"
-        case .hqBlock(let bits, let groupSize, let eb, let eg, _, _, let edb, let edg, _):
+        case .hqBlock(let bits, let groupSize, let eb, let eg, _, _, let edb, let edg, _,
+                      let ds, let es, let eds):
             let expB = eb ?? bits, expG = eg ?? groupSize
             let downB = edb ?? expB, downG = edg ?? expG
-            if downB != expB || downG != expG {
-                return "HQ\(bits)_G\(groupSize)+ExpHQ\(expB)_G\(expG)/HQ\(downB)_G\(downG)"
+            let downS = eds ?? es
+            let dTag = ds ? "SHVQ\(bits)_G\(groupSize)" : "HQ\(bits)_G\(groupSize)"
+            let eTag = es ? "SHVQ\(expB)_G\(expG)" : "HQ\(expB)_G\(expG)"
+            let dnTag = downS ? "SHVQ\(downB)_G\(downG)" : "HQ\(downB)_G\(downG)"
+            if dnTag != eTag {
+                return "\(dTag)+Exp\(eTag)/\(dnTag)"
             }
-            if expB != bits || expG != groupSize {
-                return "HQ\(bits)_G\(groupSize)+ExpHQ\(expB)_G\(expG)"
+            if eTag != dTag {
+                return "\(dTag)+Exp\(eTag)"
             }
-            return "HQ\(bits)_G\(groupSize)"
+            return dTag
         case .nativeAffine(let bits, let groupSize): return "AQ\(bits)_G\(groupSize)"
         }
     }
@@ -173,7 +198,10 @@ public enum QWWeightFormat: Sendable, Hashable {
         switch self {
         case .hq4G32:
             return (k / 32) * 20
-        case .hqBlock(let bits, let groupSize, _, _, _, _, _, _, _), .nativeAffine(let bits, let groupSize):
+        case .hqBlock(let bits, let groupSize, _, _, _, _, _, _, _, let ds, _, _):
+            let hdr = ds ? 2 : 4
+            return (k / groupSize) * (groupSize * bits / 8 + hdr)
+        case .nativeAffine(let bits, let groupSize):
             return (k / groupSize) * (groupSize * bits / 8 + 4)
         }
     }
@@ -182,13 +210,15 @@ public enum QWWeightFormat: Sendable, Hashable {
     public func expertRowBytes(k: Int) -> Int {
         let b = expertBits
         let g = expertGroupSize
-        return (k / g) * (g * b / 8 + 4)
+        let hdr = expertIsSHVQ ? 2 : 4
+        return (k / g) * (g * b / 8 + hdr)
     }
 
     /// The bytes one row of `k` routed expert down_proj weights takes in this container.
     public func expertDownRowBytes(k: Int) -> Int {
         let b = expertDownBits
         let g = expertDownGroupSize
-        return (k / g) * (g * b / 8 + 4)
+        let hdr = expertDownIsSHVQ ? 2 : 4
+        return (k / g) * (g * b / 8 + hdr)
     }
 }

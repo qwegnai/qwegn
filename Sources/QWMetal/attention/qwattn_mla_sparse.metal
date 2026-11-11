@@ -6,6 +6,7 @@
 #include <metal_stdlib>
 #include <metal_simdgroup>
 #include "../include/qw_dequant_multi.metalh"
+#include "../include/qw_dequant_shvq.metalh"
 #include "../include/qw_geometry_constants.metalh"
 #include "../include/qw_mla_params.metalh"
 using namespace metal;
@@ -47,7 +48,7 @@ METAL_FUNC float qwg_mla_read_weight(device const char* blocks,
                                      uint bits,
                                      uint group,
                                      uint isIncumbent) {
-    if (isIncumbent != 0u) {
+    if (isIncumbent == 1u) {
         device const Block_HQ4_G32* b = ((device const Block_HQ4_G32*)blocks)
             + (size_t)row * (K >> 5u) + (col >> 5u);
         const uint idx = col & 31u;
@@ -58,6 +59,11 @@ METAL_FUNC float qwg_mla_read_weight(device const char* blocks,
         const ushort nib = (hw >> ((sub >> 1u) * 4u)) & 0x000Fu;
         const half fp = as_type<half>(ushort(nib | 0x6400u));
         return float(fma(fp, b->scale, b->bias));
+    } else if (isIncumbent == 2u) {
+        const uint nGroups = K / group;
+        const uint bytesPerGroup = (group * bits) / 8u + 2u;
+        device const char* gp = blocks + ((size_t)row * nGroups + (col / group)) * bytesPerGroup;
+        return qwg_shvq_read_elem(gp, bits, col % group);
     } else {
         const uint nGroups = K / group;
         const uint bytesPerGroup = (group * bits) / 8u + 4u;
@@ -96,7 +102,7 @@ kernel void qwg_mla_absorb_q(
 
     float acc[8] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
     const uint headRowBase = h * (p.nopeDim + p.vHeadDim);
-    if (p.isIncumbent != 0u && p.kvLoraRank == 512u && p.nopeDim == 256u) {
+    if (p.isIncumbent == 1u && p.kvLoraRank == 512u && p.nopeDim == 256u) {
         const uint blk = c >> 5u;
         const uint idx = c & 31u;
         const uint wIdx = idx >> 3u;
@@ -509,7 +515,7 @@ kernel void qwg_mla_proj_uv(
     if (r >= p.vHeadDim) return;
 
     const uint outStride = p.qHeads * p.vHeadDim;
-    if (p.isIncumbent != 0u && p.kvLoraRank == 512u && p.vHeadDim == 256u) {
+    if (p.isIncumbent == 1u && p.kvLoraRank == 512u && p.vHeadDim == 256u) {
         const uint sg = r >> 5u;
         const uint subRow = lane >> 4u;
         const uint blkIdx = lane & 15u;

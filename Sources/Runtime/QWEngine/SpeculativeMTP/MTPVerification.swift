@@ -39,6 +39,10 @@ extension QWEngineDriver {
                     geometry: geometry, verifyRows: rows, explicitBudget: explicit)
             }
         }
+        if tuning.moeSpecBudget > 0 {
+            return QWMTPAdaptiveDepth.moeSpecDraftExpertBudget(
+                geometry: geometry, verifyRows: rows, explicitBudget: tuning.moeSpecBudget)
+        }
         return 0
     }
 
@@ -267,7 +271,7 @@ extension QWEngineDriver {
                 self.activeCB = currentCB
                 self.activeEnc = enc
                 try QWMoEChain.encode(
-                    enc: enc, hal: hal, moe: moe, s: moeScratch,
+                    enc: &enc, hal: hal, moe: moe, s: moeScratch,
                     x16: prefixRows(normalized, rows: activeRows, cols: h, dt: .f16),
                     dn32: prefixRows(moeDn32, rows: activeRows, cols: h, dt: .f32),
                     dn16: prefixRows(mtpBatchedMLP.downRows, rows: activeRows, cols: h, dt: .f16),

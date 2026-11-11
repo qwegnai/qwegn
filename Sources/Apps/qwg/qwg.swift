@@ -65,7 +65,7 @@ struct Plan: ParsableCommand {
         }
         print(try QWCli.admissionPlanReport(
             configURL: URL(fileURLWithPath: config),
-            contextTokens: contextTokens, kvMode: knobs.kvMode ?? "f16",
+            contextTokens: contextTokens, kvMode: knobs.kvMode ?? "q4",
             scratchMB: scratchMB, capGB: capGB))
     }
 }
@@ -99,17 +99,25 @@ struct Quantize: ParsableCommand {
         abstract: "Shell out to the proven Python packer (Scripts/quantize/pack.py) — Swift never reimplements the quantizer.")
     @Argument(help: "Source model directory (holds *.safetensors).") var model: String
     @Option(name: .customLong("out"), help: "New output model directory (model.qwp and assets/).") var outPack: String
-    @Option(name: .customLong("quant"), help: "Quantization format: q4g only. Required BF16 planes remain unchanged.") var quant: String = "q4g"
+    @Option(name: .customLong("quant"), help: "Quantization format (q4g, hq{2,3,4,6,8}_g{32,64,128,256}, shvq{2,3,4}_g{32,64,128,256}).") var quant: String = "q4g"
+    @Option(name: .customLong("dense-quant"), help: "Optional override for 2D dense/shared tensors.") var denseQuant: String?
+    @Option(name: .customLong("expert-quant"), help: "Optional override for routed MoE gate/up tensors.") var expertQuant: String?
+    @Option(name: .customLong("expert-down-quant"), help: "Optional override for routed MoE down_proj tensors.") var expertDownQuant: String?
+    @Option(name: .customLong("ngram-quant"), help: "Optional PLE ngram table format (q8_g32 or vq2_g32).") var ngramQuant: String?
 
     func run() throws {
-        guard quant == "q4g" else {
-            throw ValidationError("Only q4g output is supported; Q8 mirrors are not used by the engine.")
+        let lowerQ = quant.lowercased()
+        guard lowerQ == "q4g" || lowerQ == "hq4_g32_m5"
+            || lowerQ.hasPrefix("hq") || lowerQ.hasPrefix("shvq") else {
+            throw ValidationError("Unsupported quant '\(quant)'; Q8 mirrors are not used by the engine.")
         }
         let repoRoot = Self.repoRoot()
         let py = try QWCli.ensurePythonEnvironment(supportRoot: repoRoot)
         let scripts = repoRoot.appendingPathComponent("Scripts")
         let plan = QWCli.quantizePlan(repo: model, outPack: URL(fileURLWithPath: outPack),
-                                      quant: quant, scriptsDir: scripts, pythonURL: py)
+                                      quant: quant, scriptsDir: scripts, pythonURL: py,
+                                      denseQuant: denseQuant, expertQuant: expertQuant,
+                                      expertDownQuant: expertDownQuant, ngramQuant: ngramQuant)
         print("provenance: \(plan.provenanceLine)")
         let p = Process()
         p.executableURL = URL(fileURLWithPath: plan.command[0])
@@ -167,10 +175,10 @@ struct Run: ParsableCommand {
     @Flag(name: .customLong("repl"), help: "Start interactive multi-turn REPL mode.") var repl: Bool = false
     @Flag(name: .customLong("color"), inversion: .prefixedNo, help: "Colorize thinking output and prompts (default: auto).") var color: Bool?
     @Flag(name: .customLong("verbose"), help: "Print a performance statistics block after the output (load, prefill/decode tok/s, TTFT, p50/p95 step latency, arena).") var verbose: Bool = false
-    @Option(name: .customLong("dflash-window"), help: "DFlash 2 / DSpine window B in 2...16 (sets --mtp-backend dflash2 and --mtp-drafts B-1).") var dflashWindow: Int? = nil
-    @Option(name: .customLong("resident-experts-per-layer"), help: "Number of resident hot experts per MoE layer in unified memory; cold experts stream on-demand from SSD.") var residentExpertsPerLayer: Int? = nil
+    @Option(name: .customLong("dflash-window"), help: "DFlash 2 / DSpine window B in 2...16 (auto-detects dflash2 vs dspine from drafter pack and sets --mtp-drafts B-1).") var dflashWindow: Int? = nil
     @Option(name: .customLong("repo"), help: "Repository or knowledge directory root containing .qwg/manifest.json to mount as LSA memory.") var repo: String? = nil
     @Flag(name: [.customLong("no-memory-pack"), .customLong("no-memory")], help: "Disable automatic mounting of .qwg/manifest.json memory pack.") var noMemory: Bool = false
+    @Flag(name: .customLong("no-profile"), help: "Bypass ~/.qwg/settings.json and per-model knob profiles (hermetic benchmark mode).") var noProfile: Bool = false
 
     /// A knob the user set that this command cannot honour is refused here,
     /// where the error can name the flag, instead of being ignored later.
@@ -207,9 +215,9 @@ struct Run: ParsableCommand {
             replCmd.stream = stream
             replCmd.color = color
             replCmd.dflashWindow = dflashWindow
-            replCmd.residentExpertsPerLayer = residentExpertsPerLayer
             replCmd.repo = repo
             replCmd.noMemory = noMemory
+            replCmd.noProfile = noProfile
             // The window already decided the drafts and the backend, so the
             // repl is handed the decision rather than the window. A knob the
             // user did not set stays unset, not a default wearing their clothes.
@@ -250,7 +258,8 @@ struct Run: ParsableCommand {
             settings: settings,
             validateDefaultContextImmediately: false,
             repoPath: repo,
-            disableMemoryPack: noMemory || (repo == nil)
+            disableMemoryPack: noMemory || (repo == nil),
+            ignoreProfile: noProfile
         )
         let runtimeAssets = cliCfg.runtimeAssets
         let defaultContext = cliCfg.defaultContext
@@ -271,6 +280,12 @@ struct Run: ParsableCommand {
                 effectiveUserPrompt += vaultRecall.recallBlock
             }
         }
+        let allowVision = knobs.loadVision ?? true
+        let hasImageInput = image != nil
+        if hasImageInput && !allowVision {
+            FileHandle.standardError.write("qwg run: error: image input provided but vision loading disabled via --no-load-vision\n".data(using: .utf8)!)
+            throw ExitCode(2)
+        }
         let formattedUserPrompt = (image != nil && !effectiveUserPrompt.contains("<|image_pad|>"))
             ? "<|vision_start|><|image_pad|><|vision_end|>" + effectiveUserPrompt
             : effectiveUserPrompt
@@ -288,7 +303,7 @@ struct Run: ParsableCommand {
         let rawPromptIds = try tok.encode(wire)
         var promptIds: [Int]
         let visualSpans: [QWVisualSpan]
-        if let imgPath = image {
+        if let imgPath = image, allowVision {
             let mm = try QWImageDecoder.prepareOneShotMultimodalTurn(
                 promptTokens: rawPromptIds, imagePath: imgPath,
                 modelPath: resolvedPack, hiddenDim: runtimeAssets.descriptor.hidden
@@ -384,7 +399,8 @@ struct Run: ParsableCommand {
             return true
         }
 
-        let configuredChunk = QWPrefillLimits.clampedRows(knobs.prefillChunkSize ?? settings.prefillChunkSize)
+        let effSettings = cliCfg.effectiveSettings
+        let configuredChunk = QWPrefillLimits.clampedRows(knobs.prefillChunkSize ?? effSettings.prefillChunkSize)
         let minChunkRows = cliCfg.memoryPack != nil ? 1024 : 64
         let promptAlignedChunk = max(minChunkRows, ((promptIds.count + 63) / 64) * 64)
         let effectiveChunkSize = knobs.prefillChunkSize != nil
@@ -408,12 +424,11 @@ struct Run: ParsableCommand {
             prefixCacheDirectory: prefixCacheOn ? resolvedCacheDirURL : nil,
             cacheConfig: prefixCacheOn
                 ? QWCacheConfig(warmByteLimit: 4 << 30,
-                                ssdByteLimit: settings.ssdCacheEnabled ? Int(settings.ssdCacheLimitGB * 1024 * 1024 * 1024) : 0,
+                                ssdByteLimit: effSettings.ssdCacheEnabled ? Int(effSettings.ssdCacheLimitGB * 1024 * 1024 * 1024) : 0,
                                 cacheDirectory: resolvedCacheDirURL, wipeOnStart: false)
                 : nil,
             prefillScratchEviction: resolvedEviction,
-            gdnPrefill: gdnPrefill,
-            residentExpertsPerLayer: residentExpertsPerLayer
+            gdnPrefill: gdnPrefill
         )
         do {
             try QWEngineInstanceLock.acquireEngineLock()
@@ -493,9 +508,12 @@ struct Run: ParsableCommand {
         let allocs = report.steadyAllocations.map(String.init) ?? "unavailable"
         FileHandle.standardError.write("(\(ids.count) tok gen, steady allocs \(allocs))\n".data(using: .utf8)!)
         if verbose {
+            let profileState = noProfile ? "bypassed" : (cliCfg.profileApplied ? "applied" : "default")
+            let cfgLine = "[config] profile=\(profileState) kv_mode=\(cliCfg.resolvedKVMode) lsa_mode=\(cliCfg.lsaConfig.mode.rawValue) mtp_drafts=\(cliCfg.effectiveMtpDrafts)"
             Self.printRunVerboseStats(result: result, report: report,
                                       promptTokens: promptIds.count, generatedTokens: ids.count,
-                                      loadSec: loadSec, cacheDir: resolvedCacheDirURL)
+                                      loadSec: loadSec, cacheDir: resolvedCacheDirURL,
+                                      configLog: cfgLine)
         }
     }
 
@@ -553,7 +571,8 @@ struct Run: ParsableCommand {
     /// the engine's own story comes from its report.
     static func printRunVerboseStats(result: QWGenerationResult, report: QWEngineReport,
                                      promptTokens: Int, generatedTokens: Int,
-                                     loadSec: Double, cacheDir: URL) {
+                                     loadSec: Double, cacheDir: URL,
+                                     configLog: String? = nil) {
         let steps = result.stepMs.sorted()
         let stepLatency = QWStatFormat.stepLatency(steps)
         let decodeTokS = QWStatFormat.tokensPerSecond(tokens: max(0, generatedTokens - 1),
@@ -575,10 +594,11 @@ struct Run: ParsableCommand {
             roundLine = "speculative rounds:      \(rounds.count) (mean \(String(format: "%.2f", mean)) emitted tokens/round)\n"
         }
         let allocs = report.steadyAllocations.map { "\($0) (law: 0)" } ?? "unavailable"
+        let cfgLine = configLog.map { "\($0)\n" } ?? ""
         let block = """
         === qwg run statistics ===
         \(report.capacityLog)
-        pack load (weights→GPU): \(String(format: "%.1f", loadSec)) s
+        \(cfgLine)pack load (weights→GPU): \(String(format: "%.1f", loadSec)) s
         resident memory (RAM):   \(String(format: "%.2f", Double(footprint) / 1_073_741_824)) GiB
         arena reserved:          \(String(format: "%.2f", Double(report.arenaBytes) / 1_073_741_824)) GiB
         weights used/reserved:   \(String(format: "%.2f", Double(report.weightUsedBytes) / 1_073_741_824)) / \(String(format: "%.2f", Double(report.weightReservedBytes) / 1_073_741_824)) GiB

@@ -12,129 +12,127 @@ import QWHAL
 import QWAlloc
 import QWQuant
 
-/// The size-preserving affine-quantised GEMV family (Law L8).
+/// The size-preserving affine-quantised and SHVQ GEMV family (Law L8).
 public enum QWGemmAQ {
-    /// The kernel for a `(bits, group)` pair. The name is built from the
-    /// pair, the way the other runtime-selected families do it.
-    public static func kernelName(bits: Int, group: Int, f32Activations: Bool = false) -> String? {
-        guard QWAQBlock.isBlockSupported(bits: bits, group: group) else { return nil }
-        let base = "qwg_gemv_aq\(bits)_g\(group)_v4"
+    private static func isSupported(bits: Int, group: Int, isSHVQ: Bool) -> Bool {
+        isSHVQ ? QWSHVQBlock.isSupported(bits: bits, group: group) : QWAQBlock.isBlockSupported(bits: bits, group: group)
+    }
+
+    /// The kernel for a `(bits, group)` pair.
+    public static func kernelName(bits: Int, group: Int, f32Activations: Bool = false, isSHVQ: Bool = false) -> String? {
+        guard isSupported(bits: bits, group: group, isSHVQ: isSHVQ) else { return nil }
+        let base = isSHVQ ? "qwg_gemv_shvq\(bits)_g\(group)_v4" : "qwg_gemv_aq\(bits)_g\(group)_v4"
         return f32Activations ? base + "_f32" : base
     }
 
-    /// The decode kernel for a `(bits, group)` pair: the dense path's
-    /// geometry — four output rows per simdgroup, f16 in and f16 out.
-    public static func decodeKernelName(bits: Int, group: Int) -> String? {
-        guard QWAQBlock.isBlockSupported(bits: bits, group: group) else { return nil }
-        return "qwg_gemv_aq\(bits)_g\(group)_dx_h16_t4"
+    /// The decode kernel for a `(bits, group)` pair: four output rows per simdgroup, f16 in and f16 out.
+    public static func decodeKernelName(bits: Int, group: Int, isSHVQ: Bool = false) -> String? {
+        guard isSupported(bits: bits, group: group, isSHVQ: isSHVQ) else { return nil }
+        return isSHVQ ? "qwg_gemv_shvq\(bits)_g\(group)_dx_h16_t4" : "qwg_gemv_aq\(bits)_g\(group)_dx_h16_t4"
     }
 
     /// The threads one decode threadgroup runs, and the rows it owns.
     public static let decodeThreadsPerThreadgroup = 128
     public static let decodeRowsPerThreadgroup = 16
 
-    /// The MLP gate/up kernel for a `(bits, group)` pair: the incumbent's
-    /// `qwg_gemv_q4g_silu_pair_dx_h16` geometry over the family's blocks.
-    public static func siluPairKernelName(bits: Int, group: Int) -> String? {
-        guard QWAQBlock.isBlockSupported(bits: bits, group: group) else { return nil }
-        return "qwg_gemv_aq\(bits)_g\(group)_silu_pair_dx_h16"
+    /// The MLP gate/up kernel for a `(bits, group)` pair.
+    public static func siluPairKernelName(bits: Int, group: Int, isSHVQ: Bool = false) -> String? {
+        guard isSupported(bits: bits, group: group, isSHVQ: isSHVQ) else { return nil }
+        return isSHVQ ? "qwg_gemv_shvq\(bits)_g\(group)_silu_pair_dx_h16" : "qwg_gemv_aq\(bits)_g\(group)_silu_pair_dx_h16"
     }
 
-    /// The head's fused GEMV-and-argmax kernel for a `(bits, group)` pair:
-    /// the incumbent's `qwg_head_gemv_q4g_argmax` epilogue over the family's
-    /// blocks.
-    public static func headArgmaxKernelName(bits: Int, group: Int) -> String? {
-        guard QWAQBlock.isBlockSupported(bits: bits, group: group) else { return nil }
-        return "qwg_head_gemv_aq\(bits)_g\(group)_argmax"
+    /// The head's fused GEMV-and-argmax kernel for a `(bits, group)` pair.
+    public static func headArgmaxKernelName(bits: Int, group: Int, isSHVQ: Bool = false) -> String? {
+        guard isSupported(bits: bits, group: group, isSHVQ: isSHVQ) else { return nil }
+        return isSHVQ ? "qwg_head_gemv_shvq\(bits)_g\(group)_argmax" : "qwg_head_gemv_aq\(bits)_g\(group)_argmax"
     }
 
-    /// The prefill GEMM for a `(bits, group)` pair: the incumbent's
-    /// `qwg_gemm_q4g_h16` geometry over the family's blocks.
-    public static func gemmKernelName(bits: Int, group: Int, bm128: Bool = false) -> String? {
-        guard QWAQBlock.isBlockSupported(bits: bits, group: group) else { return nil }
-        return "qwg_gemm_aq\(bits)_g\(group)_h16" + (bm128 ? "_bm128" : "")
+    /// The prefill GEMM for a `(bits, group)` pair.
+    public static func gemmKernelName(bits: Int, group: Int, bm128: Bool = false, isSHVQ: Bool = false) -> String? {
+        guard isSupported(bits: bits, group: group, isSHVQ: isSHVQ) else { return nil }
+        let base = isSHVQ ? "qwg_gemm_shvq\(bits)_g\(group)_h16" : "qwg_gemm_aq\(bits)_g\(group)_h16"
+        return base + (bm128 ? "_bm128" : "")
     }
 
-    /// The GDN in-projection decode kernel for a `(bits, group)` pair: the
-    /// incumbent's `qwg_gemv_q4g_dx_h16_gdn_inproj_t4` over the family's blocks.
-    public static func gdnInProjDecodeKernelName(bits: Int, group: Int) -> String? {
-        guard QWAQBlock.isBlockSupported(bits: bits, group: group) else { return nil }
-        return "qwg_gemv_aq\(bits)_g\(group)_dx_h16_gdn_inproj_t4"
+    /// The GDN in-projection decode kernel for a `(bits, group)` pair.
+    public static func gdnInProjDecodeKernelName(bits: Int, group: Int, isSHVQ: Bool = false) -> String? {
+        guard isSupported(bits: bits, group: group, isSHVQ: isSHVQ) else { return nil }
+        return isSHVQ ? "qwg_gemv_shvq\(bits)_g\(group)_dx_h16_gdn_inproj_t4" : "qwg_gemv_aq\(bits)_g\(group)_dx_h16_gdn_inproj_t4"
     }
 
-    /// The GDN in-projection prefill kernel for a `(bits, group)` pair: the
-    /// incumbent's `qwg_gemm_q4g_h16_gdn_inproj` over the family's blocks.
-    public static func gdnInProjPrefillKernelName(bits: Int, group: Int) -> String? {
-        guard QWAQBlock.isBlockSupported(bits: bits, group: group) else { return nil }
-        return "qwg_gemm_aq\(bits)_g\(group)_h16_gdn_inproj"
+    /// The GDN in-projection prefill kernel for a `(bits, group)` pair.
+    public static func gdnInProjPrefillKernelName(bits: Int, group: Int, isSHVQ: Bool = false) -> String? {
+        guard isSupported(bits: bits, group: group, isSHVQ: isSHVQ) else { return nil }
+        return isSHVQ ? "qwg_gemm_shvq\(bits)_g\(group)_h16_gdn_inproj" : "qwg_gemm_aq\(bits)_g\(group)_h16_gdn_inproj"
     }
 
-    public static func f32BMKernelName(bits: Int, group: Int) -> String? {
-        guard QWAQBlock.isBlockSupported(bits: bits, group: group) else { return nil }
-        return "qwg_gemm_aq\(bits)_g\(group)_f32_bm"
+    public static func f32BMKernelName(bits: Int, group: Int, isSHVQ: Bool = false) -> String? {
+        guard isSupported(bits: bits, group: group, isSHVQ: isSHVQ) else { return nil }
+        return isSHVQ ? "qwg_gemm_shvq\(bits)_g\(group)_f32_bm" : "qwg_gemm_aq\(bits)_g\(group)_f32_bm"
     }
 
-    public static func f32V4KernelName(bits: Int, group: Int) -> String? {
-        guard QWAQBlock.isBlockSupported(bits: bits, group: group) else { return nil }
-        return "qwg_gemv_aq\(bits)_g\(group)_f32_v4"
+    public static func f32V4KernelName(bits: Int, group: Int, isSHVQ: Bool = false) -> String? {
+        guard isSupported(bits: bits, group: group, isSHVQ: isSHVQ) else { return nil }
+        return isSHVQ ? "qwg_gemv_shvq\(bits)_g\(group)_f32_v4" : "qwg_gemv_aq\(bits)_g\(group)_f32_v4"
     }
 
-    public static func f32V4ArgmaxKernelName(bits: Int, group: Int) -> String? {
-        guard QWAQBlock.isBlockSupported(bits: bits, group: group) else { return nil }
-        return "qwg_gemv_aq\(bits)_g\(group)_f32_v4_am"
+    public static func f32V4ArgmaxKernelName(bits: Int, group: Int, isSHVQ: Bool = false) -> String? {
+        guard isSupported(bits: bits, group: group, isSHVQ: isSHVQ) else { return nil }
+        return isSHVQ ? "qwg_gemv_shvq\(bits)_g\(group)_f32_v4_am" : "qwg_gemv_aq\(bits)_g\(group)_f32_v4_am"
     }
 
-    public static func f32V4Argmax2KernelName(bits: Int, group: Int) -> String? {
-        guard QWAQBlock.isBlockSupported(bits: bits, group: group) else { return nil }
-        return "qwg_gemv_aq\(bits)_g\(group)_f32_v4_am2"
+    public static func f32V4Argmax2KernelName(bits: Int, group: Int, isSHVQ: Bool = false) -> String? {
+        guard isSupported(bits: bits, group: group, isSHVQ: isSHVQ) else { return nil }
+        return isSHVQ ? "qwg_gemv_shvq\(bits)_g\(group)_f32_v4_am2" : "qwg_gemv_aq\(bits)_g\(group)_f32_v4_am2"
     }
 
-    public static func naxF32KernelName(bits: Int, group: Int) -> String? {
-        guard QWAQBlock.isBlockSupported(bits: bits, group: group) else { return nil }
-        return "qwg_gemm_aq\(bits)_g\(group)_nax_f32"
+    public static func naxF32KernelName(bits: Int, group: Int, isSHVQ: Bool = false) -> String? {
+        guard isSupported(bits: bits, group: group, isSHVQ: isSHVQ) else { return nil }
+        return isSHVQ ? "qwg_gemm_shvq\(bits)_g\(group)_nax_f32" : "qwg_gemm_aq\(bits)_g\(group)_nax_f32"
     }
 
-    public static func moeGateUpF32R1KernelName(bits: Int, group: Int) -> String? {
-        guard QWAQBlock.isBlockSupported(bits: bits, group: group) else { return nil }
-        return "qwg_moe_gateup_aq\(bits)_g\(group)_f32_r1"
+    public static func moeGateUpF32R1KernelName(bits: Int, group: Int, isSHVQ: Bool = false) -> String? {
+        guard isSupported(bits: bits, group: group, isSHVQ: isSHVQ) else { return nil }
+        return isSHVQ ? "qwg_moe_gateup_shvq\(bits)_g\(group)_f32_r1" : "qwg_moe_gateup_aq\(bits)_g\(group)_f32_r1"
     }
 
-    public static func moeDownSharedCombineF32KernelName(bits: Int, group: Int) -> String? {
-        guard QWAQBlock.isBlockSupported(bits: bits, group: group) else { return nil }
-        return "qwg_moe_down_shared_combine_aq\(bits)_g\(group)_f32"
+    public static func moeDownSharedCombineF32KernelName(bits: Int, group: Int, isSHVQ: Bool = false) -> String? {
+        guard isSupported(bits: bits, group: group, isSHVQ: isSHVQ) else { return nil }
+        return isSHVQ ? "qwg_moe_down_shared_combine_shvq\(bits)_g\(group)_f32" : "qwg_moe_down_shared_combine_aq\(bits)_g\(group)_f32"
     }
 
-    public static func moeNaxGemmKernelName(bits: Int, group: Int) -> String? {
-        guard QWAQBlock.isBlockSupported(bits: bits, group: group) else { return nil }
-        return "qwg_moe_nax_gemm_aq\(bits)_g\(group)"
+    public static func moeNaxGemmKernelName(bits: Int, group: Int, isSHVQ: Bool = false) -> String? {
+        guard isSupported(bits: bits, group: group, isSHVQ: isSHVQ) else { return nil }
+        return isSHVQ ? "qwg_moe_nax_gemm_shvq\(bits)_g\(group)" : "qwg_moe_nax_gemm_aq\(bits)_g\(group)"
     }
 
-    public static func moeNaxSplitF32KernelName(bits: Int, group: Int) -> String? {
-        guard QWAQBlock.isBlockSupported(bits: bits, group: group) else { return nil }
-        return "qwg_moe_nax_split_aq\(bits)_g\(group)_f32"
+    public static func moeNaxSplitF32KernelName(bits: Int, group: Int, isSHVQ: Bool = false) -> String? {
+        guard isSupported(bits: bits, group: group, isSHVQ: isSHVQ) else { return nil }
+        return isSHVQ ? "qwg_moe_nax_split_shvq\(bits)_g\(group)_f32" : "qwg_moe_nax_split_aq\(bits)_g\(group)_f32"
     }
 
-    public static func hcUpMixH32F32KernelName(bits: Int, group: Int) -> String? {
-        guard QWAQBlock.isBlockSupported(bits: bits, group: group) else { return nil }
-        return "qwg_hc_up_mix_h32_aq\(bits)_g\(group)_f32"
+    public static func hcUpMixH32F32KernelName(bits: Int, group: Int, isSHVQ: Bool = false) -> String? {
+        guard isSupported(bits: bits, group: group, isSHVQ: isSHVQ) else { return nil }
+        return isSHVQ ? "qwg_hc_up_mix_h32_shvq\(bits)_g\(group)_f32" : "qwg_hc_up_mix_h32_aq\(bits)_g\(group)_f32"
     }
 
-    public static func hcDownInjectF32KernelName(bits: Int, group: Int) -> String? {
-        guard QWAQBlock.isBlockSupported(bits: bits, group: group) else { return nil }
-        return "qwg_hc_down_inject_aq\(bits)_g\(group)_f32"
+    public static func hcDownInjectF32KernelName(bits: Int, group: Int, isSHVQ: Bool = false) -> String? {
+        guard isSupported(bits: bits, group: group, isSHVQ: isSHVQ) else { return nil }
+        return isSHVQ ? "qwg_hc_down_inject_shvq\(bits)_g\(group)_f32" : "qwg_hc_down_inject_aq\(bits)_g\(group)_f32"
     }
 
     /// The decode HC norm(+inject)+rotation+down+inject single-dispatch kernel for a `(bits, group)` down bank.
-    public static func hcNormDownInjectF32KernelName(bits: Int, group: Int) -> String? {
-        guard QWAQBlock.isBlockSupported(bits: bits, group: group) else { return nil }
-        return "qwg_hc_norm_down_inject_aq\(bits)_g\(group)_f32"
+    public static func hcNormDownInjectF32KernelName(bits: Int, group: Int, isSHVQ: Bool = false) -> String? {
+        guard isSupported(bits: bits, group: group, isSHVQ: isSHVQ) else { return nil }
+        return isSHVQ ? "qwg_hc_norm_down_inject_shvq\(bits)_g\(group)_f32" : "qwg_hc_norm_down_inject_aq\(bits)_g\(group)_f32"
     }
 
     /// The bytes one row of an `(n, k)` bank of `(bits, group)` blocks takes.
-    /// The size law lives in `QWAQBlock`; this is the same number under the
-    /// name the GEMV family uses. A pair outside the family has NO row size.
-    public static func rowBytes(bits: Int, group: Int, k: Int) -> Int? {
-        guard let groupBytes = QWAQBlock.bytesIfBlockSupported(bits: bits, group: group),
+    public static func rowBytes(bits: Int, group: Int, k: Int, isSHVQ: Bool = false) -> Int? {
+        let maybeBytes = isSHVQ
+            ? QWSHVQBlock.bytesIfSupported(bits: bits, group: group)
+            : QWAQBlock.bytesIfBlockSupported(bits: bits, group: group)
+        guard let groupBytes = maybeBytes,
               k > 0, k % group == 0 else { return nil }
         return (k / group) * groupBytes
     }
@@ -191,14 +189,14 @@ public enum QWGemmAQ {
                                blocks: QWTensorValue, x: QWTensorValue, y: QWTensorValue,
                                n: Int, k: Int, bits: Int, group: Int,
                                f32Activations: Bool = false,
-                               rows: Int = 1) throws {
-        guard let name = kernelName(bits: bits, group: group, f32Activations: f32Activations) else {
+                               rows: Int = 1, isSHVQ: Bool = false) throws {
+        guard let name = kernelName(bits: bits, group: group, f32Activations: f32Activations, isSHVQ: isSHVQ) else {
             throw QWGemmError.badWeights("no affine-quantised kernel for \(bits)-bit group \(group)")
         }
         guard k % group == 0, n > 0, rows > 0 else {
             throw QWGemmError.badWeights("k must be a multiple of \(group) and n positive")
         }
-        guard let rowBytes = rowBytes(bits: bits, group: group, k: k) else {
+        guard let rowBytes = rowBytes(bits: bits, group: group, k: k, isSHVQ: isSHVQ) else {
             throw QWGemmError.badWeights("no affine-quantised size for \(bits)-bit group \(group)")
         }
         let needed = n * rowBytes
@@ -253,8 +251,9 @@ public enum QWGemmAQ {
     public static func encodeDecodeT4(_ enc: any MTLComputeCommandEncoder, hal: QWHal,
                                       blocks: QWTensorValue, x: QWTensorValue,
                                       y16: QWTensorValue,
-                                      n: Int, k: Int, bits: Int, group: Int) throws {
-        guard let name = decodeKernelName(bits: bits, group: group) else {
+                                      n: Int, k: Int, bits: Int, group: Int,
+                                      isSHVQ: Bool = false) throws {
+        guard let name = decodeKernelName(bits: bits, group: group, isSHVQ: isSHVQ) else {
             throw QWGemmError.badWeights("no affine-quantised decode kernel for \(bits)-bit group \(group)")
         }
         guard k % group == 0, n > 0 else {
@@ -267,7 +266,7 @@ public enum QWGemmAQ {
         guard n < (1 << 30) else {
             throw QWGemmError.badWeights("a bank of \(n) rows does not fit the row-count flags")
         }
-        guard let rowBytes = rowBytes(bits: bits, group: group, k: k) else {
+        guard let rowBytes = rowBytes(bits: bits, group: group, k: k, isSHVQ: isSHVQ) else {
             throw QWGemmError.badWeights("no affine-quantised size for \(bits)-bit group \(group)")
         }
         let needed = n * rowBytes
@@ -309,7 +308,7 @@ public enum QWGemmAQ {
                                          view: QWWeightView, x: QWTensorValue, y: QWTensorValue,
                                          keysHi: QWTensorValue, keysLo: QWTensorValue,
                                          writeLogits: Bool) throws {
-        guard let name = headArgmaxKernelName(bits: view.bits, group: view.groupSize) else {
+        guard let name = headArgmaxKernelName(bits: view.bits, group: view.groupSize, isSHVQ: view.isSHVQ) else {
             throw QWGemmError.badWeights("no affine-quantised head kernel for "
                                          + "\(view.bits)-bit group \(view.groupSize)")
         }

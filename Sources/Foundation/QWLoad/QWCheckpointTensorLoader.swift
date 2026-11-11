@@ -146,12 +146,13 @@ public enum QWCheckpointTensorLoader {
         return st.tensors.keys.contains(where: { $0.hasSuffix(".scales") })
     }
 
-    /// Byte span of a 2-D or stacked HQ tensor inside a `.qwp` pack.
+    /// Byte span of a 2-D or stacked HQ/SHVQ tensor inside a `.qwp` pack.
     public struct PackSpan: Sendable {
         public let off: Int, bytes: Int, rows: Int, cols: Int
-        public let bits: Int, group: Int, isIncumbent: Bool
+        public let bits: Int, group: Int, isIncumbent: Bool, isSHVQ: Bool
 
-        public init(off: Int, bytes: Int, rows: Int, cols: Int, bits: Int, group: Int, isIncumbent: Bool) {
+        public init(off: Int, bytes: Int, rows: Int, cols: Int, bits: Int, group: Int,
+                    isIncumbent: Bool, isSHVQ: Bool = false) {
             self.off = off
             self.bytes = bytes
             self.rows = rows
@@ -159,6 +160,7 @@ public enum QWCheckpointTensorLoader {
             self.bits = bits
             self.group = group
             self.isIncumbent = isIncumbent
+            self.isSHVQ = isSHVQ
         }
     }
 
@@ -170,7 +172,7 @@ public enum QWCheckpointTensorLoader {
         let grp = e.hqGroup, blk = e.hqBlockBytes
         guard cols % grp == 0 else { throw QWCheckpointLoaderError.notHQ4(name) }
         return PackSpan(off: off, bytes: rows * (cols / grp) * blk, rows: rows, cols: cols,
-                        bits: e.hqBits, group: grp, isIncumbent: e.isIncumbentHQ4)
+                        bits: e.hqBits, group: grp, isIncumbent: e.isIncumbentHQ4, isSHVQ: e.isSHVQ)
     }
 
     public static func stackedSpan(_ pack: QWQuant.Pack, _ name: String) throws -> (span: PackSpan, n: Int, k: Int) {
@@ -179,7 +181,7 @@ public enum QWCheckpointTensorLoader {
             throw QWCheckpointLoaderError.notHQ4(name)
         }
         let s = PackSpan(off: off, bytes: count * per, rows: count * e.shape[1], cols: e.shape[2],
-                         bits: e.hqBits, group: e.hqGroup, isIncumbent: e.isIncumbentHQ4)
+                         bits: e.hqBits, group: e.hqGroup, isIncumbent: e.isIncumbentHQ4, isSHVQ: e.isSHVQ)
         return (s, count * e.shape[1], e.shape[2])
     }
 
@@ -191,7 +193,8 @@ public enum QWCheckpointTensorLoader {
         let rot = arena.hal.weightBasis.rotatesActivations
         return QWWeightView(blocks: t, n: n, k: k,
                             bits: s.bits, groupSize: s.group,
-                            isRotated: rot, isIncumbentContainer: rot && s.isIncumbent)
+                            isRotated: rot, isIncumbentContainer: rot && s.isIncumbent,
+                            isSHVQ: rot && s.isSHVQ)
     }
 
     public static func bankFrom(_ arena: QWArena, _ pack: QWQuant.Pack, _ s: PackSpan, n: Int, k: Int) throws -> QWWeightView {
@@ -201,7 +204,10 @@ public enum QWCheckpointTensorLoader {
 
     public static func concatBank(_ arena: QWArena, _ pack: QWQuant.Pack, _ spans: [PackSpan], n: Int, k: Int) throws -> QWWeightView {
         guard let first = spans.first,
-              spans.allSatisfy({ $0.bits == first.bits && $0.group == first.group && $0.isIncumbent == first.isIncumbent })
+              spans.allSatisfy({
+                  $0.bits == first.bits && $0.group == first.group
+                      && $0.isIncumbent == first.isIncumbent && $0.isSHVQ == first.isSHVQ
+              })
         else {
             throw QWCheckpointLoaderError.notHQ4("concatBank mismatched HQ formats")
         }
@@ -216,7 +222,8 @@ public enum QWCheckpointTensorLoader {
         let rot = arena.hal.weightBasis.rotatesActivations
         return QWWeightView(blocks: t, n: n, k: k,
                             bits: first.bits, groupSize: first.group,
-                            isRotated: rot, isIncumbentContainer: rot && first.isIncumbent)!
+                            isRotated: rot, isIncumbentContainer: rot && first.isIncumbent,
+                            isSHVQ: rot && first.isSHVQ)!
     }
 
     public static func hqBank(arena: QWArena, pack: QWQuant.Pack?, st: QWSafeTensorsContainer?,

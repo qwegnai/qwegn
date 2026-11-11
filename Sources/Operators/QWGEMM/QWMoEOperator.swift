@@ -127,7 +127,7 @@ public enum QWMoEOperator {
 
     /// Encodes an all-resident Sparse-MoE pass over `rows` tokens into `out32` (and optional `out16`).
     public static func encodeResident(
-        _ enc0: any MTLComputeCommandEncoder,
+        _ enc: inout any MTLComputeCommandEncoder,
         hal: QWHal,
         weights w: Weights,
         scratch s: Scratch,
@@ -137,9 +137,9 @@ public enum QWMoEOperator {
         rows T: Int,
         supportsGroupedNaxPrefill: Bool = true,
         concurrentBarriers: Bool = false,
+        rotateEncoder: ((inout any MTLComputeCommandEncoder) throws -> Void)? = nil,
         profileStage: ((String) -> (any MTLComputeCommandEncoder)?)? = nil
     ) throws {
-        var enc = enc0
         @inline(__always) func barrier() {
             if concurrentBarriers { enc.memoryBarrier(scope: .buffers) }
         }
@@ -210,21 +210,25 @@ public enum QWMoEOperator {
                                             intermediate: ISh, act16: shAct16)
             }
             barrier()
+            guard let rotateEncoder else {
+                throw QWGemmError.badShape("moe grouped nax requires rotateEncoder for indirect dispatch")
+            }
+            let tilePlan = QWGemm.MoETilePlan(experts: E, pairs: T * K, gateUpRows: 2 * I, downRows: H)
             try QWGemm.encodeMoEGroupPairsF32(enc, hal: hal, ids: s.idx, expertOff: expOff,
                                               sortedPairIdx: sortedPair, sortedTok: sortedTok,
                                               experts: E, totalPairs: T * K, routes: K,
                                               invPerm: invPerm, tileE: tileE, tileR: tileR,
-                                              tileCount: tileCount)
+                                              tileCount: tileCount, tilePlan: tilePlan)
             if concurrentBarriers, let shDown = w.sharedDown, let actSh = s.actSh32, ISh > 0 {
                 let naxY = s.naxY16 ?? naxX16
                 try QWGemm.encodeDenseProjF32(enc, hal: hal, weight: shDown, x: actSh, y: s.shared,
                                               naxX16: naxX16, naxY16: naxY, maxTileWidth: s.maxTileWidth,
                                               rows: T, x16Precast: shAct16)
             }
-            barrier()
+            try rotateEncoder(&enc)
             try QWGemm.encodeMoEGateUpNax(enc, hal: hal, xe: xe16, bank: w.gateUp, expertOff: expOff,
                                           tileE: tileE, tileR: tileR, tileCount: tileCount,
-                                          gu16: gu16, rowsPerExpert: 2 * I, pairs: T * K,
+                                          gu16: gu16, rowsPerExpert: 2 * I, tilePlan: tilePlan,
                                           sortedTok: sortedTok, coldBank: w.coldGateUp)
             barrier()
             try QWGemm.encodeSiluMulSplitF16(enc, hal: hal, gu: gu16, outHi: dnHi, outLo: dnHi,
@@ -233,7 +237,7 @@ public enum QWMoEOperator {
             try QWGemm.encodeMoENaxSplitF32(enc, hal: hal, xHi: dnHi, xLo: dnHi, bank: w.down,
                                             expertOff: expOff, tileE: tileE, tileR: tileR,
                                             tileCount: tileCount, y32: dnAcc16, rowsPerExpert: H,
-                                            pairs: T * K, coldBank: w.coldDown)
+                                            tilePlan: tilePlan, coldBank: w.coldDown)
             barrier()
             try QWGemm.encodeMoEDownReduceCombineF32(enc, hal: hal, dnAcc: dnAcc16, invPerm: invPerm,
                                                      weights: s.wts, shared: s.shared, gate: s.gate,

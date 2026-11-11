@@ -52,8 +52,9 @@ extension QWEngineDriver {
         if y32 != nil {
             pso = psoGEMVDxH16DualT4
         } else if !wQ4.isIncumbentContainer,
-                  (wQ4.bits != weightFormat.bits || wQ4.groupSize != weightFormat.groupSize || weightFormat.denseIsIncumbentContainer),
-                  let name = QWGemmAQ.decodeKernelName(bits: wQ4.bits, group: wQ4.groupSize) {
+                  (wQ4.bits != weightFormat.bits || wQ4.groupSize != weightFormat.groupSize
+                      || wQ4.isSHVQ != weightFormat.denseIsSHVQ || weightFormat.denseIsIncumbentContainer),
+                  let name = QWGemmAQ.decodeKernelName(bits: wQ4.bits, group: wQ4.groupSize, isSHVQ: wQ4.isSHVQ) {
             pso = try hal.pipeline(name)
         } else {
             pso = psoGEMVDxH16T4
@@ -82,8 +83,9 @@ extension QWEngineDriver {
                                      threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
         } else {
             let pso: any MTLComputePipelineState
-            if wQ4.bits != weightFormat.bits || wQ4.groupSize != weightFormat.groupSize || weightFormat.denseIsIncumbentContainer,
-               let name = QWGemmAQ.gdnInProjDecodeKernelName(bits: wQ4.bits, group: wQ4.groupSize) {
+            if wQ4.bits != weightFormat.bits || wQ4.groupSize != weightFormat.groupSize
+                || wQ4.isSHVQ != weightFormat.denseIsSHVQ || weightFormat.denseIsIncumbentContainer,
+               let name = QWGemmAQ.gdnInProjDecodeKernelName(bits: wQ4.bits, group: wQ4.groupSize, isSHVQ: wQ4.isSHVQ) {
                 pso = try hal.pipeline(name)
             } else {
                 pso = psoGEMVDxH16GdnInProjT4
@@ -103,8 +105,9 @@ extension QWEngineDriver {
         // BM64 beats BM128 at every M (QWGemm.encodeNaxF32); rows are chunked to keep x in the SLC.
         let pso: any MTLComputePipelineState
         if !wQ4.isIncumbentContainer,
-           (wQ4.bits != weightFormat.bits || wQ4.groupSize != weightFormat.groupSize || weightFormat.denseIsIncumbentContainer),
-           let name = QWGemmAQ.gemmKernelName(bits: wQ4.bits, group: wQ4.groupSize, bm128: false),
+           (wQ4.bits != weightFormat.bits || wQ4.groupSize != weightFormat.groupSize
+               || wQ4.isSHVQ != weightFormat.denseIsSHVQ || weightFormat.denseIsIncumbentContainer),
+           let name = QWGemmAQ.gemmKernelName(bits: wQ4.bits, group: wQ4.groupSize, bm128: false, isSHVQ: wQ4.isSHVQ),
            let customPSO = try? hal.pipeline(name) {
             pso = customPSO
         } else {
@@ -244,8 +247,9 @@ extension QWEngineDriver {
         _ = gs
         let pso: any MTLComputePipelineState
         if !wQ4.isIncumbentContainer,
-           (wQ4.bits != weightFormat.bits || wQ4.groupSize != weightFormat.groupSize || weightFormat.denseIsIncumbentContainer),
-           let name = QWGemmAQ.siluPairKernelName(bits: wQ4.bits, group: wQ4.groupSize),
+           (wQ4.bits != weightFormat.bits || wQ4.groupSize != weightFormat.groupSize
+               || wQ4.isSHVQ != weightFormat.denseIsSHVQ || weightFormat.denseIsIncumbentContainer),
+           let name = QWGemmAQ.siluPairKernelName(bits: wQ4.bits, group: wQ4.groupSize, isSHVQ: wQ4.isSHVQ),
            let customPSO = try? hal.pipeline(name) {
             pso = customPSO
         } else {

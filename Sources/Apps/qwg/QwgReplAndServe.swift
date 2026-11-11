@@ -29,10 +29,10 @@ struct Repl: ParsableCommand {
     @Flag(name: .customLong("reuse-prefix"), inversion: .prefixedNo, help: "Reuse exact consumed-token conversation prefixes (default: on). Disable for fresh whole-history processing; split-prefill logits can differ.") var reusePrefix: Bool = true
     @Flag(name: .customLong("stream"), inversion: .prefixedNo, help: "Stream output while generating (default: on).") var stream: Bool = true
     @Flag(name: .customLong("color"), inversion: .prefixedNo, help: "Colorize thinking output and prompts (default: auto).") var color: Bool?
-    @Option(name: .customLong("dflash-window"), help: "DFlash 2 / DSpine window B in 2...16 (sets --mtp-backend dflash2 and --mtp-drafts B-1).") var dflashWindow: Int? = nil
-    @Option(name: .customLong("resident-experts-per-layer"), help: "Number of resident hot experts per MoE layer in unified memory; cold experts stream on-demand from SSD.") var residentExpertsPerLayer: Int? = nil
+    @Option(name: .customLong("dflash-window"), help: "DFlash 2 / DSpine window B in 2...16 (auto-detects dflash2 vs dspine from drafter pack and sets --mtp-drafts B-1).") var dflashWindow: Int? = nil
     @Option(name: .customLong("repo"), help: "Repository or knowledge directory root containing .qwg/manifest.json to mount as LSA memory.") var repo: String? = nil
     @Flag(name: [.customLong("no-memory-pack"), .customLong("no-memory")], help: "Disable automatic mounting of .qwg/manifest.json memory pack.") var noMemory: Bool = false
+    @Flag(name: .customLong("no-profile"), help: "Bypass ~/.qwg/settings.json and per-model knob profiles.") var noProfile: Bool = false
 
     /// A knob the user set that this command cannot honour is refused here,
     /// where the error can name the flag, instead of being ignored later.
@@ -44,27 +44,15 @@ struct Repl: ParsableCommand {
         let settings = QWSettingsManager.shared.loadSettings()
         let (resolvedPack, initialMtpDrafts, effectiveMtpBackend, resolvedBackend) =
             try QWResolvedCliEngineConfig.resolvePackAndMTP(
-                verb: "qwg repl",
-                modelOption: modelOption,
-                pack: pack,
-                knobs: knobs,
-                dflashWindow: dflashWindow,
-                settings: settings
+                verb: "qwg repl", modelOption: modelOption, pack: pack,
+                knobs: knobs, dflashWindow: dflashWindow, settings: settings
             )
         let cliCfg = try QWResolvedCliEngineConfig.resolveAssetsAndKnobs(
-            verb: "qwg repl",
-            resolvedPack: resolvedPack,
-            knobs: knobs,
-            dflashWindow: dflashWindow,
-            initialMtpDrafts: initialMtpDrafts,
-            effectiveMtpBackend: effectiveMtpBackend,
-            resolvedBackend: resolvedBackend,
-            image: image,
-            video: video,
-            settings: settings,
-            validateDefaultContextImmediately: true,
-            repoPath: repo,
-            disableMemoryPack: noMemory
+            verb: "qwg repl", resolvedPack: resolvedPack, knobs: knobs, dflashWindow: dflashWindow,
+            initialMtpDrafts: initialMtpDrafts, effectiveMtpBackend: effectiveMtpBackend,
+            resolvedBackend: resolvedBackend, image: image, video: video, settings: settings,
+            validateDefaultContextImmediately: true, repoPath: repo,
+            disableMemoryPack: noMemory, ignoreProfile: noProfile
         )
         let runtimeAssets = cliCfg.runtimeAssets
         let defaultContext = cliCfg.defaultContext
@@ -84,11 +72,12 @@ struct Repl: ParsableCommand {
         let loadT0 = Date()
         var conversation: QWConversation? = nil
 
-        let effectiveChunkSize = QWPrefillLimits.clampedRows(knobs.prefillChunkSize ?? settings.prefillChunkSize)
+        let effSettings = cliCfg.effectiveSettings
+        let effectiveChunkSize = QWPrefillLimits.clampedRows(knobs.prefillChunkSize ?? effSettings.prefillChunkSize)
         let resolvedCacheDirURL = cliCfg.resolvedCacheDirURL
         let warmBytes = Int((knobs.warmCacheLimit ?? 4.0) * 1024 * 1024 * 1024)
-        let ssdEnabled = knobs.ssdCacheLimit != nil ? (knobs.ssdCacheLimit! > 0) : settings.ssdCacheEnabled
-        let ssdBytes = ssdEnabled ? Int((knobs.ssdCacheLimit ?? settings.ssdCacheLimitGB) * 1024 * 1024 * 1024) : 0
+        let ssdEnabled = knobs.ssdCacheLimit != nil ? (knobs.ssdCacheLimit! > 0) : effSettings.ssdCacheEnabled
+        let ssdBytes = ssdEnabled ? Int((knobs.ssdCacheLimit ?? effSettings.ssdCacheLimitGB) * 1024 * 1024 * 1024) : 0
         // The engine is built by the module that serves this pack: the
         // CLI names no engine type, and it does not pick a path.
         let options = cliCfg.makeBuildOptions(
@@ -99,8 +88,7 @@ struct Repl: ParsableCommand {
             cacheConfig: (reusePrefix && warmBytes > 0)
                 ? QWCacheConfig(warmByteLimit: warmBytes, ssdByteLimit: ssdBytes,
                                 cacheDirectory: resolvedCacheDirURL, wipeOnStart: false)
-                : nil,
-            residentExpertsPerLayer: residentExpertsPerLayer
+                : nil
         )
         do {
             try QWEngineInstanceLock.acquireEngineLock()
@@ -146,10 +134,11 @@ struct Repl: ParsableCommand {
 
         defer { conversation?.reset() }
 
-        let visionController: QWCLIVisionController? = (engine.capabilities.contains(.vision) && runtimeAssets.descriptor.visDepth > 0)
+        let allowVision = knobs.loadVision ?? true
+        let visionController: QWCLIVisionController? = (allowVision && engine.capabilities.contains(.vision) && runtimeAssets.descriptor.visDepth > 0)
             ? (try? QWCLIVisionController(modelPath: resolvedPack))
             : nil
-        var pendingTurnImage: String? = image
+        var pendingTurnImage: String? = allowVision ? image : nil
         var activeImageHistory: [String] = []
 
         var history: [QWJson] = []
@@ -587,10 +576,10 @@ struct Serve: AsyncParsableCommand {
     @Option(name: .customLong("port"), help: "Port to listen on.") var port: Int?
     @Option(name: .customLong("model-name"), help: "Model name reported in /v1/models.") var modelName: String?
     @Option(name: .customLong("model-alias"), help: "Model alias accepted in /v1/chat/completions.") var modelAlias: String?
-    @Option(name: .customLong("dflash-window"), help: "DFlash 2 / DSpine window B in 2...16 (sets --mtp-backend dflash2 and --mtp-drafts B-1).") var dflashWindow: Int?
-    @Option(name: .customLong("resident-experts-per-layer"), help: "Number of resident hot experts per MoE layer in unified memory; cold experts stream on-demand from SSD.") var residentExpertsPerLayer: Int? = nil
+    @Option(name: .customLong("dflash-window"), help: "DFlash 2 / DSpine window B in 2...16 (auto-detects dflash2 vs dspine from drafter pack and sets --mtp-drafts B-1).") var dflashWindow: Int?
     @Option(name: .customLong("repo"), help: "Mount a repository/knowledge memory pack (<path>/.qwg/manifest.json) at server startup.") var repo: String? = nil
     @Option(name: .customLong("parent-pid"), help: "Parent process PID to monitor for automatic termination.") var parentPid: Int32? = nil
+    @Flag(name: .customLong("no-profile"), help: "Bypass ~/.qwg/settings.json and per-model knob profiles.") var noProfile: Bool = false
 
     /// A knob the user set that this command cannot honour is refused here,
     /// where the error can name the flag, instead of being ignored later.
@@ -599,9 +588,6 @@ struct Serve: AsyncParsableCommand {
     }
 
     func run() async throws {
-        if let resE = residentExpertsPerLayer {
-            setenv("QW_RESIDENT_EXPERTS_PER_LAYER", String(resE), 1)
-        }
         if let bs = dflashWindow, !(2...16).contains(bs) {
             FileHandle.standardError.write("qwg serve: error: --dflash-window must be 2...16 (got \(bs))\n".data(using: .utf8)!)
             throw ExitCode(2)
@@ -635,7 +621,11 @@ struct Serve: AsyncParsableCommand {
             cliLSAClusterBlock: knobs.lsaClusterBlock, cliLSASidecarPath: knobs.lsaSidecarPath,
             cliWarmRAMLimitGB: knobs.warmCacheLimit,
             cliSSDCacheLimitGB: knobs.ssdCacheLimit, cliCacheDir: knobs.cacheDir,
-            cliLogLevel: knobs.logLevel, cliLazy: knobs.lazy
+            cliLogLevel: knobs.logLevel, cliLazy: knobs.lazy,
+            cliLoadVision: knobs.loadVision, cliStreamNgrams: knobs.streamNgrams,
+            cliMemoryPolicy: knobs.memoryPolicy, cliOSReserveGiB: knobs.osReserve,
+            cliResidentExpertsPerLayer: knobs.residentExpertsPerLayer, cliMoESpecBudget: knobs.moeSpecBudget,
+            cliIgnoreProfile: noProfile
         )
         let isDFlash2 = ["dflash2", "dflash", "dspine"].contains(resolved.mtpBackend?.lowercased() ?? "")
         let maxDrafts = isDFlash2 ? 15 : 5

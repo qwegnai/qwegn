@@ -59,9 +59,10 @@ final class FNMetalMoENaxTests: XCTestCase {
         let x16 = try act.allocate(QWTensorShape([tokens * k], .f16))
         let xs16 = xs.map { Float16($0) }
         arena.copyIn(x16, from: xs16.withUnsafeBufferPointer { Data(buffer: $0) })
+        let tilePlan = QWGemm.MoETilePlan(experts: experts, pairs: pairs, gateUpRows: rowsPerExpert, downRows: 64)
         let tileE = try act.allocate(QWTensorShape([pairs], .i32))
         let tileR = try act.allocate(QWTensorShape([pairs], .i32))
-        let tileCount = try act.allocate(QWTensorShape([1], .i32))
+        let tileCount = try act.allocate(QWTensorShape([tilePlan.scratchInts], .i32))
         let gu16 = try act.allocate(QWTensorShape([pairs * rowsPerExpert], .f16))
 
         func step(_ f: (any MTLComputeCommandEncoder) throws -> Void) throws {
@@ -75,12 +76,13 @@ final class FNMetalMoENaxTests: XCTestCase {
         try step { enc in try QWGemm.encodeMoEGroupPairsF32(enc, hal: Self.hal, ids: ids, expertOff: expOff,
                                                            sortedPairIdx: sortedPair, sortedTok: sortedTok,
                                                            experts: experts, totalPairs: pairs, routes: routes,
-                                                           tileE: tileE, tileR: tileR, tileCount: tileCount) }
+                                                           tileE: tileE, tileR: tileR, tileCount: tileCount,
+                                                           tilePlan: tilePlan) }
         try step { enc in try QWGemm.encodeMoEGateUpF32R1(enc, hal: Self.hal, x: x, bank: view, ids: ids, out: yPair,
                                                          rowsPerExpert: rowsPerExpert, routes: routes, tokens: tokens) }
         try step { enc in try QWGemm.encodeMoEGateUpNax(enc, hal: Self.hal, xe: x16, bank: view, expertOff: expOff, tileE: tileE,
                                                        tileR: tileR, tileCount: tileCount, gu16: gu16,
-                                                       rowsPerExpert: rowsPerExpert, pairs: pairs, sortedTok: sortedTok) }
+                                                       rowsPerExpert: rowsPerExpert, tilePlan: tilePlan, sortedTok: sortedTok) }
 
         let a = Array(UnsafeBufferPointer(start: arena.cpuPointer(of: yPair).bindMemory(to: Float.self, capacity: pairs * rowsPerExpert),
                                           count: pairs * rowsPerExpert))

@@ -120,9 +120,15 @@ extension SettingsView {
         return true
     }
 
+    var isExternalDrafterSelected: Bool {
+        let lower = draftSettings.mtpBackend.lowercased()
+        return lower == "dflash2" || lower == "dspine"
+    }
+
     var selectedModelMaxDrafts: Int {
-        if draftSettings.mtpBackend == "dflash2" {
-            return 7
+        if isExternalDrafterSelected {
+            let inferred = QWServerSettings.inferDrafterBackendAndMaxDrafts(packPath: draftSettings.dflashDraftPackPath)
+            return draftSettings.mtpBackend.lowercased() == "dspine" ? max(15, inferred.maxDrafts) : inferred.maxDrafts
         }
         if let desc = try? draftSettings.validatePrimaryModel(), desc.maxSpeculativeDrafts > 0 {
             return desc.maxSpeculativeDrafts
@@ -218,14 +224,16 @@ extension SettingsView {
                 draftSettings.loadVision = false
             }
             let supportsDFlash = desc.hcCount == nil && desc.numExperts == nil
-            if !supportsDFlash && draftSettings.mtpBackend.lowercased() == "dflash2" {
+            if !supportsDFlash && isExternalDrafterSelected {
                 draftSettings.mtpBackend = "variational"
             }
-            let maxD = draftSettings.mtpBackend.lowercased() == "dflash2" ? 7 : max(1, desc.maxSpeculativeDrafts)
+            let maxD = isExternalDrafterSelected
+                ? QWServerSettings.inferDrafterBackendAndMaxDrafts(packPath: draftSettings.dflashDraftPackPath).maxDrafts
+                : max(1, desc.maxSpeculativeDrafts)
             if draftSettings.mtpDrafts > maxD {
                 draftSettings.mtpDrafts = maxD
             }
-            if draftSettings.mtpBackend.lowercased() == "dflash2" {
+            if isExternalDrafterSelected {
                 try draftSettings.validateDFlashConfiguration()
             }
             if draftSettings.lsaMode.lowercased() == "sidecar" && !selectedModelHasLSASidecar {

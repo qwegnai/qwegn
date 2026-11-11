@@ -22,7 +22,7 @@ struct QWMTPBatchedMLP {
     static let rowPairedMinimumRows = 4
 
     static func usesQ4GMKernel(_ weight: QWWeightView) -> Bool {
-        weight.isIncumbentContainer || (weight.bits == 4 && weight.groupSize == 32)
+        weight.isIncumbentContainer || (!weight.isSHVQ && weight.bits == 4 && weight.groupSize == 32)
     }
 
     static func usesRowPairs(_ weight: QWWeightView, activeRows: Int) -> Bool {
@@ -286,7 +286,8 @@ struct QWMTPBatchedMLP {
               !overlaps(activeOutput, input), !overlaps(activeOutput, weight.blocks) else {
             throw QWEngineDriverError.state("batched AQ GEMV geometry mismatch")
         }
-        guard let kernelName = QWGemmAQ.decodeKernelName(bits: weight.bits, group: weight.groupSize) else {
+        guard let kernelName = QWGemmAQ.decodeKernelName(bits: weight.bits, group: weight.groupSize,
+                                                         isSHVQ: weight.isSHVQ) else {
             throw QWEngineDriverError.state("no AQ decode kernel for \(weight.bits)-bit group \(weight.groupSize)")
         }
         let pso = try hal.pipeline(kernelName)
@@ -329,7 +330,8 @@ struct QWMTPBatchedMLP {
               !overlaps(activeOutput, input), !overlaps(activeOutput, weight.blocks) else {
             throw QWEngineDriverError.state("batched AQ gate/up geometry mismatch")
         }
-        guard let kernelName = QWGemmAQ.siluPairKernelName(bits: weight.bits, group: weight.groupSize) else {
+        guard let kernelName = QWGemmAQ.siluPairKernelName(bits: weight.bits, group: weight.groupSize,
+                                                           isSHVQ: weight.isSHVQ) else {
             throw QWEngineDriverError.state("no AQ silu_pair kernel for \(weight.bits)-bit group \(weight.groupSize)")
         }
         let pso = try hal.pipeline(kernelName)
@@ -360,7 +362,8 @@ struct QWMTPBatchedMLP {
     private func encodeAQGDNRows(_ enc: any MTLComputeCommandEncoder, input: QWTensorValue,
                                  weight: QWWeightView, output: QWTensorValue,
                                  controls: GDNControls, n: Int, k: Int, activeRows: Int) throws {
-        guard let kernelName = QWGemmAQ.gdnInProjDecodeKernelName(bits: weight.bits, group: weight.groupSize) else {
+        guard let kernelName = QWGemmAQ.gdnInProjDecodeKernelName(bits: weight.bits, group: weight.groupSize,
+                                                                  isSHVQ: weight.isSHVQ) else {
             throw QWEngineDriverError.state("no AQ GDN decode kernel for \(weight.bits)-bit group \(weight.groupSize)")
         }
         let pso = try hal.pipeline(kernelName)

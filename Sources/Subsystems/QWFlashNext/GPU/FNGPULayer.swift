@@ -290,12 +290,8 @@ public enum FNGPULayerPasses {
                                          pooled: view(c.pooled, byteOffset: b0 * ID * 2, count: newBlocks * ID, dtype: .f16),
                                          blocks: newBlocks, compress: a.compress)
             if let clusters = c.lsaClusters {
-                let sb0 = pos / 512, sb1 = (pos + T) / 512
-                if sb1 > sb0 {
-                    barrier(enc)
-                    try QWGemm.encodeFnLSAWardCluster(enc, hal: hal, pooled: c.pooled, clusters: clusters,
-                                                      startSuperblock: sb0, numSuperblocks: sb1 - sb0, indexDim: ID)
-                }
+                _ = try QWGemm.encodeFnLSAClusterRange(enc, hal: hal, pooled: c.pooled, clusters: clusters,
+                                                       pos0: pos, count: T, indexDim: ID)
             }
             if needSelect { barrier(enc) }
         }
@@ -385,10 +381,9 @@ public enum FNGPULayerPasses {
                                          bsin: view(c.bsin, byteOffset: b * ROT * 4, count: ROT, dtype: .f32),
                                          pooled: view(c.pooled, byteOffset: b * ID * 2, count: ID, dtype: .f16),
                                          blocks: 1, compress: a.compress)
-            if (pos + 1) % 512 == 0, let clusters = c.lsaClusters {
-                barrier(enc)
-                try QWGemm.encodeFnLSAWardCluster(enc, hal: hal, pooled: c.pooled, clusters: clusters,
-                                                  startSuperblock: (pos + 1) / 512 - 1, numSuperblocks: 1, indexDim: ID)
+            if let clusters = c.lsaClusters {
+                _ = try QWGemm.encodeFnLSAClusterRange(enc, hal: hal, pooled: c.pooled, clusters: clusters,
+                                                       pos0: pos, count: 1, indexDim: ID)
             }
             if needSelect { barrier(enc) }
         }
@@ -450,10 +445,9 @@ public enum FNGPULayerPasses {
                                          bsin: view(c.bsin, byteOffset: b * ROT * 4, count: ROT, dtype: .f32),
                                          pooled: view(c.pooled, byteOffset: b * ID * 2, count: ID, dtype: .f16),
                                          blocks: 1, compress: a.compress)
-            if (pos + t + 1) % 512 == 0, let clusters = c.lsaClusters {
-                barrier(enc)
-                try QWGemm.encodeFnLSAWardCluster(enc, hal: hal, pooled: c.pooled, clusters: clusters,
-                                                  startSuperblock: (pos + t + 1) / 512 - 1, numSuperblocks: 1, indexDim: ID)
+            if let clusters = c.lsaClusters {
+                _ = try QWGemm.encodeFnLSAClusterRange(enc, hal: hal, pooled: c.pooled, clusters: clusters,
+                                                       pos0: pos + t, count: 1, indexDim: ID)
             }
             barrier(enc)
         }
@@ -471,8 +465,9 @@ public enum FNGPULayerPasses {
         barrier(enc)
     }
 
-    static func moe(_ enc: any MTLComputeCommandEncoder, ctx: FNGPUContext, m: FNGPUMoE, s: FNGPUScratch,
-                    mixed: QWTensorValue, out: QWTensorValue, rows: Int? = nil) throws {
+    static func moe(_ enc: inout any MTLComputeCommandEncoder, ctx: FNGPUContext, m: FNGPUMoE, s: FNGPUScratch,
+                    mixed: QWTensorValue, out: QWTensorValue, rows: Int? = nil,
+                    cb: (any MTLCommandBuffer)? = nil) throws {
         let T = rows ?? s.T
         let weights = QWMoEOperator.Weights(
             router: m.gateAndSharedBF16,
@@ -502,16 +497,20 @@ public enum FNGPULayerPasses {
             gu16: s.gu, dnHi: s.dnHi, dnAcc: s.dnAcc,
             naxX16: s.naxX16, naxY16: s.naxY16, maxTileWidth: s.width
         )
+        let rotateFn: ((inout any MTLComputeCommandEncoder) throws -> Void)? =
+            cb.map { buf in { try ctx.hal.rotateEncoder(buf, &$0) } }
         try QWMoEOperator.encodeResident(
-            enc, hal: ctx.hal, weights: weights, scratch: scratch,
+            &enc, hal: ctx.hal, weights: weights, scratch: scratch,
             input: .f32PreRotated(plain: mixed, rotated: s.rot32, prefillPrecast16: T >= 64 ? s.naxX16 : nil),
-            out32: out, rows: T, supportsGroupedNaxPrefill: true, concurrentBarriers: true
+            out32: out, rows: T, supportsGroupedNaxPrefill: true, concurrentBarriers: true,
+            rotateEncoder: rotateFn
         )
     }
 
     /// One decoder layer for a prefill chunk of T tokens. The attention layers run the cached decode attention per token,
     /// which fills the KV and index caches the following decode steps read; every other stage is batched over the T rows.
-    public static func layerPrefill(_ enc: any MTLComputeCommandEncoder, ctx: FNGPUContext, layer L: FNGPULayerWeights,
+    public static func layerPrefill(_ enc: inout any MTLComputeCommandEncoder, cb: any MTLCommandBuffer,
+                                     ctx: FNGPUContext, layer L: FNGPULayerWeights,
                                      s: FNGPUScratch, stream: QWTensorValue, out: QWTensorValue,
                                      attnState: FNGPUAttnDecodeState?, pos: Int, pleEmbed: QWTensorValue? = nil,
                                      inInject: (base: QWTensorValue, src: QWTensorValue, scale: QWTensorValue)? = nil,
@@ -540,7 +539,7 @@ public enum FNGPULayerPasses {
         }
         try QWHCOperator.encodeMix(enc, hal: hal, hc: L.mlpHC, s: s, stream: s.h2, mixed: s.mixedB, inj: s.injB,
                                    injectBase: h, injectSrc: s.oG, injectScale: s.injA)
-        try moe(enc, ctx: ctx, m: L.moe, s: s, mixed: s.mixedB, out: s.moeOut)
+        try moe(&enc, ctx: ctx, m: L.moe, s: s, mixed: s.mixedB, out: s.moeOut, cb: cb)
         if !deferOutInject {
             try QWHCOperator.encodeInject(enc, hal: hal, base: s.h2, src: s.moeOut, scale: s.injB,
                                           out: out, rows: T, hidden: H, hc: s.hc)
@@ -580,7 +579,8 @@ public enum FNGPULayerPasses {
         }
         try QWHCOperator.encodeMix(enc, hal: hal, hc: L.mlpHC, s: s, stream: s.h2, mixed: s.mixedB, inj: s.injB,
                                    injectBase: h, injectSrc: s.oG, injectScale: s.injA)
-        try moe(enc, ctx: ctx, m: L.moe, s: s, mixed: s.mixedB, out: s.moeOut)
+        var mEnc = enc
+        try moe(&mEnc, ctx: ctx, m: L.moe, s: s, mixed: s.mixedB, out: s.moeOut)
         if !deferOutInject {
             try QWHCOperator.encodeInject(enc, hal: hal, base: s.h2, src: s.moeOut, scale: s.injB,
                                           out: out, rows: s.T, hidden: s.hidden, hc: s.hc)

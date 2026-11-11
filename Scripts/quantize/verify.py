@@ -7,6 +7,7 @@ from pathlib import Path
 
 from hq_blocks import VALID_BITS, VALID_GROUPS, hq_block_bytes
 from pack import Q4G_ALIGNMENT
+from shvq import SHVQ_VALID_BITS, SHVQ_VALID_GROUPS, shvq_block_bytes
 
 GROUP = 32
 BLOCK_BYTES = 20
@@ -16,7 +17,18 @@ def _resolve_hq_layout(entry):
     hq = entry.get("hq")
     if hq is None:
         return GROUP, BLOCK_BYTES, "hq4_g32_m5"
-    if not isinstance(hq, dict) or set(hq) != {"bits", "group"}:
+    if not isinstance(hq, dict):
+        raise ValueError(f"invalid hq metadata: {hq!r}")
+    if hq.get("vq") == "shvq1":
+        if set(hq) != {"bits", "group", "vq"}:
+            raise ValueError(f"invalid shvq metadata keys: {hq!r}")
+        bits, group = hq["bits"], hq["group"]
+        if type(bits) is not int or type(group) is not int:
+            raise ValueError(f"invalid shvq metadata types: {hq!r}")
+        if bits not in SHVQ_VALID_BITS or group not in SHVQ_VALID_GROUPS:
+            raise ValueError(f"unsupported shvq metadata: {hq!r}")
+        return group, shvq_block_bytes(bits, group), f"shvq{bits}_g{group}"
+    if set(hq) != {"bits", "group"}:
         raise ValueError(f"invalid hq metadata: {hq!r}")
     bits, group = hq["bits"], hq["group"]
     if type(bits) is not int or type(group) is not int:

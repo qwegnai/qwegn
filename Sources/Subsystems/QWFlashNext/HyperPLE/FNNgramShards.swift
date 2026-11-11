@@ -1,5 +1,7 @@
 import Darwin
 import Foundation
+import Metal
+import QWHAL
 import QWQuant
 
 // BF16 PLE N-gram rows read from the source safetensors shards. The pack's `assets/ple_ngram_locations.json`
@@ -265,8 +267,7 @@ public final class FNNgramShardRows: FNNgramRows, @unchecked Sendable {
     }
 }
 
-/// PLE N-gram rows read directly from the packed `assets/ngram.bin` file (QNGRAM v1 BF16, v2 Q8_G32
-/// or v2 Q4_G32; the rows are sector-packed, 12, 24 or 40 rows to a 4096-byte sector).
+/// PLE N-gram rows read directly from packed `assets/ngram.bin` (QNGRAM v1 BF16, v2 Q8/Q4_G32, or v3 VQ2_G32).
 public final class FNNgramBinRows: FNNgramRows, @unchecked Sendable {
     public let headDim: Int
     public let entryCount: Int
@@ -277,6 +278,8 @@ public final class FNNgramBinRows: FNNgramRows, @unchecked Sendable {
     public let dtype: QWNgramDType
     /// The number of hot rows the writer recorded (0 when unknown).
     public let l1Hot: Int
+    public let codebook: [Float]
+    public let fileBytes: Int
     private let fd: Int32
     private let mappedPtr: UnsafeRawPointer?
     private let mappedBytes: Int
@@ -329,8 +332,11 @@ public final class FNNgramBinRows: FNNgramRows, @unchecked Sendable {
                             + "(expected [\(minSize), \(maxSize)]) at \(url.path)"])
         }
         let ptr: UnsafeRawPointer?
+        let mappedLen: Int
         if mapped {
-            let result = Darwin.mmap(nil, size, PROT_READ, MAP_PRIVATE, opened, 0)
+            let page = max(1, Int(getpagesize()))
+            let aligned = ((size + page - 1) / page) * page
+            let result = Darwin.mmap(nil, aligned, PROT_READ, MAP_SHARED, opened, 0)
             guard let result, result != MAP_FAILED else {
                 let error = errno
                 close(opened)
@@ -338,11 +344,15 @@ public final class FNNgramBinRows: FNNgramRows, @unchecked Sendable {
                               userInfo: [NSLocalizedDescriptionKey: "Failed to map ngram.bin at \(url.path)"])
             }
             ptr = UnsafeRawPointer(result)
+            mappedLen = aligned
         } else {
             ptr = nil
+            mappedLen = 0
         }
         self.dtype = hdr.dtype
         self.l1Hot = hdr.l1Hot
+        self.codebook = hdr.codebook
+        self.fileBytes = size
         self.entryCount = hdr.entryCount
         self.headDim = hdr.headDim
         self.rowBytes = hdr.rowBytes
@@ -350,14 +360,42 @@ public final class FNNgramBinRows: FNNgramRows, @unchecked Sendable {
         self.dataOffset = hdr.dataOffset
         self.fd = opened
         self.mappedPtr = ptr
-        self.mappedBytes = size
+        self.mappedBytes = mappedLen
     }
 
     deinit {
-        if let mappedPtr {
+        if let mappedPtr, mappedBytes > 0 {
             Darwin.munmap(UnsafeMutableRawPointer(mutating: mappedPtr), mappedBytes)
         }
         if fd >= 0 { close(fd) }
+    }
+
+    /// Maps a v3 `vq2g32` table into a single page-aligned `MTLBuffer` for zero-`pread` GPU gather.
+    public func makeResidentGPUBuffer(device: any MTLDevice) -> (any MTLBuffer)? {
+        guard dtype == .vq2g32 else { return nil }
+        let page = max(1, Int(getpagesize()))
+        let alignedLen = ((fileBytes + page - 1) / page) * page
+        guard alignedLen > 0, alignedLen <= Int(device.maxBufferLength) else { return nil }
+        let raw = Darwin.mmap(nil, alignedLen, PROT_READ, MAP_SHARED, fd, 0)
+        if let basePtr = raw, basePtr != MAP_FAILED {
+            if let buf = device.makeBuffer(
+                bytesNoCopy: basePtr, length: alignedLen, options: .storageModeShared,
+                deallocator: { ptr, len in _ = Darwin.munmap(ptr, len) }
+            ) {
+                QWResidencyRegistry.note(buf)
+                return buf
+            }
+            _ = Darwin.munmap(basePtr, alignedLen)
+        }
+        guard fileBytes <= (64 << 20),
+              let fallback = device.makeBuffer(length: alignedLen, options: .storageModeShared) else {
+            return nil
+        }
+        memset(fallback.contents(), 0, alignedLen)
+        let got = Darwin.pread(fd, fallback.contents(), fileBytes, 0)
+        guard got == fileBytes else { return nil }
+        QWResidencyRegistry.note(fallback)
+        return fallback
     }
 
     public func copyRow(_ id: Int, to dst: UnsafeMutablePointer<Float>) {
@@ -365,8 +403,15 @@ public final class FNNgramBinRows: FNNgramRows, @unchecked Sendable {
         let off = off_t(dataOffset + (id / rowsPerSector) * QWNgramFormat.sectorSize
                         + (id % rowsPerSector) * rowBytes)
         if let mappedPtr {
-            QWNgramFormat.decodeRow(dtype: dtype, from: mappedPtr.advanced(by: Int(off)),
-                                    headDim: headDim, into: dst)
+            if codebook.isEmpty {
+                QWNgramFormat.decodeRow(dtype: dtype, from: mappedPtr.advanced(by: Int(off)),
+                                        headDim: headDim, into: dst)
+            } else {
+                codebook.withUnsafeBufferPointer { cb in
+                    QWNgramFormat.decodeRow(dtype: dtype, from: mappedPtr.advanced(by: Int(off)),
+                                            headDim: headDim, codebook: cb.baseAddress, into: dst)
+                }
+            }
             return
         }
         if dtype == .bf16 {
@@ -384,8 +429,15 @@ public final class FNNgramBinRows: FNNgramRows, @unchecked Sendable {
         withUnsafeTemporaryAllocation(of: UInt8.self, capacity: rowBytes) { scratch in
             let got = pread(fd, scratch.baseAddress!, rowBytes, off)
             precondition(got == rowBytes, "PLE short read on ngram.bin at row \(id)")
-            QWNgramFormat.decodeRow(dtype: dtype, from: scratch.baseAddress!,
-                                    headDim: headDim, into: dst)
+            if codebook.isEmpty {
+                QWNgramFormat.decodeRow(dtype: dtype, from: scratch.baseAddress!,
+                                        headDim: headDim, into: dst)
+            } else {
+                codebook.withUnsafeBufferPointer { cb in
+                    QWNgramFormat.decodeRow(dtype: dtype, from: scratch.baseAddress!,
+                                            headDim: headDim, codebook: cb.baseAddress, into: dst)
+                }
+            }
         }
     }
 
@@ -585,10 +637,10 @@ public final class FNNgramMLXRows: FNNgramRows, @unchecked Sendable {
 /// Resolves the PLE N-gram row table from a model's `assets/` directory, preferring self-contained
 /// `assets/ngram.bin`, then `ngram_table.bin`, then `assets/ple_ngram_locations.json` + the HF snapshot shards.
 public enum FNNgramRowsLoader {
-    public static func open(assetsURL: URL) throws -> any FNNgramRows {
+    public static func open(assetsURL: URL, mapped: Bool = false) throws -> any FNNgramRows {
         let ngramBin = assetsURL.appendingPathComponent("ngram.bin")
         if FileManager.default.fileExists(atPath: ngramBin.path) {
-            return try FNNgramBinRows(url: ngramBin)
+            return try FNNgramBinRows(url: ngramBin, mapped: mapped)
         }
         let ngramTableBin = assetsURL.appendingPathComponent("ngram_table.bin")
         if FileManager.default.fileExists(atPath: ngramTableBin.path) {

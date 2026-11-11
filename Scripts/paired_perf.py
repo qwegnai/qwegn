@@ -28,6 +28,132 @@ def file_identity(path):
     return {"path": str(path.resolve()), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
 
 
+def model_identity(path, *, hash_files=False):
+    if path.is_file():
+        files = [path]
+        root = path.parent
+    else:
+        root = path
+        files = [path / "model.qwp"]
+        assets = root / "assets"
+        if not files[0].is_file() or not (assets / "config.json").is_file():
+            raise ValueError("model directory must contain model.qwp and assets/config.json")
+    assets = root / "assets"
+    if assets.is_dir():
+        files.extend(sorted(p for p in assets.rglob("*") if p.is_file()))
+    return {
+        "root": str(root.resolve()),
+        "files": {
+            str(p.relative_to(root)): {
+                **file_identity(p), **({"sha256": digest(p)} if hash_files else {})
+            }
+            for p in files
+        },
+    }
+
+
+def strict_options(options):
+    required = {
+        "--kv-mode", "--context-tokens", "--prefill-chunk-size",
+        "--temperature", "--top-p", "--top-k", "--seed", "--repetition-penalty",
+        "--mtp-drafts", "--mtp-draft-strategy",
+        "--mtp-relaxed-margin", "--mtp-relaxed-min-prob", "--lsa-mode",
+    }
+    conflicting = {
+        "--max-context", "--enable-thinking", "--prefix-cache",
+        "--dflash-window", "--dflash-top-k",
+    }
+    if any(option.split("=", 1)[0] in conflicting for option in options):
+        raise ValueError("strict experiment must not override pinned settings with aliases or DFlash options")
+    values = {}
+    for index, option in enumerate(options):
+        key, separator, value = option.partition("=")
+        if key not in required | {"--mtp-backend"}:
+            continue
+        if key in values:
+            raise ValueError(f"strict experiment specifies {key} more than once")
+        if not separator:
+            if index + 1 >= len(options) or options[index + 1].startswith("--"):
+                raise ValueError(f"strict experiment requires a value for {key}")
+            value = options[index + 1]
+        if not value:
+            raise ValueError(f"strict experiment requires a value for {key}")
+        values[key] = value
+    missing = required - values.keys()
+    if missing:
+        raise ValueError("strict experiment requires explicit options: " + ", ".join(sorted(missing)))
+    if values["--kv-mode"] not in ("f16", "q8", "q4"):
+        raise ValueError("strict experiment requires kv-mode f16, q8 or q4")
+    drafts = int(values["--mtp-drafts"])
+    if drafts < 0:
+        raise ValueError("strict experiment requires nonnegative MTP drafts")
+    if drafts == 0 and "--mtp-backend" in values:
+        raise ValueError("serial experiments must omit --mtp-backend; the CLI rejects explicit backends with zero drafts")
+    if drafts > 0 and values.get("--mtp-backend") != "standard":
+        raise ValueError("strict exact experiments with drafts require --mtp-backend standard")
+    if float(values["--mtp-relaxed-margin"]) != 0:
+        raise ValueError("strict exact experiments require --mtp-relaxed-margin 0")
+    if float(values["--temperature"]) != 0 or int(values["--seed"]) < 0:
+        raise ValueError("strict exact experiments require greedy sampling and a fixed seed")
+    context = int(values["--context-tokens"])
+    chunk = int(values["--prefill-chunk-size"])
+    if context < 1 or not 32 <= chunk <= 8192 or chunk % 32:
+        raise ValueError("strict experiment requires positive context and 32-aligned chunk in 32...8192")
+    if sum(option in ("--no-thinking", "--thinking") for option in options) != 1:
+        raise ValueError("strict experiment requires exactly one of --thinking or --no-thinking")
+    if "--no-prefix-cache" not in options:
+        raise ValueError("strict uncached experiments require --no-prefix-cache")
+    if "--no-profile" not in options:
+        raise ValueError("strict hermetic experiments require --no-profile")
+    return values
+
+
+def effective_memory(stderr):
+    rows = re.findall(r"^\[memory\].*$", stderr, re.MULTILINE)
+    if len(rows) != 1:
+        raise ValueError("strict experiment requires exactly one effective [memory] report")
+    values = dict(re.findall(r"(\w+)=([^\s]+)", rows[0]))
+    if not {"kv_mode", "max_tokens"}.issubset(values):
+        raise ValueError("effective [memory] report is missing kv_mode or max_tokens")
+    return {"kv_mode": values["kv_mode"], "max_tokens": int(values["max_tokens"])}
+
+
+def effective_config(stderr):
+    rows = re.findall(r"^\[config\].*$", stderr, re.MULTILINE)
+    if not rows:
+        return None
+    if len(rows) != 1:
+        raise ValueError("strict experiment requires at most one effective [config] report")
+    return dict(re.findall(r"(\w+)=([^\s]+)", rows[0]))
+
+
+def check_strict_pair(pair, expected):
+    for arm in ("baseline", "candidate"):
+        run = pair[arm]
+        actual = effective_memory(run["stderr"])
+        if actual["kv_mode"] != expected["--kv-mode"]:
+            raise ValueError(f"{arm} effective KV mode differs from the requested experiment")
+        if actual["max_tokens"] != int(expected["--context-tokens"]):
+            raise ValueError(f"{arm} effective context differs from the requested experiment")
+        cfg = effective_config(run["stderr"])
+        if cfg is not None:
+            if cfg.get("profile") != "bypassed":
+                raise ValueError(f"{arm} did not bypass user/model profiles (--no-profile)")
+            if cfg.get("kv_mode") != expected["--kv-mode"]:
+                raise ValueError(f"{arm} effective [config] kv_mode differs from the requested experiment")
+            if cfg.get("lsa_mode") != expected["--lsa-mode"]:
+                raise ValueError(f"{arm} effective [config] lsa_mode differs from the requested experiment")
+            if int(cfg.get("mtp_drafts", "-1")) != int(expected["--mtp-drafts"]):
+                raise ValueError(f"{arm} effective [config] mtp_drafts differs from the requested experiment")
+            run["effective_config"] = cfg
+        if run["steady_allocations"] != 0:
+            raise ValueError(f"{arm} has nonzero or missing steady-state allocation counts")
+        run["effective_memory"] = actual
+    for key in ("prompt_tokens", "generated_tokens", "stdout_sha256"):
+        if pair["baseline"][key] != pair["candidate"][key]:
+            raise ValueError(f"strict same-pack experiment differs in {key}")
+
+
 def parse_statistics(stderr):
     prefill, decode, allocs = metrics(stderr)
     prompt = re.search(r"prompt tokens:\s*(\d+)", stderr)
@@ -122,6 +248,8 @@ def main(argv=None):
     parser.add_argument("--cooldown-seconds", type=float, default=0,
                         help="Idle before each arm, including warmups, to limit thermal bias")
     parser.add_argument("--options-json", default="[]", help="JSON array of shared qwg run arguments")
+    parser.add_argument("--strict", action="store_true",
+                        help="Require pinned settings, hash model/assets, and refuse parity/config mismatches")
     parser.add_argument("--notes", default="", help="Hardware, settings, cache and workload provenance")
     args = parser.parse_args(argv)
     if not math.isfinite(args.cooldown_seconds) or args.cooldown_seconds < 0:
@@ -138,6 +266,12 @@ def main(argv=None):
                   "--max-new", "--stream", "--no-stream", "--verbose", "--repl"}
     if any(option.split("=", 1)[0] in controlled for option in options):
         parser.error("--options-json must not override model, prompt, token count, streaming or verbose")
+    expected = None
+    if args.strict:
+        try:
+            expected = strict_options(options)
+        except ValueError as error:
+            parser.error(str(error))
     for path in (args.baseline, args.candidate, args.baseline_metallib,
                  args.candidate_metallib, args.prompt_file):
         if not path.is_file():
@@ -150,7 +284,12 @@ def main(argv=None):
     metallibs = {"baseline": args.baseline_metallib.resolve(),
                  "candidate": args.candidate_metallib.resolve()}
     model, prompt = args.model.resolve(), args.prompt_file.resolve()
-    identity = {"model": file_identity(model), "prompt_sha256": digest(prompt),
+    try:
+        model_snapshot = model_identity(model, hash_files=True) if args.strict else None
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
+    identity = {"model": file_identity(model), "model_files": model_snapshot,
+                "prompt_sha256": digest(prompt),
                 "binaries": {name: {**file_identity(path), "sha256": digest(path)}
                              for name, path in binaries.items()},
                 "metallibs": {name: {**file_identity(path), "sha256": digest(path)}
@@ -160,7 +299,8 @@ def main(argv=None):
         "platform": platform.platform(), "machine": platform.machine(),
         "load_average": list(os.getloadavg()), "model_id": args.model_id,
         "identity": identity, "options": options, "max_tokens": args.max_tokens,
-        "notes": args.notes, "cooldown_seconds": args.cooldown_seconds,
+        "notes": args.notes, "cooldown_seconds": args.cooldown_seconds, "strict": args.strict,
+        "pinned_settings": expected,
         "warmups": [], "samples": [], "status": "in_progress",
     }
     try:
@@ -181,9 +321,20 @@ def main(argv=None):
                             write_report(output, report)
                             print(f"{phase} {index + 1} {arm}: {pair[arm]['error']}", file=sys.stderr)
                             return 1
-            if file_identity(model) != identity["model"] or digest(prompt) != identity["prompt_sha256"]:
+                    if expected is not None:
+                        try:
+                            check_strict_pair(pair, expected)
+                        except ValueError as error:
+                            report["status"] = "incomparable"
+                            report["error"] = str(error)
+                            write_report(output, report)
+                            print(report["error"], file=sys.stderr)
+                            return 1
+            if (file_identity(model) != identity["model"]
+                    or (args.strict and model_identity(model, hash_files=True) != identity["model_files"])
+                    or digest(prompt) != identity["prompt_sha256"]):
                 report["status"] = "failed"
-                report["error"] = "model path metadata or prompt changed during measurement"
+                report["error"] = "model files, assets or prompt changed during measurement"
                 write_report(output, report)
                 print(report["error"], file=sys.stderr)
                 return 1
@@ -222,6 +373,15 @@ def main(argv=None):
                 (pair[arm]["prompt_tokens"], pair[arm]["generated_tokens"])
                 for pair in report["samples"] for arm in ("baseline", "candidate")
             }) == 1
+            if args.strict and (not report["token_counts_stable"] or len({
+                pair[arm]["stdout_sha256"] for pair in report["samples"]
+                for arm in ("baseline", "candidate")
+            }) != 1):
+                report["status"] = "incomparable"
+                report["error"] = "strict same-pack outputs or token counts vary between samples"
+                write_report(output, report)
+                print(report["error"], file=sys.stderr)
+                return 1
             report["status"] = "complete"
             write_report(output, report)
     except FileExistsError:

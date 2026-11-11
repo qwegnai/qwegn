@@ -292,7 +292,8 @@ func everyCLIKnobParsesToItsKind() throws {
     for descriptor in QWKnobRegistry.all where descriptor.surfaces.contains(.cli) {
         let binding = try #require(QWGKnobOptions.bindings.first { $0.id == descriptor.id },
                                    "\(descriptor.id) has no binding")
-        let argument = try #require(argument(for: descriptor.defaultValue))
+        let argOpt = argument(for: descriptor.defaultValue)
+        let argument = try #require(argOpt)
         let parsed: QWGKnobOptions
         if case .bool = descriptor.kind {
             // A bool knob may be a flag, which carries no value.

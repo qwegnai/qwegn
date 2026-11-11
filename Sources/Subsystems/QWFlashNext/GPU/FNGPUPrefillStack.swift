@@ -37,12 +37,15 @@ public final class FNGPUPrefillStack {
     public private(set) var rows: Int
     let arena: QWArena, ctx: FNGPUContext
     let streamA: QWTensorValue, streamB: QWTensorValue, tokensBuf: QWTensorValue
+    let gpuPLE: (table: FNGPUPLETable, embeddings: [FNNgramEmbedding], headCount: Int,
+                 rowIds: QWTensorValue, dstOffsets0: QWTensorValue, dstOffsets1: QWTensorValue)?
     public private(set) var lastStreamTensor: QWTensorValue
     /// Signalled by the host once a chunk's PLE rows are staged; the first PLE layer's command buffer waits on it.
     private let pleReady: (any MTLSharedEvent)?
     private var pleReadyValue: UInt64 = 0
 
-    public init(arena: QWArena, ctx: FNGPUContext, slots: [Slot], hidden: Int, hc: Int) throws {
+    public init(arena: QWArena, ctx: FNGPUContext, slots: [Slot], hidden: Int, hc: Int,
+                gpuPLETable: FNGPUPLETable? = nil) throws {
         self.arena = arena; self.ctx = ctx; self.slots = slots
         self.width = hc * hidden
         let r = slots.first?.scratch.T ?? 1
@@ -53,7 +56,30 @@ public final class FNGPUPrefillStack {
         streamB = try act.allocate(QWTensorShape([r * width], .f32))
         tokensBuf = try act.allocate(QWTensorShape([r], .i32))
         lastStreamTensor = streamA
-        pleReady = ctx.hal.device.makeSharedEvent()
+        let pleSlots = slots.compactMap { slot -> (FNNgramEmbedding, QWTensorValue, QWTensorValue)? in
+            guard let e = slot.ple, let b0 = slot.pleEmbed else { return nil }
+            return (e, b0, slot.pleEmbedAlt ?? b0)
+        }
+        if let table = gpuPLETable, let first = pleSlots.first {
+            let hcNgram = first.0.heads.sizes.count
+            let uniform = hcNgram > 0 && pleSlots.allSatisfy {
+                $0.0.heads.sizes.count == hcNgram && $0.0.rows.headDim == table.headDim
+                    && $0.1.region.buffer === act.region.buffer && $0.2.region.buffer === act.region.buffer
+            }
+            if uniform {
+                let rowIds = try act.allocate(QWTensorShape([pleSlots.count * r * hcNgram], .i32))
+                let dst0 = try act.allocate(QWTensorShape([pleSlots.count], .i32))
+                let dst1 = try act.allocate(QWTensorShape([pleSlots.count], .i32))
+                arena.write(dst0, from: pleSlots.map { UInt32(($0.1.region.base - act.region.base + $0.1.offset) / 4) })
+                arena.write(dst1, from: pleSlots.map { UInt32(($0.2.region.base - act.region.base + $0.2.offset) / 4) })
+                self.gpuPLE = (table, pleSlots.map(\.0), hcNgram, rowIds, dst0, dst1)
+            } else {
+                self.gpuPLE = nil
+            }
+        } else {
+            self.gpuPLE = nil
+        }
+        pleReady = (self.gpuPLE == nil) ? ctx.hal.device.makeSharedEvent() : nil
     }
 
     /// Adjusts the active row count for the next prefill chunk without reallocating scratch buffers.
@@ -121,6 +147,7 @@ public final class FNGPUPrefillStack {
     }
 
     public func stagePLE(history: [Int64], startPos: Int, count: Int? = nil, parity: Int = 0) {
+        if gpuPLE != nil { return }
         Self.stagePLETargets(pleStageTargets(parity: parity), history: history,
                              startPos: startPos, count: count ?? rows)
     }
@@ -140,9 +167,15 @@ public final class FNGPUPrefillStack {
                             pleParity: Int, plePrecomputed: Bool,
                             nextChunkStartPos: Int?,
                             nextChunkCount: Int? = nil) throws -> (token: Int, stream: [Float]) {
-        let targets = plePrecomputed ? [] : pleStageTargets(parity: pleParity)
+        let trace = FNGPUExecutionTrace.enabled ? FNGPUExecutionTrace() : nil
+        if let gple = gpuPLE {
+            let idPtr = arena.cpuPointer(of: gple.rowIds).assumingMemoryBound(to: UInt32.self)
+            QWPLEOperator.writeRowIds(gple.embeddings, into: idPtr,
+                                      history: history, startPos: startPos, count: rows)
+        }
+        let targets = (gpuPLE != nil || plePrecomputed) ? [] : pleStageTargets(parity: pleParity)
         let firstPLE = (!plePrecomputed && !targets.isEmpty) ? slots.firstIndex { $0.weights.ple != nil } : nil
-        var pleStaged = plePrecomputed || targets.isEmpty
+        var pleStaged = gpuPLE != nil || plePrecomputed || targets.isEmpty
         if !pleStaged, (firstPLE == nil || firstPLE == 0 || pleReady == nil) {
             Self.stagePLETargets(targets, history: history, startPos: startPos, count: rows)
             pleStaged = true
@@ -163,6 +196,7 @@ public final class FNGPUPrefillStack {
             pleStaged = true
         }
         defer { pleGroup.wait() }
+        trace?.preparedPLE()
         var cur = streamA, nxt = streamB
         let needHead = runHead || readStream || (mtp != nil && startPos + rows >= history.count)
         let layersPerCB = 12
@@ -170,6 +204,7 @@ public final class FNGPUPrefillStack {
         var cbs: [any MTLCommandBuffer] = []
         var chunkStart = 0
         while chunkStart < totalSlots {
+            let encodeStart = trace?.clock
             let chunkEnd = slots.isEmpty ? 0 : Self.chunkEnd(start: chunkStart, count: slots.count,
                                                               layersPerCB: layersPerCB,
                                                               firstPLE: pleWait?.layer)
@@ -179,9 +214,11 @@ public final class FNGPUPrefillStack {
             let begun = waitsForPLE
                 ? ctx.hal.begin(.concurrent, waitingFor: pleWait!.event, value: pleWait!.value)
                 : ctx.hal.begin(.concurrent)
-            guard let (cb, enc) = begun else {
+            guard let pair = begun else {
                 throw NSError(domain: "FNGPUPrefillStack", code: 1, userInfo: [NSLocalizedDescriptionKey: "no command buffer"])
             }
+            let cb = pair.0
+            var enc = pair.1
             if isFirstChunk {
                 switch stage {
                 case .host(let streamIn):
@@ -191,8 +228,16 @@ public final class FNGPUPrefillStack {
                     arena.write(tokensBuf, from: tokIds)
                     try embedTable.gather(enc: enc, hal: ctx.hal, token: tokensBuf,
                                           out: streamA, rows: rows, hc: embedTable.hc)
-                    enc.memoryBarrier(scope: .buffers)
                 }
+                if let gple = gpuPLE {
+                    let dstOffs = (pleParity == 0) ? gple.dstOffsets0 : gple.dstOffsets1
+                    try QWGemm.encodeFnPLEVQ2Gather(enc, hal: ctx.hal, table: gple.table,
+                                                    rowIds: gple.rowIds, targetFloatOffsets: dstOffs,
+                                                    outRegion: arena.activationsRegion().region,
+                                                    rowsPerTarget: rows * gple.headCount,
+                                                    numTargets: gple.embeddings.count)
+                }
+                enc.memoryBarrier(scope: .buffers)
             }
             for i in chunkStart..<chunkEnd {
                 let slot = slots[i]
@@ -202,7 +247,7 @@ public final class FNGPUPrefillStack {
                     : nil
                 let deferOut = (i + 1 < slots.count) ? (slots[i + 1].weights.ple == nil) : true
                 let pleBuf = (pleParity == 0) ? slot.pleEmbed : (slot.pleEmbedAlt ?? slot.pleEmbed)
-                try FNGPULayerPasses.layerPrefill(enc, ctx: ctx, layer: slot.weights, s: slot.scratch, stream: cur, out: nxt,
+                try FNGPULayerPasses.layerPrefill(&enc, cb: cb, ctx: ctx, layer: slot.weights, s: slot.scratch, stream: cur, out: nxt,
                                                   attnState: slot.attn, pos: startPos, pleEmbed: pleBuf,
                                                   inInject: inInj, deferOutInject: deferOut)
                 swap(&cur, &nxt)
@@ -231,11 +276,12 @@ public final class FNGPUPrefillStack {
                         enc.memoryBarrier(scope: .buffers)
                     }
                     let preInj = (base: lastSlot.scratch.h2, src: lastSlot.scratch.moeOut, scale: lastSlot.scratch.injB)
-                    try mtp.encode(enc, streamPrev: cur, tokens: mtp.tokensBuf, pos: startPos, rows: rows,
+                    try mtp.encode(&enc, cb: cb, streamPrev: cur, tokens: mtp.tokensBuf, pos: startPos, rows: rows,
                                    scratch: lastSlot.scratch, preInject: preInj,
                                    projectRows: projectMTP ? 1 : 0, usePrefillPath: rows > 1)
                 }
             }
+            trace?.submitting(cb, lower: chunkStart, upper: chunkEnd, encodeStart: encodeStart)
             ctx.hal.end(cb, enc)
             cbs.append(cb)
             if slots.isEmpty { break }
@@ -243,15 +289,22 @@ public final class FNGPUPrefillStack {
         }
         let last = cur.slice(byteOffset: (rows - 1) * width * 4, count: width, dtype: .f32)
         if let nextPos = nextChunkStartPos {
+            let prepareStart = trace?.clock
             stagePLE(history: history, startPos: nextPos, count: nextChunkCount, parity: 1 - pleParity)
+            trace?.preparedNextPLE(since: prepareStart)
         }
+        let waitStart = trace?.clock
         cbs.last?.waitUntilCompleted()
+        trace?.waitedForCompletion(since: waitStart)
         var gpuTotal = 0.0
         for cb in cbs {
             if let err = cb.error { throw err }
             gpuTotal += (cb.gpuEndTime - cb.gpuStartTime) * 1000
         }
         lastGPUMillis = gpuTotal
+        try trace?.emit(phase: "prefill", position: startPos, rows: rows,
+                        pleRoute: gpuPLE != nil ? "gpu" : (slots.contains { $0.ple != nil } ? "host" : "none"),
+                        mappedPLEBytes: gpuPLE?.table.buffer.length ?? 0, includesMTP: mtp != nil)
         let tok = needHead ? head.argmaxToken() : 0
         lastMTPDraft = (mtp != nil && projectMTP) ? mtp!.mtpHead.argmaxToken() : 0
         guard readStream else { return (tok, []) }

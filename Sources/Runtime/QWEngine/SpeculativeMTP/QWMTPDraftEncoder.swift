@@ -193,10 +193,10 @@ final class QWMTPDraftEncoder {
         }
         if !weights.fc.isIncumbentContainer {
             for optionalKernel in [
-                QWGemmAQ.decodeKernelName(bits: weights.fc.bits, group: weights.fc.groupSize),
-                QWGemmAQ.siluPairKernelName(bits: weights.gu.view.bits, group: weights.gu.view.groupSize),
-                QWGemmAQ.headArgmaxKernelName(bits: weights.fc.bits, group: weights.fc.groupSize),
-                QWGemmAQ.kernelName(bits: weights.fc.bits, group: weights.fc.groupSize)
+                QWGemmAQ.decodeKernelName(bits: weights.fc.bits, group: weights.fc.groupSize, isSHVQ: weights.fc.isSHVQ),
+                QWGemmAQ.siluPairKernelName(bits: weights.gu.view.bits, group: weights.gu.view.groupSize, isSHVQ: weights.gu.view.isSHVQ),
+                QWGemmAQ.headArgmaxKernelName(bits: weights.fc.bits, group: weights.fc.groupSize, isSHVQ: weights.fc.isSHVQ),
+                QWGemmAQ.kernelName(bits: weights.fc.bits, group: weights.fc.groupSize, isSHVQ: weights.fc.isSHVQ)
             ].compactMap({ $0 }) {
                 _ = try hal.pipeline(optionalKernel)
             }
@@ -337,7 +337,8 @@ final class QWMTPDraftEncoder {
                           x: s.oProjOut, gamma: w.postAttnNorm, out: s.ln2, residual: s.fcOut16,
                           geometry: geometry)
         if let moe = w.moe, let moeScratch = s.moe {
-            try QWMoEChain.encode(enc: enc, hal: hal, moe: moe, s: moeScratch,
+            var mEnc = enc
+            try QWMoEChain.encode(enc: &mEnc, hal: hal, moe: moe, s: moeScratch,
                                   x16: s.ln2, dn32: s.fcOut32, dn16: s.downOut,
                                   rows: 1, geometry: geometry)
         } else {

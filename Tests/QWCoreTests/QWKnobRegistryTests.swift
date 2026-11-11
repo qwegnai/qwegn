@@ -120,4 +120,25 @@ final class QWKnobRegistryTests: XCTestCase {
         // 32,768 tokens splits into 4 full 8192-row chunks.
         XCTAssertEqual(QWPrefillLimits.balancedChunkRows(forTotalTokens: 32768, maxChunkRows: 8192), 8192)
     }
+
+    func testLSAClusterBlockAcceptsEmeansMacroBlock() throws {
+        let knob = try XCTUnwrap(QWKnobRegistry.descriptor("lsaClusterBlock"))
+        XCTAssertNoThrow(try knob.validate(.int(256), capabilities: [.lsa], model: "m"))
+        XCTAssertNoThrow(try knob.validate(.int(512), capabilities: [.lsa], model: "m"))
+        XCTAssertNoThrow(try knob.validate(.int(1024), capabilities: [.lsa], model: "m"))
+        XCTAssertNoThrow(try knob.validate(.int(QWLSAConfig.emeansClusterBlock), capabilities: [.lsa], model: "m"))
+        XCTAssertThrowsError(try knob.validate(.int(128), capabilities: [.lsa], model: "m"))
+        XCTAssertThrowsError(try knob.validate(.int(8192), capabilities: [.lsa], model: "m"))
+    }
+
+    func testRecommendedDefaultsAndPromotedCLITuningHandles() throws {
+        XCTAssertEqual(QWKnobRegistry.descriptor("lsaMode")?.defaultValue, .string("auto"))
+        XCTAssertEqual(QWKnobRegistry.descriptor("kvMode")?.defaultValue, .string("q4"))
+        for id in ["memoryPolicy", "residentExpertsPerLayer", "moeSpecBudget"] {
+            let d = try XCTUnwrap(QWKnobRegistry.descriptor(id))
+            XCTAssertTrue(d.surfaces.contains(.cli), "\(id) must be exposed on the CLI")
+        }
+        let tuning = QWEngineTuning(values: [:], environment: ["QW_MOE_SPEC_BUDGET": "4"])
+        XCTAssertEqual(tuning.moeSpecBudget, 4)
+    }
 }

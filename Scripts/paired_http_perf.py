@@ -34,6 +34,36 @@ def endpoint(value):
     return parsed.hostname, port, parsed.path
 
 
+def fetch_engine_info(target, timeout):
+    host, port, _ = target
+    connection = http.client.HTTPConnection(host, port, timeout=timeout)
+    try:
+        connection.request("GET", "/v1/engine/info")
+        response = connection.getresponse()
+        raw = response.read()
+        if response.status != 200:
+            raise ValueError(f"/v1/engine/info returned HTTP {response.status}")
+        info = json.loads(raw)
+        if not isinstance(info, dict):
+            raise ValueError("/v1/engine/info payload must be an object")
+        return info
+    finally:
+        connection.close()
+
+
+def check_strict_servers(baseline_info, candidate_info):
+    for arm, info in (("baseline", baseline_info), ("candidate", candidate_info)):
+        sources = info.get("sources")
+        if not isinstance(sources, dict) or sources.get("noProfile") != "explicit":
+            raise ValueError(f"{arm} server was not started with --no-profile (sources.noProfile != explicit)")
+    base_params = baseline_info.get("parameters") or {}
+    cand_params = candidate_info.get("parameters") or {}
+    for key in ("kvMode", "contextBudget", "mtpDrafts", "mtpBackend",
+                "lsaMode", "gdnPrefillMode", "prefillScratchEviction"):
+        if base_params.get(key) != cand_params.get(key):
+            raise ValueError(f"strict server parameter mismatch in {key}: {base_params.get(key)!r} vs {cand_params.get(key)!r}")
+
+
 def request_one(target, payload, timeout, barrier):
     host, port, path = target
     connection = http.client.HTTPConnection(host, port, timeout=timeout)
@@ -150,6 +180,8 @@ def main(argv=None):
     parser.add_argument("--timeout", type=float, default=1800)
     parser.add_argument("--cooldown-seconds", type=float, default=0,
                         help="Idle before each arm, including warmups, to limit thermal bias")
+    parser.add_argument("--strict", action="store_true",
+                        help="Verify /v1/engine/info reports --no-profile and matching parameters on both servers")
     parser.add_argument("--notes", default="", help="Server builds, configs, hardware and cache state")
     args = parser.parse_args(argv)
     if not math.isfinite(args.cooldown_seconds) or args.cooldown_seconds < 0:
@@ -164,6 +196,15 @@ def main(argv=None):
         parser.error(str(error))
     if not isinstance(body, dict) or not isinstance(body.get("messages"), list) or not body.get("model"):
         parser.error("request must be an object with model and messages")
+    engine_info = None
+    if args.strict:
+        try:
+            base_info = fetch_engine_info(targets["baseline"], args.timeout)
+            cand_info = fetch_engine_info(targets["candidate"], args.timeout)
+            check_strict_servers(base_info, cand_info)
+            engine_info = {"baseline": base_info, "candidate": cand_info}
+        except (OSError, http.client.HTTPException, UnicodeDecodeError, ValueError, TypeError) as error:
+            parser.error(f"strict server verification failed: {error}")
     body["stream"] = True
     payload = json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     report = {
@@ -172,7 +213,9 @@ def main(argv=None):
         "baseline_url": args.baseline, "candidate_url": args.candidate,
         "model_id": args.model_id, "request_file_sha256": digest(args.request),
         "effective_request_sha256": hashlib.sha256(payload).hexdigest(),
-        "concurrency": args.concurrency, "notes": args.notes, "cooldown_seconds": args.cooldown_seconds,
+        "concurrency": args.concurrency, "strict": args.strict, "notes": args.notes,
+        "cooldown_seconds": args.cooldown_seconds,
+        **({"engine_info": engine_info} if engine_info is not None else {}),
         "warmups": [], "samples": [], "status": "in_progress",
     }
     try:

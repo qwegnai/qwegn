@@ -194,4 +194,22 @@ public struct QWKVCompressedLayout: Sendable {
             }
         }
     }
+
+    /// Calibrated group-128 Q4 quantization using an out-of-sample `slow-EMA` codebook;
+    /// writes standard `(qOut, scalesOut, minsOut)` readable by `dequantizeQ4` and GPU Q4 pages.
+    public static func quantizeQ4Calibrated(
+        input: [Float],
+        codebook: QWKVSlowEMACodebook,
+        qOut: inout [UInt8],
+        scalesOut: inout [Float16],
+        minsOut: inout [Float16]
+    ) throws {
+        try QWKVSlowEMACalibrator.quantizeQ4Calibrated(
+            input: input,
+            codebook: codebook,
+            qOut: &qOut,
+            scalesOut: &scalesOut,
+            minsOut: &minsOut
+        )
+    }
 }

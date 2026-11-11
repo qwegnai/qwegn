@@ -18,5 +18,5 @@ func nonTerminalProgressIsPlainLines() {
     progress.finish()
     // The render path is exercised; redraw codes are only emitted on a terminal, and
     // the end-to-end pull output is checked on a real download.
-    #expect(true)
+    #expect(Bool(true))
 }

@@ -46,11 +46,22 @@ extension QWEngineDriver {
         guard config.warmByteLimit >= 0, config.entryLimit > 0, verifiedSession == nil else {
             throw QWEngineDriverError.state("invalid prefix cache limits or unresolved verification")
         }
-        if config.warmByteLimit == 0 {
+        let wiredEngineBytes = max(arena.committedBytes, capacityPlan.requiredBytes)
+        let warmAdmission = QWResidencyAdmission.clampWarmCache(
+            requestedWarmBytes: config.warmByteLimit,
+            requestedSessions: config.maxConcurrentSessions,
+            wiredEngineBytes: wiredEngineBytes,
+            measuredAfterWire: true,
+            snapshot: QWLiveDeviceMemorySnapshotSource(maxWorkingSetBytes: hal.caps.maxWorkingSetBytes).capture()
+        )
+        var effectiveConfig = config
+        effectiveConfig.warmByteLimit = warmAdmission.admittedWarmBytes
+        effectiveConfig.maxConcurrentSessions = warmAdmission.maxConcurrentSessions
+        if effectiveConfig.warmByteLimit == 0 {
             prefixStore = nil
             cacheDiskManager = nil
         } else {
-            let coordinator = try QWPrefixCacheCoordinator(config: config, vocab: geometry.vocab)
+            let coordinator = try QWPrefixCacheCoordinator(config: effectiveConfig, vocab: geometry.vocab)
             let store = coordinator.warmStore!
             let diskManager = coordinator.diskManager
             store.onEvict = { [weak self, weak store] key, value, allowsSuffix in

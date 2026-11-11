@@ -119,6 +119,7 @@ public struct QWMemoryManifest: Codable, Sendable, Equatable {
     public var includeTests: Bool
     public var files: [FileEntry]
     public var caches: [CacheArtifact]
+    public var semanticIndex: QWMemorySemanticIndex?
 
     public init(
         schemaVersion: Int = Self.currentSchemaVersion,
@@ -128,7 +129,8 @@ public struct QWMemoryManifest: Codable, Sendable, Equatable {
         clusterBlockTokens: Int = 512,
         includeTests: Bool = false,
         files: [FileEntry] = [],
-        caches: [CacheArtifact] = []
+        caches: [CacheArtifact] = [],
+        semanticIndex: QWMemorySemanticIndex? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.packName = packName
@@ -138,6 +140,7 @@ public struct QWMemoryManifest: Codable, Sendable, Equatable {
         self.includeTests = includeTests
         self.files = files
         self.caches = caches
+        self.semanticIndex = semanticIndex
     }
 
     public static func qwgDirectoryURL(in rootURL: URL) -> URL {

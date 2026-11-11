@@ -13,10 +13,13 @@ public enum QWHQ4Layout {
     public static let blockBytes = 20
 }
 
-/// KV storage dtype widths (`f16` = 2 B, `q8` = 1 B).
+/// KV storage dtype widths (`f16` = 2 B, `q8` = 1 B, `q4` = 0.5 B).
 public enum QWAdmissionDtype: Sendable {
-    case f16, q8
-    public var bytesPerParam: Int { switch self { case .f16: 2; case .q8: 1 } }
+    case f16, q8, q4
+    public var bytesPerParam: Int { switch self { case .f16: 2; case .q8, .q4: 1 } }
+    public func kvBytes(elements: Int) -> Int {
+        switch self { case .f16: elements * 2; case .q8: elements; case .q4: elements / 2 }
+    }
 }
 
 public enum QWAdmissionError: Error, CustomStringConvertible, Equatable {
@@ -57,7 +60,7 @@ public struct QWAdmissionPlan: Sendable, Equatable {
     /// Marginal admission: checks whether one additional sequence fits in headroom.
     public func admitAnotherSequence() -> QWAdmissionVerdict {
         let s = Self.perSequenceStateBytes(descriptor: descriptor,
-                                           kvBytesPerParam: kvDtype.bytesPerParam,
+                                           kvDtype: kvDtype,
                                            contextTokens: contextTokens,
                                            scratchPerSeq: scratchPerSeq)
         let per = s.kv + s.gdn + s.scratch
@@ -68,7 +71,7 @@ public struct QWAdmissionPlan: Sendable, Equatable {
     /// Build the admission plan from descriptor-derived component formulas.
     public init(descriptor: QWModelDescriptor,
                 contextTokens: Int,
-                kvDtype: QWAdmissionDtype = .f16,
+                kvDtype: QWAdmissionDtype = .q4,
                 scratchPerSeq: Int,
                 workingSetCapBytes: Int) throws {
         guard contextTokens > 0, scratchPerSeq >= 0, workingSetCapBytes > 0 else {
@@ -76,7 +79,7 @@ public struct QWAdmissionPlan: Sendable, Equatable {
         }
         let model = try Self.modelResidentBytes(descriptor: descriptor)
         let perSeq = Self.perSequenceStateBytes(descriptor: descriptor,
-                                                kvBytesPerParam: kvDtype.bytesPerParam,
+                                                kvDtype: kvDtype,
                                                 contextTokens: contextTokens,
                                                 scratchPerSeq: scratchPerSeq)
         self.descriptor = descriptor
@@ -108,13 +111,9 @@ public struct QWAdmissionPlan: Sendable, Equatable {
 
     // MARK: - Component Formulas
 
-    /// Resident weights of the dense model as stored in the HQ4_G32_M5 pack: 20 bytes per
-    /// 32-weight group (0.625 B/param). Covers the embedding and lm_head matrices, attention and
-    /// GDN projections per layer kind, and the dense SwiGLU MLP (gate/up/down) per layer.
+    /// Resident weights of the model as stored in an HQ4_G32_M5 pack: 20 bytes per
+    /// 32-weight group (0.625 B/param). Covers embeddings, attention/GDN projections, and dense or MoE MLPs.
     public static func modelResidentBytes(descriptor d: QWModelDescriptor) throws -> Int {
-        guard let mlpI = d.denseIntermediate else {
-            throw QWAdmissionError.bad("admission: descriptor has no dense MLP intermediate size")
-        }
         let hq4 = { (elems: Int) in elems / QWHQ4Layout.group * QWHQ4Layout.blockBytes }
         var t = 0
         t += hq4(d.vocab * d.hidden) * 2
@@ -126,27 +125,59 @@ public struct QWAdmissionPlan: Sendable, Equatable {
         t += hq4(gdnLayers * (d.gdnQKVChannels * d.hidden
                               + d.gdnConvKernel * d.gdnQKVChannels
                               + d.hidden * d.gdnVHeads * d.gdnHeadDim))
-        t += hq4(d.numLayers * 3 * (mlpI * d.hidden))
-        // MTP draft head: each MTP layer is one full-attention block + dense MLP, plus its fc (2h → h).
+        let mlpPerLayerElems: Int
+        if let numE = d.numExperts, let moeI = d.moeIntermediate {
+            let denseLayers = min(d.numLayers, max(0, d.firstKDenseReplace))
+            let moeLayers = d.numLayers - denseLayers
+            let denseI = d.denseIntermediate ?? moeI
+            let sharedI = d.sharedExpertIntermediate ?? 0
+            t += hq4(denseLayers * 3 * (denseI * d.hidden))
+            t += hq4(moeLayers * 3 * ((numE * moeI + sharedI) * d.hidden))
+            mlpPerLayerElems = 3 * ((numE * moeI + sharedI) * d.hidden)
+        } else if let mlpI = d.denseIntermediate {
+            t += hq4(d.numLayers * 3 * (mlpI * d.hidden))
+            mlpPerLayerElems = 3 * (mlpI * d.hidden)
+        } else {
+            throw QWAdmissionError.bad("admission: descriptor has neither dense nor MoE MLP intermediate size")
+        }
+        // MTP draft head: each MTP layer is one full-attention block + MLP, plus its fc (2h → h).
         let mtpBlock = d.qProjOut * d.hidden + 2 * d.kvHeads * d.headDim * d.hidden
-            + d.qProjOut * d.hidden + 3 * mlpI * d.hidden + 2 * d.hidden * d.hidden
+            + d.qProjOut * d.hidden + mlpPerLayerElems + 2 * d.hidden * d.hidden
         t += hq4(d.mtpLayers * mtpBlock)
         return t
     }
 
     /// Per-sequence state bytes: KV cache, GDN recurrent + conv state, and scratch.
     public static func perSequenceStateBytes(descriptor d: QWModelDescriptor,
-                                             kvBytesPerParam: Int,
+                                             kvDtype: QWAdmissionDtype,
                                              contextTokens: Int,
                                              scratchPerSeq: Int)
         -> (kv: Int, gdn: Int, scratch: Int) {
         let attnLayers = (0..<d.numLayers).filter { d.isFullAttention($0) }.count
-        let kv = 2 * attnLayers * contextTokens * d.kvHeads * d.headDim * kvBytesPerParam
+        let kvElems = d.mlaUseNoPE
+            ? attnLayers * contextTokens * ((d.kvLoraRank ?? 512) + (d.qkRopeHeadDim ?? 64))
+            : 2 * attnLayers * contextTokens * d.kvHeads * d.headDim
+        let kv = kvDtype.kvBytes(elements: kvElems)
         let gdnLayers = d.numLayers - attnLayers
         let rec = d.gdnVHeads * d.gdnHeadDim * d.gdnHeadDim
         let ring = (d.gdnConvKernel - 1) * d.gdnQKVChannels
         let gdn = gdnLayers * (rec + ring) * 4
         return (kv, gdn, scratchPerSeq)
+    }
+
+    /// Legacy byte-width overload retained for callers passing explicit `kvBytesPerParam`.
+    public static func perSequenceStateBytes(descriptor d: QWModelDescriptor,
+                                             kvBytesPerParam: Int,
+                                             contextTokens: Int,
+                                             scratchPerSeq: Int)
+        -> (kv: Int, gdn: Int, scratch: Int) {
+        let dtype: QWAdmissionDtype = kvBytesPerParam >= 2 ? .f16 : .q8
+        var res = perSequenceStateBytes(descriptor: d, kvDtype: dtype, contextTokens: contextTokens, scratchPerSeq: scratchPerSeq)
+        if kvBytesPerParam > 0 && kvBytesPerParam != dtype.bytesPerParam {
+            let attnLayers = (0..<d.numLayers).filter { d.isFullAttention($0) }.count
+            res.kv = 2 * attnLayers * contextTokens * d.kvHeads * d.headDim * kvBytesPerParam
+        }
+        return res
     }
 }
 

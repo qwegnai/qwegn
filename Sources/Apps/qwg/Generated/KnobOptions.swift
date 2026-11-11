@@ -128,8 +128,8 @@ public struct QWGKnobOptions: ParsableArguments {
     @Option(name: [.customLong("lsa-budget")], help: "LSA active key budget k in tokens (512...8192, default 2048).")
     public var lsaBudget: Int?
 
-    /// LSA dynamic Ward cluster block size L in tokens (256...1024, default 512).
-    @Option(name: [.customLong("lsa-cluster-block")], help: "LSA dynamic Ward cluster block size L in tokens (256...1024, default 512).")
+    /// LSA cluster block size L in tokens (256...4096, default 512; 4096 enables e-means).
+    @Option(name: [.customLong("lsa-cluster-block")], help: "LSA cluster block size L in tokens (256...4096, default 512; 4096 enables e-means).")
     public var lsaClusterBlock: Int?
 
     /// Explicit path to a .qlsa (QLSA0001) projection sidecar file.
@@ -140,17 +140,37 @@ public struct QWGKnobOptions: ParsableArguments {
     @Flag(name: [.customLong("lazy")], inversion: .prefixedNo, help: "Load the model on the first request instead of at startup.")
     public var lazy: Bool?
 
+    /// Load the vision tower into memory for multimodal processing.
+    @Flag(name: [.customLong("load-vision")], inversion: .prefixedNo, help: "Load the vision tower into memory for multimodal processing.")
+    public var loadVision: Bool?
+
     /// Log level: debug, info, warn, error or none.
     @Option(name: [.customLong("log-level")], help: "Log level: debug, info, warn, error or none.", transform: { $0.lowercased() })
     public var logLevel: String?
+
+    /// Unified-memory residency policy: maxResident or safe.
+    @Option(name: [.customLong("memory-policy")], help: "Unified-memory residency policy: maxResident or safe.", transform: { s in ["maxResident", "safe"].first { $0.lowercased() == s.lowercased() } ?? s })
+    public var memoryPolicy: String?
 
     /// OS RAM reserve in GiB, subtracted from physical memory.
     @Option(name: [.customLong("os-reserve")], help: "OS RAM reserve in GiB, subtracted from physical memory.")
     public var osReserve: Double?
 
+    /// Resident hot experts per MoE layer in unified memory (0 sizes automatically from memory policy).
+    @Option(name: [.customLong("resident-experts-per-layer")], help: "Resident hot experts per MoE layer in unified memory (0 sizes automatically from memory policy).")
+    public var residentExpertsPerLayer: Int?
+
+    /// Stream PLE N-gram table from SSD (~64 MB cache) instead of loading into RAM.
+    @Flag(name: [.customLong("stream-ngrams")], inversion: .prefixedNo, help: "Stream PLE N-gram table from SSD (~64 MB cache) instead of loading into RAM.")
+    public var streamNgrams: Bool?
+
     /// KV cache quantization: f16, q8 or q4.
     @Option(name: [.customLong("kv-mode")], help: "KV cache quantization: f16, q8 or q4.", transform: { $0.lowercased() })
     public var kvMode: String?
+
+    /// MoE-Spec routed expert budget per verify layer (0 is lossless, 1...8 caps cold SSD reads).
+    @Option(name: [.customLong("moe-spec-budget")], help: "MoE-Spec routed expert budget per verify layer (0 is lossless, 1...8 caps cold SSD reads).")
+    public var moeSpecBudget: Int?
 
     /// GDN prefill algorithm: chunked, regres or naive.
     @Option(name: [.customLong("gdn-prefill")], help: "GDN prefill algorithm: chunked, regres or naive.", transform: { $0.lowercased() })
@@ -164,12 +184,12 @@ public struct QWGKnobOptions: ParsableArguments {
     @Option(name: [.customLong("mtp-entropy-threshold")], help: "Entropy threshold for an adaptive MTP depth.")
     public var mtpEntropyThreshold: Double?
 
-    /// Path to the DFlash 2 drafter model pack.
-    @Option(name: [.customLong("dflash-draft-pack")], help: "Path to the DFlash 2 drafter model pack.")
+    /// Path to the DFlash 2 / DSpine drafter model pack.
+    @Option(name: [.customLong("dflash-draft-pack")], help: "Path to the DFlash 2 / DSpine drafter model pack.")
     public var dflashDraftPack: String?
 
-    /// DFlash 2 candidate selector top-K.
-    @Option(name: [.customLong("dflash-top-k")], help: "DFlash 2 candidate selector top-K.")
+    /// DFlash 2 / DSpine candidate selector top-K.
+    @Option(name: [.customLong("dflash-top-k")], help: "DFlash 2 / DSpine candidate selector top-K.")
     public var dflashTopK: Int?
 
     public init() {}
@@ -204,9 +224,14 @@ public struct QWGKnobOptions: ParsableArguments {
         QWGKnobBinding(id: "lsaClusterBlock", property: "lsaClusterBlock", flag: "lsa-cluster-block"),
         QWGKnobBinding(id: "lsaSidecarPath", property: "lsaSidecarPath", flag: "lsa-sidecar-path"),
         QWGKnobBinding(id: "lazyLoad", property: "lazy", flag: "lazy"),
+        QWGKnobBinding(id: "loadVision", property: "loadVision", flag: "load-vision"),
         QWGKnobBinding(id: "logLevel", property: "logLevel", flag: "log-level"),
+        QWGKnobBinding(id: "memoryPolicy", property: "memoryPolicy", flag: "memory-policy"),
         QWGKnobBinding(id: "osReserveGiB", property: "osReserve", flag: "os-reserve"),
+        QWGKnobBinding(id: "residentExpertsPerLayer", property: "residentExpertsPerLayer", flag: "resident-experts-per-layer"),
+        QWGKnobBinding(id: "streamNgrams", property: "streamNgrams", flag: "stream-ngrams"),
         QWGKnobBinding(id: "kvMode", property: "kvMode", flag: "kv-mode"),
+        QWGKnobBinding(id: "moeSpecBudget", property: "moeSpecBudget", flag: "moe-spec-budget"),
         QWGKnobBinding(id: "gdnPrefill", property: "gdnPrefill", flag: "gdn-prefill"),
         QWGKnobBinding(id: "mtpAdaptiveDepth", property: "mtpAdaptiveDepth", flag: "mtp-adaptive-depth"),
         QWGKnobBinding(id: "mtpEntropyThreshold", property: "mtpEntropyThreshold", flag: "mtp-entropy-threshold"),
@@ -246,9 +271,14 @@ public struct QWGKnobOptions: ParsableArguments {
         if let v = lsaClusterBlock { out["lsaClusterBlock"] = .int(v) }
         if let v = lsaSidecarPath { out["lsaSidecarPath"] = .string(v) }
         if let v = lazy { out["lazyLoad"] = .bool(v) }
+        if let v = loadVision { out["loadVision"] = .bool(v) }
         if let v = logLevel { out["logLevel"] = .string(v) }
+        if let v = memoryPolicy { out["memoryPolicy"] = .string(v) }
         if let v = osReserve { out["osReserveGiB"] = .double(v) }
+        if let v = residentExpertsPerLayer { out["residentExpertsPerLayer"] = .int(v) }
+        if let v = streamNgrams { out["streamNgrams"] = .bool(v) }
         if let v = kvMode { out["kvMode"] = .string(v) }
+        if let v = moeSpecBudget { out["moeSpecBudget"] = .int(v) }
         if let v = gdnPrefill { out["gdnPrefill"] = .string(v) }
         if let v = mtpAdaptiveDepth { out["mtpAdaptiveDepth"] = .bool(v) }
         if let v = mtpEntropyThreshold { out["mtpEntropyThreshold"] = .double(v) }
@@ -281,9 +311,9 @@ public struct QWGKnobOptions: ParsableArguments {
     /// The knobs each command honours. A knob the user set that the
     /// command cannot honour is refused, not ignored.
     public static let honoured: [String: Set<String>] = [
-        "qwg run": ["contextTokens", "maxTokens", "kvMode", "enableThinking", "reasoningEffort", "systemPrompt", "gdnPrefill", "evictPrefillScratch", "lsaMode", "lsaBudget", "lsaClusterBlock", "lsaSidecarPath", "mtpDrafts", "mtpBackend", "mtpRelaxedMargin", "mtpRelaxedMinProb", "mtpDraftStrategy", "mtpQuadraticSeeding", "mtpAdaptiveDepth", "mtpEntropyThreshold", "dflashDraftPackPath", "dflashSelectorTopK", "osReserveGiB", "prefillChunkRows", "temperature", "topP", "topK", "repetitionPenalty", "seed", "prefixCacheEnabled", "cacheDir"],
-        "qwg repl": ["contextTokens", "maxTokens", "kvMode", "enableThinking", "reasoningEffort", "systemPrompt", "warmCacheLimitGiB", "ssdCacheLimitGiB", "cacheDir", "lsaMode", "lsaBudget", "lsaClusterBlock", "lsaSidecarPath", "mtpDrafts", "mtpBackend", "mtpRelaxedMargin", "mtpRelaxedMinProb", "mtpDraftStrategy", "mtpQuadraticSeeding", "mtpAdaptiveDepth", "mtpEntropyThreshold", "dflashDraftPackPath", "dflashSelectorTopK", "osReserveGiB", "prefillChunkRows", "temperature", "topP", "topK", "repetitionPenalty", "seed"],
-        "qwg serve": ["contextTokens", "kvMode", "lsaMode", "lsaBudget", "lsaClusterBlock", "lsaSidecarPath", "mtpDrafts", "mtpBackend", "mtpRelaxedMargin", "mtpRelaxedMinProb", "mtpDraftStrategy", "mtpQuadraticSeeding", "mtpAdaptiveDepth", "mtpEntropyThreshold", "dflashDraftPackPath", "dflashSelectorTopK", "gdnPrefill", "evictPrefillScratch", "prefillChunkRows", "maxConcurrentSessions", "warmCacheLimitGiB", "ssdCacheLimitGiB", "cacheDir", "logLevel", "temperature", "topP", "topK", "maxTokens", "repetitionPenalty", "seed", "enableThinking", "reasoningEffort", "systemPrompt", "lazyLoad"],
+        "qwg run": ["contextTokens", "maxTokens", "kvMode", "enableThinking", "reasoningEffort", "systemPrompt", "gdnPrefill", "evictPrefillScratch", "lsaMode", "lsaBudget", "lsaClusterBlock", "lsaSidecarPath", "mtpDrafts", "mtpBackend", "mtpRelaxedMargin", "mtpRelaxedMinProb", "mtpDraftStrategy", "mtpQuadraticSeeding", "mtpAdaptiveDepth", "mtpEntropyThreshold", "dflashDraftPackPath", "dflashSelectorTopK", "memoryPolicy", "osReserveGiB", "residentExpertsPerLayer", "moeSpecBudget", "prefillChunkRows", "temperature", "topP", "topK", "repetitionPenalty", "seed", "prefixCacheEnabled", "cacheDir", "loadVision", "streamNgrams"],
+        "qwg repl": ["contextTokens", "maxTokens", "kvMode", "enableThinking", "reasoningEffort", "systemPrompt", "warmCacheLimitGiB", "ssdCacheLimitGiB", "cacheDir", "lsaMode", "lsaBudget", "lsaClusterBlock", "lsaSidecarPath", "mtpDrafts", "mtpBackend", "mtpRelaxedMargin", "mtpRelaxedMinProb", "mtpDraftStrategy", "mtpQuadraticSeeding", "mtpAdaptiveDepth", "mtpEntropyThreshold", "dflashDraftPackPath", "dflashSelectorTopK", "memoryPolicy", "osReserveGiB", "residentExpertsPerLayer", "moeSpecBudget", "prefillChunkRows", "temperature", "topP", "topK", "repetitionPenalty", "seed", "loadVision", "streamNgrams"],
+        "qwg serve": ["contextTokens", "kvMode", "lsaMode", "lsaBudget", "lsaClusterBlock", "lsaSidecarPath", "mtpDrafts", "mtpBackend", "mtpRelaxedMargin", "mtpRelaxedMinProb", "mtpDraftStrategy", "mtpQuadraticSeeding", "mtpAdaptiveDepth", "mtpEntropyThreshold", "dflashDraftPackPath", "dflashSelectorTopK", "memoryPolicy", "osReserveGiB", "residentExpertsPerLayer", "moeSpecBudget", "gdnPrefill", "evictPrefillScratch", "prefillChunkRows", "maxConcurrentSessions", "warmCacheLimitGiB", "ssdCacheLimitGiB", "cacheDir", "logLevel", "temperature", "topP", "topK", "maxTokens", "repetitionPenalty", "seed", "enableThinking", "reasoningEffort", "systemPrompt", "lazyLoad", "loadVision", "streamNgrams"],
         "qwg plan": ["contextTokens", "kvMode"],
     ]
 
@@ -298,6 +328,7 @@ public struct QWGKnobOptions: ParsableArguments {
         "gdnPrefill": ["qwg run", "qwg serve"],
         "kvMode": ["qwg run", "qwg repl", "qwg serve", "qwg plan"],
         "lazyLoad": ["qwg serve"],
+        "loadVision": ["qwg run", "qwg repl", "qwg serve"],
         "logLevel": ["qwg serve"],
         "lsaBudget": ["qwg run", "qwg repl", "qwg serve"],
         "lsaClusterBlock": ["qwg run", "qwg repl", "qwg serve"],
@@ -305,6 +336,8 @@ public struct QWGKnobOptions: ParsableArguments {
         "lsaSidecarPath": ["qwg run", "qwg repl", "qwg serve"],
         "maxConcurrentSessions": ["qwg serve"],
         "maxTokens": ["qwg run", "qwg repl", "qwg serve"],
+        "memoryPolicy": ["qwg run", "qwg repl", "qwg serve"],
+        "moeSpecBudget": ["qwg run", "qwg repl", "qwg serve"],
         "mtpAdaptiveDepth": ["qwg run", "qwg repl", "qwg serve"],
         "mtpBackend": ["qwg run", "qwg repl", "qwg serve"],
         "mtpDraftStrategy": ["qwg run", "qwg repl", "qwg serve"],
@@ -313,13 +346,15 @@ public struct QWGKnobOptions: ParsableArguments {
         "mtpQuadraticSeeding": ["qwg run", "qwg repl", "qwg serve"],
         "mtpRelaxedMargin": ["qwg run", "qwg repl", "qwg serve"],
         "mtpRelaxedMinProb": ["qwg run", "qwg repl", "qwg serve"],
-        "osReserveGiB": ["qwg run", "qwg repl"],
+        "osReserveGiB": ["qwg run", "qwg repl", "qwg serve"],
         "prefillChunkRows": ["qwg run", "qwg repl", "qwg serve"],
         "prefixCacheEnabled": ["qwg run"],
         "reasoningEffort": ["qwg run", "qwg repl", "qwg serve"],
         "repetitionPenalty": ["qwg run", "qwg repl", "qwg serve"],
+        "residentExpertsPerLayer": ["qwg run", "qwg repl", "qwg serve"],
         "seed": ["qwg run", "qwg repl", "qwg serve"],
         "ssdCacheLimitGiB": ["qwg repl", "qwg serve"],
+        "streamNgrams": ["qwg run", "qwg repl", "qwg serve"],
         "systemPrompt": ["qwg run", "qwg repl", "qwg serve"],
         "temperature": ["qwg run", "qwg repl", "qwg serve"],
         "topK": ["qwg run", "qwg repl", "qwg serve"],

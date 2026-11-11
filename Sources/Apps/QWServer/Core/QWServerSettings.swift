@@ -117,7 +117,7 @@ public struct QWServerSettings: Codable, Sendable, Equatable {
         modelAlias: String = "",
         modelAliases: [String: String] = [:],
         maxContext: Int = 4096,
-        kvMode: String = "f16",
+        kvMode: String = "q4",
         ropeScalingType: String = "none",
         ropeScalingFactor: Double = 1.0,
         temperature: Double = 0.7,
@@ -146,7 +146,7 @@ public struct QWServerSettings: Codable, Sendable, Equatable {
         evictPrefillScratch: String = "auto",
         prefillChunkSize: Int = QWPrefillLimits.chunkRows,
         maxConcurrentSessions: Int = QWCacheConfig.defaultMaxConcurrentSessions,
-        lsaMode: String = "off",
+        lsaMode: String = "auto",
         lsaBudget: Int = QWLSAConfig.defaultBudget,
         lsaClusterBlock: Int = QWLSAConfig.defaultClusterBlock,
         lsaSidecarPath: String = "",
@@ -235,7 +235,7 @@ public struct QWServerSettings: Codable, Sendable, Equatable {
         self.modelAliases = decodedAliases
         self.modelAlias = decodedAliases[self.modelName] ?? trimmedDecoded
         self.maxContext = try c.decodeIfPresent(Int.self, forKey: .maxContext) ?? 4096
-        self.kvMode = try c.decodeIfPresent(String.self, forKey: .kvMode) ?? "f16"
+        self.kvMode = try c.decodeIfPresent(String.self, forKey: .kvMode) ?? "q4"
         func decodeDouble(forKey key: CodingKeys, defaultVal: Double) throws -> Double {
             try c.decodeIfPresent(Double.self, forKey: key) ?? defaultVal
         }
@@ -270,7 +270,7 @@ public struct QWServerSettings: Codable, Sendable, Equatable {
         self.prefillChunkSize = try c.decodeIfPresent(Int.self, forKey: .prefillChunkSize) ?? QWPrefillLimits.chunkRows
         let decodedSessions = try c.decodeIfPresent(Int.self, forKey: .maxConcurrentSessions) ?? QWCacheConfig.defaultMaxConcurrentSessions
         self.maxConcurrentSessions = max(1, min(16, decodedSessions))
-        self.lsaMode = try c.decodeIfPresent(String.self, forKey: .lsaMode) ?? "off"
+        self.lsaMode = try c.decodeIfPresent(String.self, forKey: .lsaMode) ?? "auto"
         self.lsaBudget = try c.decodeIfPresent(Int.self, forKey: .lsaBudget) ?? QWLSAConfig.defaultBudget
         self.lsaClusterBlock = try c.decodeIfPresent(Int.self, forKey: .lsaClusterBlock) ?? QWLSAConfig.defaultClusterBlock
         self.lsaSidecarPath = try c.decodeIfPresent(String.self, forKey: .lsaSidecarPath) ?? ""
@@ -374,7 +374,7 @@ public struct QWServerSettings: Codable, Sendable, Equatable {
         let specDefaults = QWSpeculativeParameters.topPerformanceDefaults(for: resolvedDescriptor)
         speculativeParameters = specDefaults
         maxContext = resolvedDescriptor?.maxPositionEmbeddings ?? 4096
-        kvMode = "f16"
+        kvMode = "q4"
         ropeScalingType = "none"
         ropeScalingFactor = 1.0
         temperature = 0.7
@@ -387,7 +387,7 @@ public struct QWServerSettings: Codable, Sendable, Equatable {
         reasoningEffort = "xhigh"
         gdnPrefill = "chunked"
         evictPrefillScratch = "auto"
-        lsaMode = "off"
+        lsaMode = "auto"
         lsaBudget = QWLSAConfig.defaultBudget
         lsaClusterBlock = QWLSAConfig.defaultClusterBlock
         lsaSidecarPath = ""
@@ -568,23 +568,24 @@ public struct QWServerSettings: Codable, Sendable, Equatable {
         }
     }
 
-    /// Scans ~/.qwg/models for installed DFlash drafter model packs
+    /// Scans ~/.qwg/models for installed DFlash 2 and DSpine drafter model packs via `config.json`.
     public static func scanDrafterModelsDirectory() -> [DiscoveredModel] {
-        let dir = "~/.qwg/models".canonicalPath
-        let fm = FileManager.default
+        let dir = QWPaths.modelsDirectoryPath
         var models: [DiscoveredModel] = []
-        if let items = try? fm.contentsOfDirectory(atPath: dir) {
-            for item in items.sorted() where !item.hasPrefix(".") && item.lowercased().contains("dflash") {
+        if let items = try? FileManager.default.contentsOfDirectory(atPath: dir) {
+            for item in items.sorted() where !item.hasPrefix(".") {
                 let itemPath = (dir as NSString).appendingPathComponent(item)
-                let itemName = QWModelRoot.canonicalModelName(for: URL(fileURLWithPath: itemPath))
-                models.append(DiscoveredModel(name: itemName, packPath: itemPath))
+                let url = URL(fileURLWithPath: itemPath)
+                guard QWDFlashConfig.isDrafterPack(at: url) else { continue }
+                models.append(DiscoveredModel(name: QWModelRoot.canonicalModelName(for: url), packPath: itemPath))
             }
         }
-        if models.isEmpty {
-            models.append(DiscoveredModel(name: "Qwen3.8-27B-DFlash2-hq4g32",
-                                          packPath: "~/.qwg/models/Qwen3.8-27B-DFlash2-hq4g32".canonicalPath))
-        }
         return models
+    }
+
+    /// Infers `"dspine"` vs `"dflash2"` and maximum draft count (`blockSize - 1`) from the drafter pack's `config.json`.
+    public static func inferDrafterBackendAndMaxDrafts(packPath: String?) -> (backend: String, maxDrafts: Int) {
+        QWDFlashConfig.inferBackendAndMaxDrafts(packPath: packPath)
     }
 
     /// Validates the currently selected primary model pack (fail-fast check before server launch or upon UI selection).
@@ -596,10 +597,11 @@ public struct QWServerSettings: Codable, Sendable, Equatable {
         return assets.descriptor
     }
 
-    /// Validates the DFlash 2 drafter model configuration against the selected primary model.
+    /// Validates the DFlash 2 / DSpine drafter model configuration against the selected primary model.
     public func validateDFlashConfiguration() throws {
         let descriptor = try validatePrimaryModel()
-        let drafts = max(1, min(7, mtpDrafts))
+        let maxD = QWDFlashConfig.inferBackendAndMaxDrafts(packPath: dflashDraftPackPath).maxDrafts
+        let drafts = max(1, min(maxD, mtpDrafts))
         try QWDFlashConfig.validateDrafter(
             targetDescriptor: descriptor,
             packPath: dflashDraftPackPath,
@@ -608,15 +610,15 @@ public struct QWServerSettings: Codable, Sendable, Equatable {
         )
     }
 
-    /// Validates both the primary model and, when DFlash 2 speculative decoding is enabled, the drafter pack.
+    /// Validates both the primary model and, when DFlash 2 / DSpine speculative decoding is enabled, the drafter pack.
     public func validateBeforeLaunch() throws {
         guard !modelPackPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
               !modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return
         }
         let descriptor = try validatePrimaryModel()
-        let isDFlash2 = mtpBackend.lowercased() == "dflash2" || mtpBackend.lowercased() == "dflash"
-        if speculativeDecodingEnabled && isDFlash2 && mtpDrafts > 0 {
+        let isExternalDrafter = ["dflash2", "dflash", "dspine"].contains(mtpBackend.lowercased())
+        if speculativeDecodingEnabled && isExternalDrafter && mtpDrafts > 0 {
             try QWDFlashConfig.validateDrafter(targetDescriptor: descriptor, packPath: dflashDraftPackPath,
                                                drafts: mtpDrafts, selectorTopK: dflashSelectorTopK)
         }
@@ -667,14 +669,15 @@ public final class QWSettingsManager: @unchecked Sendable {
     /// Resolves effective settings for `modelName` / `packPath`: starts from the model's config files + engine defaults,
     /// and overlays the dedicated per-model profile from `profiles/` if one exists.
     public func effectiveSettings(
-        forModel modelName: String, packPath: String, base: QWServerSettings, from url: URL = defaultSettingsFileURL
+        forModel modelName: String, packPath: String, base: QWServerSettings,
+        from url: URL = defaultSettingsFileURL, ignoreProfile: Bool = false
     ) -> (settings: QWServerSettings, profile: QWKnobProfile?) {
         var resolved = base
         resolved.modelName = modelName
         if !packPath.isEmpty { resolved.modelPackPath = packPath }
         resolved.modelAlias = resolved.alias(for: modelName)
         resolved.applyModelConfigDefaults(packPath: packPath)
-        if let profile = loadProfile(forModel: modelName, from: url) {
+        if !ignoreProfile, let profile = loadProfile(forModel: modelName, from: url) {
             resolved.apply(knobProfile: profile)
             return (resolved, profile)
         }

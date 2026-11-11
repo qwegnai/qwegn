@@ -71,7 +71,7 @@ kernel void qwg_moe_group_pairs_f32(device const int* selected [[buffer(0)]],
         sortedTok[at] = i / int(topK);
         if (writeInv != 0u) invPerm[i] = at;
     }
-    if (writeTiles != 0u && tid < 32u) {
+    if ((writeTiles & 1u) != 0u && tid < 32u) {
         const uint lane = tid;
         const uint chunk = (experts + 31u) / 32u;
         const uint e0 = min(lane * chunk, experts);
@@ -96,7 +96,35 @@ kernel void qwg_moe_group_pairs_f32(device const int* selected [[buffer(0)]],
                 }
             }
         }
-        if (lane == 31u) tileCount[0] = t;
+        const int totalTiles = simd_broadcast(t, 31);
+        if (lane == 31u) tileCount[0] = totalTiles;
+        const uint guCol = (writeTiles >> 1u) & 0x7FFFu;
+        const uint dnCol = (writeTiles >> 16u) & 0xFFFFu;
+        const uint maxTiles = min(totalPairs, min(experts, totalPairs) + (totalPairs + 63u) / 64u);
+        if (guCol > 0u && maxTiles > 0u) {
+            device uint* args = (device uint*)(tileCount + 4);
+            const uint guChunk = max(1u, 2560u / guCol);
+            const uint guSlices = (maxTiles + guChunk - 1u) / guChunk;
+            for (uint s = lane; s < guSlices; s += 32u) {
+                const int rem = totalTiles - int(s * guChunk);
+                const uint n = rem > 0 ? min(uint(rem), guChunk) : 0u;
+                args[s * 3u + 0u] = n > 0u ? guCol : 0u;
+                args[s * 3u + 1u] = n;
+                args[s * 3u + 2u] = n > 0u ? 1u : 0u;
+            }
+            if (dnCol > 0u) {
+                device uint* dnArgs = args + guSlices * 3u;
+                const uint dnChunk = max(1u, 2560u / dnCol);
+                const uint dnSlices = (maxTiles + dnChunk - 1u) / dnChunk;
+                for (uint s = lane; s < dnSlices; s += 32u) {
+                    const int rem = totalTiles - int(s * dnChunk);
+                    const uint n = rem > 0 ? min(uint(rem), dnChunk) : 0u;
+                    dnArgs[s * 3u + 0u] = n > 0u ? dnCol : 0u;
+                    dnArgs[s * 3u + 1u] = n;
+                    dnArgs[s * 3u + 2u] = n > 0u ? 1u : 0u;
+                }
+            }
+        }
     }
 }
 

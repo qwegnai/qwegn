@@ -138,7 +138,8 @@ public final class FNGPUMTP: @unchecked Sendable {
     /// Encodes a T-row MTP pass into `enc` using `streamPrev [T, W]` and on-device `tokens [T]` at `pos`.
     /// When `usePrefillPath` is true (or `T > 4`), runs `layerPrefill` with `scratch`; else runs decode/verify `layer`.
     public func encode(
-        _ enc: any MTLComputeCommandEncoder,
+        _ enc: inout any MTLComputeCommandEncoder,
+        cb: any MTLCommandBuffer,
         streamPrev: QWTensorValue,
         tokens: QWTensorValue,
         pos: Int,
@@ -189,7 +190,7 @@ public final class FNGPUMTP: @unchecked Sendable {
                                                   state: attnState1, pos: pos, inInject: inInj,
                                                   lastRowScratch: projectRows == 1 ? scratch1 : nil)
         } else if usePrefillPath || T > 8 {
-            try FNGPULayerPasses.layerPrefill(enc, ctx: ctx, layer: layer, s: s, stream: streamIn, out: streamOut,
+            try FNGPULayerPasses.layerPrefill(&enc, cb: cb, ctx: ctx, layer: layer, s: s, stream: streamIn, out: streamOut,
                                               attnState: attnState1, pos: pos, inInject: inInj, deferOutInject: true)
         } else {
             let st = (T == 1) ? attnState1 : attnState2
@@ -226,27 +227,27 @@ public final class FNGPUMTP: @unchecked Sendable {
     /// Chains `passes` single-row MTP passes after a verify round, each feeding the
     /// previous pass's materialized stream and draft token, writing drafts to `chainTokens[1...]`.
     /// `chainTokens[0]` receives the verify pass's own draft first.
-    public func encodeChain(_ enc: any MTLComputeCommandEncoder, firstStream: QWTensorValue,
-                            startPos: Int, passes: Int) throws {
+    public func encodeChain(_ enc: inout any MTLComputeCommandEncoder, cb: any MTLCommandBuffer,
+                            firstStream: QWTensorValue, startPos: Int, passes: Int) throws {
         let hal = ctx.hal
         let copy = try hal.pipeline("qwg_verify_copy")
-        func copyToken(to slot: Int) {
-            enc.setComputePipelineState(copy)
-            mtpHead.token.slice(byteOffset: 0, count: 1, dtype: .i32).bind(enc, index: 0)
-            chainTokens.slice(byteOffset: slot * 4, count: 1, dtype: .i32).bind(enc, index: 1)
+        func copyToken(_ targetEnc: any MTLComputeCommandEncoder, to slot: Int) {
+            targetEnc.setComputePipelineState(copy)
+            mtpHead.token.slice(byteOffset: 0, count: 1, dtype: .i32).bind(targetEnc, index: 0)
+            chainTokens.slice(byteOffset: slot * 4, count: 1, dtype: .i32).bind(targetEnc, index: 1)
             var one: UInt32 = 1
-            enc.setBytes(&one, length: 4, index: 2)
-            enc.dispatchThreads(MTLSize(width: 1, height: 1, depth: 1),
-                                threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
-            enc.memoryBarrier(scope: .buffers)
+            targetEnc.setBytes(&one, length: 4, index: 2)
+            targetEnc.dispatchThreads(MTLSize(width: 1, height: 1, depth: 1),
+                                      threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
+            targetEnc.memoryBarrier(scope: .buffers)
         }
-        copyToken(to: 0)
+        copyToken(enc, to: 0)
         var prev = firstStream
         for p in 0..<passes {
-            try encode(enc, streamPrev: prev, tokens: chainTokens.slice(byteOffset: p * 4, count: 1, dtype: .i32),
+            try encode(&enc, cb: cb, streamPrev: prev, tokens: chainTokens.slice(byteOffset: p * 4, count: 1, dtype: .i32),
                        pos: startPos + p, rows: 1, projectRows: 1)
             enc.memoryBarrier(scope: .buffers)
-            copyToken(to: p + 1)
+            copyToken(enc, to: p + 1)
             prev = scratch1.pleGVN
         }
     }
@@ -272,10 +273,12 @@ public final class FNGPUMTP: @unchecked Sendable {
         let T = nextTokens.count
         precondition(T >= 1 && prefillScratch.T == T)
         arena.write(tokensBuf, from: nextTokens)
-        guard let (cb, enc) = ctx.hal.begin(.concurrent) else {
+        guard let pair = ctx.hal.begin(.concurrent) else {
             throw NSError(domain: "FNGPUMTP", code: 1, userInfo: [NSLocalizedDescriptionKey: "no command buffer"])
         }
-        try encode(enc, streamPrev: streamBuf, tokens: tokensBuf, pos: startPos, rows: T,
+        let cb = pair.0
+        var enc = pair.1
+        try encode(&enc, cb: cb, streamPrev: streamBuf, tokens: tokensBuf, pos: startPos, rows: T,
                    scratch: prefillScratch, preInject: preInject,
                    projectRows: projectLastRow ? 1 : 0, usePrefillPath: T > 1)
         ctx.hal.end(cb, enc)

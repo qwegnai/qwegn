@@ -23,11 +23,12 @@ func die(_ message: String, _ code: Int32 = 2) -> Never {
 
 if optFlag("--help") || optFlag("-h") {
     print("""
-    usage: qwg-bench-kernels [--out DIR] [--samples N] [--cols N]
+    usage: qwg-bench-kernels [--out DIR] [--samples N] [--cols N] [--only-shvq]
       --out DIR      where to write bench_kernels_report.json (default: .)
       --samples N    timed runs per candidate, median wins (default: 5)
       --repeats N    dispatches per timed run, to amortise the buffer (default: 1)
       --cols N       the activation width every candidate reads (default: 4096)
+      --only-shvq    run only the cold-streaming SHVQ vs AQ live kernel suites
     """)
     exit(0)
 }
@@ -37,6 +38,7 @@ let samples = max(1, Int(optVal("--samples") ?? "5") ?? 5)
 let cols = max(BenchRunner.verifyCols,
                Int(optVal("--cols") ?? String(BenchSuites.defaultCols)) ?? BenchSuites.defaultCols)
 let repeats = max(1, Int(optVal("--repeats") ?? "1") ?? 1)
+let onlySHVQ = optFlag("--only-shvq")
 
 /// The candidates the bench races, in the order it reports them.
 var candidates: [BenchCandidate] = []
@@ -49,6 +51,27 @@ do {
     // The bench races the 27B's kernels, so the HAL carries the 27B's
     // function constants — named here, never defaulted.
     let hal = try QWHal(geometry: .qwen38_27b)
+
+    if onlySHVQ {
+        print("suite shvq_vs_aq (cold 256 MiB flush, \(samples) alternating samples)")
+        let shvqRows = try SHVQSuites.run(hal: hal, samples: samples, repeats: repeats)
+        for r in shvqRows {
+            let ratio = r.shvqMs / max(r.aqMs, 1e-9)
+            print("  \(r.suite) [\(r.shape)] \(r.bits)b_g\(r.group): shvq "
+                  + String(format: "%.4f", r.shvqMs) + " ms vs aq "
+                  + String(format: "%.4f", r.aqMs) + " ms ("
+                  + String(format: "%.3fx", ratio) + ")")
+        }
+        let dir = URL(fileURLWithPath: outDir, isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let emptyMap = WinnerMap.make(from: [])
+        let md = BenchReport.markdown(map: emptyMap, points: [], suites: [], moeSuites: [],
+                                      prefill: [], shvq: shvqRows, cols: cols, samples: samples)
+        let mdURL = dir.appendingPathComponent("bench_shvq_report.md")
+        try md.write(to: mdURL, atomically: true, encoding: .utf8)
+        print("VERDICT: wrote \(mdURL.path) (\(shvqRows.count) SHVQ cold-streaming pairs)")
+        exit(0)
+    }
 
     // A quick check first, so a broken candidate fails in a second rather
     // than after the whole sweep.
@@ -176,6 +199,15 @@ do {
               + String(format: "%.4f", ratio))
     }
 
+    print("suite shvq_vs_aq")
+    let shvqRows = try SHVQSuites.run(hal: hal, samples: samples, repeats: repeats)
+    for r in shvqRows {
+        let ratio = r.shvqMs / max(r.aqMs, 1e-9)
+        print("  \(r.suite) [\(r.shape)] \(r.bits)b_g\(r.group): shvq "
+              + String(format: "%.4f", r.shvqMs) + " ms vs aq "
+              + String(format: "%.4f", r.aqMs) + " ms (" + String(format: "%.3fx", ratio) + ")")
+    }
+
     // The bench and the engine share the vocabulary of operations, so the
     // bench checks itself against it before it writes anything.
     for point in points where !QWKernelDispatchTable.knownOps.contains(point.op) {
@@ -192,7 +224,7 @@ do {
     try data.write(to: url)
     let markdown = BenchReport.markdown(map: map, points: points, suites: suites,
                                          moeSuites: moeSuites, prefill: prefill,
-                                         cols: cols, samples: samples)
+                                         shvq: shvqRows, cols: cols, samples: samples)
     let mdURL = dir.appendingPathComponent("bench_kernels_report.md")
     try markdown.write(to: mdURL, atomically: true, encoding: .utf8)
 

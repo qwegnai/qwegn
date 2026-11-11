@@ -57,6 +57,7 @@ public final class FNGPUEngine: @unchecked Sendable {
         guard let warm = prefixCacheWarmStore, warm.isEnabled else { return nil }
         return warm.state
     }
+    public var prefixCacheWarmLimitBytes: Int? { prefixCacheWarmStore?.byteLimit }
 
     /// Whether a cache tier is configured at all. A directory with no
     /// room behind it is no cache.
@@ -65,6 +66,7 @@ public final class FNGPUEngine: @unchecked Sendable {
     }
 
     let pack: QWQuant.Pack?
+    let gpuPLETable: FNGPUPLETable?
     let embedTable: FNGPUEmbedTable
     let decodeStack: FNGPUDecodeStack
     let verifyStack: FNGPUDecodeStack?
@@ -144,18 +146,12 @@ public final class FNGPUEngine: @unchecked Sendable {
                 maxConcurrentSessions: Int = FNPrefixWarmStore.defaultMaxSlots,
                 evictPrefillScratch: Bool = Double(ProcessInfo.processInfo.physicalMemory) / 1_000_000_000.0 <= 36.5,
                 prewarmDoors: [String] = [],
-                lsaConfig: QWLSAConfig = QWLSAConfig()) throws {
+                lsaConfig: QWLSAConfig = QWLSAConfig(),
+                streamNgrams: Bool = false) throws {
         self.evictPrefillScratch = evictPrefillScratch
         self.lsaConfig = lsaConfig
         self.prefixCacheDirectory = prefixCacheDirectory
         let resolvedMaxSessions = max(1, min(16, maxConcurrentSessions))
-        self.maxConcurrentSessions = resolvedMaxSessions
-        let tiers = FNPrefixCacheTiers(warmByteLimit: prefixCacheWarmByteLimit,
-                                       ssdByteLimit: prefixCacheSSDByteLimit)
-        self.prefixCacheSSDByteLimit = tiers.ssdByteLimit
-        let warmStore = tiers.isEnabled
-            ? FNPrefixWarmStore(byteLimit: tiers.warmByteLimit, maxSlots: resolvedMaxSessions) : nil
-        self.prefixCacheWarmStore = warmStore
         let resolvedKVMode = try FNKVStorageMode.resolve(kvMode)
         self.kvMode = resolvedKVMode
         let expanded = packPath.expandingTildePath
@@ -177,57 +173,61 @@ public final class FNGPUEngine: @unchecked Sendable {
             let st = try QWSafeTensorsContainer(url: location.weights)
             loader = FNPackLoader(st: st, descriptor: desc)
         }
-        // The n-gram ids are EXPECTED to be steeply skewed, so the same rows
-        // are read over and over. The cache goes AROUND the row source, once,
-        // at load — the embedding's hot path is unchanged.
-        let ngramCacheBytes = desc.pleModuleIndices.isEmpty ? 0 : FNGPUEngine.ngramRowCacheBytes
-        let rows = FNNgramCachedRows(
-            backing: try FNNgramRowsLoader.open(assetsURL: location.assets),
-            capacityBytes: ngramCacheBytes)
-
         let useStandardBasis = loader.st.map(FNGPULoader.hasNativeAffineWeights) ?? false
         let hal = try QWHal(geometry: QWModelGeometry(descriptor: desc),
                             weightBasis: useStandardBasis ? .standard : .rotated)
         self.hal = hal
         let perTokBytes = resolvedKVMode.perTokenBytes
         let fnWeightsEstimate = Self.estimateWeightBytes(loader: loader, useStandardBasis: useStandardBasis)
+        let packDiskBytes = (location.kind == .qwp1)
+            ? ((try? FileManager.default.attributesOfItem(atPath: location.weights.path)[.size] as? Int) ?? 0) : 0
         let fnFixedScratchEstimate = (1408 << 20) + (836 << 20)
-        let fnFixedBytes = fnWeightsEstimate + fnFixedScratchEstimate + ngramCacheBytes
+        let retainedPrefillBytes = (!evictPrefillScratch && resolvedChunk > 1024)
+            ? Self.prefillActivationBytes(maxRows: resolvedChunk, capacity: min(maxTokens, desc.maxPositionEmbeddings)) : 0
         let availBytes = QWCapacityBudget.availableBytes(osReserveGiB: osReserveGiB)
+        let minKVBytes = min(maxTokens, desc.maxPositionEmbeddings) * perTokBytes
+        let resolvedPLE = try FNGPUPLETable.resolveBacking(
+            assetsURL: location.assets, weightsURL: location.weights, hasPLE: !desc.pleModuleIndices.isEmpty,
+            streamNgrams: streamNgrams, hal: hal, weightsEstimate: fnWeightsEstimate,
+            fixedScratchBytes: fnFixedScratchEstimate + retainedPrefillBytes,
+            minKVBytes: minKVBytes, availableBytes: availBytes)
+        let gpuPLE = resolvedPLE.gpuTable
+        self.gpuPLETable = gpuPLE
+        let ngramCacheBytes = (desc.pleModuleIndices.isEmpty || resolvedPLE.residentBytes > 0) ? 0 : FNGPUEngine.ngramRowCacheBytes
+        let rows = FNNgramCachedRows(backing: resolvedPLE.rows, capacityBytes: ngramCacheBytes)
+        let admission = QWResidencyAdmission.planFlashNext(
+            weightsEstimate: fnWeightsEstimate, packDiskBytes: packDiskBytes, gpuPLEBytes: resolvedPLE.residentBytes,
+            ngramRowCacheBytes: ngramCacheBytes, baseScratchBytes: fnFixedScratchEstimate,
+            retainedPrefillBytes: retainedPrefillBytes, lsaClusterBytes: 0, minKVBytes: minKVBytes,
+            requestedWarmCacheBytes: prefixCacheWarmByteLimit, requestedSessions: resolvedMaxSessions,
+            osReserveGiB: osReserveGiB,
+            snapshot: QWLiveDeviceMemorySnapshotSource(maxWorkingSetBytes: hal.caps.maxWorkingSetBytes).capture())
+        self.maxConcurrentSessions = admission.warmCache.maxConcurrentSessions
+        let tiers = FNPrefixCacheTiers(warmByteLimit: admission.warmCache.admittedWarmBytes, ssdByteLimit: prefixCacheSSDByteLimit)
+        self.prefixCacheSSDByteLimit = tiers.ssdByteLimit
+        self.prefixCacheWarmStore = tiers.isEnabled
+            ? FNPrefixWarmStore(byteLimit: tiers.warmByteLimit, maxSlots: self.maxConcurrentSessions) : nil
+        let fnFixedBytes = admission.totalFixedBytes
         let plan = try QWCapacityPlan.plan(
-            nativeWindow: desc.maxPositionEmbeddings,
-            requested: maxTokens,
-            perTokenBytes: perTokBytes,
-            fixedBytes: fnFixedBytes,
-            availableBytes: availBytes,
-            yarnAllowed: true)
-        guard plan.fits else {
-            throw FNGPUError.contextDoesNotFit(requested: maxTokens, maxFitting: plan.maxFittingContext)
-        }
+            nativeWindow: desc.maxPositionEmbeddings, requested: maxTokens, perTokenBytes: perTokBytes,
+            fixedBytes: fnFixedBytes, availableBytes: admission.availableBytes, yarnAllowed: true)
+        guard plan.fits else { throw FNGPUError.contextDoesNotFit(requested: maxTokens, maxFitting: plan.maxFittingContext) }
         let alignedCap = QWCapacityPlan.steppedCapacity(plan.context)
         let kvCap = alignedCap >= 32_768 ? (alignedCap + 1024) : alignedCap
-        let yarnFactor: Float? = alignedCap > desc.maxPositionEmbeddings
-            ? Float(alignedCap) / Float(desc.maxPositionEmbeddings)
-            : nil
+        let yarnFactor: Float? = alignedCap > desc.maxPositionEmbeddings ? Float(alignedCap) / Float(desc.maxPositionEmbeddings) : nil
         self.capacity = kvCap
         // The plan freezes what this engine actually runs: its geometry, its
         // KV mode and its prefill chunk. The digest binds all of it.
         self.plan = try QWEngineBootstrap.makePlan(
-            geometry: QWModelGeometry(descriptor: desc),
-            packPath: expanded,
-            prefillChunkRows: resolvedChunk,
-            kvStorageMode: resolvedKVMode.rawValue)
+            geometry: QWModelGeometry(descriptor: desc), packPath: expanded,
+            prefillChunkRows: resolvedChunk, kvStorageMode: resolvedKVMode.rawValue)
         self.capacityPlan = plan
         self.capacityLogMessage = try QWEngineBootstrap.admit(
-            weightsBytes: fnWeightsEstimate,
-            fixedScratchBytes: fnFixedScratchEstimate + ngramCacheBytes,
-            kvMode: resolvedKVMode.rawValue,
-            perTokenBytes: perTokBytes,
-            maxTokens: alignedCap,
-            totalPlannedBytes: fnFixedBytes + alignedCap * perTokBytes,
-            availableBytes: availBytes,
-            osReserveGiB: osReserveGiB
-        )
+            weightsBytes: admission.weightsBytes + resolvedPLE.residentBytes,
+            fixedScratchBytes: admission.fixedScratchBytes + ngramCacheBytes,
+            kvMode: resolvedKVMode.rawValue, perTokenBytes: perTokBytes,
+            maxTokens: alignedCap, totalPlannedBytes: fnFixedBytes + alignedCap * perTokBytes,
+            availableBytes: admission.availableBytes, osReserveGiB: osReserveGiB)
 
         let H = desc.hidden
         let C = desc.hcCount ?? 4
@@ -318,7 +318,8 @@ public final class FNGPUEngine: @unchecked Sendable {
         }
         self.layerRecords = records
         self.maxPLEDim = pleDimMax
-        self.decodeStack = try FNGPUDecodeStack(arena: arena, ctx: ctx, slots: slots, hidden: H, hc: C)
+        self.decodeStack = try FNGPUDecodeStack(arena: arena, ctx: ctx, slots: slots, hidden: H, hc: C,
+                                                gpuPLETable: gpuPLE)
         let mixerPrefix = prefix + "hyper_connection_mixer."
         let headBank = try FNGPULoader.hq4Bank(arena, loader, "lm_head.weight", n: desc.vocab, k: H, staging: staging)
         let mixerDown = try FNGPULoader.hq4Bank(arena, loader, mixerPrefix + "input_mix_weight_down.weight", n: lowrank, k: W, staging: staging)
@@ -354,7 +355,8 @@ public final class FNGPUEngine: @unchecked Sendable {
                 }
                 vSlots.append(.init(weights: rec.weights, scratch: scr2, attn: st2, ple: rec.ple))
             }
-            self.verifyStack = try FNGPUDecodeStack(arena: arena, ctx: ctx, slots: vSlots, hidden: H, hc: C, rows: 8)
+            self.verifyStack = try FNGPUDecodeStack(arena: arena, ctx: ctx, slots: vSlots, hidden: H, hc: C, rows: 8,
+                                                    gpuPLETable: gpuPLE)
             self.mtp = try FNGPUMTP(arena: arena, ctx: ctx, loader: loader, embedTable: embedTable,
                                     headWeight: headBank, capacity: kvCap,
                                     maxPrefillRows: max(resolvedChunk, QWPrefillLimits.maxRows),
@@ -366,16 +368,21 @@ public final class FNGPUEngine: @unchecked Sendable {
             self.verifyStack = nil
             self.mtp = nil
         }
-        // Native QSA is already a trained sparse selector and measures faster than the
-        // Ward-cluster replacement (64K–256K), so only an explicit qsa-cluster request swaps it in.
-        if lsaConfig.mode == .qsaCluster, let attnM = sharedAttn {
+        // Native flat QSA wins <= 262K; above 262K, auto mode engages e-means-4096 coarse clustering.
+        let useQSACluster = lsaConfig.mode == .qsaCluster
+            || (lsaConfig.mode == .auto && kvCap > QWLSAConfig.qsaAutoClusterThresholdTokens)
+        if useQSACluster, let attnM = sharedAttn {
             var allStates: [(FNGPUAttnDecodeState, FNGPUAttnDecodeState?)] = []
             for (slotIdx, rec) in records.enumerated() {
                 if let st = rec.attnState { allStates.append((st, self.verifyStack?.slots[slotIdx].attn)) }
             }
             if let mtp = self.mtp { allStates.append((mtp.attnState1, mtp.attnState2)) }
+            let fnClusterBlock = (lsaConfig.clusterBlock == QWLSAConfig.defaultClusterBlock)
+                ? QWLSAConfig.emeansClusterBlock
+                : lsaConfig.alignedClusterBlock
             self.lsaClusterRegion = try FNGPUAttnDecodeState.allocateLSAClusters(
-                hal: hal, kvCap: kvCap, indexHeadDim: attnM.indexHeadDim, states: allStates)
+                hal: hal, kvCap: kvCap, indexHeadDim: attnM.indexHeadDim,
+                states: allStates, clusterBlock: fnClusterBlock)
         } else {
             self.lsaClusterRegion = nil
         }
@@ -409,7 +416,11 @@ public final class FNGPUEngine: @unchecked Sendable {
         arena.weightsRegion().markSteadyState(); arena.activationsRegion().markSteadyState()
         arena.kvRegion().markSteadyState(); arena.kvVSub?.markSteadyState()
         arena.kvAuxSub?.markSteadyState(); arena.gdnRegion().markSteadyState()
-        warmStore?.onEvict = { [weak self] tokCount, freedBytes in self?.onCacheEvicted?(tokCount, freedBytes) }
+        prefixCacheWarmStore?.onEvict = { [weak self] tokCount, freedBytes in self?.onCacheEvicted?(tokCount, freedBytes) }
+    }
+
+    deinit {
+        if let b = gpuPLETable?.buffer { hal.evictResident([b]) }
     }
 
     /// Prefill arena budget: ~1.45 MB per prefill row plus tiled QSA score scratch.
@@ -442,11 +453,14 @@ public final class FNGPUEngine: @unchecked Sendable {
         var prefillSlots: [FNGPUPrefillStack.Slot] = []
         for rec in layerRecords {
             let pleBuf = try rec.weights.ple.map { try arena.activationsRegion().allocate(QWTensorShape([rows * $0.embedDim], .f32)) }
-            let pleBufAlt = try rec.weights.ple.map { try arena.activationsRegion().allocate(QWTensorShape([rows * $0.embedDim], .f32)) }
+            let pleBufAlt = try (gpuPLETable == nil ? rec.weights.ple : nil).map {
+                try arena.activationsRegion().allocate(QWTensorShape([rows * $0.embedDim], .f32))
+            }
             prefillSlots.append(.init(weights: rec.weights, attn: rec.attnState, ple: rec.ple,
                                       pleEmbed: pleBuf, pleEmbedAlt: pleBufAlt, scratch: pscr))
         }
-        return try FNGPUPrefillStack(arena: arena, ctx: ctx, slots: prefillSlots, hidden: hidden, hc: hc)
+        return try FNGPUPrefillStack(arena: arena, ctx: ctx, slots: prefillSlots, hidden: hidden, hc: hc,
+                                     gpuPLETable: gpuPLETable)
     }
 
     /// Dynamic prefill ceiling: respects configured `maxPrefillRows`.

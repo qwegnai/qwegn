@@ -39,7 +39,8 @@ extension QWEngineDriver: QWSessionInferenceEngine {
             warmBytes: prefixCacheChargedBytes,
             ssdBytes: ssdCacheChargedBytes,
             warmEntries: prefixCacheEntries,
-            ssdEntries: ssdCacheEntries
+            ssdEntries: ssdCacheEntries,
+            warmLimitBytes: prefixStore?.byteLimit
         )
     }
 

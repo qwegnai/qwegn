@@ -1,0 +1,131 @@
+// qw_emeans_coarse.metalh — Shared geometry and radix helpers for capacity-balanced
+// e-means (arXiv:2611.09501) coarse-to-fine pool selection across LSA, QSA, and MLA.
+#pragma once
+#include <metal_stdlib>
+#include <metal_simdgroup>
+using namespace metal;
+
+struct EmeansSelParams {
+    uint T;
+    uint pos0;
+    uint indexDim;
+    uint budgetBlocks;
+    uint windowBlocks;
+    uint hasSink;
+    uint writeCount;
+    uint listStride;
+    uint rowStep;
+    uint maxRow;
+    uint clusterStride;
+    uint probeClusters;
+    uint candCap;
+    uint qChannels;
+    uint idxHeads;
+    uint flags;
+};
+
+struct EmeansSelGeom {
+    uint qRow;
+    uint totalBlocks;
+    uint middleEnd;
+    uint minPool;
+    uint numMiddle;
+    uint kEff;
+    uint numMacros;
+    uint numClusters;
+    uint probeEff;
+    bool dense;
+};
+
+static inline uint emeans_float_to_u32(float x) {
+    if (isnan(x)) return 0u;
+    const uint bits = as_type<uint>(x);
+    return (bits & 0x80000000u) ? (~bits) : (bits ^ 0x80000000u);
+}
+
+static inline uint emeans_nonzero_score_u32(float x) {
+    return max(emeans_float_to_u32(x), 0x00010000u);
+}
+
+static inline EmeansSelGeom emeans_sel_geom(constant EmeansSelParams& p, uint unit) {
+    EmeansSelGeom g;
+    g.qRow = (p.rowStep > 1u) ? min(unit * p.rowStep + (p.rowStep - 1u), p.maxRow - 1u) : unit;
+    g.totalBlocks = (p.pos0 + g.qRow + 1u) >> 2u;
+    const uint denseLim = p.hasSink + p.budgetBlocks + p.windowBlocks;
+    g.dense = (g.totalBlocks <= denseLim);
+    g.middleEnd = 0u; g.minPool = p.hasSink; g.numMiddle = 0u; g.kEff = 0u;
+    g.numMacros = 0u; g.numClusters = 0u; g.probeEff = 0u;
+    if (g.dense) return g;
+    g.middleEnd = g.totalBlocks - p.windowBlocks;
+    g.numMiddle = g.middleEnd - g.minPool;
+    g.kEff = min(p.budgetBlocks, g.numMiddle);
+    g.numMacros = g.middleEnd >> 10u;
+    g.numClusters = g.numMacros * 64u;
+    if (p.probeClusters == 0u) {
+        g.probeEff = g.numClusters;
+    } else {
+        const uint minProbe = (p.writeCount == 0u)
+            ? max(p.probeClusters, g.kEff + 32u)
+            : max(p.probeClusters, 64u);
+        g.probeEff = min(g.numClusters, minProbe);
+    }
+    return g;
+}
+
+static inline void emeans_pick_radix_bin(threadgroup uint* hist,
+                                         threadgroup uint* scanSum,
+                                         threadgroup uint& greaterAccum,
+                                         threadgroup uint& chosenBin,
+                                         threadgroup uint& sgTotal,
+                                         uint target,
+                                         bool lastPass,
+                                         uint tid,
+                                         uint sg,
+                                         uint lane) {
+    const uint bin = 255u - tid;
+    const uint c = hist[bin];
+    const uint p = simd_prefix_inclusive_sum(c);
+    if (lane == 31u) scanSum[sg] = p;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    uint base = greaterAccum;
+    for (uint j = 0u; j < sg; j++) base += scanSum[j];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const uint incl = base + p;
+    const uint excl = incl - c;
+    if (excl < target && incl >= target) {
+        greaterAccum = excl;
+        chosenBin = bin;
+        if (lastPass) sgTotal = incl;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+}
+
+static inline void emeans_sort_and_emit(device int*               outRow,
+                                        device uint*              blockCount,
+                                        constant EmeansSelParams& p,
+                                        const EmeansSelGeom       g,
+                                        threadgroup uint*         keep,
+                                        uint                      kTarget,
+                                        uint                      nPow2,
+                                        uint                      tid) {
+    if (kTarget > 0u) {
+        for (uint k = 2u; k <= nPow2; k <<= 1u) {
+            for (uint j = k >> 1u; j > 0u; j >>= 1u) {
+                for (uint i = tid; i < nPow2; i += 256u) {
+                    const uint ixj = i ^ j;
+                    if (ixj > i) {
+                        const uint a = keep[i], c = keep[ixj];
+                        const bool up = (i & k) == 0u;
+                        if ((a > c) == up) { keep[i] = c; keep[ixj] = a; }
+                    }
+                }
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+            }
+        }
+    }
+    if (p.hasSink != 0u && tid == 0u) outRow[0] = 0;
+    for (uint i = tid; i < kTarget; i += 256u) outRow[p.hasSink + i] = int(keep[i]);
+    const uint winBase = p.hasSink + kTarget;
+    for (uint w = tid; w < p.windowBlocks; w += 256u) outRow[winBase + w] = int(g.middleEnd + w);
+    if (p.writeCount != 0u && tid == 0u) blockCount[g.qRow] = winBase + p.windowBlocks;
+}

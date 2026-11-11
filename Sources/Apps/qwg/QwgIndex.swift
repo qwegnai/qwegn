@@ -132,6 +132,10 @@ struct Index: ParsableCommand {
             manifest.clusterBlockTokens = clusterBlock
             manifest.includeTests = includeTests
             manifest.files = built.fileEntries
+            let vaultOnly = built.fileEntries.filter { !$0.inCortex }
+            manifest.semanticIndex = vaultOnly.isEmpty
+                ? nil
+                : QWMemorySemanticIndex.build(entries: vaultOnly, rootPath: rootURL.path)
             try manifest.save(to: rootURL)
             let estTokens = built.fileEntries.filter(\.inCortex).last.map { $0.tokenOffset + $0.tokenCount } ?? 0
             print("indexed \(built.fileEntries.count) files (\(built.cortexFileCount) cortex + \(built.vaultFileCount) vault, ~\(estTokens) cortex tokens) -> \(QWMemoryManifest.manifestURL(in: rootURL).path)")
@@ -183,6 +187,10 @@ struct Index: ParsableCommand {
         manifest.clusterBlockTokens = clusterBlock
         manifest.includeTests = includeTests
         manifest.files = built.fileEntries
+        let vaultEntries = built.fileEntries.filter { !$0.inCortex }
+        manifest.semanticIndex = vaultEntries.isEmpty
+            ? nil
+            : QWMemorySemanticIndex.build(entries: vaultEntries, rootPath: rootURL.path)
 
         if manifestOnly {
             try manifest.save(to: rootURL)

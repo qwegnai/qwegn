@@ -219,7 +219,8 @@ extension QWEngineDriver.WeightLoader {
         guard let gu = QWMLPWeight(blocks: guView.blocks, n: 2 * geometry.moeIntermediate, k: h,
                                    bits: guView.bits, groupSize: guView.groupSize,
                                    isRotated: guView.isRotated,
-                                   isIncumbentContainer: guView.isIncumbentContainer) else {
+                                   isIncumbentContainer: guView.isIncumbentContainer,
+                                   isSHVQ: guView.isSHVQ) else {
             throw QWEngineDriverError.weightMissing(blk + "mlp.experts", "mtp gu view invalid")
         }
         let down = try firstExpert(moe.down, rows: h)
@@ -311,11 +312,13 @@ extension QWEngineDriver.WeightLoader {
         guard let guView = QWWeightView(blocks: guBlocks, n: coldE * 2 * i, k: h,
                                         bits: format.expertBits, groupSize: format.expertGroupSize,
                                         isRotated: hl.weightBasis.rotatesActivations,
-                                        isIncumbentContainer: format.expertIsIncumbentContainer),
+                                        isIncumbentContainer: format.expertIsIncumbentContainer,
+                                        isSHVQ: format.expertIsSHVQ),
               let downView = QWWeightView(blocks: downBlocks, n: coldE * h, k: i,
                                           bits: format.expertDownBits, groupSize: format.expertDownGroupSize,
                                           isRotated: hl.weightBasis.rotatesActivations,
-                                          isIncumbentContainer: format.expertDownIsIncumbentContainer) else {
+                                          isIncumbentContainer: format.expertDownIsIncumbentContainer,
+                                          isSHVQ: format.expertDownIsSHVQ) else {
             throw QWEngineDriverError.weightMissing("sharedColdBanks", "cold expert staging bank view invalid")
         }
         let pair = (gu: guView, down: downView)

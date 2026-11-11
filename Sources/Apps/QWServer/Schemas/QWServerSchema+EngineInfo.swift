@@ -125,6 +125,7 @@ public struct QWEngineInfoResponse: Codable, Sendable {
         public let mtpBackend: String?
         public let gdnPrefillMode: String
         public let prefillScratchEviction: String
+        public let lsaMode: String
         /// The host's logical cores. The engine's own thread count is not
         /// published, so this is not called "threads". Absent when the
         /// host could not say.
@@ -141,6 +142,7 @@ public struct QWEngineInfoResponse: Codable, Sendable {
             mtpBackend: String?,
             gdnPrefillMode: String,
             prefillScratchEviction: String,
+            lsaMode: String = "auto",
             hostLogicalCores: Int?,
             isLoaded: Bool
         ) {
@@ -153,6 +155,7 @@ public struct QWEngineInfoResponse: Codable, Sendable {
             self.mtpBackend = mtpBackend
             self.gdnPrefillMode = gdnPrefillMode
             self.prefillScratchEviction = prefillScratchEviction
+            self.lsaMode = lsaMode
             self.hostLogicalCores = hostLogicalCores
             self.isLoaded = isLoaded
         }

@@ -98,3 +98,47 @@ kernel void qwg_inject(device const float* base [[buffer(0)]],
     const uint o = (t * C + c) * H + d;
     out[o] = base[o] + src[t * H + d] * inj[t * C + c];
 }
+
+// VQ2_G32 zero-pread PLE gather: loads 256x2 f16 e-means codebook at ngramFile+1024 into threadgroup LUT,
+// then decodes sector-packed 18 B/group rows into targetFloatOffsets within outBase.
+kernel void qwg_ple_vq2_gather(device const uchar* ngramFile          [[buffer(0)]],
+                               device const uint*  rowIds             [[buffer(1)]],
+                               device const uint*  targetFloatOffsets [[buffer(2)]],
+                               device float*       outBase            [[buffer(3)]],
+                               constant uint&      headDim            [[buffer(4)]],
+                               constant uint&      rowsPerTarget      [[buffer(5)]],
+                               constant uint&      numTargets         [[buffer(6)]],
+                               constant uint&      dataOffset         [[buffer(7)]],
+                               constant uint&      rowsPerSector      [[buffer(8)]],
+                               constant uint&      rowBytes           [[buffer(9)]],
+                               uint tg   [[threadgroup_position_in_grid]],
+                               uint nTGs [[threadgroups_per_grid]],
+                               uint tid  [[thread_index_in_threadgroup]]) {
+    threadgroup float2 lut[256];
+    device const ushort* cb16 = reinterpret_cast<device const ushort*>(ngramFile + 1024u);
+    lut[tid] = float2(as_type<half>(cb16[tid * 2u]), as_type<half>(cb16[tid * 2u + 1u]));
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const uint groupsPerRow = headDim >> 5u;
+    const uint totalGroups = numTargets * rowsPerTarget * groupsPerRow;
+    const uint team = tid >> 4u, lane = tid & 15u;
+    const uint gridTeams = nTGs << 4u;
+    for (uint item = (tg << 4u) + team; item < totalGroups; item += gridTeams) {
+        const uint rLinear = item / groupsPerRow;
+        const uint g = item - rLinear * groupsPerRow;
+        const uint tIdx = rLinear / rowsPerTarget;
+        const uint rIdx = rLinear - tIdx * rowsPerTarget;
+        const ulong rowId = ulong(rowIds[rLinear]);
+        const ulong sec = rowId / ulong(rowsPerSector);
+        const ulong inSec = rowId - sec * ulong(rowsPerSector);
+        const ulong byteOff = ulong(dataOffset) + sec * 4096ul + inSec * ulong(rowBytes) + ulong(g) * 18ul;
+        device const uchar* grp = ngramFile + byteOff;
+        const uint code = uint(grp[lane]);
+        const ushort sBits = ushort(grp[16]) | (ushort(grp[17]) << 8u);
+        const float scale = float(as_type<half>(sBits));
+        const float2 val = lut[code] * scale;
+        const ulong outIdx = ulong(targetFloatOffsets[tIdx]) + ulong(rIdx) * ulong(headDim)
+                           + ulong(g) * 32ul + ulong(lane) * 2ul;
+        outBase[outIdx] = val.x;
+        outBase[outIdx + 1ul] = val.y;
+    }
+}

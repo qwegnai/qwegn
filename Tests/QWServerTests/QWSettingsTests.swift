@@ -463,7 +463,8 @@ final class QWSettingsTests: XCTestCase {
         XCTAssertFalse(decoded.mtpAdaptiveDepth)
         XCTAssertEqual(decoded.mtpEntropyThreshold, 0.7, accuracy: 1e-5)
         XCTAssertEqual(decoded.temperature, 0.7, accuracy: 1e-5)
-        XCTAssertEqual(decoded.kvMode, "f16")
+        XCTAssertEqual(decoded.kvMode, "q4")
+        XCTAssertEqual(decoded.lsaMode, "auto")
         // Identity & aliases must be preserved across Reset to Defaults
         XCTAssertEqual(decoded.modelName, "Qwen3.5-35B-A3B")
         XCTAssertEqual(decoded.modelPackPath, "/models/Qwen3.5-35B-A3B")

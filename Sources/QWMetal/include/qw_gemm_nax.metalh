@@ -12,6 +12,7 @@
 #include "mlx/backend/metal/kernels/steel/gemm/nax.h"
 #include "mlx/backend/metal/kernels/steel/gemm/loader.h"
 #include "qw_dequant.metalh"
+#include "qw_dequant_shvq.metalh"
 #include "qw_geometry_constants.metalh"
 
 using namespace metal;
@@ -104,7 +105,8 @@ METAL_FUNC void qwg_aq_frag8(device const char* gp, uint bitOffset,
 template <typename T, typename U = T, const bool aligned_N = false,
           const int BM = 64, const int BK = 64, const int BN = 64,
           const int WM = 2, const int WN = 2, bool store32 = false, bool splitGdn = false,
-          bool gatherA = false, const int AQ_BITS = 0, const int AQ_GROUP = 0>
+          bool gatherA = false, const int AQ_BITS = 0, const int AQ_GROUP = 0,
+          const bool IS_SHVQ = false>
 METAL_FUNC void qmm_t_nax_tgp_dual_impl(
     const device char* w,
     const device T* x,
@@ -175,7 +177,8 @@ METAL_FUNC void qmm_t_nax_tgp_dual_impl(
   const short2 sc = BaseNAXFrag::get_coord();
   const ushort w_sub = ushort(sc.x >> 3);
   const ushort shift = ushort((sc.x & 4) << 1);
-  constexpr uint aqGroupBytes = AQ_BITS > 0 ? uint(AQ_GROUP * AQ_BITS / 8 + 4) : 0u;
+  constexpr uint aqHdrBytes = IS_SHVQ ? 2u : 4u;
+  constexpr uint aqGroupBytes = AQ_BITS > 0 ? uint(AQ_GROUP * AQ_BITS / 8) + aqHdrBytes : 0u;
   const uint aqRowBytes = AQ_BITS > 0 ? uint(K / AQ_GROUP) * aqGroupBytes : 0u;
   const device char* w_aq_tile =
       (AQ_BITS > 0) ? (w + static_cast<int64_t>(y_col) * aqRowBytes) : nullptr;
@@ -226,9 +229,10 @@ METAL_FUNC void qmm_t_nax_tgp_dual_impl(
         }
 
         const uint aqGroupIndex = AQ_BITS > 0 ? (uint(k) / uint(AQ_GROUP)) : 0u;
-        const uint aqBitInGroup = AQ_BITS > 0
-            ? (((uint(k) & uint(AQ_GROUP - 1)) + uint(sc.x)) * uint(AQ_BITS))
+        const uint aqColInGroup = AQ_BITS > 0
+            ? ((uint(k) & uint(AQ_GROUP - 1)) + uint(sc.x))
             : 0u;
+        const uint aqBitInGroup = aqColInGroup * uint(AQ_BITS);
         const device char* aqGroupBase = AQ_BITS > 0
             ? (w_aq_tile + static_cast<int64_t>(aqGroupIndex) * aqGroupBytes)
             : nullptr;
@@ -258,7 +262,11 @@ METAL_FUNC void qmm_t_nax_tgp_dual_impl(
               } else {
                 const device char* gp = aqGroupBase + static_cast<int64_t>(r_tile) * aqRowBytes;
                 half4 lo, hi;
-                qwg_aq_frag8<AQ_BITS>(gp, aqBitInGroup, lo, hi);
+                if constexpr (IS_SHVQ) {
+                  qwg_shvq_frag8<AQ_BITS>(gp, aqColInGroup, lo, hi);
+                } else {
+                  qwg_aq_frag8<AQ_BITS>(gp, aqBitInGroup, lo, hi);
+                }
                 f0[i * 4 + 0] = lo.x; f0[i * 4 + 1] = lo.y;
                 f0[i * 4 + 2] = lo.z; f0[i * 4 + 3] = lo.w;
                 f1[i * 4 + 0] = hi.x; f1[i * 4 + 1] = hi.y;

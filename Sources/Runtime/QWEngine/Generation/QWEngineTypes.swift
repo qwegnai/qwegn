@@ -78,14 +78,17 @@ public struct QWPrefixCacheState: Sendable, Equatable {
     public var warmEntries: Int?
     /// The entries the cold tier holds. Absent when the cache counts none.
     public var ssdEntries: Int?
+    /// Admitted warm RAM byte cap after unified-memory admission clamping.
+    public var warmLimitBytes: Int?
 
     public init(isConfigured: Bool, warmBytes: Int? = nil, ssdBytes: Int? = nil,
-                warmEntries: Int? = nil, ssdEntries: Int? = nil) {
+                warmEntries: Int? = nil, ssdEntries: Int? = nil, warmLimitBytes: Int? = nil) {
         self.isConfigured = isConfigured
         self.warmBytes = warmBytes
         self.ssdBytes = ssdBytes
         self.warmEntries = warmEntries
         self.ssdEntries = ssdEntries
+        self.warmLimitBytes = warmLimitBytes
     }
 }
 

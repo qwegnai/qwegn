@@ -449,16 +449,26 @@ private enum QWCacheReporting {
         config: QWEngineLifecycleActor.Config,
         logger: QWServerLogger
     ) {
-        if config.cacheConfig.warmByteLimit > 0 {
+        let state = engine.prefixCache
+        let effectiveWarmLimit = state.isConfigured
+            ? (state.warmLimitBytes ?? config.cacheConfig.warmByteLimit)
+            : 0
+        if effectiveWarmLimit > 0 {
             // The module configured the cache when it built the engine;
             // the server reports what that configuration was.
             logger.log(.info, String(
-                format: "Prefix cache initialized (kvMode=%@): warmLimit=%.2f GB, ssdLimit=%.2f GB, entryLimit=%d, maxConcurrentSessions=%d",
+                format: "Prefix cache initialized (kvMode=%@): warmLimit=%.2f GB (requested=%.2f GB), ssdLimit=%.2f GB, entryLimit=%d, maxConcurrentSessions=%d",
                 String(describing: config.kvMode),
+                Double(effectiveWarmLimit) / 1_073_741_824.0,
                 Double(config.cacheConfig.warmByteLimit) / 1_073_741_824.0,
                 Double(config.cacheConfig.ssdByteLimit) / 1_073_741_824.0,
                 config.cacheConfig.entryLimit,
                 config.maxConcurrentSessions))
+        } else if config.cacheConfig.warmByteLimit > 0 {
+            logger.log(.warn, String(
+                format: "Prefix cache warm RAM clamped to 0.00 GB (requested=%.2f GB, ssdLimit=%.2f GB) to preserve unified-memory headroom.",
+                Double(config.cacheConfig.warmByteLimit) / 1_073_741_824.0,
+                Double(state.isConfigured ? config.cacheConfig.ssdByteLimit : 0) / 1_073_741_824.0))
         } else {
             logger.log(.info, "Prefix cache is disabled (warmByteLimit is 0).")
         }

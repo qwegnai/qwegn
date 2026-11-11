@@ -204,11 +204,13 @@ final class QWStandardMoEKernelTests: XCTestCase {
                                                         rows: rows, geometry: geometry)
         mutate?(&scratch)
 
-        guard let (cb, enc) = hal.begin() else { throw XCTSkip("no command buffer") }
+        guard let pair = hal.begin() else { throw XCTSkip("no command buffer") }
+        let cb = pair.0
+        var enc = pair.1
         do {
-            try QWMoEChain.encode(enc: enc, hal: hal, moe: moe, s: scratch,
+            try QWMoEChain.encode(enc: &enc, hal: hal, moe: moe, s: scratch,
                                   x16: x16, dn32: dn32, dn16: dn16,
-                                  rows: rows, geometry: chainGeometry ?? geometry)
+                                  rows: rows, geometry: chainGeometry ?? geometry, cb: cb)
         } catch {
             enc.endEncoding()
             throw error

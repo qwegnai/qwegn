@@ -96,15 +96,22 @@ public struct QWWeightView: Sendable {
     /// holds this view. Rotated `HQ{2,3,4,6,8}_G{32,64,128,256}` bit-stream blocks set `isRotated = true`
     /// and `isIncumbentContainer = false`.
     public let isIncumbentContainer: Bool
+    /// Whether this view holds rotated `SHVQ{2,3,4}_G{32,64,128,256}` vector-quantized blocks.
+    public let isSHVQ: Bool
 
     /// The bytes this bank's rows take at the pair's native size.
-    public var rowBytes: Int { QWAQBlock.rowBytes(bits: bits, group: groupSize, k: k) }
+    public var rowBytes: Int {
+        isSHVQ
+            ? QWSHVQBlock.rowBytes(bits: bits, group: groupSize, k: k)
+            : QWAQBlock.rowBytes(bits: bits, group: groupSize, k: k)
+    }
     /// The bytes the whole bank takes at the pair's native size.
     public var requiredBytes: Int { rowBytes * n }
-    /// The container's name — `HQ4_G32` for the incumbent's container, `HQ{b}_G{G}` for
-    /// rotated bit-stream blocks, and `AQ{b}_G{G}` for standard-basis affine blocks.
+    /// The container's name — `HQ4_G32` for the incumbent's container, `SHVQ{b}_G{G}` for
+    /// rotated SHVQ blocks, `HQ{b}_G{G}` for rotated bit-stream blocks, and `AQ{b}_G{G}` for affine blocks.
     public var formatName: String {
         if isIncumbentContainer { return "HQ4_G32" }
+        if isSHVQ { return QWSHVQBlock.formatName(bits: bits, group: groupSize) }
         if isRotated { return "HQ\(bits)_G\(groupSize)" }
         return QWAQBlock.formatName(bits: bits, group: groupSize)
     }
@@ -114,17 +121,22 @@ public struct QWWeightView: Sendable {
     /// everywhere means the compiler finds the sites when the basis changes.
     public init?(blocks: QWTensorValue, n: Int, k: Int,
                  bits: Int = 4, groupSize: Int = 32, isRotated: Bool,
-                 isIncumbentContainer: Bool? = nil) {
-        let incumbent = isIncumbentContainer ?? (isRotated && bits == 4 && groupSize == 32)
-        if incumbent {
+                 isIncumbentContainer: Bool? = nil, isSHVQ: Bool = false) {
+        let incumbent = isIncumbentContainer ?? (!isSHVQ && isRotated && bits == 4 && groupSize == 32)
+        if isSHVQ {
+            guard isRotated && !incumbent && QWSHVQBlock.isSupported(bits: bits, group: groupSize) else { return nil }
+        } else if incumbent {
             guard isRotated && bits == 4 && groupSize == 32 else { return nil }
         } else if isRotated {
             guard QWAQBlock.isHQSupported(bits: bits, group: groupSize) else { return nil }
         } else {
             guard QWAQBlock.isSupported(bits: bits, group: groupSize) else { return nil }
         }
+        let maybeGroupBytes = isSHVQ
+            ? QWSHVQBlock.bytesIfSupported(bits: bits, group: groupSize)
+            : QWAQBlock.bytesIfBlockSupported(bits: bits, group: groupSize)
         guard n > 0, k > 0, k % groupSize == 0,
-              let groupBytes = QWAQBlock.bytesIfBlockSupported(bits: bits, group: groupSize),
+              let groupBytes = maybeGroupBytes,
               blocks.bytes >= n * (k / groupSize) * groupBytes
         else { return nil }
         self.blocks = blocks
@@ -132,14 +144,15 @@ public struct QWWeightView: Sendable {
         self.bits = bits; self.groupSize = groupSize
         self.isRotated = isRotated
         self.isIncumbentContainer = incumbent
+        self.isSHVQ = isSHVQ
     }
     public init?(nibbles: QWTensorValue, scales: QWTensorValue? = nil, mins: QWTensorValue? = nil,
                  n: Int, k: Int,
                  bits: Int = 4, groupSize: Int = 32, isRotated: Bool,
-                 isIncumbentContainer: Bool? = nil) {
+                 isIncumbentContainer: Bool? = nil, isSHVQ: Bool = false) {
         self.init(blocks: nibbles, n: n, k: k,
                   bits: bits, groupSize: groupSize, isRotated: isRotated,
-                  isIncumbentContainer: isIncumbentContainer)
+                  isIncumbentContainer: isIncumbentContainer, isSHVQ: isSHVQ)
     }
 
     /// A view over other bytes of the same bank — a slice of a concatenated
@@ -148,7 +161,7 @@ public struct QWWeightView: Sendable {
     public func subview(blocks: QWTensorValue, n: Int, k: Int) -> QWWeightView? {
         QWWeightView(blocks: blocks, n: n, k: k,
                      bits: bits, groupSize: groupSize, isRotated: isRotated,
-                     isIncumbentContainer: isIncumbentContainer)
+                     isIncumbentContainer: isIncumbentContainer, isSHVQ: isSHVQ)
     }
 }
 
@@ -160,6 +173,7 @@ extension QWWeightView: Equatable {
             && a.bits == b.bits && a.groupSize == b.groupSize
             && a.isRotated == b.isRotated
             && a.isIncumbentContainer == b.isIncumbentContainer
+            && a.isSHVQ == b.isSHVQ
             && a.blocks.bytes == b.blocks.bytes
             && a.blocks.offset == b.blocks.offset
             && a.blocks.region.base == b.blocks.region.base
@@ -237,7 +251,8 @@ public enum QWGemm {
                 throw QWGemmError.badWeights("dual-store encodeH16 requires incumbent container")
             }
             if plan.epilogue == .siluMulPair {
-                guard let name = QWGemmAQ.siluPairKernelName(bits: wQ4.bits, group: wQ4.groupSize) else {
+                guard let name = QWGemmAQ.siluPairKernelName(bits: wQ4.bits, group: wQ4.groupSize,
+                                                             isSHVQ: wQ4.isSHVQ) else {
                     throw QWGemmError.badWeights("no affine-quantised silu_pair kernel for \(wQ4.bits)-bit group \(wQ4.groupSize)")
                 }
                 let pso = try hal.pipeline(name)
@@ -256,7 +271,8 @@ public enum QWGemm {
                 return
             } else {
                 try QWGemmAQ.encodeDecodeT4(enc, hal: hal, blocks: wQ4.blocks, x: x, y16: y16,
-                                            n: wQ4.n, k: wQ4.k, bits: wQ4.bits, group: wQ4.groupSize)
+                                            n: wQ4.n, k: wQ4.k, bits: wQ4.bits, group: wQ4.groupSize,
+                                            isSHVQ: wQ4.isSHVQ)
                 return
             }
         }
@@ -313,7 +329,8 @@ public enum QWGemm {
         }
         if !wQ4.isIncumbentContainer && plan.epilogue == .none {
             try QWGemmAQ.encode(enc, hal: hal, blocks: wQ4.blocks, x: x, y: y,
-                                n: wQ4.n, k: wQ4.k, bits: wQ4.bits, group: wQ4.groupSize)
+                                n: wQ4.n, k: wQ4.k, bits: wQ4.bits, group: wQ4.groupSize,
+                                isSHVQ: wQ4.isSHVQ)
             return
         }
         let pso = try hal.pipeline(plan.kernel)

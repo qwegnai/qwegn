@@ -43,13 +43,116 @@ extension QWGemm {
                                  threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
     }
 
-    /// Exact 2-stage QSA top-k per query over complete blocks (or hierarchical Ward-clustered LSA selector when `lsaClusters != nil`);
-    /// list i32 [T,512] receives ascending selected block ids.
+    /// Clusters any newly completed chunks (`4096`-token `e-means` CSR or `512`-token Ward superblocks)
+    /// across `[pos0 ..< pos0 + count)`. Returns `true` when at least one chunk was clustered.
+    @discardableResult
+    public static func encodeFnLSAClusterRange(_ enc: any MTLComputeCommandEncoder, hal: QWHal,
+                                               pooled: QWTensorValue,
+                                               clusters: FNGPUAttnDecodeState.LSAClusterState,
+                                               pos0: Int, count: Int,
+                                               indexDim: Int) throws -> Bool {
+        let unitTok = clusters.isEmeans ? QWCoarsePoolIndex.macroChunkTokens : 512
+        let u0 = pos0 / unitTok
+        let u1 = (pos0 + count) / unitTok
+        guard u1 > u0 else { return false }
+        QWCoarsePoolIndex.barrierIfConcurrent(enc)
+        if clusters.isEmeans {
+            let pso = try hal.pipeline("qwg_emeans_cluster_1024")
+            let csr = QWCoarsePoolIndex.LayerCSR(
+                centroids: clusters.centroids, memberPools: clusters.bucketMembers,
+                clusterSpans: clusters.bucketSizes, maxMacros: max(u1, clusters.maxUnits))
+            QWCoarsePoolIndex.encodeClusterMacros(
+                enc, pso: pso, pooledKeys: pooled, csr: csr,
+                startMacro: u0, numMacros: u1 - u0, indexDim: indexDim)
+        } else {
+            try encodeFnLSAWardCluster(enc, hal: hal, pooled: pooled, clusters: clusters,
+                                       startSuperblock: u0, numSuperblocks: u1 - u0, indexDim: indexDim)
+        }
+        return true
+    }
+
+    /// Exact 2-stage QSA top-k per query over complete blocks (or multi-TG `e-means` / legacy Ward coarse selector
+    /// when `lsaClusters != nil`); list i32 [T,512] receives ascending selected block ids.
     public static func encodeFnQSASelect(_ enc: any MTLComputeCommandEncoder, hal: QWHal,
                                          idxQ: QWTensorValue, pooled: QWTensorValue, list: QWTensorValue,
                                          rows: Int, blockTopK: Int, pos0: Int = 0,
                                          scores: QWTensorValue,
                                          lsaClusters: FNGPUAttnDecodeState.LSAClusterState? = nil) throws {
+        if let clusters = lsaClusters, let cScratch = clusters.emeansScratch {
+            let probe = max(544, blockTopK + 32)
+            let bg = QWCoarsePoolIndex.batchGeometry(
+                pos0: pos0, units: rows, budgetBlocks: blockTopK,
+                windowBlocks: 0, hasSink: false, writeCount: false, probeClusters: probe)
+            if bg.shouldPrune {
+                let pipes = try QWCoarsePoolIndex.Pipelines(hal: hal)
+                let psoCoarse = try hal.pipeline("qwg_emeans_qsa_score_coarse")
+                let psoCands = try hal.pipeline("qwg_emeans_qsa_score_cands")
+                let psoFallback = try hal.pipeline("qwg_emeans_qsa_flat_fallback")
+                let csr = QWCoarsePoolIndex.LayerCSR(
+                    centroids: clusters.centroids, memberPools: clusters.bucketMembers,
+                    clusterSpans: clusters.bucketSizes, maxMacros: max(bg.numMacros, clusters.maxUnits))
+                let tpg = MTLSize(width: 256, height: 1, depth: 1)
+                var r0 = 0
+                while r0 < rows {
+                    let subRows = min(cScratch.maxBatchRows, rows - r0)
+                    let subBg = QWCoarsePoolIndex.batchGeometry(
+                        pos0: pos0 + r0, units: subRows, budgetBlocks: blockTopK,
+                        windowBlocks: 0, hasSink: false, writeCount: false, probeClusters: probe)
+                    let qSlice = idxQ.slice(byteOffset: r0 * 4 * 128 * 4, count: subRows * 4 * 128, dtype: .f32)
+                    let listSlice = list.slice(byteOffset: r0 * blockTopK * 4, count: subRows * blockTopK, dtype: .i32)
+                    var ePrm = QWCoarsePoolIndex.SelectParams(
+                        T: subRows, pos0: pos0 + r0, indexDim: 128, budgetBlocks: blockTopK,
+                        windowBlocks: 0, hasSink: false, writeCount: false, listStride: blockTopK,
+                        rowStep: 1, maxRow: subRows, clusterStride: cScratch.clusterStride,
+                        probeClusters: probe, candCap: cScratch.candCap)
+                    let plen = MemoryLayout<QWCoarsePoolIndex.SelectParams>.stride
+                    enc.setComputePipelineState(psoCoarse)
+                    qSlice.bind(enc, index: 0)
+                    csr.centroids.bind(enc, index: 1)
+                    csr.clusterSpans.bind(enc, index: 2)
+                    cScratch.cScore.bind(enc, index: 3)
+                    cScratch.uHist.bind(enc, index: 4)
+                    enc.setBytes(&ePrm, length: plen, index: 5)
+                    enc.dispatchThreadgroups(
+                        MTLSize(width: (subBg.numClusters + 255) / 256, height: subRows, depth: 1),
+                        threadsPerThreadgroup: tpg)
+                    QWCoarsePoolIndex.encodeHistCollectScoreFinalize(
+                        enc, pipelines: pipes, csr: csr, scratch: cScratch,
+                        blockList: listSlice, blockCount: listSlice, params: &ePrm,
+                        numClusters: subBg.numClusters, maxMiddlePools: subBg.middleEnd,
+                        encodeScoreCands: { enc, maxCand, prm in
+                            enc.setComputePipelineState(psoCands)
+                            qSlice.bind(enc, index: 0)
+                            pooled.bind(enc, index: 1)
+                            cScratch.candState.bind(enc, index: 2)
+                            cScratch.candPools.bind(enc, index: 3)
+                            cScratch.candU.bind(enc, index: 4)
+                            enc.setBytes(&prm, length: plen, index: 5)
+                            enc.dispatchThreadgroups(
+                                MTLSize(width: (maxCand + 255) / 256, height: subRows, depth: 1),
+                                threadsPerThreadgroup: tpg)
+                        },
+                        encodeFlatFallback: { enc, prm in
+                            enc.setComputePipelineState(psoFallback)
+                            qSlice.bind(enc, index: 0)
+                            pooled.bind(enc, index: 1)
+                            cScratch.candState.bind(enc, index: 2)
+                            listSlice.bind(enc, index: 3)
+                            listSlice.bind(enc, index: 4)
+                            enc.setBytes(&prm, length: plen, index: 5)
+                            enc.dispatchThreadgroups(
+                                MTLSize(width: subRows, height: 1, depth: 1),
+                                threadsPerThreadgroup: tpg)
+                        }
+                    )
+                    if r0 + subRows < rows {
+                        QWCoarsePoolIndex.barrierIfConcurrent(enc)
+                    }
+                    r0 += subRows
+                }
+                return
+            }
+        }
         let maxBlocks = max(1, (pos0 + rows) / 4)
         let totalScoreElems = scores.shape.elementCount
         let rawTileRows = max(1, min(rows, totalScoreElems / max(1, maxBlocks)))
@@ -57,7 +160,7 @@ extension QWGemm {
         guard tileRows >= 1 && maxBlocks <= totalScoreElems else {
             throw FNGPUError.selectionLimitExceeded(positions: pos0 + rows, limit: totalScoreElems * 4)
         }
-        if let clusters = lsaClusters, (pos0 + rows) / 512 > 0 {
+        if let clusters = lsaClusters, !clusters.isEmeans, (pos0 + rows) / 512 > 0 {
             let lsaPso = try hal.pipeline("qwg_lsa_qsa_select")
             var r0 = 0
             while r0 < rows {

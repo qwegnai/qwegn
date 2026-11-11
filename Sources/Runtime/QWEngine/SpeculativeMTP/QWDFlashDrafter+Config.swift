@@ -120,6 +120,36 @@ public struct QWDFlashConfig: Sendable, Equatable {
         }
     }
 
+    /// True when `packURL` holds a DFlash 2 or DSpine drafter `config.json`.
+    public static func isDrafterPack(at packURL: URL) -> Bool {
+        let root = QWModelRoot(url: packURL)
+        guard let cfgURL = root.configURL,
+              let data = try? Data(contentsOf: cfgURL),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return false
+        }
+        if json["dflash_config"] != nil || json["selected_prefix_code_bridge"] != nil {
+            return true
+        }
+        if let mt = (json["model_type"] as? String)?.lowercased(),
+           mt.contains("dflash") || mt.contains("dspine") {
+            return true
+        }
+        return false
+    }
+
+    /// Infers `"dspine"` vs `"dflash2"` and maximum draft count (`blockSize - 1`) from the drafter pack's `config.json`.
+    public static func inferBackendAndMaxDrafts(packPath: String?) -> (backend: String, maxDrafts: Int) {
+        let rawPath = (packPath ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let effectivePath = (rawPath.isEmpty ? Self.defaultPackPath : rawPath).expandingTildePath
+        let url = effectivePath.canonicalFileURL
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return ("dflash2", 7)
+        }
+        let cfg = Self.load(from: url)
+        return (cfg.isDSpine ? "dspine" : "dflash2", max(7, min(15, cfg.blockSize - 1)))
+    }
+
     public static func load(from packURL: URL, topKOverride: Int? = nil) -> QWDFlashConfig {
         let dir = packURL.pathExtension == "qwp" ? packURL.deletingLastPathComponent() : packURL
         let cfgURL = dir.appendingPathComponent("assets/config.json")

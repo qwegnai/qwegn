@@ -1,5 +1,6 @@
 import Foundation
 import QWCore
+import QWEngine
 import QWQuant
 
 /// Resolved runtime configuration adhering to the standard configuration hierarchy:
@@ -30,7 +31,7 @@ public struct QWResolvedServerConfig: Sendable, Equatable {
     public init(
         host: String = "127.0.0.1", port: Int = 8080,
         modelPackPath: String = "", modelName: String = "Qwen3.8-27B", modelAlias: String = "",
-        maxContext: Int = 4096, kvMode: String = "f16",
+        maxContext: Int = 4096, kvMode: String = "q4",
         ropeScalingType: String = "none", ropeScalingFactor: Double = 1.0,
         temperature: Double = 0.7, topP: Double = 0.9, topK: Int = 40,
         maxTokens: Int = 512, modelMaxLength: Int? = nil,
@@ -44,7 +45,7 @@ public struct QWResolvedServerConfig: Sendable, Equatable {
         gdnPrefill: String = "chunked", evictPrefillScratch: String = "auto",
         prefillChunkSize: Int = QWPrefillLimits.chunkRows,
         maxConcurrentSessions: Int = 8,
-        lsaMode: String = "off", lsaBudget: Int = QWLSAConfig.defaultBudget,
+        lsaMode: String = "auto", lsaBudget: Int = QWLSAConfig.defaultBudget,
         lsaClusterBlock: Int = QWLSAConfig.defaultClusterBlock, lsaSidecarPath: String = "",
         warmRAMLimitGB: Double = 4.0, ssdCacheEnabled: Bool = false, ssdCacheLimitGB: Double = 10.0, cacheDir: String = "~/.qwg/cache",
         logDir: String = "~/.qwg/logs", logFileName: String = "qwg.log", logLevel: String = "info",
@@ -131,9 +132,17 @@ public enum QWServerConfigurationResolver {
         cliLSABudget: Int? = nil, cliLSAClusterBlock: Int? = nil, cliLSASidecarPath: String? = nil,
         cliWarmRAMLimitGB: Double? = nil, cliSSDCacheLimitGB: Double? = nil, cliCacheDir: String? = nil,
         cliLogDir: String? = nil, cliLogFileName: String? = nil, cliLogLevel: String? = nil, cliLazy: Bool? = nil,
+        cliLoadVision: Bool? = nil, cliStreamNgrams: Bool? = nil,
+        cliMemoryPolicy: String? = nil, cliOSReserveGiB: Double? = nil,
+        cliResidentExpertsPerLayer: Int? = nil, cliMoESpecBudget: Int? = nil,
+        cliIgnoreProfile: Bool = false,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> QWResolvedServerConfig {
         var sources: [String: String] = [:]
+        let ignoreProfile = cliIgnoreProfile || environment["QWG_NO_PROFILE"] == "1"
+        if ignoreProfile {
+            sources["noProfile"] = cliIgnoreProfile ? "cli (--no-profile)" : "env (QWG_NO_PROFILE=1)"
+        }
 
         // 1. Determine configuration file URL
         let resolvedConfigFileURL: URL? = {
@@ -143,6 +152,9 @@ public enum QWServerConfigurationResolver {
             } else if let envPath = environment["QWG_CONFIG"], !envPath.isEmpty {
                 sources["config"] = "env (QWG_CONFIG=\(envPath))"
                 return envPath.canonicalFileURL
+            } else if ignoreProfile {
+                sources["config"] = "none (--no-profile)"
+                return nil
             } else {
                 let defaultURL = QWSettingsManager.defaultSettingsFileURL
                 if FileManager.default.fileExists(atPath: defaultURL.path) {
@@ -154,9 +166,13 @@ public enum QWServerConfigurationResolver {
             }
         }()
 
-        // 2. Load file settings if present
+        // 2. Load file settings if present (preserve alias lookup when --no-profile bypasses default settings.json)
         let snapshot = try settingsSnapshot(at: resolvedConfigFileURL)
-        let rawFileSettings = snapshot.settings
+        var rawFileSettings = snapshot.settings
+        if ignoreProfile, resolvedConfigFileURL == nil,
+           FileManager.default.fileExists(atPath: QWSettingsManager.defaultSettingsFileURL.path) {
+            rawFileSettings.modelAliases = QWSettingsManager.shared.loadSettings().modelAliases
+        }
         let rawConfiguredSettingKeys = snapshot.keys
 
         // 3. Resolve pack path: CLI > Env > File > Discovered in ~/.qwg/models
@@ -227,15 +243,16 @@ public enum QWServerConfigurationResolver {
         // 4b. Apply per-model profile or model-config defaults when switching models
         // or when no per-model profile exists yet for the selected model.
         let (fileSettings, configuredSettingKeys): (QWServerSettings, Set<String>) = {
-            let modelProfile = resolvedConfigFileURL.flatMap {
+            let modelProfile = ignoreProfile ? nil : resolvedConfigFileURL.flatMap {
                 QWSettingsManager.shared.loadProfile(forModel: resolvedModelName, from: $0)
             }
             let fileSpecifiesAnotherModel = (rawConfiguredSettingKeys.contains("modelName")
                 || rawConfiguredSettingKeys.contains("modelPackPath"))
                 && resolvedModelName != rawFileSettings.modelName
                 && modelDescriptor != nil
-            let isDefaultConfigWithoutProfile = (resolvedConfigFileURL?.standardizedFileURL
+            let isDefaultConfigWithoutProfile = ((resolvedConfigFileURL?.standardizedFileURL
                 == QWSettingsManager.defaultSettingsFileURL.standardizedFileURL)
+                || (ignoreProfile && resolvedConfigFileURL == nil))
                 && modelProfile == nil
                 && modelDescriptor != nil
 
@@ -395,45 +412,19 @@ public enum QWServerConfigurationResolver {
 
         // 8. Sampling & Generation Parameters
         let resolvedTemperature: Double = {
-            if let t = cliTemperature {
-                sources["temperature"] = "cli"
-                return t
-            }
-            if let envStr = environment["QWG_TEMPERATURE"], let t = Double(envStr) {
-                sources["temperature"] = "env"
-                return t
-            }
-            if configuredSettingKeys.contains("temperature") {
-                sources["temperature"] = "config-file"
-                return fileSettings.temperature
-            }
-            if let temperature = modelDefaults?.effectiveTemperature {
-                sources["temperature"] = "model-config"
-                return temperature
-            }
-            sources["temperature"] = "config-file"
-            return fileSettings.temperature
+            if let t = cliTemperature { sources["temperature"] = "cli"; return t }
+            if let envStr = environment["QWG_TEMPERATURE"], let t = Double(envStr) { sources["temperature"] = "env"; return t }
+            if configuredSettingKeys.contains("temperature") { sources["temperature"] = "config-file"; return fileSettings.temperature }
+            if let temperature = modelDefaults?.effectiveTemperature { sources["temperature"] = "model-config"; return temperature }
+            sources["temperature"] = "config-file"; return fileSettings.temperature
         }()
 
         let resolvedTopP: Double = {
-            if let p = cliTopP {
-                sources["topP"] = "cli"
-                return p
-            }
-            if let envStr = environment["QWG_TOP_P"], let p = Double(envStr) {
-                sources["topP"] = "env"
-                return p
-            }
-            if configuredSettingKeys.contains("topP") {
-                sources["topP"] = "config-file"
-                return fileSettings.topP
-            }
-            if let topP = modelDefaults?.topP {
-                sources["topP"] = "model-config"
-                return topP
-            }
-            sources["topP"] = "config-file"
-            return fileSettings.topP
+            if let p = cliTopP { sources["topP"] = "cli"; return p }
+            if let envStr = environment["QWG_TOP_P"], let p = Double(envStr) { sources["topP"] = "env"; return p }
+            if configuredSettingKeys.contains("topP") { sources["topP"] = "config-file"; return fileSettings.topP }
+            if let topP = modelDefaults?.topP { sources["topP"] = "model-config"; return topP }
+            sources["topP"] = "config-file"; return fileSettings.topP
         }()
 
         let resolvedTopK: Int = {
@@ -505,14 +496,6 @@ public enum QWServerConfigurationResolver {
             sources["mtpDrafts"] = "config-file"; return fileSettings.mtpDrafts
         }()
 
-        let resolvedMTPBackend: String? = {
-            if let b = cliMTPBackend, !b.isEmpty { sources["mtpBackend"] = "cli"; return b }
-            if let bs = cliDFlashBlockSize, (2...16).contains(bs) { sources["mtpBackend"] = "cli (--dflash-window)"; return "dflash2" }
-            if let b = environment["QWG_MTP_BACKEND"], !b.isEmpty { sources["mtpBackend"] = "env"; return b }
-            if !fileSettings.mtpBackend.isEmpty { sources["mtpBackend"] = "config-file"; return fileSettings.mtpBackend }
-            return nil
-        }()
-
         let resolvedDFlashDraftPackPath: String = {
             if let p = cliDFlashDraftPack, !p.isEmpty { sources["dflashDraftPackPath"] = "cli"; return p.canonicalPath }
             if let p = environment["QW_DFLASH_DRAFT_PACK"] ?? environment["QWG_DFLASH_DRAFT_PACK"], !p.isEmpty {
@@ -525,7 +508,18 @@ public enum QWServerConfigurationResolver {
                 sources["dflashDraftPackPath"] = "discovered (~/.qwg/models/\(first.name))"; return first.packPath
             }
             sources["dflashDraftPackPath"] = "default"
-            return "~/.qwg/models/Qwen3.8-27B-DFlash2-hq4g32".canonicalPath
+            return QWDFlashConfig.defaultPackPath
+        }()
+
+        let resolvedMTPBackend: String? = {
+            if let b = cliMTPBackend, !b.isEmpty { sources["mtpBackend"] = "cli"; return b }
+            if let bs = cliDFlashBlockSize, (2...16).contains(bs) {
+                sources["mtpBackend"] = "cli (--dflash-window)"
+                return QWDFlashConfig.inferBackendAndMaxDrafts(packPath: resolvedDFlashDraftPackPath).backend
+            }
+            if let b = environment["QWG_MTP_BACKEND"], !b.isEmpty { sources["mtpBackend"] = "env"; return b }
+            if !fileSettings.mtpBackend.isEmpty { sources["mtpBackend"] = "config-file"; return fileSettings.mtpBackend }
+            return nil
         }()
 
         let resolvedDFlashSelectorTopK: Int = {
@@ -716,13 +710,38 @@ public enum QWServerConfigurationResolver {
         }()
 
         let resolvedLoadVision: Bool = {
+            if let cli = cliLoadVision {
+                sources["loadVision"] = "cli (--load-vision)"; return cli
+            }
             if let envStr = environment["QWG_LOAD_VISION"] ?? environment["QW_LOAD_VISION"] ?? environment["QW_VISION_EAGER"] {
                 sources["loadVision"] = "env"; return envStr == "1" || envStr.lowercased() == "true"
             }
             sources["loadVision"] = "config-file"; return fileSettings.loadVision
         }()
 
-        for id in QWEngineTuning.knobIds {
+        var resolvedTuning = fileSettings.resolvedEngineTuning
+        if let cliPol = cliMemoryPolicy, let parsed = QWMemoryPolicy(rawValue: cliPol) {
+            resolvedTuning.memoryPolicy = parsed
+            sources["memoryPolicy"] = "cli (--memory-policy)"
+        }
+        if let cliOS = cliOSReserveGiB {
+            resolvedTuning.osReserveGiB = cliOS
+            sources["osReserveGiB"] = "cli (--os-reserve)"
+        }
+        if let cliRes = cliResidentExpertsPerLayer {
+            resolvedTuning.residentExpertsPerLayer = cliRes > 0 ? cliRes : nil
+            sources["residentExpertsPerLayer"] = "cli (--resident-experts-per-layer)"
+        }
+        if let cliBudget = cliMoESpecBudget {
+            resolvedTuning.moeSpecBudget = cliBudget
+            sources["moeSpecBudget"] = "cli (--moe-spec-budget)"
+        }
+        if let cliStream = cliStreamNgrams {
+            resolvedTuning.streamNgrams = cliStream
+            sources["streamNgrams"] = "cli (--stream-ngrams)"
+        }
+
+        for id in QWEngineTuning.knobIds where sources[id] == nil {
             if let env = QWEngineTuning.environmentNames[id], environment[env] != nil {
                 sources[id] = "env"
             } else if fileSettings.engineTuning[id] != nil {
@@ -753,7 +772,7 @@ public enum QWServerConfigurationResolver {
             logDir: resolvedLogDir, logFileName: resolvedLogFile,
             logLevel: resolvedLogLevel, lazy: resolvedLazy, loadVision: resolvedLoadVision, sourceSummary: sources
         )
-        resolvedConfig.engineTuning = fileSettings.resolvedEngineTuning
+        resolvedConfig.engineTuning = resolvedTuning
         return resolvedConfig
     }
 }

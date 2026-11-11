@@ -8,6 +8,7 @@ public enum QWNgramDType: UInt32, Sendable, Equatable, CaseIterable {
     case bf16 = 0
     case q8g32 = 1
     case q4g32 = 2
+    case vq2g32 = 3
 
     /// The bytes one row of `headDim` values takes.
     /// Size-preserving (Law L8): `groups × (payload + scale)`, never more.
@@ -26,6 +27,11 @@ public enum QWNgramDType: UInt32, Sendable, Equatable, CaseIterable {
                 throw QWNgramFormatError.badRowSize(headDim)
             }
             return (headDim / QWNgramFormat.group) * 20
+        case .vq2g32:
+            guard headDim % QWNgramFormat.group == 0 else {
+                throw QWNgramFormatError.badRowSize(headDim)
+            }
+            return (headDim / QWNgramFormat.group) * 18
         }
     }
 }
@@ -61,11 +67,27 @@ public struct QWNgramHeader: Sendable, Equatable {
     public let dataOffset: Int
     /// The producer's sha256 of the rows, hex, when it wrote one.
     public let note: String
+    /// Widened `[256 * 2]` Float32 e-means codebook for v3 `vq2g32` (`[]` for v1/v2).
+    public let codebook: [Float]
+
+    public init(version: UInt16, flags: UInt16, dtype: QWNgramDType, entryCount: Int,
+                headDim: Int, rowBytes: Int, l1Hot: Int, dataOffset: Int,
+                note: String, codebook: [Float] = []) {
+        self.version = version
+        self.flags = flags
+        self.dtype = dtype
+        self.entryCount = entryCount
+        self.headDim = headDim
+        self.rowBytes = rowBytes
+        self.l1Hot = l1Hot
+        self.dataOffset = dataOffset
+        self.note = note
+        self.codebook = codebook
+    }
 }
 
-/// The QNGRAM on-disk contract, shared byte for byte with the Python writer
-/// in `Scripts/quantize/pack_ngram.py`. v1 is BF16 only; v2 adds the two
-/// quantised row formats.
+/// The QNGRAM on-disk contract, shared byte for byte with `Scripts/quantize/pack_ngram.py`.
+/// v1 is BF16, v2 carries scalar group-quantised rows, and v3 carries VQ2_G32 + 1 KiB e-means LUT.
 public enum QWNgramFormat {
     public static let magic: UInt64 = 0x0000_4D41_5247_4E51  // "QNGRAM\0\0"
     public static let sectorSize = 4096
@@ -73,6 +95,47 @@ public enum QWNgramFormat {
     public static let group = 32
     /// The bytes the producer's sha256 note occupies.
     public static let noteBytes = 64
+    public static let vq2CodebookOffset = 1024
+    public static let vq2CodebookBytes = 1024
+    public static let vq2CodebookScalars = 512
+
+    private static func validateVQ2Codebook(_ rawU16: [UInt16]) throws -> [Float] {
+        guard rawU16.count == vq2CodebookScalars else {
+            throw QWNgramFormatError.badHeader("v3 codebook must hold 512 f16 values")
+        }
+        guard rawU16[0] == 0 && rawU16[1] == 0 else {
+            throw QWNgramFormatError.badHeader("v3 codebook[0] must be canonical +0.0")
+        }
+        var out = [Float](repeating: 0, count: vq2CodebookScalars)
+        var anyLive = false
+        for (i, bits) in rawU16.enumerated() {
+            let v = QWQuant.f16tof32Bits(bits)
+            guard v.isFinite else {
+                throw QWNgramFormatError.badHeader("non-finite value in v3 codebook")
+            }
+            out[i] = v
+            if i >= 2 && v != 0 { anyLive = true }
+        }
+        guard anyLive else {
+            throw QWNgramFormatError.badHeader("v3 codebook is all zero")
+        }
+        return out
+    }
+
+    private static func checkVersionPairing(version: UInt16, dtype: QWNgramDType) throws {
+        guard version == 1 || version == 2 || version == 3 else {
+            throw QWNgramFormatError.unsupportedVersion(version)
+        }
+        if version == 1, dtype != .bf16 {
+            throw QWNgramFormatError.badHeader("version 1 cannot carry dtype \(dtype.rawValue)")
+        }
+        if version == 2, (dtype == .bf16 || dtype == .vq2g32) {
+            throw QWNgramFormatError.badHeader("version 2 cannot carry dtype \(dtype.rawValue)")
+        }
+        if version == 3, dtype != .vq2g32 {
+            throw QWNgramFormatError.badHeader("version 3 must carry dtype vq2g32")
+        }
+    }
 
     public static func parse(_ bytes: [UInt8]) throws -> QWNgramHeader {
         guard bytes.count >= headerBytes else { throw QWNgramFormatError.shortHeader }
@@ -85,21 +148,20 @@ public enum QWNgramFormat {
         }
         guard u64(0) == magic else { throw QWNgramFormatError.badMagic }
         let version = u16(8)
-        guard version == 1 || version == 2 else { throw QWNgramFormatError.unsupportedVersion(version) }
+        guard version == 1 || version == 2 || version == 3 else {
+            throw QWNgramFormatError.unsupportedVersion(version)
+        }
         let dtypeRaw = u32(12)
         guard let dtype = QWNgramDType(rawValue: dtypeRaw) else {
             throw QWNgramFormatError.unsupportedDType(dtypeRaw)
         }
-        // The pairing is strict: v1 is BF16 only, v2 carries a quantised
-        // format. A v2 file holding BF16 rows is malformed, not "v1 in
-        // disguise", and a v1 file holding quantised rows is worse.
-        if version == 1, dtype != .bf16 {
-            throw QWNgramFormatError.badHeader(
-                "version 1 cannot carry dtype \(dtypeRaw)")
-        }
-        if version == 2, dtype == .bf16 {
-            throw QWNgramFormatError.badHeader(
-                "version 2 must carry a quantised dtype")
+        try checkVersionPairing(version: version, dtype: dtype)
+        let codebook: [Float]
+        if dtype == .vq2g32 {
+            let raw = (0..<vq2CodebookScalars).map { u16(vq2CodebookOffset + $0 * 2) }
+            codebook = try validateVQ2Codebook(raw)
+        } else {
+            codebook = []
         }
         let headDim = Int(u16(24))
         let rowBytes = Int(u16(26))
@@ -137,30 +199,24 @@ public enum QWNgramFormat {
                              rowBytes: rowBytes,
                              l1Hot: l1Hot,
                              dataOffset: dataOffset,
-                             note: note)
+                             note: note,
+                             codebook: codebook)
     }
 
-    /// Builds a canonical 4096-byte header.
-    /// The Swift writer and the Python writer must produce identical bytes.
+    /// Builds a canonical 4096-byte header matching the Python writer byte for byte.
     public static func makeHeader(version: UInt16,
                                   dtype: QWNgramDType,
                                   entryCount: UInt64,
                                   headDim: UInt16,
                                   rowBytes: UInt16,
                                   l1Hot: UInt32,
-                                  note: String = "") throws -> [UInt8] {
-        // A writer that could emit a header the reader refuses would be a
-        // footgun, so it applies the reader's own rules first.
-        guard version == 1 || version == 2 else {
-            throw QWNgramFormatError.unsupportedVersion(version)
-        }
-        if version == 1, dtype != .bf16 {
-            throw QWNgramFormatError.badHeader(
-                "version 1 cannot carry dtype \(dtype.rawValue)")
-        }
-        if version == 2, dtype == .bf16 {
-            throw QWNgramFormatError.badHeader(
-                "version 2 must carry a quantised dtype")
+                                  note: String = "",
+                                  codebook: [UInt16] = []) throws -> [UInt8] {
+        try checkVersionPairing(version: version, dtype: dtype)
+        if dtype == .vq2g32 {
+            _ = try validateVQ2Codebook(codebook)
+        } else if !codebook.isEmpty {
+            throw QWNgramFormatError.badHeader("codebook is only valid for v3 vq2g32")
         }
         guard rowBytes == (try dtype.rowBytes(headDim: Int(headDim))) else {
             throw QWNgramFormatError.badRowSize(Int(rowBytes))
@@ -191,6 +247,9 @@ public enum QWNgramFormat {
         put32(28, l1Hot); put64(32, UInt64(headerBytes))
         h[44] = UInt8(self.noteBytes)
         for (i, b) in noteBytes.enumerated() { h[45 + i] = b }
+        if dtype == .vq2g32 {
+            for (i, u) in codebook.enumerated() { put16(vq2CodebookOffset + i * 2, u) }
+        }
         return h
     }
 
@@ -216,6 +275,7 @@ extension QWNgramFormat {
     public static func decodeRow(dtype: QWNgramDType,
                                   from bytes: UnsafeRawPointer,
                                   headDim: Int,
+                                  codebook: UnsafePointer<Float>? = nil,
                                   into dst: UnsafeMutablePointer<Float>) {
         precondition(headDim > 0, "ngram.bin: a row must hold at least one value")
         switch dtype {
@@ -235,14 +295,28 @@ extension QWNgramFormat {
                 }
             }
         case .q4g32:
-            // The block holds `QWQuant.group` values and the container's
-            // group is the same number. A divergence would mis-read the
-            // row, so it is checked here rather than assumed.
             precondition(group == QWQuant.group, "ngram.bin: the Q4 block group must match the row group")
             precondition(headDim % group == 0, "ngram.bin: a Q4 row holds whole groups")
             for g in 0..<(headDim / group) {
                 QWQuant.dequantHQ4Group(bytes.advanced(by: g * QWQuant.blockBytes),
                                         into: dst.advanced(by: g * group))
+            }
+        case .vq2g32:
+            precondition(headDim % group == 0, "ngram.bin: a VQ2 row holds whole groups")
+            guard let cb = codebook else {
+                preconditionFailure("ngram.bin: VQ2 decode requires its e-means codebook")
+            }
+            let pairs = group / 2
+            let stride = pairs + 2
+            for g in 0..<(headDim / group) {
+                let base = g * stride
+                let scale = QWQuant.f16tof32Bits(QWQuant.u16le(bytes, base + pairs))
+                for p in 0..<pairs {
+                    let code = Int(bytes.loadUnaligned(fromByteOffset: base + p, as: UInt8.self))
+                    let outIdx = g * group + 2 * p
+                    dst[outIdx] = cb[code * 2] * scale
+                    dst[outIdx + 1] = cb[code * 2 + 1] * scale
+                }
             }
         }
     }

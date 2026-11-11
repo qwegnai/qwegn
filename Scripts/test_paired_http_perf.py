@@ -14,9 +14,25 @@ import paired_http_perf
 class ChatHandler(BaseHTTPRequestHandler):
     pieces = ["answer"]
     include_usage = True
+    engine_info = {
+        "sources": {"noProfile": "explicit"},
+        "parameters": {
+            "kvMode": "q4", "contextBudget": 4096, "mtpDrafts": 0, "mtpBackend": None,
+            "lsaMode": "off", "gdnPrefillMode": "chunked", "prefillScratchEviction": "auto",
+        },
+    }
 
     def log_message(self, format, *args):
         pass
+
+    def do_GET(self):
+        if self.path != "/v1/engine/info":
+            self.send_error(404)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(self.engine_info).encode("utf-8"))
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -99,6 +115,37 @@ class PairedHTTPPerfTests(unittest.TestCase):
         result = paired_http_perf.run_batch(target, b'{"stream":true}', 2, 5)
         self.assertIn("error", result)
         self.assertTrue(all("usage object" in request["error"] for request in result["requests"]))
+
+    def test_strict_engine_info_requires_no_profile_and_matching_params(self):
+        class ProfiledHandler(ChatHandler):
+            engine_info = {**ChatHandler.engine_info, "sources": {}}
+
+        class MismatchedKVHandler(ChatHandler):
+            engine_info = {
+                **ChatHandler.engine_info,
+                "parameters": {**ChatHandler.engine_info["parameters"], "kvMode": "f16"},
+            }
+
+        baseline = self.server_url(ChatHandler)
+        candidate = self.server_url(SplitChatHandler)
+        profiled = self.server_url(ProfiledHandler)
+        mismatched = self.server_url(MismatchedKVHandler)
+        with tempfile.TemporaryDirectory() as directory:
+            request = Path(directory) / "request.json"
+            request.write_text(json.dumps({"model": "test", "messages": [{"role": "user", "content": "hi"}]}))
+            for bad_cand in (profiled, mismatched):
+                with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                    paired_http_perf.main(["--baseline", baseline, "--candidate", bad_cand,
+                                           "--request", str(request), "--output", str(Path(directory) / "bad.json"),
+                                           "--model-id", "checkpoint", "--strict"])
+            good_out = Path(directory) / "strict-ok.json"
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(paired_http_perf.main(
+                    ["--baseline", baseline, "--candidate", candidate, "--request", str(request),
+                     "--output", str(good_out), "--model-id", "checkpoint", "--concurrency", "1", "--strict"]), 0)
+            report = json.loads(good_out.read_text())
+            self.assertTrue(report["strict"])
+            self.assertEqual(report["engine_info"]["baseline"]["sources"]["noProfile"], "explicit")
 
     def test_rejects_invalid_cooldown(self):
         for value in ("-1", "nan", "inf"):

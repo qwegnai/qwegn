@@ -10,6 +10,50 @@ The single source of the version is `QWVersion.current` in
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-11
+
+### Added
+- **CLI residency & MoE speculation handles (`--memory-policy`, `--resident-experts-per-layer`, `--moe-spec-budget`), `HQ8_G32_M5` Weight-SVD dequantization, `Qwegn.app` `DSpine` / `streamNgrams` / `moeSpecBudget` controls, and tracked [`docs/settings-reference.md`](docs/settings-reference.md) (`QWCore`, `QWQuant`, `QWEngine`, `QWServer`, `qwg`, `QWMenuBar`, `docs/`).**
+  - Promoted `memoryPolicy` (`--memory-policy maxResident|safe`) and `residentExpertsPerLayer` (`--resident-experts-per-layer`) to first-class CLI options via `QWKnobRegistry` (`normalSurfaces`) and canonical case-insensitive enum transforms in `Scripts/gen_knob_cli.py`, and registered `moeSpecBudget` (`--moe-spec-budget 0...8`, `QWEngineTuning.moeSpecBudget`, `QW_MOE_SPEC_EXPERT_BUDGET`) across `qwg run`, `qwg repl`, and `qwg serve`.
+  - Added inverse-FWHT `QWQuant.Pack.dequantHQ8` (`HQ8_G32_M5`) to `QWLSASidecar.synthesizeFromPack` so every `.qwp` pack format supports automatic in-memory Weight-SVD under `--lsa-mode auto`.
+  - Extracted `SettingsView+Speculative.swift` in `QWMenuBar` (`Qwegn.app`), adding `DSpine` (`B = 16`, up to `15` drafts) with automatic drafter `config.json` pack syncing, plus `Stream PLE N-gram Table from SSD` (`streamNgrams`, `-27.3 GiB` GPU RAM) and `MoE-Spec Verify Budget` (`moeSpecBudget`) in `SettingsView+Performance.swift`.
+  - Added tracked open-source [`docs/settings-reference.md`](docs/settings-reference.md) covering zero-config defaults, 8 copy-paste operational scenarios, flagship presets, all `49` `QWKnobRegistry` controls, CLI/REPL flags, and environment variables.
+
+### Changed
+- **Adaptive out-of-the-box defaults (`--kv-mode q4`, `--lsa-mode auto`), `>262K` QSA `e-means-4096` auto-escalation, `<41K`-bypassed MLA `e-means` coarse pruning, and `config.json`-driven drafter auto-detection (`QWKnobRegistry`, `QWLSAConfig`, `QWMLAAttnOperator`, `FNGPUEngine`, `QWDFlashConfig`, `QWServer`).**
+  - Upgraded default `kvMode` from `"f16"` to `"q4"` (`4×` KV RAM savings, direct `.qwcache` compatibility) and default `lsaMode` from `"off"` to `"auto"` across `QWKnobRegistry`, `qwg`, `qwg plan`, and `QWServer`.
+  - Under `lsaMode = "auto"`, `FNGPUEngine` and `QWLSAConfig.resolveBackend` retain native flat QSA up to `262,144` tokens and automatically enable `e-means-4096` coarse clustering above `262K`; `QWMLAAttnOperator` automatically enables `e-means` coarse pruning (`<41K` zero-Stage-1 flat bypass, `>=41K` `e-means`, `--lsa-mode off` / `QW_MLA_EMEANS=0` `exactFlat`); and `QWDFlashConfig` discovers and classifies `dspine` (`maxDrafts = 15`) vs `dflash2` (`maxDrafts = 7`) directly from drafter `assets/config.json` with zero folder-name heuristics.
+
+## [0.14.1] - 2026-11-11
+
+### Added
+- **CLI & Menu Bar `--lsa-cluster-block 4096` (`e-means` macro-clustering) knob exposure and `64K → 1M` long-context LSA vs `e-means` benchmarks, whitepaper (§2.6 / §3.6), and presentation infographics (`QWCore`, `qwg`, `QWMenuBar`, `docs/`, `assets/`).**
+  - Widened `QWKnobRegistry.lsaClusterBlock` (`--lsa-cluster-block`) from `256...1024` to `256...4096` (`4096` activates `QWCoarsePoolIndex` capacity-balanced spherical `e-means` macro-clustering) and added `4,096 (e-means)` to `qwg-menu` (`SettingsView+Performance.swift`).
+  - Registered 44 quiet-GPU (`0% / 0%`) empirical runs from `16K` / `64K` to `1,039,928` (`1M`) tokens across `Qwen3.6-35B-A3B-hq4g32` (`2,317.0 / 105.56 tok/s` @1M `Ward-512`, `136.84 tok/s` @64K `e-means`), `Qwen3.8-Flash-Next-hq8g32-hq4g64` (`1,887.6 / 63.74 tok/s` @1M `e-means` — `+39.8%` prefill / `+55.3%` decode vs Native QSA), `Qwen3.8-27B-hq4g32` (`830.6–914.3 tok/s` prefill `+3.2%–9.0%` `e-means`), and `GLM-5.3-Flash-shvq4g32-shvq2g64-shvq3g64` (`26.63 tok/s` @160K `+19.8%` `e-means`, `1M` `102.3 GiB` UMA admission) with **100% (`3/3`) 3-needle passkey recall** on every sparse run, plus 6 dual-panel Prefill Profile & Decode SVG infographics (`assets/qwegn_lsa_*.svg`) in `docs/benchmarks.md`, `docs/lsa.md`, and `docs/lsa-codebase-memory-whitepaper.md`.
+
+## [0.14.0] - 2026-11-11
+
+### Added
+- **Spherical Hadamard Vector Quantization (`SHVQ{2,3,4}_G{32,64,128,256}`), `QNGRAM v3 VQ2_G32` 2-bit PLE tables (`50.9 → 27.1 GiB`), and zero-overspill Metal SHVQ quantizer (`QWQuant`, `QWGEMM`, `QWMLP`, `QWFlashNext`, `Scripts/quantize/shvq.py`, `pack_ngram.py`, `emeans.py`).**
+  - Implemented 12 `SHVQ{2,3,4}_G{32,64,128,256}` e-means vector quantization formats (`arXiv:2611.09501`) across dense GEMV, greedy `lm_head` argmax, batched Apple10 NAX GEMM, `f32` BM/GEMV (`bm32` exact 32-row small-prefill tiles), and grouped/routed MoE kernels (`ShvqTgLut<2|3>` threadgroup SRAM codebook staging + `SHVQ4` 32 KiB direct half-LUT lookup), shrinking `GLM-5.3-Flash` (`321B`) from `134.37 GiB` (`3.59 bpp` cold-streamed) to **`100.63 GiB` (`2.69 bpp` `SHVQ4_G32 + SHVQ2_G64 + SHVQ3_G64`, `-33.74 GiB` / `-25.1%`)** so all `321B` weights reside **100% in 128 GB UMA** (`36.2 tok/s` decode, `44.0 tok/s` speculative, `0` SSD expert misses).
+  - Added `QNGRAM v3 VQ2_G32` 2-bit e-means PLE N-gram table quantization (`170 → 90 bytes/row`, `50.86 → 27.13 GiB`, **`-23.73 GiB` / `-46.7%`**) with resident Metal GPU gather (`FNGPUPLETable` / `qwg_fn_ple_vq2_gather`) alongside SSD sector streaming, shrinking `Qwen3.8-Flash-Next-hq8g32-hq4g64` + PLE total disk footprint from `122.15 GiB` to **`98.42 GiB`** and enabling GPU-resident PLE alongside the `71.29 GiB` `HQ8+HQ4` pack (**`95.1 tok/s` decode `+13.9%` vs `83.5` `v0.13.1`, `145.4 tok/s` predictable `4.92 tok/step`, `2,528 tok/s` @10.4K prefill `+11.5%`**) with `10/10` (`100%`) `llmprobe` core reasoning and `9/9` structured JSON fidelity.
+  - Added zero-overspill `146 MiB` Metal SHVQ encoder (`shvq_metal_enc.mm`) and fast `VQ2` N-gram packer in `Scripts/quantize/`.
+- **Universal `--load-vision` / `--no-load-vision` and `--stream-ngrams` / `--no-stream-ngrams` CLI & runtime residency toggles (`QWKnobRegistry`, `qwg`, `QWEngineDriver`, `FNGPUEngine`, `FNGPUPLETable`), plus `--no-profile` hermetic benchmark mode (`paired_perf.py --strict`, `qwg-bench-kernels --only-shvq`).**
+  - Exposed `--load-vision` / `--no-load-vision` (`-1.60 GiB` CPU RSS when vision planes stay unmapped) and `--stream-ngrams` / `--no-stream-ngrams` (`-27.30 GiB` Metal GPU RAM when VQ2 PLE streams from SSD with a `64 MiB` L1 cache) across `qwg run`, `qwg repl`, `qwg serve`, and `qwg bench`, saving **`-28.48 GiB` combined RAM** (`108.77 → 80.29 GiB`) on `Qwen3.8-Flash-Next` with zero throughput penalty (`110.5 tok/s` warm decode).
+  - Added `--no-profile` across CLI commands and `Scripts/paired_perf.py --strict`, `QW_FLASH_TRACE=1` submission-interval diagnostics, and cache-hot + `256 MiB` ring-cycled cold-streaming `SHVQSuites` in `qwg-bench-kernels`.
+- **Capacity-balanced e-means coarse pool index (`QWCoarsePoolIndex`), slow-EMA KV calibration, and semantic `QWMemoryVault` centroids (`QWAttn`, `QWState`, `QWEngine`).**
+  - Added deterministic single-TG `qwg_emeans_collect`, on-device exact flat Top-K overflow fallback (`candState.overflow`), zero-Stage-1 flat bypass below `< 41K` tokens, and opt-in `QW_MLA_EMEANS=1` (keeping MLA `exactFlat` by default).
+
+### Changed
+- **Unified on-device indirect grouped-NAX MoE dispatch, dynamic 128 GB UMA admission, MoE `4096`-row prefill auto-tuning, and early Flash-Next decode submissions (`QWGEMM`, `QWHal`, `QWMLP`, `QWResidencyAdmission`, `PrefixCache`, `FNGPUEngine`).**
+  - Unified `encodeMoEGateUpNax` and `encodeMoENaxSplitF32` onto on-device `MTLDispatchThreadgroupsIndirectArguments` written by `qwg_moe_group_pairs_f32` (`0` empty threadgroups/slices) across an explicit `QWHal.rotateEncoder` boundary for AGX indirect-grid coherency, lifting `GLM-5.3-Flash` multi-row verify determinism to `5/5` bit-exact SHA-256 and improving server throughput across all flagship packs (`+21.2%` decode & `+7.0%` prefill on `Qwen3.8-27B + DSpine-b16`, `+11.4%` 10K prefill on `Qwen3.6-35B-A3B`, `+4.9%` decode on `Qwen3.8-Flash-Next`).
+  - Unified live `vm_statistics64` working-set admission (`QWResidencyAdmission`) across CLI load guards, `DriverConfig` MoE residency, and `qwg serve` `PrefixCache` warm-tier clamping (`<= 25%` of post-load headroom, `0 B` under pressure).
+  - Restored early layer cuts `[0, 1, 8, layerCount]` for GPU-PLE Flash-Next decode/verify stacks (`+2.5–2.9%` paired decode throughput with `15/15` full-arena SHA-256 checkpoint identity) and extended exact `bm32` Apple10 prefill tiles across `HQ4`/`HQ8`/`SHVQ4` fused epilogues `0..3`.
+
+### Fixed
+- **Flash-Next `[memory]` weight accounting and `--stream-ngrams` GPU VQ2 residency gating (`FNGPUEngine`, `FNGPUPLEEncoders`).**
+  - Fixed `FNGPUEngine` `[memory]` startup telemetry to report full `.qwp` weight residency (`71.29 GiB` instead of `3.33 GiB`) and wired `options.streamNgrams` into `FNGPUPLETable.resolveBacking` so `--stream-ngrams` strictly bypasses Metal GPU wiring on `VQ2_G32` PLE tables.
+
 ## [0.13.1] - 2026-11-09
 
 ### Fixed

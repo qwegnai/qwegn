@@ -176,6 +176,7 @@ public enum QWMemoryVault {
 
     private static let snapshotCacheLock = NSLock()
     nonisolated(unsafe) private static var historicalSectionCache: [String: (section: String, tokens: Int)] = [:]
+    nonisolated(unsafe) private static var semanticIndexCache: [String: QWMemorySemanticIndex] = [:]
 
     /// Builds a compact `[QWG REPOSITORY CORTEX MAP]` indexing all discovered files and their symbols
     /// while capping map size so verbatim core files retain >= 75% of the Resident Cortex token budget.
@@ -272,8 +273,23 @@ public enum QWMemoryVault {
             if !includeCortexFiles && entry.inCortex { continue }
             if excludedPaths.contains(entry.relativePath) { continue }
             let lowerRel = entry.relativePath.lowercased()
-            let fileName = (lowerRel as NSString).lastPathComponent
-            let stem = (fileName as NSString).deletingPathExtension
+            let fileNameSub: Substring
+            if let slash = lowerRel.lastIndex(of: "/") {
+                fileNameSub = lowerRel[lowerRel.index(after: slash)...]
+            } else {
+                fileNameSub = lowerRel[...]
+            }
+            let stemSub: Substring
+            let extSub: Substring
+            if let dot = fileNameSub.lastIndex(of: "."), dot > fileNameSub.startIndex {
+                stemSub = fileNameSub[..<dot]
+                extSub = fileNameSub[fileNameSub.index(after: dot)...]
+            } else {
+                stemSub = fileNameSub
+                extSub = ""
+            }
+            let fileName = String(fileNameSub)
+            let stem = String(stemSub)
 
             var score = 0
             if lowerQuery.contains(lowerRel) {
@@ -295,14 +311,11 @@ public enum QWMemoryVault {
                 }
             }
 
-            let ext = (lowerRel as NSString).pathExtension
-            let pathTokens = lowerRel
-                .split { !$0.isLetter && !$0.isNumber }
-                .map(String.init)
-                .filter { $0.count >= 4 && $0 != ext }
             var matchedPathTokens = 0
-            for pt in pathTokens where queryWords.contains(pt) {
-                matchedPathTokens += 1
+            for ptSub in lowerRel.split(whereSeparator: { !$0.isLetter && !$0.isNumber }) {
+                if ptSub.count >= 4 && ptSub != extSub && queryWords.contains(String(ptSub)) {
+                    matchedPathTokens += 1
+                }
             }
             if matchedPathTokens >= 2 {
                 score += matchedPathTokens * 10
@@ -313,6 +326,32 @@ public enum QWMemoryVault {
             let minScoreThreshold = includeCortexFiles ? 15 : 30
             if score >= minScoreThreshold {
                 candidates.append((entry, score))
+            }
+        }
+
+        if candidates.isEmpty {
+            let asksExplicitCortexPath = !includeCortexFiles && manifest.files.contains {
+                $0.inCortex && lowerQuery.contains($0.relativePath.lowercased())
+            }
+            if !asksExplicitCortexPath {
+                if let semIndex = resolveSemanticIndex(
+                    manifest: manifest,
+                    includeCortexFiles: includeCortexFiles
+                ) {
+                    let semHits = semIndex.query(
+                        trimmedQuery,
+                        excludedPaths: excludedPaths,
+                        topK: maxFiles,
+                        minCosine: 0.18
+                    )
+                    for hit in semHits {
+                        if let entry = manifest.files.first(where: {
+                            (includeCortexFiles || !$0.inCortex) && $0.relativePath == hit.relativePath
+                        }) {
+                            candidates.append((entry, Int((hit.cosine * 100.0).rounded())))
+                        }
+                    }
+                }
             }
         }
 
@@ -443,5 +482,35 @@ public enum QWMemoryVault {
             bypassedOversizedCache: true,
             availableVaultTokenBudget: min(defaultVaultRecallTokenBudget * 2, availableForMemory)
         )
+    }
+
+    private static func resolveSemanticIndex(
+        manifest: QWMemoryManifest,
+        includeCortexFiles: Bool
+    ) -> QWMemorySemanticIndex? {
+        if !includeCortexFiles, let embedded = manifest.semanticIndex {
+            return embedded.filePaths.isEmpty ? nil : embedded
+        }
+        let poolEntries = includeCortexFiles
+            ? manifest.files
+            : manifest.files.filter { !$0.inCortex }
+        guard !poolEntries.isEmpty else { return nil }
+        let firstSHA = poolEntries.first?.sha256 ?? ""
+        let lastSHA = poolEntries.last?.sha256 ?? ""
+        let key = "\(manifest.rootPath)|\(includeCortexFiles)|\(poolEntries.count)|\(firstSHA)|\(lastSHA)"
+        snapshotCacheLock.lock()
+        if let cached = semanticIndexCache[key] {
+            snapshotCacheLock.unlock()
+            return cached
+        }
+        snapshotCacheLock.unlock()
+        let built = QWMemorySemanticIndex.build(entries: poolEntries, rootPath: manifest.rootPath)
+        snapshotCacheLock.lock()
+        if semanticIndexCache.count >= 64 {
+            semanticIndexCache.removeAll(keepingCapacity: true)
+        }
+        semanticIndexCache[key] = built
+        snapshotCacheLock.unlock()
+        return built
     }
 }

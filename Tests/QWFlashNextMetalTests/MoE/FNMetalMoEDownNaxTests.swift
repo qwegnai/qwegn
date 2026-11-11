@@ -50,9 +50,10 @@ final class FNMetalMoEDownNaxTests: XCTestCase {
         let invPerm = try act.allocate(QWTensorShape([pairs], .i32))
         let hi = try act.allocate(QWTensorShape([pairs * inter], .f16))
         let lo = try act.allocate(QWTensorShape([pairs * inter], .f16))
+        let tilePlan = QWGemm.MoETilePlan(experts: experts, pairs: pairs, gateUpRows: 64, downRows: hidden)
         let tileE = try act.allocate(QWTensorShape([pairs], .i32))
         let tileR = try act.allocate(QWTensorShape([pairs], .i32))
-        let tileCount = try act.allocate(QWTensorShape([1], .i32))
+        let tileCount = try act.allocate(QWTensorShape([tilePlan.scratchInts], .i32))
         let ySorted = try act.allocate(QWTensorShape([pairs * hidden], .f32))
         let wRoute = try act.allocate(QWTensorShape([pairs], .f32))
         let wVals = [Float](repeating: 0.25, count: pairs)
@@ -76,7 +77,8 @@ final class FNMetalMoEDownNaxTests: XCTestCase {
         try step { enc in try QWGemm.encodeMoEGroupPairsF32(enc, hal: Self.hal, ids: ids, expertOff: expOff,
                                                            sortedPairIdx: sortedPair, sortedTok: sortedTok,
                                                            experts: experts, totalPairs: pairs, routes: routes,
-                                                           invPerm: invPerm, tileE: tileE, tileR: tileR, tileCount: tileCount) }
+                                                           invPerm: invPerm, tileE: tileE, tileR: tileR,
+                                                           tileCount: tileCount, tilePlan: tilePlan) }
         let sp = Array(UnsafeBufferPointer(start: arena.cpuPointer(of: sortedPair).bindMemory(to: Int32.self, capacity: pairs),
                                            count: pairs))
         var hiVals = [Float16](repeating: 0, count: pairs * inter)
@@ -98,7 +100,7 @@ final class FNMetalMoEDownNaxTests: XCTestCase {
                                                                   out: yRef, ids: ids, tokens: tokens) }
         try step { enc in try QWGemm.encodeMoENaxSplitF32(enc, hal: Self.hal, xHi: hi, xLo: lo, bank: view, expertOff: expOff,
                                                          tileE: tileE, tileR: tileR, tileCount: tileCount, y32: ySorted,
-                                                         rowsPerExpert: hidden, pairs: pairs) }
+                                                         rowsPerExpert: hidden, tilePlan: tilePlan) }
         try step { enc in try QWGemm.encodeMoEDownReduceCombineF32(enc, hal: Self.hal, dnAcc: ySorted, invPerm: invPerm,
                                                                   weights: wRoute, shared: shared, gate: gate,
                                                                   out: yNax, hidden: hidden, routes: routes, tokens: tokens) }

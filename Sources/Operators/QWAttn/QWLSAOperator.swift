@@ -10,6 +10,7 @@ import Metal
 import QWCore
 import QWHAL
 import QWAlloc
+import QWGEMM
 import QWQuant
 
 public final class QWLSAOperator: @unchecked Sendable {
@@ -36,8 +37,10 @@ public final class QWLSAOperator: @unchecked Sendable {
     }
 
     public static let maxSelectBatchRows = 32
+    public static let emeansProbeClusters = 320
 
     public let config: QWLSAConfig
+    public let isEmeansCoarse: Bool
     public let geometry: QWModelGeometry
     public let maxContext: Int
     public let maxPrefillChunk: Int
@@ -69,6 +72,10 @@ public final class QWLSAOperator: @unchecked Sendable {
     private let psoSelectHist2: any MTLComputePipelineState
     private let psoSelectExpand: any MTLComputePipelineState
     private let psoSelectFinalize: any MTLComputePipelineState
+    private let coarsePipelines: QWCoarsePoolIndex.Pipelines?
+    private let psoEmeansScoreCoarse: (any MTLComputePipelineState)?
+    private let psoEmeansScoreCands: (any MTLComputePipelineState)?
+    private let psoEmeansFlatFallback: (any MTLComputePipelineState)?
 
     /// Parallel selector scratch (zero at rest; restored by `qwg_lsa_select_finalize`).
     private let selCScore: QWTensorValue
@@ -87,6 +94,9 @@ public final class QWLSAOperator: @unchecked Sendable {
     var pinnedBaseFullPosition: Int = 0
     var pinnedBasePos512: Int = 0
     var residentPos512: Int = 0
+    var clusterUnitTokens: Int { isEmeansCoarse ? QWCoarsePoolIndex.macroChunkTokens : 512 }
+    var clusterMemBytesPerUnit: Int { isEmeansCoarse ? (QWCoarsePoolIndex.macroChunkPools * 2) : 256 }
+    var clusterSizeBytesPerUnit: Int { isEmeansCoarse ? (QWCoarsePoolIndex.clustersPerMacro * 4) : 64 }
 
     public init(hal: QWHal,
                 geometry: QWModelGeometry,
@@ -98,6 +108,8 @@ public final class QWLSAOperator: @unchecked Sendable {
         self.hal = hal
         self.geometry = geometry
         self.config = config
+        let emeans = (config.alignedClusterBlock == QWLSAConfig.emeansClusterBlock)
+        self.isEmeansCoarse = emeans
         self.maxContext = max(512, maxContext)
         self.maxPrefillChunk = max(32, maxPrefillChunk)
         self.indexDim = indexDim
@@ -110,7 +122,9 @@ public final class QWLSAOperator: @unchecked Sendable {
         while rc < self.maxPrefillChunk * 2 { rc <<= 1 }
         let ringCap = rc
         let maxBlocks = max(128, (self.maxContext + 3) / 4)
-        let maxSuperblocks = max(1, (self.maxContext + 511) / 512)
+        let maxSuperblocks = emeans
+            ? QWCoarsePoolIndex.maxMacros(forMaxContext: self.maxContext)
+            : max(1, (self.maxContext + 511) / 512)
         let maxBuckets = maxSuperblocks * 64
         let listStride = max(512, config.maxTotalSelectedBlocks)
         self.ringCap = ringCap
@@ -127,6 +141,17 @@ public final class QWLSAOperator: @unchecked Sendable {
         self.psoSelectHist2 = try hal.pipeline("qwg_lsa_select_hist2")
         self.psoSelectExpand = try hal.pipeline("qwg_lsa_select_expand")
         self.psoSelectFinalize = try hal.pipeline("qwg_lsa_select_finalize")
+        if emeans {
+            self.coarsePipelines = try QWCoarsePoolIndex.Pipelines(hal: hal)
+            self.psoEmeansScoreCoarse = try hal.pipeline("qwg_emeans_lsa_score_coarse")
+            self.psoEmeansScoreCands = try hal.pipeline("qwg_emeans_lsa_score_cands")
+            self.psoEmeansFlatFallback = try hal.pipeline("qwg_emeans_lsa_flat_fallback")
+        } else {
+            self.coarsePipelines = nil
+            self.psoEmeansScoreCoarse = nil
+            self.psoEmeansScoreCands = nil
+            self.psoEmeansFlatFallback = nil
+        }
 
         let nAttnLayers = layerWeights.count
         var cursor = 0
@@ -155,8 +180,8 @@ public final class QWLSAOperator: @unchecked Sendable {
             let kPendOff = reserve(ringCap * indexDim * 2)
             let pooledOff = reserve(maxBlocks * indexDim * 2)
             let centOff = reserve(maxBuckets * indexDim * 2)
-            let memOff = reserve(maxBuckets * 4)
-            let sizeOff = reserve(maxBuckets)
+            let memOff = reserve(emeans ? maxSuperblocks * 2048 : maxBuckets * 4)
+            let sizeOff = reserve(emeans ? maxBuckets * 4 : maxBuckets)
             layerOffsets.append(LayerOffsets(
                 wqOff: wqOff, wkOff: wkOff, kPendOff: kPendOff,
                 pooledOff: pooledOff, centOff: centOff, memOff: memOff, sizeOff: sizeOff
@@ -165,14 +190,17 @@ public final class QWLSAOperator: @unchecked Sendable {
 
         let selectBatch = min(self.maxPrefillChunk, Self.maxSelectBatchRows)
         let qIdxOff = reserve(self.maxPrefillChunk * indexDim * 2)
-        let scoreOff = reserve(selectBatch * maxBlocks * 4)
+        let scoreRows = emeans ? 1 : selectBatch
+        let scoreCols = emeans ? 64 : maxBlocks
+        let scoreOff = reserve(scoreRows * scoreCols * 4)
         let listOff = reserve(self.maxPrefillChunk * listStride * 4)
         let countOff = reserve(self.maxPrefillChunk * 4)
-        let markStride = (maxBlocks + 31) / 32
+        let markStride = emeans ? 1 : ((maxBlocks + 31) / 32)
         let candCap = Self.selectCandidateCap
         let selCScoreOff = reserve(selectBatch * maxBuckets * 4)
         let selHistOff = reserve(selectBatch * 512 * 4)
-        let selCountOff = reserve(selectBatch * 4)
+        let selCountCols = emeans ? 2 : 1
+        let selCountOff = reserve(selectBatch * selCountCols * 4)
         let selMarksOff = reserve(selectBatch * markStride * 4)
         let selCandMOff = reserve(selectBatch * candCap * 4)
         let selCandUOff = reserve(selectBatch * candCap * 4)
@@ -210,8 +238,10 @@ public final class QWLSAOperator: @unchecked Sendable {
                 kPending: QWTensorValue(region: reg, offset: offs.kPendOff, shape: QWTensorShape([ringCap, indexDim], .f16)),
                 pooledKeys: QWTensorValue(region: reg, offset: offs.pooledOff, shape: QWTensorShape([maxBlocks, indexDim], .f16)),
                 centroids: QWTensorValue(region: reg, offset: offs.centOff, shape: QWTensorShape([maxBuckets, indexDim], .f16)),
-                bucketMembers: QWTensorValue(region: reg, offset: offs.memOff, shape: QWTensorShape([maxBuckets], .i32)),
-                bucketSizes: QWTensorValue(region: reg, offset: offs.sizeOff, shape: QWTensorShape([max(1, maxBuckets / 4)], .i32))
+                bucketMembers: QWTensorValue(region: reg, offset: offs.memOff,
+                                             shape: QWTensorShape([emeans ? maxSuperblocks * 512 : maxBuckets], .i32)),
+                bucketSizes: QWTensorValue(region: reg, offset: offs.sizeOff,
+                                           shape: QWTensorShape([emeans ? maxBuckets : max(1, maxBuckets / 4)], .i32))
             ))
         }
         self.layers = builtLayers
@@ -221,7 +251,7 @@ public final class QWLSAOperator: @unchecked Sendable {
             shape: QWTensorShape([self.maxPrefillChunk, indexDim], .f16))
         self.scoreScratch = QWTensorValue(
             region: reg, offset: scoreOff,
-            shape: QWTensorShape([selectBatch, maxBlocks], .i32))
+            shape: QWTensorShape([scoreRows, scoreCols], .i32))
         self.blockListScratch = QWTensorValue(
             region: reg, offset: listOff,
             shape: QWTensorShape([self.maxPrefillChunk, listStride], .i32))
@@ -234,7 +264,7 @@ public final class QWLSAOperator: @unchecked Sendable {
         self.selHist = QWTensorValue(region: reg, offset: selHistOff,
                                      shape: QWTensorShape([selectBatch, 512], .i32))
         self.selCount = QWTensorValue(region: reg, offset: selCountOff,
-                                      shape: QWTensorShape([selectBatch], .i32))
+                                      shape: QWTensorShape([selectBatch * selCountCols], .i32))
         self.selMarks = QWTensorValue(region: reg, offset: selMarksOff,
                                       shape: QWTensorShape([selectBatch, markStride], .i32))
         self.selCandM = QWTensorValue(region: reg, offset: selCandMOff,
@@ -282,8 +312,9 @@ public final class QWLSAOperator: @unchecked Sendable {
                                       pos0: Int,
                                       rows: Int) {
         guard fullAttnLayer >= 0, fullAttnLayer < layers.count, rows > 0 else { return }
+        let unitTok = clusterUnitTokens
         if pos0 < residentPos512 {
-            residentPos512 = (pos0 / 512) * 512
+            residentPos512 = (pos0 / unitTok) * unitTok
         }
         let ls = layers[fullAttnLayer]
         var tU = UInt32(rows)
@@ -340,7 +371,21 @@ public final class QWLSAOperator: @unchecked Sendable {
                 threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
         }
 
-        // 3. Ward-cluster any newly completed 512-token superblocks in [pos0 / 512 ..< (pos0 + rows) / 512]
+        // 3. Cluster newly completed chunks (4096-token e-means CSR or 512-token Ward superblocks).
+        if isEmeansCoarse, let pipes = coarsePipelines {
+            let startM = pos0 / QWCoarsePoolIndex.macroChunkTokens
+            let endM = min(maxSuperblocks, (pos0 + rows) / QWCoarsePoolIndex.macroChunkTokens)
+            if endM > startM {
+                let csr = QWCoarsePoolIndex.LayerCSR(
+                    centroids: ls.centroids, memberPools: ls.bucketMembers,
+                    clusterSpans: ls.bucketSizes, maxMacros: maxSuperblocks)
+                QWCoarsePoolIndex.barrierIfConcurrent(enc)
+                QWCoarsePoolIndex.encodeClusterMacros(
+                    enc, pso: pipes.cluster1024, pooledKeys: ls.pooledKeys,
+                    csr: csr, startMacro: startM, numMacros: endM - startM, indexDim: indexDim)
+            }
+            return
+        }
         let startSB = pos0 / 512
         let endSB = min(maxSuperblocks, (pos0 + rows) / 512)
         if endSB > startSB {
@@ -400,6 +445,95 @@ public final class QWLSAOperator: @unchecked Sendable {
                 region: blockCountScratch.region,
                 offset: blockCountScratch.offset + r0 * 4,
                 shape: QWTensorShape([remRows], .i32))
+
+            if isEmeansCoarse,
+               let pipes = coarsePipelines,
+               let psoCoarse = psoEmeansScoreCoarse,
+               let psoCands = psoEmeansScoreCands,
+               let psoFallback = psoEmeansFlatFallback {
+                let winBlk = QWLSAConfig.windowTokens / QWLSAConfig.poolSize
+                let bg = QWCoarsePoolIndex.batchGeometry(
+                    pos0: pos0 + r0, units: batchUnits, rowStep: step, maxRow: remRows,
+                    budgetBlocks: config.budgetBlocks, windowBlocks: winBlk,
+                    hasSink: true, writeCount: true, probeClusters: Self.emeansProbeClusters)
+                let shouldPrune = (bg.selectionMode == .approximateCoarse) && useParallelSelect
+                let probe = shouldPrune ? Self.emeansProbeClusters : 0
+                var ePrm = QWCoarsePoolIndex.SelectParams(
+                    T: batchUnits, pos0: pos0 + r0, indexDim: indexDim,
+                    budgetBlocks: config.budgetBlocks, windowBlocks: winBlk,
+                    hasSink: true, writeCount: true, listStride: listStride,
+                    rowStep: step, maxRow: remRows, clusterStride: maxBuckets,
+                    probeClusters: probe, candCap: Self.selectCandidateCap)
+                let tpg = MTLSize(width: 256, height: 1, depth: 1)
+                if bg.isDense {
+                    let plen = MemoryLayout<QWCoarsePoolIndex.SelectParams>.stride
+                    enc.setComputePipelineState(pipes.finalize)
+                    listSub.bind(enc, index: 0)
+                    countSub.bind(enc, index: 1)
+                    selHist.bind(enc, index: 2)
+                    selCount.bind(enc, index: 3)
+                    selCandM.bind(enc, index: 4)
+                    selCandU.bind(enc, index: 5)
+                    enc.setBytes(&ePrm, length: plen, index: 6)
+                    enc.dispatchThreadgroups(MTLSize(width: batchUnits, height: 1, depth: 1),
+                                             threadsPerThreadgroup: tpg)
+                    u0 += batchUnits
+                    continue
+                }
+                let csr = QWCoarsePoolIndex.LayerCSR(
+                    centroids: ls.centroids, memberPools: ls.bucketMembers,
+                    clusterSpans: ls.bucketSizes, maxMacros: maxSuperblocks)
+                let scratch = QWCoarsePoolIndex.Scratch(
+                    cScore: selCScore, uHist: selHist, candState: selCount,
+                    candPools: selCandM, candU: selCandU, maxBatchRows: Self.maxSelectBatchRows,
+                    clusterStride: maxBuckets, candCap: Self.selectCandidateCap)
+                if shouldPrune && bg.numClusters > 0 {
+                    let plen = MemoryLayout<QWCoarsePoolIndex.SelectParams>.stride
+                    enc.setComputePipelineState(psoCoarse)
+                    qIdxSub.bind(enc, index: 0)
+                    csr.centroids.bind(enc, index: 1)
+                    csr.clusterSpans.bind(enc, index: 2)
+                    scratch.cScore.bind(enc, index: 3)
+                    scratch.uHist.bind(enc, index: 4)
+                    enc.setBytes(&ePrm, length: plen, index: 5)
+                    enc.dispatchThreadgroups(
+                        MTLSize(width: (bg.numClusters + 255) / 256, height: batchUnits, depth: 1),
+                        threadsPerThreadgroup: tpg)
+                }
+                QWCoarsePoolIndex.encodeHistCollectScoreFinalize(
+                    enc, pipelines: pipes, csr: csr, scratch: scratch,
+                    blockList: listSub, blockCount: countSub, params: &ePrm,
+                    numClusters: bg.numClusters, maxMiddlePools: bg.middleEnd,
+                    encodeScoreCands: { enc, maxCand, prm in
+                        let plen = MemoryLayout<QWCoarsePoolIndex.SelectParams>.stride
+                        enc.setComputePipelineState(psoCands)
+                        qIdxSub.bind(enc, index: 0)
+                        ls.pooledKeys.bind(enc, index: 1)
+                        scratch.candState.bind(enc, index: 2)
+                        scratch.candPools.bind(enc, index: 3)
+                        scratch.candU.bind(enc, index: 4)
+                        enc.setBytes(&prm, length: plen, index: 5)
+                        enc.dispatchThreadgroups(
+                            MTLSize(width: (maxCand + 255) / 256, height: batchUnits, depth: 1),
+                            threadsPerThreadgroup: tpg)
+                    },
+                    encodeFlatFallback: { enc, prm in
+                        let plen = MemoryLayout<QWCoarsePoolIndex.SelectParams>.stride
+                        enc.setComputePipelineState(psoFallback)
+                        qIdxSub.bind(enc, index: 0)
+                        ls.pooledKeys.bind(enc, index: 1)
+                        scratch.candState.bind(enc, index: 2)
+                        listSub.bind(enc, index: 3)
+                        countSub.bind(enc, index: 4)
+                        enc.setBytes(&prm, length: plen, index: 5)
+                        enc.dispatchThreadgroups(
+                            MTLSize(width: batchUnits, height: 1, depth: 1),
+                            threadsPerThreadgroup: tpg)
+                    }
+                )
+                u0 += batchUnits
+                continue
+            }
 
             if useParallelSelect, let numBuckets = filterBuckets(pos0: pos0 + r0, units: batchUnits,
                                               rowStep: step, maxRow: remRows) {

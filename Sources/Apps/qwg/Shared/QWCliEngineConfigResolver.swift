@@ -88,6 +88,8 @@ struct QWResolvedCliEngineConfig {
     let resolvedPack: String
     let location: QWModelLocation
     let runtimeAssets: QWModelRuntimeAssets
+    let effectiveSettings: QWServerSettings
+    let profileApplied: Bool
     let defaultContext: Int
     let effectiveMtpDrafts: Int
     let effectiveMtpBackend: String?
@@ -122,7 +124,7 @@ struct QWResolvedCliEngineConfig {
             }
             effectiveMtpDrafts = bs - 1
             if effectiveMtpBackend == nil {
-                effectiveMtpBackend = "dflash2"
+                effectiveMtpBackend = QWDFlashConfig.inferBackendAndMaxDrafts(packPath: knobs.dflashDraftPack).backend
             }
         }
         if let tk = knobs.dflashTopK {
@@ -140,7 +142,11 @@ struct QWResolvedCliEngineConfig {
         }
         let maxDrafts = (resolvedBackend == .dflash2) ? 15 : 5
         if resolvedBackend == .dflash2, knobs.mtpDrafts == nil, dflashWindow == nil {
-            effectiveMtpDrafts = effectiveMtpBackend?.lowercased() == "dspine" ? 5 : 4
+            let inferred = QWDFlashConfig.inferBackendAndMaxDrafts(
+                packPath: knobs.dflashDraftPack
+                    ?? (effectiveMtpBackend?.lowercased() == "dspine" ? QWDFlashConfig.defaultDSpinePackPath : nil)
+            )
+            effectiveMtpDrafts = inferred.maxDrafts
         }
         guard effectiveMtpDrafts >= 0 && effectiveMtpDrafts <= maxDrafts else {
             FileHandle.standardError.write("\(verb): error: --mtp-drafts must be 0...\(maxDrafts) (got \(effectiveMtpDrafts))\n".data(using: .utf8)!)
@@ -168,15 +174,19 @@ struct QWResolvedCliEngineConfig {
         settings: QWServerSettings,
         validateDefaultContextImmediately: Bool,
         repoPath: String? = nil,
-        disableMemoryPack: Bool = false
+        disableMemoryPack: Bool = false,
+        ignoreProfile: Bool = false
     ) throws -> QWResolvedCliEngineConfig {
         let location = try QWModelLocation(url: URL(fileURLWithPath: resolvedPack), assetsOverride: nil)
         let runtimeAssets = try QWModelRuntimeAssets.load(packPath: resolvedPack, assetsOverride: location.assets)
         let modelName = QWModelRoot.canonicalModelName(for: URL(fileURLWithPath: resolvedPack))
+        var baseSettings = ignoreProfile ? QWServerSettings() : settings
+        if ignoreProfile { baseSettings.modelAliases = settings.modelAliases }
         let effectivePair = QWSettingsManager.shared.effectiveSettings(
-            forModel: modelName.isEmpty ? settings.modelName : modelName,
+            forModel: modelName.isEmpty ? baseSettings.modelName : modelName,
             packPath: resolvedPack,
-            base: settings
+            base: baseSettings,
+            ignoreProfile: ignoreProfile
         )
         let memoryPack = QWResolvedCliMemoryPack.resolve(
             explicitRepoPath: repoPath,
@@ -194,7 +204,7 @@ struct QWResolvedCliEngineConfig {
         }
         let profileKV = effectivePair.profile?.values["kvMode"]?.stringValue
             ?? effectivePair.profile?.values["kv_mode"]?.stringValue
-        let effectiveKVString = memoryPack?.artifact.kvMode ?? knobs.kvMode ?? profileKV ?? "f16"
+        let effectiveKVString = memoryPack?.artifact.kvMode ?? knobs.kvMode ?? profileKV ?? "q4"
         let resolvedKVMode: QWKVMode
         do {
             _ = try QWMTPBackend.resolveSelection(resolvedBackend, drafts: effectiveMtpDrafts)
@@ -228,6 +238,8 @@ struct QWResolvedCliEngineConfig {
             resolvedPack: resolvedPack,
             location: location,
             runtimeAssets: runtimeAssets,
+            effectiveSettings: effectivePair.settings,
+            profileApplied: effectivePair.profile != nil,
             defaultContext: defaultContext,
             effectiveMtpDrafts: effectiveMtpDrafts,
             effectiveMtpBackend: effectiveMtpBackend,
@@ -248,14 +260,30 @@ struct QWResolvedCliEngineConfig {
         prefixCacheDirectory: URL?,
         cacheConfig: QWCacheConfig?,
         prefillScratchEviction: QWPrefillScratchEvictionPolicy = .auto,
-        gdnPrefill: String = "chunked",
-        residentExpertsPerLayer: Int?
+        gdnPrefill: String = "chunked"
     ) -> QWEngineBuildOptions {
-        QWEngineBuildOptions(
+        var tuning = effectiveSettings.resolvedEngineTuning
+        if let rawPolicy = knobs.memoryPolicy, let parsed = QWMemoryPolicy(rawValue: rawPolicy) {
+            tuning.memoryPolicy = parsed
+        }
+        if let osReserve = knobs.osReserve {
+            tuning.osReserveGiB = osReserve
+        }
+        let resolvedResidentExperts = knobs.residentExpertsPerLayer ?? tuning.residentExpertsPerLayer
+        if let resE = knobs.residentExpertsPerLayer {
+            tuning.residentExpertsPerLayer = resE > 0 ? resE : nil
+        }
+        if let moeSpec = knobs.moeSpecBudget {
+            tuning.moeSpecBudget = moeSpec
+        }
+        if let streamNgrams = knobs.streamNgrams {
+            tuning.streamNgrams = streamNgrams
+        }
+        return QWEngineBuildOptions(
             packPath: resolvedPack,
             maxTokens: maxTokens,
             kvMode: String(describing: resolvedKVMode),
-            osReserveGiB: knobs.osReserve,
+            osReserveGiB: knobs.osReserve ?? tuning.osReserveGiB,
             prefillChunkSize: prefillChunkSize,
             prefixCacheDirectory: prefixCacheDirectory,
             cacheConfig: cacheConfig,
@@ -273,7 +301,8 @@ struct QWResolvedCliEngineConfig {
             dflashSelectorTopK: knobs.dflashTopK,
             gdnPrefill: gdnPrefill,
             lsaConfig: lsaConfig,
-            residentExpertsPerLayer: residentExpertsPerLayer
+            residentExpertsPerLayer: resolvedResidentExperts,
+            tuning: tuning
         )
     }
 

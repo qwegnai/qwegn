@@ -20,7 +20,13 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from hq4 import quant_hq4_blocks  # noqa: E402
-from pack_ngram import _F16_MIN_NORMAL, _encode_q8  # noqa: E402
+from pack_ngram import (  # noqa: E402
+    _F16_MIN_NORMAL,
+    _encode_q8,
+    _encode_vq2,
+    decode_vq2_rows,
+    train_vq2_codebook,
+)
 
 GROUP = 32
 HEAD_DIM = 160
@@ -61,16 +67,23 @@ def deq_q4(rows: np.ndarray) -> np.ndarray:
     return out.reshape(rows.shape)
 
 
+def deq_vq2(train_rows: np.ndarray, eval_rows: np.ndarray, device: str = "cpu") -> np.ndarray:
+    """Train a 1 KiB e-means VQ2_G32 codebook on train_rows and decode eval_rows."""
+    cb = train_vq2_codebook(train_rows, seed=0, device=device)
+    enc = _encode_vq2(eval_rows, cb, np, device=device)
+    return decode_vq2_rows(enc, cb, eval_rows.shape[0], HEAD_DIM)
+
+
 def sample_rows(path: Path, sectors: int) -> np.ndarray:
-    """Read rows spread evenly across the table's sectors."""
+    """Read rows spread evenly across the table's sectors (v1 BF16 or v2 Q8_G32)."""
     size = path.stat().st_size
     with path.open("rb") as f:
         head = f.read(4096)
         entry_count, dim, row_bytes = struct.unpack_from("<QHH", head, 16)
         data_offset, = struct.unpack_from("<Q", head, 32)
         version, flags, dtype = struct.unpack_from("<HHI", head, 8)
-        if version != 1 or dtype != 0:
-            raise SystemExit(f"{path}: expected a v1 BF16 table, got "
+        if (version, dtype) not in ((1, 0), (2, 1)):
+            raise SystemExit(f"{path}: expected v1 BF16 or v2 Q8_G32 table, got "
                              f"version={version} dtype={dtype}")
         rps = 4096 // row_bytes
         total = (size - data_offset) // 4096
@@ -80,8 +93,14 @@ def sample_rows(path: Path, sectors: int) -> np.ndarray:
         for s in picks:
             f.seek(data_offset + s * 4096)
             blk = f.read(rps * row_bytes)
-            u16 = np.frombuffer(blk, dtype="<u2").astype("<u4") << np.uint32(16)
-            rows.append(u16.view("<f4").reshape(-1, dim))
+            if dtype == 0:
+                u16 = np.frombuffer(blk, dtype="<u2").astype("<u4") << np.uint32(16)
+                rows.append(u16.view("<f4").reshape(-1, dim))
+            else:
+                g = np.frombuffer(blk, dtype=np.uint8).reshape(rps, dim // GROUP, GROUP + 2)
+                codes = g[:, :, :GROUP].view(np.int8).astype(np.float32)
+                sc = np.ascontiguousarray(g[:, :, GROUP:]).view("<f2").reshape(rps, dim // GROUP).astype(np.float32)
+                rows.append((codes * sc[:, :, None]).reshape(rps, dim))
     return np.concatenate(rows)
 
 
@@ -131,6 +150,11 @@ def main() -> int:
           f"{(am < cliff).sum():,} of {am.size:,} ({100.0 * (am < cliff).mean():.4f}%)")
     report("Q8_G32", live, deq_q8(live))
     report("Q4_G32", live, deq_q4(live))
+    import torch
+    dev = "mps" if torch.backends.mps.is_available() else "cpu"
+    train_live, eval_live = live[0::2], live[1::2]
+    report("Q4_G32 (held-out split)", eval_live, deq_q4(eval_live))
+    report("VQ2_G32 (e-means, held-out split)", eval_live, deq_vq2(train_live, eval_live, device=dev))
     return 0
 
 

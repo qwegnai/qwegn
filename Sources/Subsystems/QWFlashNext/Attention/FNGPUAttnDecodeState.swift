@@ -73,13 +73,23 @@ public enum FNKVStorageMode: String, Sendable {
 /// (f16 raw index keys per token, f16 pooled block keys per completed block), absolute-indexed by position.
 public final class FNGPUAttnDecodeState {
     public struct LSAClusterState {
-        public let centroids: QWTensorValue      // f16 [maxBuckets, indexHeadDim]
-        public let bucketMembers: QWTensorValue  // i32 [maxBuckets] (uchar4)
-        public let bucketSizes: QWTensorValue    // u8  [maxBuckets]
-        public init(centroids: QWTensorValue, bucketMembers: QWTensorValue, bucketSizes: QWTensorValue) {
+        public let centroids: QWTensorValue      // f16 [maxUnits * 64, indexHeadDim]
+        public let bucketMembers: QWTensorValue  // u16 [maxMacros * 1024] or uchar4 [maxBuckets]
+        public let bucketSizes: QWTensorValue    // u16x2 [maxClusters] or u8 [maxBuckets]
+        public let emeansScratch: QWCoarsePoolIndex.Scratch?
+        public let maxUnits: Int
+        public var isEmeans: Bool { emeansScratch != nil }
+
+        public init(centroids: QWTensorValue,
+                    bucketMembers: QWTensorValue,
+                    bucketSizes: QWTensorValue,
+                    emeansScratch: QWCoarsePoolIndex.Scratch? = nil,
+                    maxUnits: Int = 0) {
             self.centroids = centroids
             self.bucketMembers = bucketMembers
             self.bucketSizes = bucketSizes
+            self.emeansScratch = emeansScratch
+            self.maxUnits = maxUnits
         }
     }
 
@@ -269,10 +279,15 @@ public final class FNGPUAttnDecodeState {
         hal: QWHal,
         kvCap: Int,
         indexHeadDim: Int,
-        states: [(FNGPUAttnDecodeState, FNGPUAttnDecodeState?)]
+        states: [(FNGPUAttnDecodeState, FNGPUAttnDecodeState?)],
+        clusterBlock: Int = QWLSAConfig.emeansClusterBlock,
+        maxBatchRows: Int = 32
     ) throws -> QWMRegion {
-        let maxSuperblocks = max(1, (kvCap + 511) / 512)
-        let maxBuckets = maxSuperblocks * 64
+        let useEmeans = (clusterBlock >= QWLSAConfig.emeansClusterBlock)
+        let maxUnits = useEmeans
+            ? QWCoarsePoolIndex.maxMacros(forMaxContext: kvCap)
+            : max(1, (kvCap + 511) / 512)
+        let maxBuckets = maxUnits * 64
         var cursor = 0
         func align256(_ x: Int) -> Int { (x + 255) & ~255 }
         func reserve(_ bytes: Int) -> Int {
@@ -283,10 +298,18 @@ public final class FNGPUAttnDecodeState {
         var offsets: [(Int, Int, Int)] = []
         for _ in 0..<states.count {
             let cOff = reserve(maxBuckets * indexHeadDim * 2)
-            let mOff = reserve(maxBuckets * 4)
-            let sOff = reserve(maxBuckets)
+            let mOff = reserve(useEmeans ? maxUnits * 2048 : maxBuckets * 4)
+            let sOff = reserve(useEmeans ? maxBuckets * 4 : maxBuckets)
             offsets.append((cOff, mOff, sOff))
         }
+        let candCap = 14336
+        let scSizes = QWCoarsePoolIndex.scratchByteSizes(
+            maxBatchRows: maxBatchRows, maxClusters: maxBuckets, candCap: candCap)
+        let scOff = useEmeans ? reserve(scSizes.cScore) : 0
+        let shOff = useEmeans ? reserve(scSizes.uHist) : 0
+        let ssOff = useEmeans ? reserve(scSizes.candState) : 0
+        let spOff = useEmeans ? reserve(scSizes.candPools) : 0
+        let suOff = useEmeans ? reserve(scSizes.candU) : 0
         let totalBytes = max(4096, cursor)
         guard let buf = hal.device.makeBuffer(length: totalBytes, options: .storageModeShared) else {
             throw QWAllocError.outOfSpace(region: "fn-lsa-clusters", asked: totalBytes, free: 0)
@@ -294,12 +317,26 @@ public final class FNGPUAttnDecodeState {
         buf.label = "fn-lsa-clusters"
         memset(buf.contents(), 0, totalBytes)
         let reg = QWMRegion(buffer: buf, base: 0, length: totalBytes)
+        let sharedScratch: QWCoarsePoolIndex.Scratch? = useEmeans ? QWCoarsePoolIndex.Scratch(
+            cScore: QWTensorValue(region: reg, offset: scOff, shape: QWTensorShape([maxBatchRows, maxBuckets], .i32)),
+            uHist: QWTensorValue(region: reg, offset: shOff, shape: QWTensorShape([maxBatchRows, 512], .i32)),
+            candState: QWTensorValue(region: reg, offset: ssOff, shape: QWTensorShape([maxBatchRows * 2], .i32)),
+            candPools: QWTensorValue(region: reg, offset: spOff, shape: QWTensorShape([maxBatchRows, candCap], .i32)),
+            candU: QWTensorValue(region: reg, offset: suOff, shape: QWTensorShape([maxBatchRows, candCap], .i32)),
+            maxBatchRows: maxBatchRows,
+            clusterStride: maxBuckets,
+            candCap: candCap
+        ) : nil
         for (i, (st, vSt)) in states.enumerated() {
             let (cOff, mOff, sOff) = offsets[i]
             let cs = LSAClusterState(
                 centroids: QWTensorValue(region: reg, offset: cOff, shape: QWTensorShape([maxBuckets * indexHeadDim], .f16)),
-                bucketMembers: QWTensorValue(region: reg, offset: mOff, shape: QWTensorShape([maxBuckets], .i32)),
-                bucketSizes: QWTensorValue(region: reg, offset: sOff, shape: QWTensorShape([max(1, maxBuckets / 4)], .i32))
+                bucketMembers: QWTensorValue(region: reg, offset: mOff,
+                                             shape: QWTensorShape([useEmeans ? maxUnits * 512 : maxBuckets], .i32)),
+                bucketSizes: QWTensorValue(region: reg, offset: sOff,
+                                           shape: QWTensorShape([useEmeans ? maxBuckets : max(1, maxBuckets / 4)], .i32)),
+                emeansScratch: sharedScratch,
+                maxUnits: maxUnits
             )
             st.lsaClusters = cs
             vSt?.lsaClusters = cs

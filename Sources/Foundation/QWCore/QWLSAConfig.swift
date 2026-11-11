@@ -80,6 +80,8 @@ public struct QWLSAConfig: Sendable, Codable, Equatable, Hashable {
     public static let poolSize: Int = 4
     /// Default Ward clustering block size ($n_{\mathrm{cluster}} = 512$ tokens = 128 pool blocks).
     public static let defaultClusterBlock: Int = 512
+    /// Capacity-balanced `e-means` macro-chunk size ($n_{\mathrm{cluster}} = 4096$ tokens = 1024 pool blocks).
+    public static let emeansClusterBlock: Int = 4096
     /// Number of Ward buckets produced per cluster block ($m = 64$, average 8 keys / 2 pool blocks per bucket).
     public static let bucketsPerBlock: Int = 64
     /// Hard cap on keys per Ward bucket ($n_b^{\max} = 16$ keys = 4 four-token pool blocks -> fits in `uchar4`).
@@ -121,9 +123,10 @@ public struct QWLSAConfig: Sendable, Codable, Equatable, Hashable {
         alignedBudget / Self.poolSize
     }
 
-    /// Cluster block size $n_{\mathrm{cluster}}$ aligned to a supported power-of-two (`256`, `512`, or `1024`).
+    /// Cluster block size $n_{\mathrm{cluster}}$ aligned to a supported power-of-two (`256`, `512`, `1024`, or `4096`).
     public var alignedClusterBlock: Int {
         if clusterBlock <= 256 { return 256 }
+        if clusterBlock >= 4096 { return 4096 }
         if clusterBlock >= 1024 { return 1024 }
         return 512
     }
@@ -156,8 +159,11 @@ public struct QWLSAConfig: Sendable, Codable, Equatable, Hashable {
         position < denseBypassThreshold
     }
 
+    /// Context threshold above which QSA models automatically engage `e-means-4096` coarse clustering in `auto` mode.
+    public static let qsaAutoClusterThresholdTokens: Int = 262_144
+
     /// Resolves the concrete backend for `descriptor`.
-    public func resolveBackend(descriptor: QWModelDescriptor, hasValidSidecar: Bool) -> QWLSAResolvedBackend {
+    public func resolveBackend(descriptor: QWModelDescriptor, hasValidSidecar: Bool, maxContext: Int = 0) -> QWLSAResolvedBackend {
         switch mode {
         case .off:
             return .disabled
@@ -171,11 +177,11 @@ public struct QWLSAConfig: Sendable, Codable, Equatable, Hashable {
             }
             return hasValidSidecar ? .sidecar : .svd
         case .auto:
+            if descriptor.capabilities.contains(.qsaIndexer) {
+                return maxContext > Self.qsaAutoClusterThresholdTokens ? .qsaCluster : .disabled
+            }
             if hasValidSidecar {
                 return .sidecar
-            }
-            if descriptor.capabilities.contains(.qsaIndexer) {
-                return .disabled
             }
             return .svd
         }
@@ -218,6 +224,13 @@ public struct QWLSAConfig: Sendable, Codable, Equatable, Hashable {
         bucketsPerBlock: Int = bucketsPerBlock
     ) -> (tailPoolBytes: Int, centroidBytes: Int, memberBytes: Int, totalBytes: Int) {
         func align256(_ n: Int) -> Int { (max(256, n) + 255) & ~255 }
+        if clusterBlock >= emeansClusterBlock {
+            let macros = max(1, (maxTokens + emeansClusterBlock - 1) / emeansClusterBlock)
+            let tailBytes = align256(1024 * indexDim * 2)
+            let centBytes = align256(macros * 64 * indexDim * 2)
+            let membBytes = align256(macros * (1024 * 2 + 64 * 4))
+            return (tailBytes, centBytes, membBytes, tailBytes + centBytes + membBytes)
+        }
         let maxBlocks = max(1, (maxTokens + clusterBlock - 1) / clusterBlock)
         let poolBlocks = max(128, clusterBlock / poolSize)
         let tailBytes = align256(poolBlocks * indexDim * 2)

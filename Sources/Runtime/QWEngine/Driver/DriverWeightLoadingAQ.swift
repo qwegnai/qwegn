@@ -63,10 +63,12 @@ extension QWEngineDriver.WeightLoader {
         let bits = entry?.hqBits ?? format.bits
         let groupSize = entry?.hqGroup ?? format.groupSize
         let isIncumbent = entry?.isIncumbentHQ4 ?? format.denseIsIncumbentContainer
+        let isSHVQ = entry?.isSHVQ ?? format.denseIsSHVQ
         guard let v = QWWeightView(blocks: blocks, n: n, k: k,
                                     bits: bits, groupSize: groupSize,
                                     isRotated: hl.weightBasis.rotatesActivations,
-                                    isIncumbentContainer: isIncumbent) else {
+                                    isIncumbentContainer: isIncumbent,
+                                    isSHVQ: isSHVQ) else {
             throw QWEngineDriverError.weightMissing(name, "QWWeightView layout invalid")
         }
         // The bank's basis must be the MODEL's basis: the bank and the

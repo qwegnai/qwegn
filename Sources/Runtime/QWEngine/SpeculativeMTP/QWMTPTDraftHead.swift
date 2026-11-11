@@ -81,8 +81,11 @@ final class QWMTPTDraftHead {
         self.k = k
         let bits = entry.hqBits
         let groupSize = entry.hqGroup
+        let maybeBytes = entry.isSHVQ
+            ? QWSHVQBlock.bytesIfSupported(bits: bits, group: groupSize)
+            : QWAQBlock.bytesIfBlockSupported(bits: bits, group: groupSize)
         guard k % groupSize == 0,
-              let groupBytes = QWAQBlock.bytesIfBlockSupported(bits: bits, group: groupSize) else {
+              let groupBytes = maybeBytes else {
             throw QWEngineDriverError.state("draft head unsupported quant bits=\(bits) group=\(groupSize)")
         }
         let totalGroups = n * (k / groupSize)
@@ -93,7 +96,8 @@ final class QWMTPTDraftHead {
         guard let v = QWWeightView(blocks: blocks, n: n, k: k,
                                    bits: bits, groupSize: groupSize,
                                    isRotated: rot,
-                                   isIncumbentContainer: rot && entry.isIncumbentHQ4) else {
+                                   isIncumbentContainer: rot && entry.isIncumbentHQ4,
+                                   isSHVQ: rot && entry.isSHVQ) else {
             throw QWEngineDriverError.state("draft head QWWeightView layout invalid")
         }
         self.view = v
@@ -115,7 +119,8 @@ final class QWMTPTDraftHead {
         }
         if !view.isIncumbentContainer {
             try QWGemmAQ.encode(enc, hal: hal, blocks: view.blocks, x: x, y: y,
-                                n: n, k: k, bits: view.bits, group: view.groupSize)
+                                n: n, k: k, bits: view.bits, group: view.groupSize,
+                                isSHVQ: view.isSHVQ)
             return
         }
         try QWGemm.encode(enc, hal: hal, plan: f2plan, x: x, xGroupSum: gs, wQ4: view, y: y)
@@ -137,14 +142,15 @@ final class QWMTPTDraftHead {
                 throw QWEngineDriverError.state("draft head output aliases a mapped plane")
             }
         }
-        if !view.isIncumbentContainer && !(view.bits == 4 && view.groupSize == 32) {
+        if !view.isIncumbentContainer && (view.isSHVQ || !(view.bits == 4 && view.groupSize == 32)) {
             for r in 0..<m {
                 let xRow = QWTensorValue(region: x.region, offset: x.offset + r * k * 2,
                                          shape: QWTensorShape([k], .f16))
                 let yRow = QWTensorValue(region: y.region, offset: y.offset + r * n * 4,
                                          shape: QWTensorShape([n], .f32))
                 try QWGemmAQ.encode(enc, hal: hal, blocks: view.blocks, x: xRow, y: yRow,
-                                    n: n, k: k, bits: view.bits, group: view.groupSize)
+                                    n: n, k: k, bits: view.bits, group: view.groupSize,
+                                    isSHVQ: view.isSHVQ)
             }
             return
         }

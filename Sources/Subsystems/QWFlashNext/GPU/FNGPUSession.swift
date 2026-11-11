@@ -507,9 +507,11 @@ extension FNGPUEngine {
             let needsResync = sel != accepted || lastTok != v[accepted]
             if passes > 0 || needsResync {
                 let chainT0 = Date()
-                guard let (cb, enc) = ctx.hal.begin(.concurrent) else {
+                guard let pair = ctx.hal.begin(.concurrent) else {
                     throw FNGPUError.notHQ4("chain command buffer")
                 }
+                let cb = pair.0
+                var enc = pair.1
                 let firstStream: QWTensorValue
                 if !needsResync {
                     firstStream = stepMTP.lastProjectedStream(verifyRows: activeRows)
@@ -521,7 +523,8 @@ extension FNGPUEngine {
                         dtype: .f32
                     )
                     try stepMTP.encode(
-                        enc,
+                        &enc,
+                        cb: cb,
                         streamPrev: selStream,
                         tokens: stepMTP.tokensBuf.slice(byteOffset: 0, count: 1, dtype: .i32),
                         pos: prevCount + accepted,
@@ -532,7 +535,7 @@ extension FNGPUEngine {
                     firstStream = stepMTP.lastProjectedStream(verifyRows: 1)
                 }
                 if passes > 0 {
-                    try stepMTP.encodeChain(enc, firstStream: firstStream,
+                    try stepMTP.encodeChain(&enc, cb: cb, firstStream: firstStream,
                                             startPos: prevCount + accepted + 1, passes: passes)
                 }
                 ctx.hal.end(cb, enc)

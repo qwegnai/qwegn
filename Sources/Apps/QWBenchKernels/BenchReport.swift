@@ -14,6 +14,7 @@ enum BenchReport {
                          suites: [OperatorSuites.OperatorResult],
                          moeSuites: [OperatorSuites.OperatorResult],
                          prefill: [PrefillSuites.Race] = [],
+                         shvq: [SHVQSuites.Row] = [],
                          cols: Int, samples: Int) -> String {
         let suiteOps = Set(suites.map(\.op)).union(moeSuites.map(\.op))
         var out = "# qwg-bench-kernels\n\n"
@@ -45,6 +46,23 @@ enum BenchReport {
                 out += String(format: "%.4f", race.incumbent.milliseconds) + " | "
                 out += String(format: "%.4f", ratio) + " | "
                 out += sci(race.family.error) + " | " + sci(race.incumbent.error) + " |\n"
+            }
+            out += "\n"
+        }
+
+        if !shvq.isEmpty {
+            out += "## shvq_vs_aq (cold 256 MiB flush)\n\n"
+            out += "| suite | shape | pair | shvq ms | aq ms | shvq/aq | shvq range | aq range | shvq err |\n"
+            out += "|---|---|---|---|---|---|---|---|---|\n"
+            for r in shvq {
+                let ratio = r.shvqMs / max(r.aqMs, 1e-9)
+                out += "| \(r.suite) | \(r.shape) | \(r.bits)-bit G\(r.group) | "
+                out += String(format: "%.4f", r.shvqMs) + " | "
+                out += String(format: "%.4f", r.aqMs) + " | "
+                out += String(format: "%.3fx", ratio) + " | "
+                out += String(format: "%.4f–%.4f", r.shvqRange.0, r.shvqRange.1) + " | "
+                out += String(format: "%.4f–%.4f", r.aqRange.0, r.aqRange.1) + " | "
+                out += sci(r.shvqErr) + " |\n"
             }
             out += "\n"
         }

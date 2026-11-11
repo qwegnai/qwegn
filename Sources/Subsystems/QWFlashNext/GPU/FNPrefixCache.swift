@@ -334,12 +334,11 @@ extension FNGPUEngine {
 
             if !inPlaceKV, N >= 512, layerRecords.contains(where: { $0.attnState?.lsaClusters != nil }),
                let (cb, enc) = arena.hal.begin() {
-                let numSB = N / 512
                 for rec in layerRecords {
                     if let a = rec.attnState, let clusters = a.lsaClusters {
-                        try? QWGemm.encodeFnLSAWardCluster(
+                        _ = try? QWGemm.encodeFnLSAClusterRange(
                             enc, hal: arena.hal, pooled: a.pooled, clusters: clusters,
-                            startSuperblock: 0, numSuperblocks: numSB, indexDim: 128)
+                            pos0: 0, count: N, indexDim: 128)
                     }
                 }
                 arena.hal.end(cb, enc)

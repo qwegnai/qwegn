@@ -46,6 +46,14 @@ extension SettingsView {
                     }
                     .pickerStyle(.segmented)
                 }
+
+                if selectedModelSupportsPLE {
+                    Divider().background(Color.white.opacity(0.08))
+                    tuningToggle("Stream PLE N-gram Table from SSD (Saves ~27.3 GiB GPU RAM)", id: "streamNgrams")
+                    Text("Streams external ngram.bin via a 64 MiB L1 cache instead of wiring into Metal RAM. Auto-engages when context exceeds UMA headroom.")
+                        .font(.system(size: 9))
+                        .foregroundColor(TelemetryTheme.quiet(increasedContrast: contrast == .increased))
+                }
             }
 
             if selectedModelStreamsExperts {
@@ -54,6 +62,10 @@ extension SettingsView {
                                  range: 0...Double(selectedModelExpertCount), step: 1,
                                  readout: { $0 == 0 ? "Auto (memory policy)" : "\($0) of \(selectedModelExpertCount)" },
                                  value: tuningInt("residentExpertsPerLayer"))
+                    intSliderRow(label: "MoE-Spec Verify Budget:", key: "engineTuning",
+                                 range: 0...8, step: 1,
+                                 readout: { $0 == 0 ? "0 (Lossless)" : "\($0) experts / layer" },
+                                 value: tuningInt("moeSpecBudget"))
                     tuningToggle("Cross-Token Expert Cache", id: "expertCache")
                     tuningToggle("Event-Pipelined Cold Expert Staging (Decode)", id: "coldEvents")
                     tuningToggle("Overlap Resident Experts with Cold Staging", id: "coldEventOverlap")
@@ -131,6 +143,7 @@ extension SettingsView {
                             Text("256 tokens").tag(256)
                             Text("512 tokens (Default)").tag(512)
                             Text("1,024 tokens").tag(1024)
+                            Text("4,096 (e-means)").tag(4096)
                         }
                         .pickerStyle(.segmented)
                     }
@@ -146,12 +159,24 @@ extension SettingsView {
                         }
                     }
 
-                    Text("Subquadratic dynamic Ward clustering (M=64 buckets/512-tok block, max 16 keys/bucket) with 4 sink + 512 sliding-window tokens. Contexts <= k+516 automatically run exact dense attention.")
+                    Text("Auto selects .qlsa / Weight-SVD on GQA (<= k+516 runs exact dense), native flat QSA <= 262K + e-means-4096 > 262K on QSA, and < 41K flat bypass + >= 41K e-means coarse pruning on MLA.")
                         .font(.system(size: 9))
                         .foregroundColor(TelemetryTheme.quiet(increasedContrast: contrast == .increased))
                 }
             }
         }
+    }
+
+    /// True when the selected model carries Per-Layer Embedding (PLE) N-gram modules (`ngram.bin`).
+    var selectedModelSupportsPLE: Bool {
+        if let desc = try? draftSettings.validatePrimaryModel() {
+            return !desc.pleModuleIndices.isEmpty
+        }
+        if let disc = discoveredModels.first(where: { $0.name == draftSettings.modelName }),
+           !disc.capabilities.isEmpty {
+            return disc.capabilities.contains("ple")
+        }
+        return false
     }
 
     /// The selected model has routed experts the engine can stream (MoE outside FlashNext's own engine).

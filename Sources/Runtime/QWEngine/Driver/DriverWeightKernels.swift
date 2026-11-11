@@ -16,7 +16,8 @@ extension QWEngineDriver {
     /// the family's twin over the family's blocks.
     static func decodeKernelName(format: QWWeightFormat) throws -> String {
         guard format.usesDenseAQKernels else { return "qwg_gemv_q4g_dx_h16_t4" }
-        guard let name = QWGemmAQ.decodeKernelName(bits: format.bits, group: format.groupSize) else {
+        guard let name = QWGemmAQ.decodeKernelName(bits: format.bits, group: format.groupSize,
+                                                   isSHVQ: format.denseIsSHVQ) else {
             throw QWEngineDriverError.state("no decode kernel for \(format.bits)-bit group "
                                             + "\(format.groupSize)")
         }
@@ -26,7 +27,8 @@ extension QWEngineDriver {
     /// The MLP gate/up GEMV for a container.
     static func siluPairKernelName(format: QWWeightFormat) throws -> String {
         guard format.usesDenseAQKernels else { return "qwg_gemv_q4g_silu_pair_dx_h16" }
-        guard let name = QWGemmAQ.siluPairKernelName(bits: format.bits, group: format.groupSize) else {
+        guard let name = QWGemmAQ.siluPairKernelName(bits: format.bits, group: format.groupSize,
+                                                     isSHVQ: format.denseIsSHVQ) else {
             throw QWEngineDriverError.state("no MLP kernel for \(format.bits)-bit group "
                                             + "\(format.groupSize)")
         }
@@ -39,7 +41,7 @@ extension QWEngineDriver {
             return bm128 ? "qwg_gemm_q4g_h16_bm128" : "qwg_gemm_q4g_h16"
         }
         guard let name = QWGemmAQ.gemmKernelName(bits: format.bits, group: format.groupSize,
-                                                 bm128: bm128) else {
+                                                 bm128: bm128, isSHVQ: format.denseIsSHVQ) else {
             throw QWEngineDriverError.state("no prefill kernel for \(format.bits)-bit group "
                                             + "\(format.groupSize)")
         }
@@ -51,7 +53,8 @@ extension QWEngineDriver {
     static func gdnInProjDecodeKernelName(format: QWWeightFormat) throws -> String {
         guard format.usesDenseAQKernels else { return "qwg_gemv_q4g_dx_h16_gdn_inproj_t4" }
         guard let name = QWGemmAQ.gdnInProjDecodeKernelName(bits: format.bits,
-                                                            group: format.groupSize) else {
+                                                            group: format.groupSize,
+                                                            isSHVQ: format.denseIsSHVQ) else {
             throw QWEngineDriverError.state("no GDN decode kernel for \(format.bits)-bit group "
                                             + "\(format.groupSize)")
         }
@@ -62,7 +65,8 @@ extension QWEngineDriver {
     static func gdnInProjPrefillKernelName(format: QWWeightFormat) throws -> String {
         guard format.usesDenseAQKernels else { return "qwg_gemm_q4g_h16_gdn_inproj" }
         guard let name = QWGemmAQ.gdnInProjPrefillKernelName(bits: format.bits,
-                                                            group: format.groupSize) else {
+                                                            group: format.groupSize,
+                                                            isSHVQ: format.denseIsSHVQ) else {
             throw QWEngineDriverError.state("no GDN prefill kernel for \(format.bits)-bit group "
                                             + "\(format.groupSize)")
         }
@@ -77,7 +81,8 @@ extension QWEngineDriver {
         guard let weight = QWHeadWeight(blocks: view.blocks, n: view.n, k: view.k,
                                         bits: view.bits, groupSize: view.groupSize,
                                         isRotated: view.isRotated,
-                                        isIncumbentContainer: view.isIncumbentContainer) else {
+                                        isIncumbentContainer: view.isIncumbentContainer,
+                                        isSHVQ: view.isSHVQ) else {
             throw QWEngineDriverError.weightMissing("lm_head.weight", "QWHeadWeight layout invalid")
         }
         return .q4g(weight)

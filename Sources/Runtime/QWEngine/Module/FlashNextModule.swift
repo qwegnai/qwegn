@@ -194,7 +194,8 @@ public final class FlashNextModule: QWInferenceModule, @unchecked Sendable {
                 maxConcurrentSessions: options.maxConcurrentSessions,
                 evictPrefillScratch: options.prefillScratchEviction.shouldEvict(),
                 prewarmDoors: FlashNextModule.requiredDoors,
-                lsaConfig: options.lsaConfig
+                lsaConfig: options.lsaConfig,
+                streamNgrams: resolvedTuning.streamNgrams
             )
         }
         return FlashNextModule(engine: engine)
@@ -360,7 +361,8 @@ extension FlashNextModule: QWInferenceEngine {
             warmBytes: warm?.bytes,
             ssdBytes: disk?.bytes,
             warmEntries: warm?.entries,
-            ssdEntries: disk?.entries)
+            ssdEntries: disk?.entries,
+            warmLimitBytes: engine?.prefixCacheWarmLimitBytes)
     }
 
     public var supportsTokenConstraints: Bool { true }

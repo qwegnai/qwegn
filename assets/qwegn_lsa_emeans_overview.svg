@@ -1,0 +1,149 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 790" width="1000" height="790">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#070a12"/><stop offset="0.5" stop-color="#0d1323"/><stop offset="1" stop-color="#090d18"/>
+    </linearGradient>
+    <linearGradient id="card" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#131c31" stop-opacity="0.96"/><stop offset="1" stop-color="#0b1120" stop-opacity="0.98"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#34d399"/><stop offset="1" stop-color="#38bdf8"/>
+    </linearGradient>
+  </defs>
+  <style>
+    svg { text-rendering: geometricPrecision; -webkit-font-smoothing: antialiased; }
+    .sans { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", "Segoe UI", system-ui, sans-serif; }
+    .mono { font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace; font-weight: 600; }
+  </style>
+
+  <rect width="1000" height="790" rx="20" fill="url(#bg)" stroke="#1e293b" stroke-width="2"/>
+  <rect x="0" y="0" width="1000" height="5" fill="url(#mark)" opacity="0.95"/>
+
+  <g transform="translate(28, 22)">
+    <rect x="0" y="0" width="386" height="28" rx="14" fill="#0c2a3a" stroke="#38bdf8" stroke-width="1.2"/>
+    <text x="193" y="18.6" text-anchor="middle" class="mono" font-size="12.5" font-weight="700" fill="#7dd3fc" letter-spacing="0.3">160K → 1M LONG-CONTEXT LSA &amp; E-MEANS SUITE</text>
+    <text x="0" y="64" class="sans" font-size="27" font-weight="800" fill="#f8fafc">Qwegn Long-Context Performance &amp; Fidelity Matrix</text>
+    <text x="0" y="90" class="mono" font-size="13" fill="#cbd5e1">Without LSA vs LSA (Ward-512) vs Capacity-Balanced e-means (4096 Macro-Clusters &amp; SHVQ)</text>
+  </g>
+  <g transform="translate(772, 20)">
+    <rect width="200" height="58" rx="13" fill="#0b1222" stroke="#334155" stroke-width="1.3"/>
+    <rect x="11" y="11" width="36" height="36" rx="9" fill="url(#mark)"/>
+    <text x="29" y="36" text-anchor="middle" class="sans" font-size="21" font-weight="900" fill="#04110c">Q</text>
+    <text x="57" y="29" class="sans" font-size="21" font-weight="800" fill="#f8fafc">Qwegn</text>
+    <text x="57" y="46" class="mono" font-size="11.5" font-weight="700" fill="#94a3b8">SWIFT 6.2 · METAL 4</text>
+  </g>
+
+  <g transform="translate(28, 136)">
+    <rect width="460" height="266" rx="14" fill="url(#card)" stroke="#1e293b" stroke-width="1.4"/>
+    <text x="20" y="30" class="sans" font-size="14.5" font-weight="800" fill="#f8fafc">LONG-CONTEXT PREFILL THROUGHPUT</text>
+    <text x="440" y="30" text-anchor="end" class="mono" font-size="11.5" fill="#94a3b8">tok/s</text>
+    <line x1="48" y1="218.0" x2="436" y2="218.0" stroke="#475569" stroke-width="1.3"/>
+    <rect x="66.0" y="204.8" width="30" height="13.2" rx="4" fill="#334155" stroke="#64748b" stroke-width="1"/>
+    <rect x="100.0" y="85.6" width="30" height="132.4" rx="4" fill="#10b981" fill-opacity="0.88"/>
+    <text x="81.0" y="198.8" text-anchor="middle" class="mono" font-size="10.5" fill="#cbd5e1">231*</text>
+    <text x="115.0" y="79.6" text-anchor="middle" class="mono" font-size="11" font-weight="800" fill="#10b981">2,317</text>
+    <text x="98.0" y="237.0" text-anchor="middle" class="mono" font-size="11" fill="#cbd5e1">35B-A3B @1M</text>
+    <rect x="160.0" y="140.8" width="30" height="77.2" rx="4" fill="#334155" stroke="#64748b" stroke-width="1"/>
+    <rect x="194.0" y="110.1" width="30" height="107.9" rx="4" fill="#38bdf8" fill-opacity="0.88"/>
+    <text x="175.0" y="134.8" text-anchor="middle" class="mono" font-size="10.5" fill="#cbd5e1">1,350</text>
+    <text x="209.0" y="104.1" text-anchor="middle" class="mono" font-size="11" font-weight="800" fill="#38bdf8">1,888</text>
+    <text x="192.0" y="237.0" text-anchor="middle" class="mono" font-size="11" fill="#cbd5e1">Flash-Next @1M</text>
+    <rect x="254.0" y="197.9" width="30" height="20.1" rx="4" fill="#334155" stroke="#64748b" stroke-width="1"/>
+    <rect x="288.0" y="170.5" width="30" height="47.5" rx="4" fill="#a855f7" fill-opacity="0.88"/>
+    <text x="269.0" y="191.9" text-anchor="middle" class="mono" font-size="10.5" fill="#cbd5e1">351*</text>
+    <text x="303.0" y="164.5" text-anchor="middle" class="mono" font-size="11" font-weight="800" fill="#a855f7">831</text>
+    <text x="286.0" y="237.0" text-anchor="middle" class="mono" font-size="11" fill="#cbd5e1">27B Dense @1M</text>
+    <rect x="348.0" y="211.2" width="30" height="6.8" rx="4" fill="#334155" stroke="#64748b" stroke-width="1"/>
+    <rect x="382.0" y="211.2" width="30" height="6.8" rx="4" fill="#f43f5e" fill-opacity="0.88"/>
+    <text x="363.0" y="205.2" text-anchor="middle" class="mono" font-size="10.5" fill="#cbd5e1">119</text>
+    <text x="397.0" y="205.2" text-anchor="middle" class="mono" font-size="11" font-weight="800" fill="#f43f5e">118</text>
+    <text x="380.0" y="237.0" text-anchor="middle" class="mono" font-size="11" fill="#cbd5e1">GLM-321B @160K</text>
+    <text x="20" y="254" class="mono" font-size="10.5" fill="#64748b">Slate = Baseline (Dense* @262–524K or Flat QSA/MLA) · Color = LSA / e-means-4096</text>
+  </g>
+  <g transform="translate(512, 136)">
+    <rect width="460" height="266" rx="14" fill="url(#card)" stroke="#1e293b" stroke-width="1.4"/>
+    <text x="20" y="30" class="sans" font-size="14.5" font-weight="800" fill="#f8fafc">LONG-CONTEXT DECODE THROUGHPUT</text>
+    <text x="440" y="30" text-anchor="end" class="mono" font-size="11.5" fill="#94a3b8">tok/s</text>
+    <line x1="48" y1="218.0" x2="436" y2="218.0" stroke="#475569" stroke-width="1.3"/>
+    <rect x="66.0" y="188.3" width="30" height="29.7" rx="4" fill="#334155" stroke="#64748b" stroke-width="1"/>
+    <rect x="100.0" y="82.9" width="30" height="135.1" rx="4" fill="#10b981" fill-opacity="0.88"/>
+    <text x="81.0" y="182.3" text-anchor="middle" class="mono" font-size="10.5" fill="#cbd5e1">23.2*</text>
+    <text x="115.0" y="76.9" text-anchor="middle" class="mono" font-size="11" font-weight="800" fill="#10b981">105.6</text>
+    <text x="98.0" y="237.0" text-anchor="middle" class="mono" font-size="11" fill="#cbd5e1">35B-A3B @1M</text>
+    <rect x="160.0" y="165.5" width="30" height="52.5" rx="4" fill="#334155" stroke="#64748b" stroke-width="1"/>
+    <rect x="194.0" y="136.4" width="30" height="81.6" rx="4" fill="#38bdf8" fill-opacity="0.88"/>
+    <text x="175.0" y="159.5" text-anchor="middle" class="mono" font-size="10.5" fill="#cbd5e1">41.0</text>
+    <text x="209.0" y="130.4" text-anchor="middle" class="mono" font-size="11" font-weight="800" fill="#38bdf8">63.7</text>
+    <text x="192.0" y="237.0" text-anchor="middle" class="mono" font-size="11" fill="#cbd5e1">Flash-Next @1M</text>
+    <rect x="254.0" y="185.6" width="30" height="32.4" rx="4" fill="#334155" stroke="#64748b" stroke-width="1"/>
+    <rect x="288.0" y="171.3" width="30" height="46.7" rx="4" fill="#a855f7" fill-opacity="0.88"/>
+    <text x="269.0" y="179.6" text-anchor="middle" class="mono" font-size="10.5" fill="#cbd5e1">25.3*</text>
+    <text x="303.0" y="165.3" text-anchor="middle" class="mono" font-size="11" font-weight="800" fill="#a855f7">36.5</text>
+    <text x="286.0" y="237.0" text-anchor="middle" class="mono" font-size="11" fill="#cbd5e1">27B Dense @1M</text>
+    <rect x="348.0" y="189.5" width="30" height="28.5" rx="4" fill="#334155" stroke="#64748b" stroke-width="1"/>
+    <rect x="382.0" y="183.9" width="30" height="34.1" rx="4" fill="#f43f5e" fill-opacity="0.88"/>
+    <text x="363.0" y="183.5" text-anchor="middle" class="mono" font-size="10.5" fill="#cbd5e1">22.2</text>
+    <text x="397.0" y="177.9" text-anchor="middle" class="mono" font-size="11" font-weight="800" fill="#f43f5e">26.6</text>
+    <text x="380.0" y="237.0" text-anchor="middle" class="mono" font-size="11" fill="#cbd5e1">GLM-321B @160K</text>
+    <text x="20" y="254" class="mono" font-size="10.5" fill="#64748b">Slate = Baseline (Dense* @262–524K or Flat QSA/MLA) · Color = LSA / e-means-4096</text>
+  </g>
+  <g transform="translate(28, 418)">
+    <rect width="944" height="254" rx="14" fill="url(#card)" stroke="#1e293b" stroke-width="1.4"/>
+    <rect x="14" y="14" width="916" height="34" rx="8" fill="#0b1324"/>
+    <text x="26" y="35" text-anchor="start" class="mono" font-size="11" font-weight="800" fill="#94a3b8">MODEL &amp; PACK</text>
+    <text x="308" y="35" text-anchor="middle" class="mono" font-size="11" font-weight="800" fill="#94a3b8">CONTEXT</text>
+    <text x="435" y="35" text-anchor="middle" class="mono" font-size="11" font-weight="800" fill="#94a3b8">WITHOUT LSA (PRE/DEC)</text>
+    <text x="582" y="35" text-anchor="middle" class="mono" font-size="11" font-weight="800" fill="#94a3b8">LSA WARD-512</text>
+    <text x="718" y="35" text-anchor="middle" class="mono" font-size="11" font-weight="800" fill="#94a3b8">E-MEANS (4096)</text>
+    <text x="855" y="35" text-anchor="middle" class="mono" font-size="11" font-weight="800" fill="#94a3b8">RAM · RECALL</text>
+    <text x="26" y="71" class="sans" font-size="13.5" font-weight="800" fill="#34d399">Qwen3.6-35B-A3B</text>
+    <text x="26" y="88" class="mono" font-size="10.5" fill="#94a3b8">HQ4_G32 · 40L (10 GQA + 30 GDN)</text>
+    <text x="308" y="79" text-anchor="middle" class="mono" font-size="12" fill="#e2e8f0">1M (1,040K)</text>
+    <text x="435" y="79" text-anchor="middle" class="mono" font-size="11.5" fill="#fca5a5">231 / 23.2 (@524K)</text>
+    <text x="582" y="79" text-anchor="middle" class="mono" font-size="12" fill="#6ee7b7">2,317 / 105.6</text>
+    <text x="718" y="73" text-anchor="middle" class="mono" font-size="12" font-weight="800" fill="#7dd3fc">2,315 / 88.5</text>
+    <text x="718" y="89" text-anchor="middle" class="mono" font-size="10.5" fill="#38bdf8">13.9× pre · 4.5× dec</text>
+    <text x="855" y="73" text-anchor="middle" class="mono" font-size="11.5" font-weight="700" fill="#34d399">3/3 (100%)</text>
+    <text x="855" y="89" text-anchor="middle" class="mono" font-size="10.5" fill="#94a3b8">30.5 GiB</text>
+    <line x1="20" y1="99" x2="924" y2="99" stroke="#1e293b" stroke-width="1"/>
+    <text x="26" y="118" class="sans" font-size="13.5" font-weight="800" fill="#38bdf8">Qwen3.8-Flash-Next</text>
+    <text x="26" y="135" class="mono" font-size="10.5" fill="#94a3b8">HQ8+HQ4 + VQ2 PLE · 48L MoE</text>
+    <text x="308" y="126" text-anchor="middle" class="mono" font-size="12" fill="#e2e8f0">1M (1,040K)</text>
+    <text x="435" y="126" text-anchor="middle" class="mono" font-size="11.5" fill="#fca5a5">1,350 / 41.0 (QSA)</text>
+    <text x="582" y="126" text-anchor="middle" class="mono" font-size="12" fill="#6ee7b7">976 / 18.7 (@524K)</text>
+    <text x="718" y="120" text-anchor="middle" class="mono" font-size="12" font-weight="800" fill="#7dd3fc">1,888 / 63.7</text>
+    <text x="718" y="136" text-anchor="middle" class="mono" font-size="10.5" fill="#38bdf8">+39.8% pre · +55.3% dec</text>
+    <text x="855" y="120" text-anchor="middle" class="mono" font-size="11.5" font-weight="700" fill="#34d399">3/3 (100%)</text>
+    <text x="855" y="136" text-anchor="middle" class="mono" font-size="10.5" fill="#94a3b8">23.0 GiB (+SSD PLE)</text>
+    <line x1="20" y1="146" x2="924" y2="146" stroke="#1e293b" stroke-width="1"/>
+    <text x="26" y="165" class="sans" font-size="13.5" font-weight="800" fill="#c084fc">Qwen3.8-27B</text>
+    <text x="26" y="182" class="mono" font-size="10.5" fill="#94a3b8">HQ4_G32 · 64L Dense Hybrid</text>
+    <text x="308" y="173" text-anchor="middle" class="mono" font-size="12" fill="#e2e8f0">1M (1,040K)</text>
+    <text x="435" y="173" text-anchor="middle" class="mono" font-size="11.5" fill="#fca5a5">351 / 25.3 (@262K)</text>
+    <text x="582" y="173" text-anchor="middle" class="mono" font-size="12" fill="#6ee7b7">805 / 36.5</text>
+    <text x="718" y="167" text-anchor="middle" class="mono" font-size="12" font-weight="800" fill="#7dd3fc">831 / 35.6</text>
+    <text x="718" y="183" text-anchor="middle" class="mono" font-size="10.5" fill="#38bdf8">+3.2–9.0% pre · 2.55× @262K</text>
+    <text x="855" y="167" text-anchor="middle" class="mono" font-size="11.5" font-weight="700" fill="#34d399">3/3 (100%)</text>
+    <text x="855" y="183" text-anchor="middle" class="mono" font-size="10.5" fill="#94a3b8">36.4 GiB</text>
+    <line x1="20" y1="193" x2="924" y2="193" stroke="#1e293b" stroke-width="1"/>
+    <text x="26" y="212" class="sans" font-size="13.5" font-weight="800" fill="#fda4af">GLM-5.3-Flash (321B)</text>
+    <text x="26" y="229" class="mono" font-size="10.5" fill="#94a3b8">SHVQ4/2/3 (100.6 GiB UMA) · MLA</text>
+    <text x="308" y="220" text-anchor="middle" class="mono" font-size="12" fill="#e2e8f0">160K (1M ready)</text>
+    <text x="435" y="220" text-anchor="middle" class="mono" font-size="11.5" fill="#fca5a5">118.6 / 22.23</text>
+    <text x="582" y="220" text-anchor="middle" class="mono" font-size="12" fill="#6ee7b7">Key-Pool(4) Native</text>
+    <text x="718" y="214" text-anchor="middle" class="mono" font-size="12" font-weight="800" fill="#7dd3fc">118.2 / 26.63</text>
+    <text x="718" y="230" text-anchor="middle" class="mono" font-size="10.5" fill="#38bdf8">+19.8% MLA decode</text>
+    <text x="855" y="214" text-anchor="middle" class="mono" font-size="11.5" font-weight="700" fill="#34d399">3/3 (100%)</text>
+    <text x="855" y="230" text-anchor="middle" class="mono" font-size="10.5" fill="#94a3b8">104.0 GiB (0 swap)</text>
+  </g>
+
+  <g transform="translate(28, 686)">
+    <rect width="944" height="62" rx="11" fill="#0a101f" stroke="#334155" stroke-width="1.2"/>
+    <rect x="14" y="13" width="96" height="36" rx="8" fill="#111c33" stroke="#38bdf8" stroke-opacity="0.45" stroke-width="1"/>
+    <text x="62" y="29" text-anchor="middle" class="mono" font-size="11" font-weight="800" fill="#7dd3fc">M5 MAX</text>
+    <text x="62" y="43" text-anchor="middle" class="mono" font-size="10.5" fill="#94a3b8">128 GB UMA</text>
+    <text x="124" y="27" class="mono" font-size="12" font-weight="700" fill="#e2e8f0">INFERENCE MACHINE · Apple M5 Max (Mac17,6) · 18-Core CPU · 40-Core Apple10 NAX GPU · 128 GB Unified Memory</text>
+    <text x="124" y="46" class="mono" font-size="11.5" fill="#94a3b8">585 GB/s DRAM · 950 GB/s SLC · macOS 26+ · Qwegn v0.14.1 (Swift 6.2 &amp; Metal 4) · q4 KV · Temp 0 · 0 Steady Allocs</text>
+  </g>
+  <text x="500" y="770" text-anchor="middle" class="mono" font-size="11.5" fill="#94a3b8">100% (3/3) 3-needle passkey retrieval at 10%, 50%, 90% document depth across all sparse runs up to 1,040,000 tokens · 0 steady-state GPU allocs.</text>
+</svg>

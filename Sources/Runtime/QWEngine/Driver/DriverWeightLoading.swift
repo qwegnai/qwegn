@@ -289,19 +289,23 @@ extension QWEngineDriver {
             return t
         }
         // ── W3: plane concatenation helper (pure plumbing, zero math change) ──
-        private func resolvedPlaneLayout(_ firstName: String?, k: Int) -> (bits: Int, group: Int, incumbent: Bool, rowBytes: Int) {
+        private func resolvedPlaneLayout(_ firstName: String?, k: Int) -> (bits: Int, group: Int, incumbent: Bool, shvq: Bool, rowBytes: Int) {
             if let firstName, let pk, let entry = try? pk.entry(resolveName(firstName)), entry.hq4Off != nil {
-                return (entry.hqBits, entry.hqGroup, entry.isIncumbentHQ4, (k / entry.hqGroup) * entry.hqBlockBytes)
+                return (entry.hqBits, entry.hqGroup, entry.isIncumbentHQ4, entry.isSHVQ,
+                        (k / entry.hqGroup) * entry.hqBlockBytes)
             }
             if let firstName, firstName.contains(".experts.") && !firstName.contains("shared_expert") {
                 if firstName.contains("down_proj") {
                     return (format.expertDownBits, format.expertDownGroupSize,
-                            format.expertDownIsIncumbentContainer, format.expertDownRowBytes(k: k))
+                            format.expertDownIsIncumbentContainer, format.expertDownIsSHVQ,
+                            format.expertDownRowBytes(k: k))
                 }
                 return (format.expertBits, format.expertGroupSize,
-                        format.expertIsIncumbentContainer, format.expertRowBytes(k: k))
+                        format.expertIsIncumbentContainer, format.expertIsSHVQ,
+                        format.expertRowBytes(k: k))
             }
-            return (format.bits, format.groupSize, format.denseIsIncumbentContainer, format.rowBytes(k: k))
+            return (format.bits, format.groupSize, format.denseIsIncumbentContainer,
+                    format.denseIsSHVQ, format.rowBytes(k: k))
         }
 
         mutating func concatPlane(_ tensors: [(name: String, n: Int)], k: Int,
@@ -353,7 +357,8 @@ extension QWEngineDriver {
             guard let bigView = QWWeightView(blocks: blocks, n: totalN, k: k,
                                                  bits: layout.bits, groupSize: layout.group,
                                                  isRotated: hl.weightBasis.rotatesActivations,
-                                                 isIncumbentContainer: layout.incumbent) else {
+                                                 isIncumbentContainer: layout.incumbent,
+                                                 isSHVQ: layout.shvq) else {
                 throw QWEngineDriverError.weightMissing(tensors.first?.name ?? "concat", "concat view invalid")
             }
             var subViews: [QWWeightView] = []
@@ -378,7 +383,8 @@ extension QWEngineDriver {
             guard let v = QWMLPWeight(blocks: bigView.blocks, n: 2 * geometry.intermediate, k: geometry.hidden,
                                     bits: bigView.bits, groupSize: bigView.groupSize,
                                     isRotated: bigView.isRotated,
-                                    isIncumbentContainer: bigView.isIncumbentContainer) else {
+                                    isIncumbentContainer: bigView.isIncumbentContainer,
+                                    isSHVQ: bigView.isSHVQ) else {
                 throw QWEngineDriverError.weightMissing(gate, "gu view invalid")
             }
             return v
@@ -504,11 +510,13 @@ extension QWEngineDriver {
                 guard let guView = QWWeightView(blocks: guBlocks, n: resE * 2 * I, k: H,
                                              bits: format.expertBits, groupSize: format.expertGroupSize,
                                              isRotated: hl.weightBasis.rotatesActivations,
-                                             isIncumbentContainer: format.expertIsIncumbentContainer),
+                                             isIncumbentContainer: format.expertIsIncumbentContainer,
+                                             isSHVQ: format.expertIsSHVQ),
                       let downView = QWWeightView(blocks: downBlocks, n: resE * H, k: I,
                                                  bits: format.expertDownBits, groupSize: format.expertDownGroupSize,
                                                  isRotated: hl.weightBasis.rotatesActivations,
-                                                 isIncumbentContainer: format.expertDownIsIncumbentContainer) else {
+                                                 isIncumbentContainer: format.expertDownIsIncumbentContainer,
+                                                 isSHVQ: format.expertDownIsSHVQ) else {
                     throw QWEngineDriverError.weightMissing(blk + "mlp.experts.gate_up_proj", "moe bank view invalid")
                 }
                 gu = guView
@@ -532,11 +540,13 @@ extension QWEngineDriver {
                 guard let guView = QWWeightView(blocks: guBank.blocks, n: resE * 2 * I, k: H,
                                              bits: format.expertBits, groupSize: format.expertGroupSize,
                                              isRotated: hl.weightBasis.rotatesActivations,
-                                             isIncumbentContainer: format.expertIsIncumbentContainer),
+                                             isIncumbentContainer: format.expertIsIncumbentContainer,
+                                             isSHVQ: format.expertIsSHVQ),
                       let downView = QWWeightView(blocks: downBank.blocks, n: resE * H, k: I,
                                                  bits: format.expertDownBits, groupSize: format.expertDownGroupSize,
                                                  isRotated: hl.weightBasis.rotatesActivations,
-                                                 isIncumbentContainer: format.expertDownIsIncumbentContainer) else {
+                                                 isIncumbentContainer: format.expertDownIsIncumbentContainer,
+                                                 isSHVQ: format.expertDownIsSHVQ) else {
                     throw QWEngineDriverError.weightMissing(blk + "mlp.experts", "moe bank view invalid")
                 }
                 gu = guView
@@ -623,7 +633,8 @@ extension QWEngineDriver {
                                              bits: moe.gateUp.bits,
                                              groupSize: moe.gateUp.groupSize,
                                              isRotated: moe.gateUp.isRotated,
-                                             isIncumbentContainer: moe.gateUp.isIncumbentContainer) else {
+                                             isIncumbentContainer: moe.gateUp.isIncumbentContainer,
+                                             isSHVQ: moe.gateUp.isSHVQ) else {
                         throw QWEngineDriverError.weightMissing(blk + "mlp.experts", "moe gu view invalid")
                     }
                     gu = v

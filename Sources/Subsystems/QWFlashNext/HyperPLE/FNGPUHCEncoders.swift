@@ -62,7 +62,8 @@ extension QWGemm {
         if upWeight.isIncumbentContainer {
             name = "qwg_hc_up_mix_h32_q4g_f32"
         } else {
-            guard let aqName = QWGemmAQ.hcUpMixH32F32KernelName(bits: upWeight.bits, group: upWeight.groupSize) else {
+            guard let aqName = QWGemmAQ.hcUpMixH32F32KernelName(bits: upWeight.bits, group: upWeight.groupSize,
+                                                                isSHVQ: upWeight.isSHVQ) else {
                 throw QWGemmError.badWeights("no affine-quantised hc up mix kernel for \(upWeight.bits)-bit group \(upWeight.groupSize)")
             }
             name = aqName
@@ -156,7 +157,8 @@ extension QWGemm {
         if downWeight.isIncumbentContainer {
             name = "qwg_hc_down_inject_f32"
         } else {
-            guard let aqName = QWGemmAQ.hcDownInjectF32KernelName(bits: downWeight.bits, group: downWeight.groupSize) else {
+            guard let aqName = QWGemmAQ.hcDownInjectF32KernelName(bits: downWeight.bits, group: downWeight.groupSize,
+                                                                  isSHVQ: downWeight.isSHVQ) else {
                 throw QWGemmError.badWeights("no affine-quantised hc down inject kernel for \(downWeight.bits)-bit group \(downWeight.groupSize)")
             }
             name = aqName
@@ -181,7 +183,8 @@ extension QWGemm {
                                                       rows: Int) throws -> Bool {
         guard !downWeight.isIncumbentContainer, hc <= 16, hidden % 32 == 0, width % hidden == 0,
               width / hidden <= 4, downWeight.k == width,
-              let name = QWGemmAQ.hcNormDownInjectF32KernelName(bits: downWeight.bits, group: downWeight.groupSize)
+              let name = QWGemmAQ.hcNormDownInjectF32KernelName(bits: downWeight.bits, group: downWeight.groupSize,
+                                                                isSHVQ: downWeight.isSHVQ)
         else { return false }
         let injecting = src != nil && inj != nil && xOut != nil
         if injecting, let o = xOut, o.region.buffer === x.region.buffer {

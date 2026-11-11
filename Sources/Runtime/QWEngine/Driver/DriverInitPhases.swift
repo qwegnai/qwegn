@@ -78,7 +78,8 @@ extension QWEngineDriver {
                                           bits: mMoE.gateUp.bits,
                                           groupSize: mMoE.gateUp.groupSize,
                                           isRotated: mMoE.gateUp.isRotated,
-                                          isIncumbentContainer: mMoE.gateUp.isIncumbentContainer) else {
+                                          isIncumbentContainer: mMoE.gateUp.isIncumbentContainer,
+                                          isSHVQ: mMoE.gateUp.isSHVQ) else {
                     throw QWEngineDriverError.weightMissing("mtp.layers.0.mlp.experts", "mtp moe gu view invalid")
                 }
                 mGu = v

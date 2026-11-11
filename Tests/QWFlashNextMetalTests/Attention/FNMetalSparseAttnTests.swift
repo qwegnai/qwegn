@@ -276,4 +276,204 @@ final class FNMetalSparseAttnTests: XCTestCase {
         XCTAssertEqual(state.capacity, cap)
         XCTAssertEqual(state.k.offset, kOffsets[0])
     }
+
+    func testQSAEmeansClusterThreeNeedleRecallAndFootprint() throws {
+        let totalTokens = 81_920
+        let numPools = totalTokens / 4
+        let needles = [1900, 9600, 17400]
+        let NI = 4, DI = 128, topK = 512
+        let arena = try QWArena(hal: Self.hal, weights: 4 << 20, activations: 128 << 20, kv: 64 << 20, gdnStates: 0)
+        let act = arena.activationsRegion()
+        let dummyW = try arena.weightsRegion().allocate(QWTensorShape([256], .f16))
+        let dummyView = QWWeightView(blocks: dummyW, n: 16, k: 32, isRotated: true)!
+        let dummyNorm = try act.allocate(QWTensorShape([256], .f32))
+        let mixer = FNGPUAttnMixer(
+            bank: dummyView, oProj: dummyView,
+            qNorm: dummyNorm, kNorm: dummyNorm, iqNorm: dummyNorm, ikNorm: dummyNorm,
+            heads: 16, kvHeads: 4, headDim: 256, indexHeads: NI, indexKVHeads: 1, indexHeadDim: DI,
+            rotaryDim: 64, compress: 4, blockTopK: topK, bankRows: 16 * 512 + 8 * 256 + 5 * 128,
+            rope: FNRope(rotaryDim: 64, theta: 10000.0))
+        let dummyState = try FNGPUAttnDecodeState(arena: arena, mixer: mixer, hidden: 2560, capacity: 1024, kvMode: .q4)
+
+        let wardReg = try FNGPUAttnDecodeState.allocateLSAClusters(
+            hal: Self.hal, kvCap: 262_144, indexHeadDim: DI,
+            states: Array(repeating: (dummyState, nil), count: 13), clusterBlock: 512)
+        let emReg = try FNGPUAttnDecodeState.allocateLSAClusters(
+            hal: Self.hal, kvCap: 262_144, indexHeadDim: DI,
+            states: Array(repeating: (dummyState, nil), count: 13), clusterBlock: 4096)
+        XCTAssertLessThan(Double(emReg.length), Double(wardReg.length) * 0.25,
+                          "e-means QSA cluster region must shrink per-layer cluster RAM dramatically vs Ward")
+
+        _ = try FNGPUAttnDecodeState.allocateLSAClusters(
+            hal: Self.hal, kvCap: totalTokens, indexHeadDim: DI, states: [(dummyState, nil)], clusterBlock: 4096)
+        let clusters = try XCTUnwrap(dummyState.lsaClusters)
+        XCTAssertTrue(clusters.isEmeans)
+
+        var rng: UInt64 = 0x55AA_9911
+        func nextN() -> Float {
+            rng = rng &* 6364136223846793005 &+ 1442695040888963407
+            let u1 = max(1e-6, Float((rng >> 33) & 0x7FFF_FFFF) / Float(0x8000_0000))
+            rng = rng &* 6364136223846793005 &+ 1442695040888963407
+            let u2 = Float((rng >> 33) & 0x7FFF_FFFF) / Float(0x8000_0000)
+            return sqrt(-2.0 * log(u1)) * cos(2.0 * .pi * u2)
+        }
+        var topics = [[Float]]()
+        for _ in 0..<128 {
+            var v = (0..<DI).map { _ in nextN() }
+            let n = max(1e-6, sqrt(v.reduce(0) { $0 + $1 * $1 }))
+            for d in 0..<DI { v[d] /= n }
+            topics.append(v)
+        }
+        var ps16 = [UInt16](repeating: 0, count: numPools * DI)
+        var p = 0
+        while p < numPools {
+            rng = rng &* 6364136223846793005 &+ 1442695040888963407
+            let topic = topics[Int((rng >> 48) % 128)]
+            let span = min(32, numPools - p)
+            for s in 0..<span {
+                var row = [Float](repeating: 0, count: DI)
+                var sq: Float = 0
+                for d in 0..<DI { let v = topic[d] + 0.35 * nextN(); row[d] = v; sq += v * v }
+                let gain = Float(DI).squareRoot() / max(1e-6, sqrt(sq))
+                for d in 0..<DI { ps16[(p + s) * DI + d] = Float16(row[d] * gain).bitPattern }
+            }
+            p += span
+        }
+        var qs = [Float](repeating: 0, count: 3 * NI * DI)
+        for (r, np) in needles.enumerated() {
+            var dir = (0..<DI).map { _ in nextN() }
+            let n = max(1e-6, sqrt(dir.reduce(0) { $0 + $1 * $1 }))
+            for d in 0..<DI { dir[d] /= n }
+            for off in 0..<2 {
+                var row = [Float](repeating: 0, count: DI)
+                var sq: Float = 0
+                for d in 0..<DI { let v = dir[d] + 0.03 * nextN(); row[d] = v; sq += v * v }
+                let gain = Float(DI).squareRoot() / max(1e-6, sqrt(sq))
+                for d in 0..<DI { ps16[(np + off) * DI + d] = Float16(row[d] * gain).bitPattern }
+            }
+            for d in 0..<DI { qs[(r * NI + 0) * DI + d] = dir[d] }
+        }
+
+        let idxQ = try act.allocate(QWTensorShape([3 * NI * DI], .f32))
+        let pooled = try act.allocate(QWTensorShape([numPools * DI], .f16))
+        let list = try act.allocate(QWTensorShape([3 * topK], .i32))
+        let scores = try act.allocate(QWTensorShape([3 * numPools], .i32))
+        arena.write(idxQ, from: qs)
+        arena.write(pooled, from: ps16)
+
+        guard let (cb, enc) = Self.hal.begin() else { throw XCTSkip("no command buffer") }
+        let didCluster = try QWGemm.encodeFnLSAClusterRange(
+            enc, hal: Self.hal, pooled: pooled, clusters: clusters, pos0: 0, count: totalTokens, indexDim: DI)
+        XCTAssertTrue(didCluster)
+        enc.memoryBarrier(scope: .buffers)
+        try QWGemm.encodeFnQSASelect(
+            enc, hal: Self.hal, idxQ: idxQ, pooled: pooled, list: list,
+            rows: 3, blockTopK: topK, pos0: totalTokens - 3, scores: scores, lsaClusters: clusters)
+        Self.hal.end(cb, enc)
+        cb.waitUntilCompleted()
+        XCTAssertNil(cb.error)
+
+        let got = arena.read(list, as: Int32.self, count: 3 * topK)
+        for (r, np) in needles.enumerated() {
+            let rowSel = Array(got[(r * topK)..<((r + 1) * topK)])
+            for i in 1..<rowSel.count {
+                XCTAssertLessThan(rowSel[i - 1], rowSel[i], "QSA e-means list must be strictly ascending")
+            }
+            XCTAssertTrue(rowSel.contains(Int32(np)), "QSA e-means missed needle \(np) at row \(r)")
+            XCTAssertTrue(rowSel.contains(Int32(np + 1)), "QSA e-means missed needle \(np + 1) at row \(r)")
+        }
+    }
+
+    func testQSAPairedPerfAB() throws {
+        guard ProcessInfo.processInfo.environment["QW_PERF_GATE"] == "1" else {
+            throw XCTSkip("Set QW_PERF_GATE=1 to run paired QSA flat vs Ward vs e-means A/B")
+        }
+        let maxT = 1_048_576
+        let maxPools = maxT / 4
+        let NI = 4, DI = 128, topK = 512
+        let arena = try QWArena(hal: Self.hal, weights: 4 << 20, activations: 256 << 20, kv: 64 << 20, gdnStates: 0)
+        let act = arena.activationsRegion()
+        let dummyW = try arena.weightsRegion().allocate(QWTensorShape([256], .f16))
+        let dummyView = QWWeightView(blocks: dummyW, n: 16, k: 32, isRotated: true)!
+        let dummyNorm = try act.allocate(QWTensorShape([256], .f32))
+        let mixer = FNGPUAttnMixer(
+            bank: dummyView, oProj: dummyView,
+            qNorm: dummyNorm, kNorm: dummyNorm, iqNorm: dummyNorm, ikNorm: dummyNorm,
+            heads: 16, kvHeads: 4, headDim: 256, indexHeads: NI, indexKVHeads: 1, indexHeadDim: DI,
+            rotaryDim: 64, compress: 4, blockTopK: topK, bankRows: 16 * 512 + 8 * 256 + 5 * 128,
+            rope: FNRope(rotaryDim: 64, theta: 10000.0))
+        let stWard = try FNGPUAttnDecodeState(arena: arena, mixer: mixer, hidden: 2560, capacity: 1024, kvMode: .q4)
+        let stEm = try FNGPUAttnDecodeState(arena: arena, mixer: mixer, hidden: 2560, capacity: 1024, kvMode: .q4)
+        _ = try FNGPUAttnDecodeState.allocateLSAClusters(
+            hal: Self.hal, kvCap: maxT, indexHeadDim: DI, states: [(stWard, nil)], clusterBlock: 512)
+        _ = try FNGPUAttnDecodeState.allocateLSAClusters(
+            hal: Self.hal, kvCap: maxT, indexHeadDim: DI, states: [(stEm, nil)], clusterBlock: 4096)
+        let wardC = try XCTUnwrap(stWard.lsaClusters)
+        let emC = try XCTUnwrap(stEm.lsaClusters)
+
+        let idxQ = try act.allocate(QWTensorShape([32 * NI * DI], .f32))
+        let pooled = try act.allocate(QWTensorShape([maxPools * DI], .f16))
+        let list = try act.allocate(QWTensorShape([32 * topK], .i32))
+        let scores = try act.allocate(QWTensorShape([32 * maxPools], .i32))
+        var seed: UInt32 = 0x2468_ACE1
+        let qSeed = (0..<(32 * NI * DI)).map { _ -> Float in
+            seed = seed &* 1664525 &+ 1013904223
+            return Float(Int32(bitPattern: seed)) * 4e-10
+        }
+        let pSeed = (0..<(maxPools * DI)).map { _ -> UInt16 in
+            seed = seed &* 1664525 &+ 1013904223
+            return Float16(Float(Int32(bitPattern: seed)) * 4e-10).bitPattern
+        }
+        arena.write(idxQ, from: qSeed)
+        arena.write(pooled, from: pSeed)
+        guard let (cbInit, encInit) = Self.hal.begin() else { return }
+        _ = try QWGemm.encodeFnLSAClusterRange(encInit, hal: Self.hal, pooled: pooled, clusters: wardC, pos0: 0, count: maxT, indexDim: DI)
+        _ = try QWGemm.encodeFnLSAClusterRange(encInit, hal: Self.hal, pooled: pooled, clusters: emC, pos0: 0, count: maxT, indexDim: DI)
+        Self.hal.end(cbInit, encInit)
+        cbInit.waitUntilCompleted()
+
+        func gpuMs(iters: Int, _ body: (any MTLComputeCommandEncoder) throws -> Void) throws -> Double {
+            guard let (cb, enc) = Self.hal.begin() else { return .nan }
+            for _ in 0..<iters { try body(enc); enc.memoryBarrier(scope: .buffers) }
+            Self.hal.end(cb, enc)
+            cb.waitUntilCompleted()
+            return (cb.gpuEndTime - cb.gpuStartTime) * 1e3 / Double(iters)
+        }
+        func med(_ xs: [Double]) -> Double { let s = xs.sorted(); return s[s.count / 2] }
+        for T in [131_072, 262_144, 524_288, 1_048_576] {
+            var wardD = [Double](), flatD = [Double](), emD = [Double]()
+            for r in 0..<8 {
+                if r % 2 == 0 {
+                    wardD.append(try gpuMs(iters: 10) {
+                        try QWGemm.encodeFnQSASelect($0, hal: Self.hal, idxQ: idxQ, pooled: pooled, list: list,
+                                                     rows: 1, blockTopK: topK, pos0: T - 1, scores: scores, lsaClusters: wardC)
+                    })
+                    flatD.append(try gpuMs(iters: 10) {
+                        try QWGemm.encodeFnQSASelect($0, hal: Self.hal, idxQ: idxQ, pooled: pooled, list: list,
+                                                     rows: 1, blockTopK: topK, pos0: T - 1, scores: scores, lsaClusters: nil)
+                    })
+                    emD.append(try gpuMs(iters: 10) {
+                        try QWGemm.encodeFnQSASelect($0, hal: Self.hal, idxQ: idxQ, pooled: pooled, list: list,
+                                                     rows: 1, blockTopK: topK, pos0: T - 1, scores: scores, lsaClusters: emC)
+                    })
+                } else {
+                    emD.append(try gpuMs(iters: 10) {
+                        try QWGemm.encodeFnQSASelect($0, hal: Self.hal, idxQ: idxQ, pooled: pooled, list: list,
+                                                     rows: 1, blockTopK: topK, pos0: T - 1, scores: scores, lsaClusters: emC)
+                    })
+                    flatD.append(try gpuMs(iters: 10) {
+                        try QWGemm.encodeFnQSASelect($0, hal: Self.hal, idxQ: idxQ, pooled: pooled, list: list,
+                                                     rows: 1, blockTopK: topK, pos0: T - 1, scores: scores, lsaClusters: nil)
+                    })
+                    wardD.append(try gpuMs(iters: 10) {
+                        try QWGemm.encodeFnQSASelect($0, hal: Self.hal, idxQ: idxQ, pooled: pooled, list: list,
+                                                     rows: 1, blockTopK: topK, pos0: T - 1, scores: scores, lsaClusters: wardC)
+                    })
+                }
+            }
+            print(String(format: "QSA-PAIRED T=%7d | ward=%.3f(p50=%.3f)ms flat=%.3f(p50=%.3f)ms emeans=%.3f(p50=%.3f)ms | %.2fx vs ward, %.2fx vs flat",
+                         T, wardD.min()!, med(wardD), flatD.min()!, med(flatD), emD.min()!, med(emD),
+                         wardD.min()! / emD.min()!, flatD.min()! / emD.min()!))
+        }
+    }
 }

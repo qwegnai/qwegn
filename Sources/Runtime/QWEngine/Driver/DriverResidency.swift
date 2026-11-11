@@ -113,7 +113,9 @@ extension QWEngineDriver {
             case .q4:  11_752
             }
             let hiBit = (descriptor.quantization?.bits ?? 4) > 4
-            let weightsBytes = (hiBit ? 3_408 : 2_384) << 20
+            let minWeights = (hiBit ? 3_408 : 2_384) << 20
+            let onDisk = QWResidencyAdmission.flashNextOnDiskFootprint(packPath: packPath, minWeightsBytes: minWeights)
+            let weightsBytes = onDisk.weightsBytes + onDisk.pleBytes
             let scratchBytes = (1408 << 20) + (836 << 20)
             let fixedBytes = weightsBytes + scratchBytes
             let alignedCap = QWCapacityPlan.steppedCapacity(clampedContext)

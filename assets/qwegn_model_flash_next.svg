@@ -40,9 +40,9 @@
 <text x="27.0" y="18.6" class="sans" font-size="13" font-weight="700" fill="#e9d5ff" letter-spacing="0.3">QWEGN ENGINE · MODEL PROFILE</text>
     <rect x="289.0" y="0.0" width="370" height="28" rx="14.0" fill="#064e3b" stroke="#10b981" stroke-width="1.2"/>
 <text x="474.0" y="18.6" text-anchor="middle" class="sans" font-size="13" font-weight="700" fill="#6ee7b7" letter-spacing="0.3">NEEDLE RECALL: 3/3 @ 64K–1M (QSA &amp; CLUSTER)</text>
-    <text x="0" y="64" fill="#f8fafc" class="title" font-size="28">Qwen3.8-Flash-Next (HQ8_G32 + HQ4_G64 + QSA/LSA)</text>
+    <text x="0" y="64" fill="#f8fafc" class="title" font-size="27">Qwen3.8-Flash-Next (HQ8_G32 + HQ4_G64 + VQ2 PLE)</text>
     <text x="0" y="92" fill="#cbd5e1" class="subtitle" font-size="14.5">48-Layer Flagship Hybrid MoE (512 Experts · 10 Routed + 1 Shared · 12 QSA + 36 GDN)</text>
-    <text x="0" y="114" fill="#cbd5e1" class="subtitle" font-size="14.5">4-Branch Hyper-Connections · Per-Layer Embeddings (PLE) · 71.30 GiB Pack · Up to 1M Ctx</text>
+    <text x="0" y="114" fill="#cbd5e1" class="subtitle" font-size="14.5">4-Branch HC · 71.29 GiB QWP + 27.13 GiB VQ2_G32 PLE (-46.7% PLE) · Up to 1M Ctx</text>
   </g>
 
   <g transform="translate(28, 160)">
@@ -75,13 +75,13 @@
     <rect width="288" height="268" rx="16" fill="url(#cardGrad)" stroke="#322954" stroke-width="1.4"/>
     <rect x="18.0" y="16.0" width="151" height="26" rx="13.0" fill="#33230c" stroke="#f59e0b" stroke-width="1.2"/>
 <text x="93.5" y="33.5" text-anchor="middle" class="sans" font-size="13" font-weight="700" fill="#fde68a" letter-spacing="0.2">SPECULATIVE MTP</text>
-    <text x="18" y="90" fill="url(#amberGrad)" class="title mono" font-size="44">142.7</text>
+    <text x="18" y="90" fill="url(#amberGrad)" class="title mono" font-size="44">145.4</text>
     <text x="164.5" y="88" fill="#fbbf24" class="title mono" font-size="17">tok/s</text>
-    <text x="18" y="120" fill="#f8fafc" class="title" font-size="15.5">3.49 tok/step Acceptance</text>
-    <text x="18" y="144" fill="#cbd5e1" class="subtitle" font-size="13.5">106.6 tok/s novel spec (+29.1%</text>
-    <text x="18" y="165" fill="#cbd5e1" class="subtitle" font-size="13.5">faster than mlx-serve 82.6 tok/s)</text>
+    <text x="18" y="120" fill="#f8fafc" class="title" font-size="15.5">4.92 tok/step · GPU VQ2 PLE</text>
+    <text x="18" y="144" fill="#cbd5e1" class="subtitle" font-size="13.5">95.1–113.7 tok/s novel (+13.9%</text>
+    <text x="18" y="165" fill="#cbd5e1" class="subtitle" font-size="13.5">w/ resident 27.1 GiB VQ2 PLE)</text>
     <line x1="18" y1="196" x2="270" y2="196" stroke="#1e293b" stroke-width="1"/>
-    <text x="18" y="218" fill="#fbbf24" class="mono" font-size="13">Adaptive EMA</text>
+    <text x="18" y="218" fill="#fbbf24" class="mono" font-size="13">8-Slot Spec Ring</text>
     <text x="18" y="238" fill="#fbbf24" class="mono" font-size="13">+ Long-Context Backoff</text>
   </g>
   <g transform="translate(28, 446)">
@@ -97,18 +97,18 @@
   </g>
   <g transform="translate(28, 676)">
     <rect width="904" height="214" rx="16" fill="url(#cardGrad)" stroke="#322954" stroke-width="1.4"/>
-    <rect x="22.0" y="16.0" width="289" height="26" rx="13.0" fill="#281638" stroke="#a855f7" stroke-width="1.2"/>
-<text x="166.5" y="33.5" text-anchor="middle" class="sans" font-size="13" font-weight="700" fill="#e9d5ff" letter-spacing="0.3">SMARTNESS &amp; MIXED QUANTIZATION</text>
-    <text x="22" y="68" fill="#f8fafc" class="title" font-size="18">100% Conformance · 100% Capability · 81% Code · 3/3 Needle</text>
-    <text x="22" y="98" fill="#34d399" class="mono" font-size="14.5">• Conformance &amp; Capability : 131/131 (100%) · 18/18 (100%, 6/6 JSON)</text>
-    <text x="22" y="122" fill="#34d399" class="mono" font-size="14.5">• Code Eval &amp; Fidelity     : 81/100 (HE 45 · MBPP 36) · 100% (topProb 0.966)</text>
-    <text x="22" y="146" fill="#38bdf8" class="mono" font-size="14.5">• Mixed HQ8_G32 + HQ4_G64  : 71.30 GiB (-5.16 GiB vs hq4g32) · 2.62× lower KLD</text>
-    <text x="22" y="170" fill="#c084fc" class="mono" font-size="14.5">• Agentic &amp; Needle (64K–1M): 87.5% (7/8, constrained tools) · 3/3 (100%) needle</text>
-    <text x="22" y="194" fill="#fbbf24" class="mono" font-size="14.5">• Evaluation Protocol      : llmprobe v0.6.16 · greedy · --reasoning off · 100 code q</text>
+    <rect x="22.0" y="16.0" width="334" height="26" rx="13.0" fill="#281638" stroke="#a855f7" stroke-width="1.2"/>
+<text x="189.0" y="33.5" text-anchor="middle" class="sans" font-size="13" font-weight="700" fill="#e9d5ff" letter-spacing="0.3">VQ2 PLE &amp; MIXED HQ8+HQ4 QUANTIZATION</text>
+    <text x="22" y="68" fill="#f8fafc" class="title" font-size="18">10/10 Core Eval · 100% Conformance · 98.4 GiB Total (-23.7 GiB PLE)</text>
+    <text x="22" y="98" fill="#34d399" class="mono" font-size="14.5">• Core Reasoning &amp; JSON    : 10/10 (100% GPQA/AIME25/COMPSEC) · 9/9 JSON</text>
+    <text x="22" y="122" fill="#34d399" class="mono" font-size="14.5">• QNGRAM v3 VQ2_G32 PLE    : 50.86 → 27.13 GiB (90 B/row, GPU or SSD)</text>
+    <text x="22" y="146" fill="#38bdf8" class="mono" font-size="14.5">• Mixed HQ8_G32 + HQ4_G64  : 71.29 GiB (-5.16 GiB vs hq4g32) · 2.62× lower KLD</text>
+    <text x="22" y="170" fill="#c084fc" class="mono" font-size="14.5">• Residency RAM Toggles    : -28.48 GiB saved (--no-load-vision --stream-ngrams)</text>
+    <text x="22" y="194" fill="#fbbf24" class="mono" font-size="14.5">• Evaluation Protocol      : llmprobe v0.6.17 · greedy · 81/100 code · 3/3 needle</text>
   </g>
 
   <g transform="translate(28, 904)">
     <rect x="0" y="0" width="904" height="38" rx="9" fill="#0d1322" stroke="#1e293b" stroke-width="1.2"/>
-    <text x="452" y="24" text-anchor="middle" fill="#cbd5e1" class="mono" font-size="13">Qwen3.8-Flash-Next-hq8g32-hq4g64 · Apple M5 Max (Mac17,6 · 128 GB RAM · 40C GPU · 585 GB/s)</text>
+    <text x="452" y="24" text-anchor="middle" fill="#cbd5e1" class="mono" font-size="13">Qwegn v0.14.0 · Qwen3.8-Flash-Next-hq8g32-hq4g64 (+ VQ2 PLE) · Apple M5 Max (128 GB · 585 GB/s)</text>
   </g>
 </svg>

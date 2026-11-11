@@ -22,16 +22,16 @@ public enum QWMLPError: Error, CustomStringConvertible {
 public struct QWMLPWeight: Sendable {
     public let view: QWWeightView
     public init?(blocks: QWTensorValue, n: Int, k: Int, bits: Int = 4, groupSize: Int = 32,
-                 isRotated: Bool, isIncumbentContainer: Bool? = nil) {
+                 isRotated: Bool, isIncumbentContainer: Bool? = nil, isSHVQ: Bool = false) {
         guard let v = QWWeightView(blocks: blocks, n: n, k: k, bits: bits,
                                    groupSize: groupSize, isRotated: isRotated,
-                                   isIncumbentContainer: isIncumbentContainer) else { return nil }
+                                   isIncumbentContainer: isIncumbentContainer, isSHVQ: isSHVQ) else { return nil }
         self.view = v
     }
     public init?(nibbles: QWTensorValue, scales: QWTensorValue? = nil, mins: QWTensorValue? = nil,
-                 n: Int, k: Int, isRotated: Bool, isIncumbentContainer: Bool? = nil) {
+                 n: Int, k: Int, isRotated: Bool, isIncumbentContainer: Bool? = nil, isSHVQ: Bool = false) {
         self.init(blocks: nibbles, n: n, k: k, isRotated: isRotated,
-                  isIncumbentContainer: isIncumbentContainer)
+                  isIncumbentContainer: isIncumbentContainer, isSHVQ: isSHVQ)
     }
 }
 

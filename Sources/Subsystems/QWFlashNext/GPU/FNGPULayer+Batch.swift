@@ -216,7 +216,8 @@ extension FNGPULayerPasses {
         }
         try hcMix(enc, hal: hal, hc: L.mlpHC, s: s, stream: s.h2, mixed: s.mixedB, inj: s.injB,
                   injectBase: h, injectSrc: s.oG, injectScale: s.injA, rows: B)
-        try moe(enc, ctx: ctx, m: L.moe, s: s, mixed: s.mixedB, out: s.moeOut, rows: B)
+        var mEnc = enc
+        try moe(&mEnc, ctx: ctx, m: L.moe, s: s, mixed: s.mixedB, out: s.moeOut, rows: B)
         if !deferOutInject {
             try QWGemm.encodeFnInject(enc, hal: hal, base: s.h2, src: s.moeOut, inj: s.injB, out: out, rows: B, hidden: s.hidden, hc: s.hc)
             barrier(enc)

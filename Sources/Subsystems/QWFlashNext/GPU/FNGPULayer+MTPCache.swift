@@ -23,7 +23,8 @@ extension FNGPULayerPasses {
             try hcMix(enc, hal: ctx.hal, hc: layer.mlpHC, s: tail, stream: tail.h2,
                       mixed: tail.mixedB, inj: tail.injB,
                       injectBase: streamLast, injectSrc: oGLast, injectScale: injALast, rows: 1)
-            try moe(enc, ctx: ctx, m: layer.moe, s: tail, mixed: tail.mixedB, out: tail.moeOut, rows: 1)
+            var mEnc = enc
+            try moe(&mEnc, ctx: ctx, m: layer.moe, s: tail, mixed: tail.mixedB, out: tail.moeOut, rows: 1)
         }
     }
 }

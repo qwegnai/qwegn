@@ -21,24 +21,72 @@ extension QWGemm {
         case coldOnly = 0x80
     }
 
+    public static func moeMaxTiles(experts: Int, pairs: Int) -> Int {
+        min(pairs, min(experts, pairs) + (pairs + 63) / 64)
+    }
+
+    public static func moeSliceCount(colTiles: Int, maxTiles: Int) -> Int {
+        guard colTiles > 0, maxTiles > 0 else { return 0 }
+        let chunk = max(1, 2560 / colTiles)
+        return (maxTiles + chunk - 1) / chunk
+    }
+
+    /// Single source of truth for grouped-NAX MoE active-tile indirect dispatch layout.
+    public struct MoETilePlan: Sendable {
+        public let experts: Int
+        public let pairs: Int
+        public let maxTiles: Int
+        public let guColTiles: Int
+        public let dnColTiles: Int
+        public let guSlices: Int
+        public let dnSlices: Int
+
+        public var scratchInts: Int { 4 + (guSlices + dnSlices) * 3 }
+        public var downIndirectByteOffset: Int { 16 + guSlices * 12 }
+        var packedWriteWord: Int {
+            1 | ((guColTiles & 0x7FFF) << 1) | ((dnColTiles & 0xFFFF) << 16)
+        }
+
+        public init(experts: Int, pairs: Int, gateUpRows: Int, downRows: Int) {
+            self.experts = experts
+            self.pairs = pairs
+            let m = QWGemm.moeMaxTiles(experts: experts, pairs: pairs)
+            let guCol = gateUpRows / 64
+            let dnCol = downRows / 64
+            self.maxTiles = m
+            self.guColTiles = guCol
+            self.dnColTiles = dnCol
+            self.guSlices = QWGemm.moeSliceCount(colTiles: guCol, maxTiles: m)
+            self.dnSlices = QWGemm.moeSliceCount(colTiles: dnCol, maxTiles: m)
+        }
+    }
+
     /// Expert-sorted pair order (counting sort of (token, route) pairs by expert id), with optional fused NAX tile list build.
     public static func encodeMoEGroupPairsF32(_ enc: any MTLComputeCommandEncoder, hal: QWHal, ids: QWTensorValue,
                                               expertOff: QWTensorValue, sortedPairIdx: QWTensorValue,
                                               sortedTok: QWTensorValue, experts: Int, totalPairs: Int,
                                               routes: Int, invPerm: QWTensorValue? = nil,
                                               tileE: QWTensorValue? = nil, tileR: QWTensorValue? = nil,
-                                              tileCount: QWTensorValue? = nil) throws {
+                                              tileCount: QWTensorValue? = nil,
+                                              tilePlan: MoETilePlan? = nil) throws {
         precondition(experts <= 512, "the expert-sorted pair order holds 512 experts")
+        let hasTiles = tileE != nil && tileR != nil && tileCount != nil
+        var writeWord = 0
+        if hasTiles {
+            guard let plan = tilePlan, let tc = tileCount, tc.shape.elementCount >= plan.scratchInts else {
+                throw QWGemmError.badShape("moe group pairs: tileCount scratch does not fit MoETilePlan")
+            }
+            writeWord = plan.packedWriteWord
+        }
         enc.setComputePipelineState(try hal.pipeline("qwg_moe_group_pairs_f32"))
         enc.bindTensors(ids, expertOff, sortedPairIdx, sortedTok, startIndex: 0)
         enc.setUInt32s(experts, totalPairs, routes, startIndex: 4)
         (invPerm ?? sortedPairIdx).bind(enc, index: 7)
         enc.setUInt32s(invPerm != nil ? 1 : 0, startIndex: 8)
-        let hasTiles = tileE != nil && tileR != nil && tileCount != nil
         (tileE ?? sortedPairIdx).bind(enc, index: 9)
         (tileR ?? sortedPairIdx).bind(enc, index: 10)
         (tileCount ?? sortedPairIdx).bind(enc, index: 11)
-        enc.setUInt32s(hasTiles ? 1 : 0, startIndex: 12)
+        enc.setUInt32s(writeWord, startIndex: 12)
         enc.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
                                  threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
     }
@@ -79,7 +127,8 @@ extension QWGemm {
         if bank.isIncumbentContainer {
             enc.setComputePipelineState(try hal.pipeline("qwg_moe_gateup_q4g_f32_r1"))
         } else {
-            guard let aqName = QWGemmAQ.moeGateUpF32R1KernelName(bits: bank.bits, group: bank.groupSize) else {
+            guard let aqName = QWGemmAQ.moeGateUpF32R1KernelName(bits: bank.bits, group: bank.groupSize,
+                                                                 isSHVQ: bank.isSHVQ) else {
                 throw QWGemmError.badWeights("no affine-quantised moe gateup r1 kernel for \(bank.bits)-bit group \(bank.groupSize)")
             }
             enc.setComputePipelineState(try hal.pipeline(aqName))
@@ -112,7 +161,8 @@ extension QWGemm {
         if bank.isIncumbentContainer {
             enc.setComputePipelineState(try hal.pipeline("qwg_moe_down_shared_combine_q4g_f32"))
         } else {
-            guard let aqName = QWGemmAQ.moeDownSharedCombineF32KernelName(bits: bank.bits, group: bank.groupSize) else {
+            guard let aqName = QWGemmAQ.moeDownSharedCombineF32KernelName(bits: bank.bits, group: bank.groupSize,
+                                                                          isSHVQ: bank.isSHVQ) else {
                 throw QWGemmError.badWeights("no affine-quantised moe down combine kernel for \(bank.bits)-bit group \(bank.groupSize)")
             }
             enc.setComputePipelineState(try hal.pipeline(aqName))
@@ -139,24 +189,28 @@ extension QWGemm {
     public static func encodeMoEGateUpNax(_ enc: any MTLComputeCommandEncoder, hal: QWHal, xe: QWTensorValue,
                                           bank: QWWeightView, expertOff: QWTensorValue, tileE: QWTensorValue,
                                           tileR: QWTensorValue, tileCount: QWTensorValue, gu16: QWTensorValue,
-                                          rowsPerExpert: Int, pairs: Int,
+                                          rowsPerExpert: Int, tilePlan: MoETilePlan,
                                           sortedTok: QWTensorValue? = nil,
                                           coldBank: QWWeightView? = nil,
                                           tileFilter: MoETileFilter = .all) throws {
         precondition(rowsPerExpert % 64 == 0 && bank.k % 64 == 0, "NAX gate/up needs N and K multiples of 64")
+        guard tileCount.shape.elementCount >= 4 + tilePlan.guSlices * 3 else {
+            throw QWGemmError.badShape("moe gateup nax: tileCount buffer too small for indirect slices")
+        }
         let residentE = bank.n / rowsPerExpert
         let coldE = (coldBank?.n ?? 0) / rowsPerExpert
         let experts = residentE + coldE
         let packedExperts = coldBank != nil
             ? ((UInt32(residentE & 0xFFFF) << 16) | UInt32(experts & 0xFFFF))
             : UInt32(experts)
-        let maxTiles = min(pairs, min(experts, pairs) + (pairs + 63) / 64)  // ≤1 tile per expert ≤32 rows, else ⌈c/64⌉
+        let colTiles = rowsPerExpert / 64
         let grp = QWNaxGroupedParams(experts: packedExperts, n: UInt32(rowsPerExpert), k: UInt32(bank.k),
-                                     blocksPerRow: UInt32(bank.k / max(1, bank.groupSize)), rowTiles: 0, colTiles: UInt32(rowsPerExpert / 64))
+                                     blocksPerRow: UInt32(bank.k / max(1, bank.groupSize)), rowTiles: 0, colTiles: UInt32(colTiles))
         if bank.isIncumbentContainer {
             enc.setComputePipelineState(try hal.pipeline("qwg_moe_nax_gemm"))
         } else {
-            guard let aqName = QWGemmAQ.moeNaxGemmKernelName(bits: bank.bits, group: bank.groupSize) else {
+            guard let aqName = QWGemmAQ.moeNaxGemmKernelName(bits: bank.bits, group: bank.groupSize,
+                                                             isSHVQ: bank.isSHVQ) else {
                 throw QWGemmError.badWeights("no affine-quantised moe nax gemm kernel for \(bank.bits)-bit group \(bank.groupSize)")
             }
             enc.setComputePipelineState(try hal.pipeline(aqName))
@@ -166,30 +220,37 @@ extension QWGemm {
         enc.bindTensors(sortedTok ?? tileE, startIndex: 9)
         enc.setUInt32s(sortedTok != nil ? 1 : 0, startIndex: 10)
         (coldBank ?? bank).blocks.bind(enc, index: 11)
-        dispatchTileChunks(enc, colTiles: rowsPerExpert / 64, maxTiles: maxTiles, flags: tileFilter.rawValue, flagsIndex: 8)
+        dispatchTileChunks(enc, indirectBuffer: tileCount.region.buffer,
+                           baseByteOffset: tileCount.region.base + tileCount.offset + 16,
+                           colTiles: colTiles, maxTiles: tilePlan.maxTiles,
+                           flags: tileFilter.rawValue, flagsIndex: 8)
     }
 
     /// Grouped NAX/MPP GEMM with a hi/lo split activation and an fp32 output in expert-major rows.
     public static func encodeMoENaxSplitF32(_ enc: any MTLComputeCommandEncoder, hal: QWHal, xHi: QWTensorValue,
                                             xLo: QWTensorValue, bank: QWWeightView, expertOff: QWTensorValue,
                                             tileE: QWTensorValue, tileR: QWTensorValue, tileCount: QWTensorValue,
-                                            y32: QWTensorValue, rowsPerExpert: Int, pairs: Int,
+                                            y32: QWTensorValue, rowsPerExpert: Int, tilePlan: MoETilePlan,
                                             coldBank: QWWeightView? = nil,
                                             tileFilter: MoETileFilter = .all) throws {
         precondition(rowsPerExpert % 64 == 0 && bank.k % 64 == 0, "NAX split needs N and K multiples of 64")
+        guard tileCount.shape.elementCount >= tilePlan.scratchInts else {
+            throw QWGemmError.badShape("moe down nax: tileCount buffer too small for indirect slices")
+        }
         let residentE = bank.n / rowsPerExpert
         let coldE = (coldBank?.n ?? 0) / rowsPerExpert
         let experts = residentE + coldE
         let packedExperts = coldBank != nil
             ? ((UInt32(residentE & 0xFFFF) << 16) | UInt32(experts & 0xFFFF))
             : UInt32(experts)
-        let maxTiles = min(pairs, min(experts, pairs) + (pairs + 63) / 64)  // ≤1 tile per expert ≤32 rows, else ⌈c/64⌉
+        let colTiles = rowsPerExpert / 64
         let grp = QWNaxGroupedParams(experts: packedExperts, n: UInt32(rowsPerExpert), k: UInt32(bank.k),
-                                     blocksPerRow: UInt32(bank.k / max(1, bank.groupSize)), rowTiles: 0, colTiles: UInt32(rowsPerExpert / 64))
+                                     blocksPerRow: UInt32(bank.k / max(1, bank.groupSize)), rowTiles: 0, colTiles: UInt32(colTiles))
         if bank.isIncumbentContainer {
             enc.setComputePipelineState(try hal.pipeline("qwg_moe_nax_split_f32"))
         } else {
-            guard let aqName = QWGemmAQ.moeNaxSplitF32KernelName(bits: bank.bits, group: bank.groupSize) else {
+            guard let aqName = QWGemmAQ.moeNaxSplitF32KernelName(bits: bank.bits, group: bank.groupSize,
+                                                                 isSHVQ: bank.isSHVQ) else {
                 throw QWGemmError.badWeights("no affine-quantised moe nax split kernel for \(bank.bits)-bit group \(bank.groupSize)")
             }
             enc.setComputePipelineState(try hal.pipeline(aqName))
@@ -198,22 +259,27 @@ extension QWGemm {
         enc.setPod(grp, index: 8)
         (coldBank ?? bank).blocks.bind(enc, index: 10)
         let tbFlags: UInt32 = ((y32.shape.dtype == .f16) ? 0x8000_0000 : 0) | tileFilter.rawValue
-        dispatchTileChunks(enc, colTiles: rowsPerExpert / 64, maxTiles: maxTiles, flags: tbFlags, flagsIndex: 9)
+        dispatchTileChunks(enc, indirectBuffer: tileCount.region.buffer,
+                           baseByteOffset: tileCount.region.base + tileCount.offset + tilePlan.downIndirectByteOffset,
+                           colTiles: colTiles, maxTiles: tilePlan.maxTiles,
+                           flags: tbFlags, flagsIndex: 9)
     }
 
-    /// Grouped NAX tiles in bounded dispatches: one huge grid costs Flash-Next r8k ~5% GPU time vs
-    /// ~2560-threadgroup slices (35B-A3B neutral; fewer TGs per slice underfills its narrow gate/up). The slice's first tile index rides in bits 8..30 of the tileBlock word.
-    static func dispatchTileChunks(_ enc: any MTLComputeCommandEncoder, colTiles: Int, maxTiles: Int,
+    /// Grouped NAX tiles in <=2560-TG slices using on-device indirect grid counts (`0` empty threadgroups).
+    static func dispatchTileChunks(_ enc: any MTLComputeCommandEncoder, indirectBuffer: any MTLBuffer,
+                                   baseByteOffset: Int, colTiles: Int, maxTiles: Int,
                                    flags: UInt32, flagsIndex: Int) {
         let chunk = max(1, 2560 / colTiles)
         var base = 0
+        var slice = 0
         while base < maxTiles {
-            let n = min(chunk, maxTiles - base)
             var word = flags | (UInt32(base) << 8)
             enc.setBytes(&word, length: 4, index: flagsIndex)
-            enc.dispatchThreadgroups(MTLSize(width: colTiles, height: n, depth: 1),
+            enc.dispatchThreadgroups(indirectBuffer: indirectBuffer,
+                                     indirectBufferOffset: baseByteOffset + slice * 12,
                                      threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
-            base += n
+            base += min(chunk, maxTiles - base)
+            slice += 1
         }
     }
 

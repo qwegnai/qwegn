@@ -28,6 +28,10 @@ public struct QWEngineTuning: Sendable, Equatable {
     public var coldEventOverlap: Bool
     /// One GPU-mapped expert span per prefill chunk.
     public var prefillSpanMap: Bool
+    /// Whether PLE N-gram embeddings are streamed from SSD (true, ~64 MB L1 cache) or mapped in RAM (false).
+    public var streamNgrams: Bool
+    /// Routed MoE expert budget per verify layer (`0` = lossless, `1...8` = MoE-Spec cap).
+    public var moeSpecBudget: Int
 
     /// Headroom the `safe` policy keeps free beyond the engine's own plan.
     public static let safeHeadroomBytes = 6 << 30
@@ -38,6 +42,7 @@ public struct QWEngineTuning: Sendable, Equatable {
     public static let knobIds = [
         "memoryPolicy", "osReserveGiB", "residentExpertsPerLayer",
         "expertCache", "coldEvents", "coldEventOverlap", "prefillSpanMap",
+        "streamNgrams", "moeSpecBudget",
     ]
 
     /// The environment variable that overrides each knob.
@@ -49,6 +54,8 @@ public struct QWEngineTuning: Sendable, Equatable {
         "coldEvents": "QW_COLD_EVENTS",
         "coldEventOverlap": "QW_COLD_EVENT_OVERLAP",
         "prefillSpanMap": "QW_PREFILL_SPAN_MAP",
+        "streamNgrams": "QW_STREAM_NGRAMS",
+        "moeSpecBudget": "QW_MOE_SPEC_EXPERT_BUDGET",
     ]
 
     /// Resolves the tunables: an environment variable wins, then `values`, then the default.
@@ -56,9 +63,21 @@ public struct QWEngineTuning: Sendable, Equatable {
     public init(values: [String: QWKnobValue], environment: [String: String] = [:]) {
         func value(_ id: String) -> QWKnobValue? {
             guard let d = QWKnobRegistry.descriptor(id) else { return nil }
-            if let name = Self.environmentNames[id], let raw = environment[name],
-               let v = Self.parse(raw, kind: d.kind), (try? d.validate(v)) != nil {
-                return v
+            let envCandidates: [String]
+            if id == "moeSpecBudget" {
+                envCandidates = ["QW_MOE_SPEC_EXPERT_BUDGET", "QW_MOE_SPEC_BUDGET"]
+            } else if id == "residentExpertsPerLayer" {
+                envCandidates = ["QW_RESIDENT_EXPERTS_PER_LAYER", "QW_RESIDENT_EXPERTS"]
+            } else if let primary = Self.environmentNames[id] {
+                envCandidates = [primary]
+            } else {
+                envCandidates = []
+            }
+            for name in envCandidates {
+                if let raw = environment[name],
+                   let v = Self.parse(raw, kind: d.kind), (try? d.validate(v)) != nil {
+                    return v
+                }
             }
             if let v = values[id], (try? d.validate(v)) != nil { return v }
             return nil
@@ -70,6 +89,8 @@ public struct QWEngineTuning: Sendable, Equatable {
         coldEvents = value("coldEvents")?.boolValue ?? true
         coldEventOverlap = value("coldEventOverlap")?.boolValue ?? true
         prefillSpanMap = value("prefillSpanMap")?.boolValue ?? true
+        streamNgrams = value("streamNgrams")?.boolValue ?? false
+        moeSpecBudget = value("moeSpecBudget")?.intValue ?? 0
     }
 
     /// The same tunables with environment overrides applied on top.
@@ -85,6 +106,8 @@ public struct QWEngineTuning: Sendable, Equatable {
             "coldEvents": .bool(coldEvents),
             "coldEventOverlap": .bool(coldEventOverlap),
             "prefillSpanMap": .bool(prefillSpanMap),
+            "streamNgrams": .bool(streamNgrams),
+            "moeSpecBudget": .int(moeSpecBudget),
         ]
         if let osReserveGiB { out["osReserveGiB"] = .double(osReserveGiB) }
         if let residentExpertsPerLayer { out["residentExpertsPerLayer"] = .int(residentExpertsPerLayer) }

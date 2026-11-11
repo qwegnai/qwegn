@@ -69,6 +69,8 @@ final class FNNgramFormatTests: XCTestCase {
         XCTAssertEqual(try QWNgramFormat.rowBytes(dtype: .bf16, headDim: 160), 320)
         XCTAssertEqual(try QWNgramFormat.rowBytes(dtype: .q8g32, headDim: 160), 170)
         XCTAssertEqual(try QWNgramFormat.rowBytes(dtype: .q4g32, headDim: 160), 100)
+        XCTAssertEqual(try QWNgramFormat.rowBytes(dtype: .vq2g32, headDim: 160), 90)
+        XCTAssertEqual(try QWNgramFormat.rowsPerSector(rowBytes: 90), 45)
     }
 
     func testAQuantisedRowIsNeverLargerThanItsBf16Row() throws {
@@ -77,6 +79,7 @@ final class FNNgramFormatTests: XCTestCase {
         let bf16 = try QWNgramFormat.rowBytes(dtype: .bf16, headDim: 160)
         XCTAssertLessThan(try QWNgramFormat.rowBytes(dtype: .q8g32, headDim: 160), bf16)
         XCTAssertLessThan(try QWNgramFormat.rowBytes(dtype: .q4g32, headDim: 160), bf16)
+        XCTAssertLessThan(try QWNgramFormat.rowBytes(dtype: .vq2g32, headDim: 160), bf16)
     }
 
     func testRejectsARowSizeThatDisagreesWithTheDType() {
@@ -212,6 +215,45 @@ final class FNNgramFormatTests: XCTestCase {
                                             headDim: 160, rowBytes: 100, l1Hot: 0)
         XCTAssertEqual(hex(Array(v2q4[0..<45])),
                        "514e4752414d000002000000020000001900000000000000a00064000000000000100000000000000000000040")
+        var cb = [UInt16](repeating: 0, count: 512)
+        cb[2] = Float16(0.5).bitPattern
+        cb[3] = Float16(-0.25).bitPattern
+        let v3vq2 = try QWNgramFormat.makeHeader(version: 3, dtype: .vq2g32, entryCount: 25,
+                                                 headDim: 160, rowBytes: 90, l1Hot: 0, codebook: cb)
+        XCTAssertEqual(hex(Array(v3vq2[0..<45])),
+                       "514e4752414d000003000000030000001900000000000000a0005a000000000000100000000000000000000040")
+    }
+
+    func testParsesAndValidatesV3VQ2HeaderAndCodebook() throws {
+        var cb = [UInt16](repeating: 0, count: 512)
+        for i in 1..<256 {
+            cb[2 * i] = Float16(Float(i) / 256.0).bitPattern
+            cb[2 * i + 1] = Float16(-Float(i) / 512.0).bitPattern
+        }
+        let bytes = try QWNgramFormat.makeHeader(version: 3, dtype: .vq2g32, entryCount: 95,
+                                                 headDim: 160, rowBytes: 90, l1Hot: 4, codebook: cb)
+        let parsed = try QWNgramFormat.parse(bytes)
+        XCTAssertEqual(parsed.version, 3)
+        XCTAssertEqual(parsed.dtype, .vq2g32)
+        XCTAssertEqual(parsed.codebook.count, 512)
+        XCTAssertEqual(parsed.codebook[0], 0.0)
+        XCTAssertEqual(parsed.codebook[1], 0.0)
+        XCTAssertEqual(parsed.codebook[2], Float(Float16(1.0 / 256.0)))
+        XCTAssertThrowsError(try QWNgramFormat.makeHeader(version: 2, dtype: .vq2g32, entryCount: 25,
+                                                          headDim: 160, rowBytes: 90, l1Hot: 0, codebook: cb))
+        XCTAssertThrowsError(try QWNgramFormat.makeHeader(version: 3, dtype: .q4g32, entryCount: 25,
+                                                          headDim: 160, rowBytes: 100, l1Hot: 0))
+        var negZero = cb
+        negZero[0] = 0x8000
+        XCTAssertThrowsError(try QWNgramFormat.makeHeader(version: 3, dtype: .vq2g32, entryCount: 25,
+                                                          headDim: 160, rowBytes: 90, l1Hot: 0, codebook: negZero))
+        var nonFinite = cb
+        nonFinite[4] = 0x7C00
+        XCTAssertThrowsError(try QWNgramFormat.makeHeader(version: 3, dtype: .vq2g32, entryCount: 25,
+                                                          headDim: 160, rowBytes: 90, l1Hot: 0, codebook: nonFinite))
+        let allZero = [UInt16](repeating: 0, count: 512)
+        XCTAssertThrowsError(try QWNgramFormat.makeHeader(version: 3, dtype: .vq2g32, entryCount: 25,
+                                                          headDim: 160, rowBytes: 90, l1Hot: 0, codebook: allZero))
     }
 
     func testTheHeaderLayoutIsTheProducersLayout() throws {

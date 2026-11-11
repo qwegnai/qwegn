@@ -126,6 +126,54 @@ public enum QWPLEOperator {
             }
         }
     }
+
+    public static func writeRowIds(
+        _ targets: [FNNgramEmbedding],
+        into dst: UnsafeMutablePointer<UInt32>,
+        history: [Int64],
+        startPos: Int,
+        count: Int
+    ) {
+        let numPLE = targets.count
+        guard numPLE > 0 && count > 0 else { return }
+        let hc = targets[0].heads.sizes.count
+        let stride = count * hc
+        if numPLE * count >= 64 {
+            let rawAddr = Int(bitPattern: dst)
+            DispatchQueue.concurrentPerform(iterations: numPLE * count) { idx in
+                let pIdx = idx / count
+                let t = idx - pIdx * count
+                let base = UnsafeMutablePointer<UInt32>(bitPattern: rawAddr + pIdx * stride * 4)!
+                targets[pIdx].writeTokenRowIds(into: base, tokens: history, startPos: startPos, t: t)
+            }
+        } else {
+            for pIdx in 0..<numPLE {
+                let base = dst.advanced(by: pIdx * stride)
+                for t in 0..<count {
+                    targets[pIdx].writeTokenRowIds(into: base, tokens: history, startPos: startPos, t: t)
+                }
+            }
+        }
+    }
+
+    public static func writeBatchRowIds(
+        _ targets: [FNNgramEmbedding],
+        into dst: UnsafeMutablePointer<UInt32>,
+        histories: [[Int64]],
+        positions: [Int]
+    ) {
+        let numPLE = targets.count, batch = histories.count
+        guard numPLE > 0 && batch > 0 else { return }
+        let hc = targets[0].heads.sizes.count
+        let stride = batch * hc
+        for pIdx in 0..<numPLE {
+            let base = dst.advanced(by: pIdx * stride)
+            for row in 0..<batch {
+                targets[pIdx].writeTokenRowIds(into: base, tokens: histories[row],
+                                               startPos: positions[row] - row, t: row)
+            }
+        }
+    }
 }
 
 /// Unified Hyper-Connection (`hc`-stream) carrier operator seam.

@@ -537,9 +537,9 @@ public final class QWEngineDriver: @unchecked Sendable {
         }
         headStorage = try Self.loadHead(loader: &L, headIsQ4g: headIsQ4g, geometry: geometry)
         if case .q4g(let hw) = headStorage, !hw.view.isIncumbentContainer {
-            for name in [QWGemmAQ.kernelName(bits: hw.view.bits, group: hw.view.groupSize),
-                         QWGemmAQ.decodeKernelName(bits: hw.view.bits, group: hw.view.groupSize),
-                         QWGemmAQ.headArgmaxKernelName(bits: hw.view.bits, group: hw.view.groupSize)].compactMap({ $0 }) {
+            for name in [QWGemmAQ.kernelName(bits: hw.view.bits, group: hw.view.groupSize, isSHVQ: hw.view.isSHVQ),
+                         QWGemmAQ.decodeKernelName(bits: hw.view.bits, group: hw.view.groupSize, isSHVQ: hw.view.isSHVQ),
+                         QWGemmAQ.headArgmaxKernelName(bits: hw.view.bits, group: hw.view.groupSize, isSHVQ: hw.view.isSHVQ)].compactMap({ $0 }) {
                 _ = try hal.pipeline(name)
             }
         }
