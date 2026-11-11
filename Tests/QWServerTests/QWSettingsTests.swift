@@ -138,8 +138,12 @@ final class QWSettingsTests: XCTestCase {
         settings.modelAlias = "qwen-custom-alias"
         XCTAssertEqual(settings.modelAlias, "qwen-custom-alias")
 
+        let hasLocalModels = ((try? FileManager.default.contentsOfDirectory(atPath: QWPaths.modelsDirectoryPath)) ?? [])
+            .contains { !$0.hasPrefix(".") }
         let scanned = QWServerSettings.scanModelsDirectory()
-        XCTAssertFalse(scanned.isEmpty)
+        if hasLocalModels {
+            XCTAssertFalse(scanned.isEmpty)
+        }
 
         let model = DiscoveredModel(name: "test-model", packPath: "/path/to/test.qwp")
         XCTAssertEqual(model.id, "test-model")

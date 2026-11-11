@@ -26,6 +26,7 @@ final class FNMetalMoENaxTests: XCTestCase {
     }
 
     func testNaxVsPerPair() throws {
+        try XCTSkipUnless(Self.hal.caps.isMetal4TensorCapable, "NAX MoE requires Metal 4 tensor hardware")
         let experts = 32, routes = 4, tokens = 64, inter = 64, k = 256
         let rowsPerExpert = 2 * inter
         let n = experts * rowsPerExpert

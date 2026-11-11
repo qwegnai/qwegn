@@ -27,6 +27,7 @@ final class FNMetalDenseNaxTests: XCTestCase {
     }
 
     func testDenseNaxVsF32() throws {
+        try XCTSkipUnless(Self.hal.caps.isMetal4TensorCapable, "NAX GEMM requires Metal 4 tensor hardware")
         let rows = 128, k = 2560, n = 1280
         let bytes = n * (k / 32) * 20
         let arena = try QWArena(hal: Self.hal, weights: bytes + (8 << 20), activations: (256 << 20), kv: 0, gdnStates: 0)

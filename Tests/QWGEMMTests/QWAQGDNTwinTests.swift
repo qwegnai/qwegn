@@ -11,6 +11,9 @@ import QWQuant
 /// the family's blocks: the decode twin and the prefill twin, each checked
 /// against a host reference that reproduces its OWN arithmetic.
 final class QWAQGDNTwinTests: XCTestCase {
+    override func setUpWithError() throws {
+        try XCTSkipUnless(QWDeviceCaps.current?.isMetal4TensorCapable == true, "AQ GDN prefill twin requires Metal 4 tensor hardware")
+    }
 
     /// The bank's header: f16-exact (the format refuses a header it cannot
     /// hold) but NOT a power of two, so the dequantised weights are generally

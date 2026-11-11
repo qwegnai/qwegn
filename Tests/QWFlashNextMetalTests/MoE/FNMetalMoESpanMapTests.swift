@@ -80,6 +80,7 @@ final class FNMetalMoESpanMapTests: XCTestCase {
     }
 
     func testSplitResidentColdOnSpanMapIsBitExact() throws {
+        try XCTSkipUnless(Self.hal.caps.isMetal4TensorCapable, "NAX MoE span map requires Metal 4 tensor hardware")
         let experts = 32, residentE = 12, coldE = experts - residentE
         let routes = 4, tokens = 96, hidden = 128, inter = 64
         let pairs = tokens * routes

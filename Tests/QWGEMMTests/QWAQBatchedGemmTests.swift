@@ -13,6 +13,10 @@ import QWQuant
 final class QWAQBatchedGemmTests: XCTestCase {
     static let hal: QWHal = { try! QWHal(geometry: .qwen38_27b) }()
 
+    override func setUpWithError() throws {
+        try XCTSkipUnless(Self.hal.caps.isMetal4TensorCapable, "AQ batched prefill GEMM requires Metal 4 tensor hardware")
+    }
+
     /// One shape of the prefill: `m` tokens, `n` weight rows, `k` columns.
     private struct Shape {
         let m: Int

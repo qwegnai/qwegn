@@ -16,6 +16,7 @@ final class FNMetalMTPPrefillCacheTests: XCTestCase {
 
     private func checkCacheParity(mode: FNKVStorageMode) throws {
         let hal = try QWHal(geometry: .qwen38_27b)
+        try XCTSkipUnless(hal.caps.isMetal4TensorCapable, "NAX prefill cache parity requires Metal 4 tensor hardware")
         let ctx = try FNGPUContext(hal: hal, doors: [], geometry: .qwen38_27b)
         let arena = try QWArena(hal: hal, weights: 4 << 20, activations: 128 << 20, kv: 0, gdnStates: 0)
         let hidden = 32, rows = 16, capacity = 2064

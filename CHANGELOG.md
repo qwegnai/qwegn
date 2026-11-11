@@ -10,6 +10,13 @@ The single source of the version is `QWVersion.current` in
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-11-11
+
+### Fixed
+- **GitHub Actions CI paravirtual GPU & host environment test gating and `QWCliTests` Swift Testing macro fixes (`Scripts/ci.sh`, `Tests/`).**
+  - Fixed Swift Testing `#expect(Bool(true))` warning in `PullProgressTests.swift` and `#require` macro expansion overload ambiguity in `KnobBindingTests.swift` across Xcode 26 minor toolchains.
+  - Gated bare-metal Apple Silicon GPU (`isMetal4TensorCapable` NAX cooperative-tensor, 1024-thread GDN recurrent, and 49K-context multi-TG LSA selector) and host environment (`>= 110 GiB` physical RAM, local `~/.qwg/models`, uncontaminated process `ru_maxrss`, and bare-metal timing) tests with `XCTSkipUnless`, and skipped executing `qwg-bench-kernels` in `Scripts/ci.sh` Phase 2 when `GITHUB_ACTIONS=true` while preserving full test and benchmark execution on real Apple Silicon hardware.
+
 ## [0.15.0] - 2026-11-11
 
 ### Added

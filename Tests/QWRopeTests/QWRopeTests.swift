@@ -118,6 +118,8 @@ final class QWRopeTests: XCTestCase {
     }
 
     func testTableBuildBudget() throws {
+        try XCTSkipUnless(Self.hal.caps.isMetal4TensorCapable && ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] != "true",
+                          "Cold table build timing gate requires bare-metal hardware")
         let t0 = DispatchTime.now()
         _ = QWRopeTables(rows: 262_144, yarn: nil, geometry: .qwen38_27b)
         let ms = Double(t0.distance(to: .now()).nanosecondsOrDie()) / 1e6

@@ -45,6 +45,7 @@ final class QWHALTests: XCTestCase {
 
     func testDeviceFactsMatchHardwareDoc() throws {
         let caps = Self.hal.caps
+        try XCTSkipUnless(caps.isMetal4TensorCapable, "Hardware doc facts apply to bare-metal Apple Silicon")
         XCTAssertEqual(caps.name, "Apple M5 Max",
                        "HAL must run on the budgeted chip (HARDWARE_FACTS.md)")
         XCTAssertTrue(caps.unifiedMemory)

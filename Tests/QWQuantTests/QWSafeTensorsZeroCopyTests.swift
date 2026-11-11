@@ -57,6 +57,7 @@ final class QWSafeTensorsZeroCopyTests: XCTestCase {
 
         let mappedDelta = afterMapped - before
         let copyDelta = afterCopy - afterMapped
+        try XCTSkipUnless(copyDelta > 0, "Process peak RSS already exceeds 64 MB from prior test suites")
         XCTAssertLessThan(mappedDelta, copyDelta / 4,
                           "the mapped read raised peak RSS by \(mappedDelta) B; a copy raises \(copyDelta) B")
     }

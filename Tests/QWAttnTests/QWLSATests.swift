@@ -192,6 +192,7 @@ final class QWLSATests: XCTestCase {
     }
 
     func testSparsePagedPrefillMatchesDenseWhenAllBlocksSelected() throws {
+        try XCTSkipUnless(Self.hal.caps.isMetal4TensorCapable, "Sparse paged NAX prefill requires Metal 4 tensor hardware")
         let pos = 64
         let T = 8
         let sp = 32

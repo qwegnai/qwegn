@@ -15,6 +15,7 @@ final class FNMetalSparseAttnTests: XCTestCase {
     func testSparseGatedAttnPrefillRows() throws { try check(4, 0) }
     func testSparseGatedAttnPrefillDeep() throws { try check(8, 300) }
     func testSparseGatedAttnKVModesParity() throws {
+        try XCTSkipUnless(Self.hal.caps.isMetal4TensorCapable, "Sparse NAX attention requires Metal 4 tensor hardware")
         try checkKVMode(.f16, rows: 8, maxRelErr: 2e-3)
         try checkKVMode(.q8, rows: 8, maxRelErr: 1.5e-2)
         try checkKVMode(.q4, rows: 8, maxRelErr: 8e-2)

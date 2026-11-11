@@ -299,6 +299,7 @@ final class QWStandardMoEKernelTests: XCTestCase {
 
     /// The chain's output is the reference's, to within the f32 arithmetic.
     func testTheRoutedLayerMatchesTheCPUReference() throws {
+        try XCTSkipUnless(Self.hal.caps.isMetal4TensorCapable, "Routed MoE prefill (rows=16) requires Metal 4 tensor hardware")
         for rows in [1, 3, 16] {
             let model = try Self.model(rows: rows, normTopKProb: true)
             let got = try Self.runChain(model: model, rows: rows)

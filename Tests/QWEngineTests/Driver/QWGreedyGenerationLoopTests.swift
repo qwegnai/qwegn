@@ -181,11 +181,13 @@ final class QWGreedyGenerationLoopTests: XCTestCase {
         }
     }
 
-    func testResidencyBudgetHonorsPolicyReserveAndLiveHeadroom() {
+    func testResidencyBudgetHonorsPolicyReserveAndLiveHeadroom() throws {
         let gib = 1 << 30
         XCTAssertEqual(QWEngineDriver.effectiveOSReserveGiB(policy: .maxResident, explicitReserveGiB: nil), 16.0)
         XCTAssertEqual(QWEngineDriver.effectiveOSReserveGiB(policy: .safe, explicitReserveGiB: nil), 24.0)
         XCTAssertEqual(QWEngineDriver.effectiveOSReserveGiB(policy: .maxResident, explicitReserveGiB: 20.0), 20.0)
+        try XCTSkipUnless(ProcessInfo.processInfo.physicalMemory >= UInt64(110) << 30,
+                          "Live 90 GiB headroom test requires >= 110 GiB physical host RAM")
 
         let maxResCappedByLive = QWEngineDriver.residencyBudgetBytes(
             policy: .maxResident,

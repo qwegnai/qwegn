@@ -12,6 +12,10 @@ final class QWAttnPagedPrefillTests: XCTestCase {
     static let hal: QWHal = { try! QWHal(geometry: .qwen38_27b) }()
     static let layer = 3
 
+    override func setUpWithError() throws {
+        try XCTSkipUnless(Self.hal.caps.isMetal4TensorCapable, "Paged NAX prefill requires Metal 4 tensor hardware")
+    }
+
     struct SplitMix64 {
         var state: UInt64
         init(seed: UInt64) { state = seed }

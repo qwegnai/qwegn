@@ -14,6 +14,10 @@ final class QWGDNPrefillRegResTests: XCTestCase {
 
     static let hal: QWHal = { try! QWHal(geometry: .qwen38_27b) }()
 
+    override func setUpWithError() throws {
+        try XCTSkipUnless(Self.hal.caps.isMetal4TensorCapable, "GDN prefill regres vs recurrent decode requires bare-metal Apple Silicon GPU")
+    }
+
     struct SplitMix64 {
         var s: UInt64
         mutating func next() -> UInt64 {

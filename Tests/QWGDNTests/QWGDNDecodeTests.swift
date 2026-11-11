@@ -13,6 +13,10 @@ import QWQuant
 final class QWGDNDecodeTests: XCTestCase {
 
     static let hal: QWHal = { try! QWHal(geometry: .qwen38_27b) }()
+
+    override func setUpWithError() throws {
+        try XCTSkipUnless(Self.hal.caps.isMetal4TensorCapable, "1024-thread GDN recurrent kernel requires bare-metal Apple Silicon GPU")
+    }
     static let spikeOut = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         .appendingPathComponent("Scripts/spike/out")

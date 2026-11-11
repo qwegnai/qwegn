@@ -133,6 +133,7 @@ final class QWAttnPrefillTests: XCTestCase {
     /// C06 parity vs the CPU goldens as v5.1 — the swap ships only when this
     /// is 0 violations. (S≤512 fixtures; the engine's maxChunk is 4096 and
     func testPrefillParityNax() throws {
+        try XCTSkipUnless(Self.hal.caps.isMetal4TensorCapable, "NAX prefill requires Metal 4 tensor hardware")
         for c in Self.cases {
             let qg = try Self.load("attn_qgate_S\(c.S)\(c.tag).bin")
             let k = try Self.load("attn_k_S\(c.S)\(c.tag).bin")

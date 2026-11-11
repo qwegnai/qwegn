@@ -13,6 +13,7 @@ import QWQuant
 final class QWLSASelectParityTests: XCTestCase {
     private func runParity(distinctChunks: Int, T: Int, budget: Int) throws {
         let hal = QWLSATests.hal
+        try XCTSkipUnless(hal.caps.isMetal4TensorCapable, "Multi-TG LSA selector requires bare-metal Apple Silicon GPU")
         let geometry = QWLSATests.geometry
         let cfg = QWLSAConfig(mode: .svd, budget: budget, clusterBlock: 512)
         let basis = QWLSASidecar.synthesizeDeterministicOrthogonalBasis(

@@ -139,6 +139,7 @@ final class QWGDNPrefillTests: XCTestCase {
     }
 
     func testChunkedVsStreamedPrefillParity() throws {
+        try XCTSkipUnless(Self.hal.caps.isMetal4TensorCapable, "Streamed GDN decode requires bare-metal Apple Silicon GPU")
         // STATE-CLOBBER DETECTOR & MULTI-TOKEN PARITY LAW:
         // Comparing chunked K1/K2/K3 scan against sequential C12 streamed decode (T=1 x N).
         // Using ragged fixture (T=130, L=64):

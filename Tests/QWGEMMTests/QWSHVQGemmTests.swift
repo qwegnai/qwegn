@@ -227,6 +227,7 @@ final class QWSHVQGemmTests: XCTestCase {
     }
 
     func testPrefillNaxH16AndNaxF32MatchHostAcrossAll12Pairs() throws {
+        try XCTSkipUnless(Self.hal.caps.isMetal4TensorCapable, "SHVQ NAX prefill requires Metal 4 tensor hardware")
         for (bits, group) in QWSHVQBlock.supported {
             let n = 64, k = 256
             let bank = makeSHVQBank(bits: bits, group: group, n: n, k: k)
@@ -515,6 +516,7 @@ final class QWSHVQGemmTests: XCTestCase {
     }
 
     func testGroupedMoEIndirectDispatchMatchesReferenceAndEliminatesEmptySlices() throws {
+        try XCTSkipUnless(Self.hal.caps.isMetal4TensorCapable, "Grouped NAX MoE requires Metal 4 tensor hardware")
         let experts = 64, tokens = 64, routes = 4
         let pairs = tokens * routes
         let hidden = 128, inter = 2048, guRows = inter * 2

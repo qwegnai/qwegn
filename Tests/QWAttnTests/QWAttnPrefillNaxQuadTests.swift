@@ -14,6 +14,10 @@ final class QWAttnPrefillNaxQuadTests: XCTestCase {
 
     static let hal: QWHal = { try! QWHal(geometry: .qwen38_27b) }()
 
+    override func setUpWithError() throws {
+        try XCTSkipUnless(Self.hal.caps.isMetal4TensorCapable, "NAX quad prefill requires Metal 4 tensor hardware")
+    }
+
     // MARK: - SplitMix64 deterministic PRNG (same family as the GDN regres harness)
     struct SplitMix64 {
         var state: UInt64

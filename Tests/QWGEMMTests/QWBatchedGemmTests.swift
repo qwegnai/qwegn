@@ -8,6 +8,10 @@ import QWAlloc
 final class QWBatchedGemmTests: XCTestCase {
     static let hal: QWHal = { try! QWHal(geometry: .qwen38_27b) }()
 
+    override func setUpWithError() throws {
+        try XCTSkipUnless(Self.hal.caps.isMetal4TensorCapable, "Batched NAX GEMM requires Metal 4 tensor hardware")
+    }
+
     static func makeSyntheticBlocks(n: Int, k: Int, seedAdd: Int = 3) -> Data {
         let g32 = k / 32
         let totalBlocks = n * g32

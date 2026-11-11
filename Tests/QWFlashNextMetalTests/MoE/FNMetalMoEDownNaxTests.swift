@@ -25,6 +25,7 @@ final class FNMetalMoEDownNaxTests: XCTestCase {
     }
 
     func testSplitDownVsF32() throws {
+        try XCTSkipUnless(Self.hal.caps.isMetal4TensorCapable, "NAX MoE down requires Metal 4 tensor hardware")
         let experts = 32, routes = 4, tokens = 64, hidden = 128, inter = 64
         let pairs = tokens * routes
         let n = experts * hidden
