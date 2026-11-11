@@ -37,6 +37,10 @@ the owner's private `docs/agent-retrospective-*.md`.
 9. **Publish only when separation beats the noise floor.** A delta inside
    run-to-run noise means "same speed". Non-regression is a gate: an
    optimization that does not gain is rolled back, not shipped with caveats.
+   Cross-cutting runtime, kernel, or quant changes must compare fresh `master`
+   release vs candidate across **every** supported flagship pack in a concise
+   4-category table: throughput, UMA/GPU memory (including residency toggles),
+   `llmprobe` task evaluation, and determinism / needle fidelity.
 10. **Never compare across checkpoint formats as if same-model** (native HQ
     pack vs MLX pack). Match weights, KV mode, prompt, context, sampling,
     speculation settings, and state the target up front.
@@ -59,7 +63,10 @@ the owner's private `docs/agent-retrospective-*.md`.
 15. **Config-sourced truth.** Geometry, context caps, and quant metadata come
     from the model's own config/assets under `~/.qwg/models` — never
     hardcoded, never capped below native capacity. On spec/code conflict, the
-    code is the fact; fix the spec.
+    code is the fact; fix the spec. Every new weight or table container
+    (`HQ*`, `AQ*`, `SHVQ*`, `VQ*`, `QNGRAM`) must honor runtime residency
+    toggles (`--load-vision` / `--no-load-vision`, `--stream-ngrams` /
+    `--no-stream-ngrams`) and `--no-profile` hermetic benchmarks.
 
 ## Code law
 
@@ -70,7 +77,9 @@ the owner's private `docs/agent-retrospective-*.md`.
     probes, plan tables, geometric fallbacks) before removing a flag, route,
     or kernel; a kernel that looks dead may be a live fallback.
 18. **Clean trunk.** Rejected experiments leave the repository. No half-built
-    doors, no disabled-attempt litter, no unrelated drive-by refactors.
+    doors, no disabled-attempt litter, no unrelated drive-by refactors, and no
+    dead or test-only code in `Sources/` — every production symbol and kernel
+    must serve a live product path (`qwg`, `QWServer`, `QWMenuBar`).
 19. **Keep judge and builder separate.** Review tasks report
     `VERDICT: PASS|FAIL|PARTIAL` with evidence and never fix what they judge;
     fixes get re-reviewed. Numeric surfaces (telemetry, banners) are
@@ -90,10 +99,17 @@ the owner's private `docs/agent-retrospective-*.md`.
 24. **Never ingest raw chat-template/Jinja blobs into your own loop** while
     your harness is served by models sharing that template syntax — route
     such content through a stripping script.
+25. **Cross-version compile sanity & zero-warning discipline**:
+    All code must compile cleanly without warnings under `-Xswiftc -warnings-as-errors`.
+    Avoid ambiguous standard library closures (such as `Data.withUnsafeBytes` without explicit buffer signatures or `DispatchData.copyBytes`); use explicit types or direct initializers (e.g. `Data(dispatchData)` or `replaceSubrange`) to prevent overload ambiguities across Swift minor versions.
+26. **CI transparency & diagnostic preservation**:
+    CI scripts (`ci.sh`) must never swallow compiler or test failure output through `tail` or silent pipes on nonzero exit. If a gate step exits nonzero, the full captured build/test log must be printed to standard output before terminating. Distinguish CI runner infrastructure timeouts (queue acquisition) from test/build failures before retrying code changes.
 
 Verification footer: when you finish and merge to `master`, bump the semantic
 version in `Sources/Foundation/QWCore/QWVersion.swift`, `CHANGELOG.md`,
 `README.md`, `CITATION.cff`, and `assets/qwegn_engine_bento.svg` according to significance
 (fix/cleanup = patch, feature = minor, breaking/major milestone = major),
+sync affected `~/.qwg/models/*/README.md` + `media/*.{svg,png}`, preserve
+`out/llmprobe/*.json` when cleaning worktrees/artifacts,
 update the component ledger row, and state which gates you ran — including any
 you did not.
