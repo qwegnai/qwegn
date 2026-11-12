@@ -155,8 +155,18 @@ public final class QWToolCallConstraint: QWTokenConstraint, @unchecked Sendable 
            targets.contains(where: { $0 == prefix + Array("</tool_call>".utf8) }) {
             out.append(endTok)
         }
+        let vocab = table.vocabulary
+        out.removeAll { $0 < 0 || $0 >= vocab }
         guard !out.isEmpty else { return nil }
         out.sort()
+        var write = 1
+        for idx in 1..<out.count where out[idx] != out[write - 1] {
+            out[write] = out[idx]
+            write += 1
+        }
+        if write < out.count {
+            out.removeSubrange(write..<out.count)
+        }
         return out
     }
 

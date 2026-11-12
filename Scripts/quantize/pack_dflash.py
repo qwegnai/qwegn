@@ -1,4 +1,4 @@
-"""DFlash 2 / DSpine drafter weight packer: BF16 -> HQ4_G32_M5 + BF16 QWP1 directory."""
+"""DFlash 2 / DSpine drafter weight packer: BF16 -> HQ/SHVQ + BF16 QWP1 directory."""
 import argparse
 import hashlib
 import json
@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 
 from pack import GROUP, pack_file, sha256
+from shvq import format_any_quant_spec, parse_any_quant_spec
 from verify import audit_pack
 
 DFLASH_RAW_EXACT = {
@@ -42,12 +43,16 @@ def is_dflash_raw_plane(name: str) -> bool:
     )
 
 
-def quantize_dflash_model(source: Path, destination: Path) -> dict:
+def quantize_dflash_model(
+    source: Path, destination: Path, quant: str = "hq4_g32_m5"
+) -> dict:
     """Pack a DFlash 2 or DSpine safetensors checkpoint into a QWP1 directory."""
     import torch
     from safetensors import safe_open
     from safetensors.torch import load_file
 
+    spec = parse_any_quant_spec(quant)
+    quant_canonical = format_any_quant_spec(*spec)
     torch.set_num_threads(min(os.cpu_count() or 8, 16))
     source = source.resolve(strict=True)
     destination = destination.absolute()
@@ -84,7 +89,7 @@ def quantize_dflash_model(source: Path, destination: Path) -> dict:
                 h.update(chunk)
     sha256_source_hex = h.hexdigest()
 
-    stats = {"hq4_g32_m5": 0, "bf16": 0}
+    stats = {quant_canonical: 0, "bf16": 0}
 
     def stream():
         for path in files:
@@ -97,8 +102,8 @@ def quantize_dflash_model(source: Path, destination: Path) -> dict:
                         raise ValueError(f"unsupported {name}={val} (expected 1)")
                     continue
                 raw = is_dflash_raw_plane(name) or arr.ndim != 2 or arr.shape[1] % GROUP != 0
-                stats["bf16" if raw else "hq4_g32_m5"] += 1
-                yield name, arr, raw
+                stats["bf16" if raw else quant_canonical] += 1
+                yield name, arr, (True if raw else spec)
 
     dcfg = config.get("dflash_config", {})
     bridge_cfg = dcfg.get("selected_prefix_code_bridge") or config.get("selected_prefix_code_bridge")
@@ -151,7 +156,7 @@ def quantize_dflash_model(source: Path, destination: Path) -> dict:
                 "geometry_hash": hashlib.sha256(geo_str.encode()).hexdigest(),
                 "source": str(source),
                 "sha256_source": sha256_source_hex,
-                "quant_recorded": "hq4_g32_m5",
+                "quant_recorded": quant_canonical,
                 "assets_dir": "assets",
                 "assets_manifest_sha256": sha256(manifest_path),
             },
@@ -168,6 +173,8 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--model", required=True, metavar="DIR")
     ap.add_argument("--out", required=True, metavar="DIR")
+    ap.add_argument("--quant", default="hq4_g32_m5", metavar="SPEC")
     args = ap.parse_args()
-    res = quantize_dflash_model(Path(args.model), Path(args.out))
-    print(f"packed {res['hq4_g32_m5']} HQ4_G32_M5 + {res['bf16']} BF16 tensors -> {args.out}")
+    q_key = format_any_quant_spec(*parse_any_quant_spec(args.quant))
+    res = quantize_dflash_model(Path(args.model), Path(args.out), quant=args.quant)
+    print(f"packed {res[q_key]} {q_key.upper()} + {res['bf16']} BF16 tensors -> {args.out}")

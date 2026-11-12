@@ -25,23 +25,23 @@ enum SHVQSuites {
 
     static func run(hal: QWHal, samples: Int, repeats: Int) throws -> [Row] {
         var out: [Row] = []
-        for (bits, group) in [(2, 64), (3, 64), (4, 32), (4, 64)] {
-            out.append(try runDecodeT4(hal: hal, bits: bits, group: group,
+        for (bits, group, aqB) in [(1, 64, 2), (15, 64, 2), (2, 64, 2), (3, 64, 3), (4, 32, 4), (4, 64, 4)] {
+            out.append(try runDecodeT4(hal: hal, bits: bits, group: group, aqBits: aqB,
                                        rows: 12288, cols: 4096, samples: samples, repeats: repeats))
         }
-        for (bits, group) in [(2, 64), (3, 64), (4, 64)] {
-            out.append(try runMoEGateUpR1(hal: hal, label: "moe_gateup_glm", bits: bits, group: group,
+        for (bits, group, aqB) in [(1, 64, 2), (15, 64, 2), (2, 64, 2), (3, 64, 3), (4, 64, 4)] {
+            out.append(try runMoEGateUpR1(hal: hal, label: "moe_gateup_glm", bits: bits, group: group, aqBits: aqB,
                                           experts: 12, routes: 8, rowsPerExpert: 4096, cols: 2048,
                                           samples: samples, repeats: repeats))
-            out.append(try runMoEGateUpR1(hal: hal, label: "moe_gateup_fn", bits: bits, group: group,
+            out.append(try runMoEGateUpR1(hal: hal, label: "moe_gateup_fn", bits: bits, group: group, aqBits: aqB,
                                           experts: 12, routes: 10, rowsPerExpert: 2048, cols: 4096,
                                           samples: samples, repeats: repeats))
-            out.append(try runMoEDownCombine(hal: hal, bits: bits, group: group,
+            out.append(try runMoEDownCombine(hal: hal, bits: bits, group: group, aqBits: aqB,
                                              experts: 12, routes: 8, rowsPerRoute: 2048, cols: 2048,
                                              samples: samples, repeats: repeats))
         }
-        for (bits, group) in [(2, 64), (3, 64), (4, 32), (4, 64)] {
-            out.append(try runPrefillNaxF32(hal: hal, bits: bits, group: group,
+        for (bits, group, aqB) in [(1, 64, 2), (15, 64, 2), (2, 64, 2), (3, 64, 3), (4, 32, 4), (4, 64, 4)] {
+            out.append(try runPrefillNaxF32(hal: hal, bits: bits, group: group, aqBits: aqB,
                                             m: 64, rows: 4096, cols: 4096, samples: samples, repeats: repeats))
         }
         return out
@@ -112,13 +112,14 @@ enum SHVQSuites {
         return (sTimes.sorted(), aTimes.sorted())
     }
 
-    private static func runDecodeT4(hal: QWHal, bits: Int, group: Int,
+    private static func runDecodeT4(hal: QWHal, bits: Int, group: Int, aqBits: Int? = nil,
                                     rows: Int, cols: Int, samples: Int, repeats: Int) throws -> Row {
+        let ab = aqBits ?? bits
         let device = hal.device
         let sName = "qwg_gemv_shvq\(bits)_g\(group)_dx_h16_t4"
-        let aName = "qwg_gemv_aq\(bits)_g\(group)_dx_h16_t4"
+        let aName = "qwg_gemv_aq\(ab)_g\(group)_dx_h16_t4"
         let sBank = makeSHVQBank(bits: bits, group: group, rows: rows, cols: cols)
-        let aBank = AQBanks.make(bits: bits, group: group, rows: rows, cols: cols)
+        let aBank = AQBanks.make(bits: ab, group: group, rows: rows, cols: cols)
         let sW = try BenchRunner.buffer(device, bytes: sBank.count)
         let aW = try BenchRunner.buffer(device, bytes: aBank.count)
         sBank.withUnsafeBytes { sW.contents().copyMemory(from: $0.baseAddress!, byteCount: sBank.count) }
@@ -158,7 +159,7 @@ enum SHVQSuites {
         let gotA = yBuf.contents().bindMemory(to: UInt16.self, capacity: rows)
         var aErr = 0.0
         for r in stride(from: 0, to: rows, by: 64) {
-            let ref = AQBanks.referenceRow(bits: bits, group: group, row: r, cols: cols, bank: aBank, x: xs)
+            let ref = AQBanks.referenceRow(bits: ab, group: group, row: r, cols: cols, bank: aBank, x: xs)
             aErr = max(aErr, BenchRunner.relativeError(got: Float(Float16(bitPattern: gotA[r])), reference: ref))
         }
         guard aErr <= 2e-3 else { throw BenchError.verificationFailed(aName, aErr) }
@@ -177,16 +178,17 @@ enum SHVQSuites {
                    shvqErr: sErr, aqErr: aErr)
     }
 
-    private static func runMoEGateUpR1(hal: QWHal, label: String, bits: Int, group: Int,
+    private static func runMoEGateUpR1(hal: QWHal, label: String, bits: Int, group: Int, aqBits: Int? = nil,
                                        experts: Int, routes: Int, rowsPerExpert: Int, cols: Int,
                                        samples: Int, repeats: Int) throws -> Row {
+        let ab = aqBits ?? bits
         let device = hal.device
         let sName = "qwg_moe_gateup_shvq\(bits)_g\(group)_f32_r1"
-        let aName = "qwg_moe_gateup_aq\(bits)_g\(group)_f32_r1"
+        let aName = "qwg_moe_gateup_aq\(ab)_g\(group)_f32_r1"
         let totalRows = experts * rowsPerExpert
         let inter = rowsPerExpert / 2
         let sBank = makeSHVQBank(bits: bits, group: group, rows: totalRows, cols: cols)
-        let aBank = AQBanks.make(bits: bits, group: group, rows: totalRows, cols: cols)
+        let aBank = AQBanks.make(bits: ab, group: group, rows: totalRows, cols: cols)
         let sW = try BenchRunner.buffer(device, bytes: sBank.count)
         let aW = try BenchRunner.buffer(device, bytes: aBank.count)
         sBank.withUnsafeBytes { sW.contents().copyMemory(from: $0.baseAddress!, byteCount: sBank.count) }
@@ -243,8 +245,8 @@ enum SHVQSuites {
         var aBlock = [Float](repeating: 0, count: 32)
         var aMag: Float = 0
         for c in 0..<32 {
-            let gRef = AQBanks.referenceRow(bits: bits, group: group, row: e0 * rowsPerExpert + c, cols: cols, bank: aBank, x: xs)
-            let uRef = AQBanks.referenceRow(bits: bits, group: group, row: e0 * rowsPerExpert + inter + c, cols: cols, bank: aBank, x: xs)
+            let gRef = AQBanks.referenceRow(bits: ab, group: group, row: e0 * rowsPerExpert + c, cols: cols, bank: aBank, x: xs)
+            let uRef = AQBanks.referenceRow(bits: ab, group: group, row: e0 * rowsPerExpert + inter + c, cols: cols, bank: aBank, x: xs)
             aBlock[c] = swigluMul(gRef.value, uRef.value)
             aMag = max(aMag, abs(aBlock[c]))
         }
@@ -270,15 +272,16 @@ enum SHVQSuites {
                    shvqErr: sErr, aqErr: aErr)
     }
 
-    private static func runMoEDownCombine(hal: QWHal, bits: Int, group: Int,
+    private static func runMoEDownCombine(hal: QWHal, bits: Int, group: Int, aqBits: Int? = nil,
                                           experts: Int, routes: Int, rowsPerRoute: Int, cols: Int,
                                           samples: Int, repeats: Int) throws -> Row {
+        let ab = aqBits ?? bits
         let device = hal.device
         let sName = "qwg_moe_down_shared_combine_shvq\(bits)_g\(group)_f32"
-        let aName = "qwg_moe_down_shared_combine_aq\(bits)_g\(group)_f32"
+        let aName = "qwg_moe_down_shared_combine_aq\(ab)_g\(group)_f32"
         let totalRows = experts * rowsPerRoute
         let sBank = makeSHVQBank(bits: bits, group: group, rows: totalRows, cols: cols)
-        let aBank = AQBanks.make(bits: bits, group: group, rows: totalRows, cols: cols)
+        let aBank = AQBanks.make(bits: ab, group: group, rows: totalRows, cols: cols)
         let sW = try BenchRunner.buffer(device, bytes: sBank.count)
         let aW = try BenchRunner.buffer(device, bytes: aBank.count)
         sBank.withUnsafeBytes { sW.contents().copyMemory(from: $0.baseAddress!, byteCount: sBank.count) }
@@ -347,7 +350,7 @@ enum SHVQSuites {
             var want = 0.5 * shared[h], mag = abs(want)
             for rt in 0..<routes {
                 let xSlice = Array(xs[(rt * cols)..<((rt + 1) * cols)])
-                let rRef = AQBanks.referenceRow(bits: bits, group: group, row: Int(chosen[rt]) * rowsPerRoute + h, cols: cols, bank: aBank, x: xSlice)
+                let rRef = AQBanks.referenceRow(bits: ab, group: group, row: Int(chosen[rt]) * rowsPerRoute + h, cols: cols, bank: aBank, x: xSlice)
                 want += rWeights[rt] * rRef.value
                 mag += rWeights[rt] * rRef.magnitude
             }
@@ -369,13 +372,14 @@ enum SHVQSuites {
                    shvqErr: sErr, aqErr: aErr)
     }
 
-    private static func runPrefillNaxF32(hal: QWHal, bits: Int, group: Int,
+    private static func runPrefillNaxF32(hal: QWHal, bits: Int, group: Int, aqBits: Int? = nil,
                                          m: Int, rows: Int, cols: Int, samples: Int, repeats: Int) throws -> Row {
+        let ab = aqBits ?? bits
         let device = hal.device
         let sName = "qwg_gemm_shvq\(bits)_g\(group)_nax_f32"
-        let aName = "qwg_gemm_aq\(bits)_g\(group)_nax_f32"
+        let aName = "qwg_gemm_aq\(ab)_g\(group)_nax_f32"
         let sBank = makeSHVQBank(bits: bits, group: group, rows: rows, cols: cols)
-        let aBank = AQBanks.make(bits: bits, group: group, rows: rows, cols: cols)
+        let aBank = AQBanks.make(bits: ab, group: group, rows: rows, cols: cols)
         let sW = try BenchRunner.buffer(device, bytes: sBank.count)
         let aW = try BenchRunner.buffer(device, bytes: aBank.count)
         sBank.withUnsafeBytes { sW.contents().copyMemory(from: $0.baseAddress!, byteCount: sBank.count) }
@@ -421,7 +425,7 @@ enum SHVQSuites {
         for tok in [0, m - 1] {
             let xSlice = Array(xs[(tok * cols)..<((tok + 1) * cols)])
             for r in [0, rows / 2, rows - 1] {
-                let ref = AQBanks.referenceRow(bits: bits, group: group, row: r, cols: cols, bank: aBank, x: xSlice)
+                let ref = AQBanks.referenceRow(bits: ab, group: group, row: r, cols: cols, bank: aBank, x: xSlice)
                 aErr = max(aErr, BenchRunner.relativeError(got: gotA[tok * rows + r], reference: ref))
             }
         }

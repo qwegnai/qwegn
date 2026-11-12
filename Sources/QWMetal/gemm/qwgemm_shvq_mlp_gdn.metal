@@ -1,8 +1,9 @@
 // qwgemm_shvq_mlp_gdn.metal — SwiGLU gate/up GEMV and GDN in-projection
-// decode twins for SHVQ{2,3,4}_G{32,64,128,256}.
+// decode twins for SHVQ{1,15,2,3,4}_G{32,64,128,256}.
 
 #include <metal_stdlib>
 #include <metal_simdgroup>
+#define QW_SHVQ_ROUTED_DIRECT_LUT 1
 #include "qw_dequant_shvq.metalh"
 #include "include/qw_geometry_constants.metalh"
 using namespace metal;
@@ -15,9 +16,10 @@ struct QWSHVQSiluPair {
 template <int BITS, int GROUP>
 static inline QWSHVQSiluPair qwg_shvq_silu_pair_rows4(device const char* blocks,
                                                       device const half* x,
-                                                      uint r0, uint I, uint K, uint lane) {
+                                                      uint r0, uint I, uint K, uint lane,
+                                                      threadgroup const ShvqTgLut<BITS> &tgLut) {
     const uint nBlocks = K >> 5u;
-    constexpr uint groupBytes = 2u + (uint(GROUP * BITS) >> 3u);
+    constexpr uint groupBytes = qwg_shvq_group_bytes(BITS, GROUP);
     const uint rowBytes = (K / uint(GROUP)) * groupBytes;
     device const char* g0 = blocks + (size_t)r0 * rowBytes;
     device const char* g1 = (r0 + 1u < I) ? (g0 + rowBytes) : g0;
@@ -33,15 +35,15 @@ static inline QWSHVQSiluPair qwg_shvq_silu_pair_rows4(device const char* blocks,
         half4 xlo[4], xhi[4];
         qwg_shvq_load_half32(x + col, xlo, xhi);
         const size_t groupOff = size_t(col / uint(GROUP)) * groupBytes;
-        const uint byteInGroup = ((col % uint(GROUP)) * uint(BITS)) >> 3u;
-        acc.gate.x += qwg_shvq_slice_dot<BITS>(g0 + groupOff, byteInGroup, xlo, xhi);
-        acc.gate.y += qwg_shvq_slice_dot<BITS>(g1 + groupOff, byteInGroup, xlo, xhi);
-        acc.gate.z += qwg_shvq_slice_dot<BITS>(g2 + groupOff, byteInGroup, xlo, xhi);
-        acc.gate.w += qwg_shvq_slice_dot<BITS>(g3 + groupOff, byteInGroup, xlo, xhi);
-        acc.up.x += qwg_shvq_slice_dot<BITS>(u0 + groupOff, byteInGroup, xlo, xhi);
-        acc.up.y += qwg_shvq_slice_dot<BITS>(u1 + groupOff, byteInGroup, xlo, xhi);
-        acc.up.z += qwg_shvq_slice_dot<BITS>(u2 + groupOff, byteInGroup, xlo, xhi);
-        acc.up.w += qwg_shvq_slice_dot<BITS>(u3 + groupOff, byteInGroup, xlo, xhi);
+        const uint byteInGroup = qwg_shvq_byte_in_group<BITS, GROUP>(col);
+        acc.gate.x += qwg_shvq_slice_dot_tg<BITS>(g0 + groupOff, byteInGroup, xlo, xhi, tgLut);
+        acc.gate.y += qwg_shvq_slice_dot_tg<BITS>(g1 + groupOff, byteInGroup, xlo, xhi, tgLut);
+        acc.gate.z += qwg_shvq_slice_dot_tg<BITS>(g2 + groupOff, byteInGroup, xlo, xhi, tgLut);
+        acc.gate.w += qwg_shvq_slice_dot_tg<BITS>(g3 + groupOff, byteInGroup, xlo, xhi, tgLut);
+        acc.up.x += qwg_shvq_slice_dot_tg<BITS>(u0 + groupOff, byteInGroup, xlo, xhi, tgLut);
+        acc.up.y += qwg_shvq_slice_dot_tg<BITS>(u1 + groupOff, byteInGroup, xlo, xhi, tgLut);
+        acc.up.z += qwg_shvq_slice_dot_tg<BITS>(u2 + groupOff, byteInGroup, xlo, xhi, tgLut);
+        acc.up.w += qwg_shvq_slice_dot_tg<BITS>(u3 + groupOff, byteInGroup, xlo, xhi, tgLut);
     }
     acc.gate += simd_shuffle_down(acc.gate, 16);
     acc.gate += simd_shuffle_down(acc.gate, 8);
@@ -63,12 +65,13 @@ static inline void qwg_shvq_silu_pair_rows4_m(device const char* blocks,
                                               threadgroup half* tgAct,
                                               uint I, uint K, uint mRows,
                                               bool fuseFwht,
-                                              uint tg, uint sgi, uint lane) {
+                                              uint tg, uint sgi, uint lane,
+                                              threadgroup const ShvqTgLut<BITS> &tgLut) {
     const uint rBase = tg * 32u;
     const uint r0 = rBase + sgi * 4u;
     if (r0 < I) {
         const uint nBlocks = K >> 5u;
-        constexpr uint groupBytes = 2u + (uint(GROUP * BITS) >> 3u);
+        constexpr uint groupBytes = qwg_shvq_group_bytes(BITS, GROUP);
         const uint rowBytes = (K / uint(GROUP)) * groupBytes;
         device const char* g0 = blocks + (size_t)r0 * rowBytes;
         device const char* g1 = (r0 + 1u < I) ? (g0 + rowBytes) : g0;
@@ -83,7 +86,7 @@ static inline void qwg_shvq_silu_pair_rows4_m(device const char* blocks,
         for (uint g = lane; g < nBlocks; g += 32u) {
             const uint col = g << 5u;
             const size_t groupOff = size_t(col / uint(GROUP)) * groupBytes;
-            const uint byteInGroup = ((col % uint(GROUP)) * uint(BITS)) >> 3u;
+            const uint byteInGroup = qwg_shvq_byte_in_group<BITS, GROUP>(col);
             device const char* gp0 = g0 + groupOff;
             device const char* gp1 = g1 + groupOff;
             device const char* gp2 = g2 + groupOff;
@@ -96,14 +99,14 @@ static inline void qwg_shvq_silu_pair_rows4_m(device const char* blocks,
                 half4 xlo0[4], xhi0[4], xlo1[4], xhi1[4];
                 qwg_shvq_load_half32(x + col, xlo0, xhi0);
                 qwg_shvq_load_half32(x + (size_t)K + col, xlo1, xhi1);
-                const float2 dg0 = qwg_shvq_slice_dot2<BITS>(gp0, byteInGroup, xlo0, xhi0, xlo1, xhi1);
-                const float2 dg1 = qwg_shvq_slice_dot2<BITS>(gp1, byteInGroup, xlo0, xhi0, xlo1, xhi1);
-                const float2 dg2 = qwg_shvq_slice_dot2<BITS>(gp2, byteInGroup, xlo0, xhi0, xlo1, xhi1);
-                const float2 dg3 = qwg_shvq_slice_dot2<BITS>(gp3, byteInGroup, xlo0, xhi0, xlo1, xhi1);
-                const float2 du0 = qwg_shvq_slice_dot2<BITS>(up_p0, byteInGroup, xlo0, xhi0, xlo1, xhi1);
-                const float2 du1 = qwg_shvq_slice_dot2<BITS>(up_p1, byteInGroup, xlo0, xhi0, xlo1, xhi1);
-                const float2 du2 = qwg_shvq_slice_dot2<BITS>(up_p2, byteInGroup, xlo0, xhi0, xlo1, xhi1);
-                const float2 du3 = qwg_shvq_slice_dot2<BITS>(up_p3, byteInGroup, xlo0, xhi0, xlo1, xhi1);
+                const float2 dg0 = qwg_shvq_slice_dot2_tg<BITS>(gp0, byteInGroup, xlo0, xhi0, xlo1, xhi1, tgLut);
+                const float2 dg1 = qwg_shvq_slice_dot2_tg<BITS>(gp1, byteInGroup, xlo0, xhi0, xlo1, xhi1, tgLut);
+                const float2 dg2 = qwg_shvq_slice_dot2_tg<BITS>(gp2, byteInGroup, xlo0, xhi0, xlo1, xhi1, tgLut);
+                const float2 dg3 = qwg_shvq_slice_dot2_tg<BITS>(gp3, byteInGroup, xlo0, xhi0, xlo1, xhi1, tgLut);
+                const float2 du0 = qwg_shvq_slice_dot2_tg<BITS>(up_p0, byteInGroup, xlo0, xhi0, xlo1, xhi1, tgLut);
+                const float2 du1 = qwg_shvq_slice_dot2_tg<BITS>(up_p1, byteInGroup, xlo0, xhi0, xlo1, xhi1, tgLut);
+                const float2 du2 = qwg_shvq_slice_dot2_tg<BITS>(up_p2, byteInGroup, xlo0, xhi0, xlo1, xhi1, tgLut);
+                const float2 du3 = qwg_shvq_slice_dot2_tg<BITS>(up_p3, byteInGroup, xlo0, xhi0, xlo1, xhi1, tgLut);
                 gate0 += float4(dg0.x, dg1.x, dg2.x, dg3.x);
                 gate1 += float4(dg0.y, dg1.y, dg2.y, dg3.y);
                 up0 += float4(du0.x, du1.x, du2.x, du3.x);
@@ -112,26 +115,26 @@ static inline void qwg_shvq_silu_pair_rows4_m(device const char* blocks,
             if (mRows == 3u) {
                 half4 xlo2[4], xhi2[4];
                 qwg_shvq_load_half32(x + (size_t)2u * K + col, xlo2, xhi2);
-                gate2.x += qwg_shvq_slice_dot<BITS>(gp0, byteInGroup, xlo2, xhi2);
-                gate2.y += qwg_shvq_slice_dot<BITS>(gp1, byteInGroup, xlo2, xhi2);
-                gate2.z += qwg_shvq_slice_dot<BITS>(gp2, byteInGroup, xlo2, xhi2);
-                gate2.w += qwg_shvq_slice_dot<BITS>(gp3, byteInGroup, xlo2, xhi2);
-                up2.x += qwg_shvq_slice_dot<BITS>(up_p0, byteInGroup, xlo2, xhi2);
-                up2.y += qwg_shvq_slice_dot<BITS>(up_p1, byteInGroup, xlo2, xhi2);
-                up2.z += qwg_shvq_slice_dot<BITS>(up_p2, byteInGroup, xlo2, xhi2);
-                up2.w += qwg_shvq_slice_dot<BITS>(up_p3, byteInGroup, xlo2, xhi2);
+                gate2.x += qwg_shvq_slice_dot_tg<BITS>(gp0, byteInGroup, xlo2, xhi2, tgLut);
+                gate2.y += qwg_shvq_slice_dot_tg<BITS>(gp1, byteInGroup, xlo2, xhi2, tgLut);
+                gate2.z += qwg_shvq_slice_dot_tg<BITS>(gp2, byteInGroup, xlo2, xhi2, tgLut);
+                gate2.w += qwg_shvq_slice_dot_tg<BITS>(gp3, byteInGroup, xlo2, xhi2, tgLut);
+                up2.x += qwg_shvq_slice_dot_tg<BITS>(up_p0, byteInGroup, xlo2, xhi2, tgLut);
+                up2.y += qwg_shvq_slice_dot_tg<BITS>(up_p1, byteInGroup, xlo2, xhi2, tgLut);
+                up2.z += qwg_shvq_slice_dot_tg<BITS>(up_p2, byteInGroup, xlo2, xhi2, tgLut);
+                up2.w += qwg_shvq_slice_dot_tg<BITS>(up_p3, byteInGroup, xlo2, xhi2, tgLut);
             } else if (mRows >= 4u) {
                 half4 xlo2[4], xhi2[4], xlo3[4], xhi3[4];
                 qwg_shvq_load_half32(x + (size_t)2u * K + col, xlo2, xhi2);
                 qwg_shvq_load_half32(x + (size_t)3u * K + col, xlo3, xhi3);
-                const float2 dg0 = qwg_shvq_slice_dot2<BITS>(gp0, byteInGroup, xlo2, xhi2, xlo3, xhi3);
-                const float2 dg1 = qwg_shvq_slice_dot2<BITS>(gp1, byteInGroup, xlo2, xhi2, xlo3, xhi3);
-                const float2 dg2 = qwg_shvq_slice_dot2<BITS>(gp2, byteInGroup, xlo2, xhi2, xlo3, xhi3);
-                const float2 dg3 = qwg_shvq_slice_dot2<BITS>(gp3, byteInGroup, xlo2, xhi2, xlo3, xhi3);
-                const float2 du0 = qwg_shvq_slice_dot2<BITS>(up_p0, byteInGroup, xlo2, xhi2, xlo3, xhi3);
-                const float2 du1 = qwg_shvq_slice_dot2<BITS>(up_p1, byteInGroup, xlo2, xhi2, xlo3, xhi3);
-                const float2 du2 = qwg_shvq_slice_dot2<BITS>(up_p2, byteInGroup, xlo2, xhi2, xlo3, xhi3);
-                const float2 du3 = qwg_shvq_slice_dot2<BITS>(up_p3, byteInGroup, xlo2, xhi2, xlo3, xhi3);
+                const float2 dg0 = qwg_shvq_slice_dot2_tg<BITS>(gp0, byteInGroup, xlo2, xhi2, xlo3, xhi3, tgLut);
+                const float2 dg1 = qwg_shvq_slice_dot2_tg<BITS>(gp1, byteInGroup, xlo2, xhi2, xlo3, xhi3, tgLut);
+                const float2 dg2 = qwg_shvq_slice_dot2_tg<BITS>(gp2, byteInGroup, xlo2, xhi2, xlo3, xhi3, tgLut);
+                const float2 dg3 = qwg_shvq_slice_dot2_tg<BITS>(gp3, byteInGroup, xlo2, xhi2, xlo3, xhi3, tgLut);
+                const float2 du0 = qwg_shvq_slice_dot2_tg<BITS>(up_p0, byteInGroup, xlo2, xhi2, xlo3, xhi3, tgLut);
+                const float2 du1 = qwg_shvq_slice_dot2_tg<BITS>(up_p1, byteInGroup, xlo2, xhi2, xlo3, xhi3, tgLut);
+                const float2 du2 = qwg_shvq_slice_dot2_tg<BITS>(up_p2, byteInGroup, xlo2, xhi2, xlo3, xhi3, tgLut);
+                const float2 du3 = qwg_shvq_slice_dot2_tg<BITS>(up_p3, byteInGroup, xlo2, xhi2, xlo3, xhi3, tgLut);
                 gate2 += float4(dg0.x, dg1.x, dg2.x, dg3.x);
                 gate3 += float4(dg0.y, dg1.y, dg2.y, dg3.y);
                 up2 += float4(du0.x, du1.x, du2.x, du3.x);
@@ -183,9 +186,10 @@ static inline void qwg_shvq_silu_pair_rows4_m(device const char* blocks,
 template <int BITS, int GROUP>
 static inline float2 qwg_shvq_silu_pair_row1(device const char* blocks,
                                              device const half* x,
-                                             uint row, uint I, uint K, uint lane) {
+                                             uint row, uint I, uint K, uint lane,
+                                             threadgroup const ShvqTgLut<BITS> &tgLut) {
     const uint nBlocks = K >> 5u;
-    constexpr uint groupBytes = 2u + (uint(GROUP * BITS) >> 3u);
+    constexpr uint groupBytes = qwg_shvq_group_bytes(BITS, GROUP);
     const uint rowBytes = (K / uint(GROUP)) * groupBytes;
     device const char* gRow = blocks + (size_t)row * rowBytes;
     device const char* uRow = blocks + (size_t)(I + row) * rowBytes;
@@ -195,15 +199,15 @@ static inline float2 qwg_shvq_silu_pair_row1(device const char* blocks,
         half4 xlo[4], xhi[4];
         qwg_shvq_load_half32(x + col, xlo, xhi);
         const size_t groupOff = size_t(col / uint(GROUP)) * groupBytes;
-        const uint byteInGroup = ((col % uint(GROUP)) * uint(BITS)) >> 3u;
-        gAcc += qwg_shvq_slice_dot<BITS>(gRow + groupOff, byteInGroup, xlo, xhi);
-        uAcc += qwg_shvq_slice_dot<BITS>(uRow + groupOff, byteInGroup, xlo, xhi);
+        const uint byteInGroup = qwg_shvq_byte_in_group<BITS, GROUP>(col);
+        gAcc += qwg_shvq_slice_dot_tg<BITS>(gRow + groupOff, byteInGroup, xlo, xhi, tgLut);
+        uAcc += qwg_shvq_slice_dot_tg<BITS>(uRow + groupOff, byteInGroup, xlo, xhi, tgLut);
     }
     gAcc += simd_shuffle_down(gAcc, 16); uAcc += simd_shuffle_down(uAcc, 16);
     gAcc += simd_shuffle_down(gAcc, 8);  uAcc += simd_shuffle_down(uAcc, 8);
     gAcc += simd_shuffle_down(gAcc, 4);  uAcc += simd_shuffle_down(uAcc, 4);
-    gAcc += simd_shuffle_down(gAcc, 2);  uAcc += simd_shuffle_down(uAcc, 2);
-    gAcc += simd_shuffle_down(gAcc, 1);  uAcc += simd_shuffle_down(uAcc, 1);
+    gAcc += simd_shuffle_down(gAcc, 2);  uAcc += simd_shuffle_down(gAcc, 2);
+    gAcc += simd_shuffle_down(gAcc, 1);  uAcc += simd_shuffle_down(gAcc, 1);
     return float2(gAcc, uAcc);
 }
 
@@ -242,14 +246,15 @@ static inline void qwg_gemv_shvq_gdn_rows4_m_body(device const char* blocks,
                                                   uint mRows,
                                                   uint tg,
                                                   uint ti,
-                                                  uint tptg) {
+                                                  uint tptg,
+                                                  threadgroup const ShvqTgLut<BITS> &tgLut) {
     const uint simdPerTG = max(1u, tptg >> 5u);
     const uint simdId = ti >> 5u;
     const uint lane = ti & 31u;
     const uint row0 = (tg * simdPerTG + simdId) * 4u;
     if (row0 >= realN) return;
     const uint nBlocks = K >> 5u;
-    constexpr uint groupBytes = 2u + (uint(GROUP * BITS) >> 3u);
+    constexpr uint groupBytes = qwg_shvq_group_bytes(BITS, GROUP);
     const uint rowBytes = (K / uint(GROUP)) * groupBytes;
     device const char* r0 = blocks + (size_t)row0 * rowBytes;
     device const char* r1 = (row0 + 1u < realN) ? (r0 + rowBytes) : r0;
@@ -259,7 +264,7 @@ static inline void qwg_gemv_shvq_gdn_rows4_m_body(device const char* blocks,
     for (uint g = lane; g < nBlocks; g += 32u) {
         const uint col = g << 5u;
         const size_t groupOff = size_t(col / uint(GROUP)) * groupBytes;
-        const uint byteInGroup = ((col % uint(GROUP)) * uint(BITS)) >> 3u;
+        const uint byteInGroup = qwg_shvq_byte_in_group<BITS, GROUP>(col);
         device const char* gp0 = r0 + groupOff;
         device const char* gp1 = r1 + groupOff;
         device const char* gp2 = r2 + groupOff;
@@ -268,28 +273,28 @@ static inline void qwg_gemv_shvq_gdn_rows4_m_body(device const char* blocks,
             half4 xlo0[4], xhi0[4], xlo1[4], xhi1[4];
             qwg_shvq_load_half32(x + col, xlo0, xhi0);
             qwg_shvq_load_half32(x + (size_t)K + col, xlo1, xhi1);
-            const float2 d0 = qwg_shvq_slice_dot2<BITS>(gp0, byteInGroup, xlo0, xhi0, xlo1, xhi1);
-            const float2 d1 = qwg_shvq_slice_dot2<BITS>(gp1, byteInGroup, xlo0, xhi0, xlo1, xhi1);
-            const float2 d2 = qwg_shvq_slice_dot2<BITS>(gp2, byteInGroup, xlo0, xhi0, xlo1, xhi1);
-            const float2 d3 = qwg_shvq_slice_dot2<BITS>(gp3, byteInGroup, xlo0, xhi0, xlo1, xhi1);
+            const float2 d0 = qwg_shvq_slice_dot2_tg<BITS>(gp0, byteInGroup, xlo0, xhi0, xlo1, xhi1, tgLut);
+            const float2 d1 = qwg_shvq_slice_dot2_tg<BITS>(gp1, byteInGroup, xlo0, xhi0, xlo1, xhi1, tgLut);
+            const float2 d2 = qwg_shvq_slice_dot2_tg<BITS>(gp2, byteInGroup, xlo0, xhi0, xlo1, xhi1, tgLut);
+            const float2 d3 = qwg_shvq_slice_dot2_tg<BITS>(gp3, byteInGroup, xlo0, xhi0, xlo1, xhi1, tgLut);
             acc0 += float4(d0.x, d1.x, d2.x, d3.x);
             acc1 += float4(d0.y, d1.y, d2.y, d3.y);
         }
         if (mRows == 3u) {
             half4 xlo2[4], xhi2[4];
             qwg_shvq_load_half32(x + (size_t)2u * K + col, xlo2, xhi2);
-            acc2.x += qwg_shvq_slice_dot<BITS>(gp0, byteInGroup, xlo2, xhi2);
-            acc2.y += qwg_shvq_slice_dot<BITS>(gp1, byteInGroup, xlo2, xhi2);
-            acc2.z += qwg_shvq_slice_dot<BITS>(gp2, byteInGroup, xlo2, xhi2);
-            acc2.w += qwg_shvq_slice_dot<BITS>(gp3, byteInGroup, xlo2, xhi2);
+            acc2.x += qwg_shvq_slice_dot_tg<BITS>(gp0, byteInGroup, xlo2, xhi2, tgLut);
+            acc2.y += qwg_shvq_slice_dot_tg<BITS>(gp1, byteInGroup, xlo2, xhi2, tgLut);
+            acc2.z += qwg_shvq_slice_dot_tg<BITS>(gp2, byteInGroup, xlo2, xhi2, tgLut);
+            acc2.w += qwg_shvq_slice_dot_tg<BITS>(gp3, byteInGroup, xlo2, xhi2, tgLut);
         } else if (mRows >= 4u) {
             half4 xlo2[4], xhi2[4], xlo3[4], xhi3[4];
             qwg_shvq_load_half32(x + (size_t)2u * K + col, xlo2, xhi2);
             qwg_shvq_load_half32(x + (size_t)3u * K + col, xlo3, xhi3);
-            const float2 d0 = qwg_shvq_slice_dot2<BITS>(gp0, byteInGroup, xlo2, xhi2, xlo3, xhi3);
-            const float2 d1 = qwg_shvq_slice_dot2<BITS>(gp1, byteInGroup, xlo2, xhi2, xlo3, xhi3);
-            const float2 d2 = qwg_shvq_slice_dot2<BITS>(gp2, byteInGroup, xlo2, xhi2, xlo3, xhi3);
-            const float2 d3 = qwg_shvq_slice_dot2<BITS>(gp3, byteInGroup, xlo2, xhi2, xlo3, xhi3);
+            const float2 d0 = qwg_shvq_slice_dot2_tg<BITS>(gp0, byteInGroup, xlo2, xhi2, xlo3, xhi3, tgLut);
+            const float2 d1 = qwg_shvq_slice_dot2_tg<BITS>(gp1, byteInGroup, xlo2, xhi2, xlo3, xhi3, tgLut);
+            const float2 d2 = qwg_shvq_slice_dot2_tg<BITS>(gp2, byteInGroup, xlo2, xhi2, xlo3, xhi3, tgLut);
+            const float2 d3 = qwg_shvq_slice_dot2_tg<BITS>(gp3, byteInGroup, xlo2, xhi2, xlo3, xhi3, tgLut);
             acc2 += float4(d0.x, d1.x, d2.x, d3.x);
             acc3 += float4(d0.y, d1.y, d2.y, d3.y);
         }
@@ -340,6 +345,11 @@ static inline void qwg_gemv_shvq_gdn_rows4_m_body(device const char* blocks,
         uint tg   [[threadgroup_position_in_grid]],                                    \
         uint ti   [[thread_index_in_threadgroup]],                                     \
         uint tptg [[threads_per_threadgroup]]) {                                       \
+        threadgroup ShvqTgLut<BITS> tgLut;                                             \
+        if constexpr (BITS <= 3) {                                                     \
+            tgLut.load(ti, tptg);                                                      \
+            threadgroup_barrier(mem_flags::mem_threadgroup);                           \
+        }                                                                              \
         if ((N & 0x40000000u) != 0u) {                                                 \
             const bool fuseFwht = (N & 0x80000000u) != 0u;                             \
             const uint mRows = (N >> 24u) & 0x3Fu;                                     \
@@ -348,7 +358,7 @@ static inline void qwg_gemv_shvq_gdn_rows4_m_body(device const char* blocks,
                 const uint realN = N & 0x00FFFFFFu;                                    \
                 qwg_shvq_silu_pair_rows4_m<BITS, GROUP>(                               \
                     blocks, x, h16, tgActM, realN >> 1u, K, mRows, fuseFwht,           \
-                    tg, ti >> 5u, ti & 31u);                                           \
+                    tg, ti >> 5u, ti & 31u, tgLut);                                    \
                 return;                                                                \
             }                                                                          \
             threadgroup half tgAct[32];                                                \
@@ -359,7 +369,7 @@ static inline void qwg_gemv_shvq_gdn_rows4_m_body(device const char* blocks,
             const uint r0 = rBase + sgi * 4u;                                          \
             if (r0 < I) {                                                              \
                 const QWSHVQSiluPair acc = qwg_shvq_silu_pair_rows4<BITS, GROUP>(      \
-                    blocks, x, r0, I, K, lane);                                        \
+                    blocks, x, r0, I, K, lane, tgLut);                                 \
                 if (lane == 0u) {                                                      \
                     const uint c = sgi * 4u;                                           \
                     tgAct[c + 0u] = half(qwg_swiglu_mul(acc.gate.x, acc.up.x));        \
@@ -381,7 +391,7 @@ static inline void qwg_gemv_shvq_gdn_rows4_m_body(device const char* blocks,
             const uint lane = ti & 31u;                                                \
             if (row < I) {                                                             \
                 const float2 acc = qwg_shvq_silu_pair_row1<BITS, GROUP>(               \
-                    blocks, x, row, I, K, lane);                                       \
+                    blocks, x, row, I, K, lane, tgLut);                                \
                 if (lane == 0u) h16[row] = half(qwg_swiglu_mul(acc.x, acc.y));         \
             }                                                                          \
             return;                                                                    \
@@ -394,8 +404,8 @@ static inline void qwg_gemv_shvq_gdn_rows4_m_body(device const char* blocks,
         const uint row = tg * max(1u, tptg >> 6u) + pairId;                            \
         if (row < I) {                                                                 \
             const uint outRow = (sub == 0u) ? row : (row + I);                         \
-            const float v = qwg_gemv_shvq_rowsN<BITS, GROUP, 1u>(                      \
-                blocks, x, outRow, outRow + 1u, K, lane).x;                            \
+            const float v = qwg_gemv_shvq_rowsN_tg<BITS, GROUP, 1u>(                   \
+                blocks, x, outRow, outRow + 1u, K, lane, tgLut).x;                     \
             if (lane == 0u) part[pairId * 2u + sub] = v;                               \
         }                                                                              \
         threadgroup_barrier(mem_flags::mem_threadgroup);                               \
@@ -417,20 +427,25 @@ static inline void qwg_gemv_shvq_gdn_rows4_m_body(device const char* blocks,
         uint tg   [[threadgroup_position_in_grid]],                                    \
         uint ti   [[thread_index_in_threadgroup]],                                     \
         uint tptg [[threads_per_threadgroup]]) {                                       \
+        threadgroup ShvqTgLut<BITS> tgLut;                                             \
+        if constexpr (BITS <= 3) {                                                     \
+            tgLut.load(ti, tptg);                                                      \
+            threadgroup_barrier(mem_flags::mem_threadgroup);                           \
+        }                                                                              \
         if ((N & 0x40000000u) != 0u) {                                                 \
             const uint mRows = (N >> 24u) & 0x3Fu;                                     \
             if (mRows >= 2u) {                                                         \
                 qwg_gemv_shvq_gdn_rows4_m_body<BITS, GROUP>(                           \
                     blocks, x, N & 0x00FFFFFFu, K, y16, aLog, dtBias, betas, mRows,    \
-                    tg, ti, tptg);                                                     \
+                    tg, ti, tptg, tgLut);                                              \
                 return;                                                                \
             }                                                                          \
             const uint realN = N & 0x3FFFFFFFu;                                        \
             const uint row0 = (tg * max(1u, tptg >> 5u) + (ti >> 5u)) * 4u;            \
             const uint lane = ti & 31u;                                                \
             if (row0 >= realN) return;                                                 \
-            const float4 acc = qwg_gemv_shvq_rowsN<BITS, GROUP, 4u>(                   \
-                blocks, x, row0, realN, K, lane);                                      \
+            const float4 acc = qwg_gemv_shvq_rowsN_tg<BITS, GROUP, 4u>(                \
+                blocks, x, row0, realN, K, lane, tgLut);                               \
             if (lane == 0u) {                                                          \
                 qwg_shvq_gdn_store_row(row0, acc.x, y16, y32, aLog, dtBias, betas, glog); \
                 if (row0 + 1u < realN) qwg_shvq_gdn_store_row(row0 + 1u, acc.y, y16, y32, aLog, dtBias, betas, glog); \
@@ -442,13 +457,21 @@ static inline void qwg_gemv_shvq_gdn_rows4_m_body(device const char* blocks,
         const uint row = tg * max(1u, tptg >> 5u) + (ti >> 5u);                        \
         const uint lane = ti & 31u;                                                    \
         if (row >= N) return;                                                          \
-        const float vx = qwg_gemv_shvq_rowsN<BITS, GROUP, 1u>(                         \
-            blocks, x, row, N, K, lane).x;                                             \
+        const float vx = qwg_gemv_shvq_rowsN_tg<BITS, GROUP, 1u>(                      \
+            blocks, x, row, N, K, lane, tgLut).x;                                      \
         if (lane == 0u) {                                                              \
             qwg_shvq_gdn_store_row(row, vx, y16, y32, aLog, dtBias, betas, glog);      \
         }                                                                              \
     }
 
+QW_SHVQ_MLP_GDN_KERNELS(1, 32)
+QW_SHVQ_MLP_GDN_KERNELS(1, 64)
+QW_SHVQ_MLP_GDN_KERNELS(1, 128)
+QW_SHVQ_MLP_GDN_KERNELS(1, 256)
+QW_SHVQ_MLP_GDN_KERNELS(15, 32)
+QW_SHVQ_MLP_GDN_KERNELS(15, 64)
+QW_SHVQ_MLP_GDN_KERNELS(15, 128)
+QW_SHVQ_MLP_GDN_KERNELS(15, 256)
 QW_SHVQ_MLP_GDN_KERNELS(2, 32)
 QW_SHVQ_MLP_GDN_KERNELS(2, 64)
 QW_SHVQ_MLP_GDN_KERNELS(2, 128)

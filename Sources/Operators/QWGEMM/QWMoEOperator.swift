@@ -144,7 +144,7 @@ public enum QWMoEOperator {
             if concurrentBarriers { enc.memoryBarrier(scope: .buffers) }
         }
         let H = w.hidden, E = w.experts, K = w.topK, I = w.intermediate, ISh = w.sharedIntermediate
-        let isGroupedNax = T > 8 && supportsGroupedNaxPrefill
+        let isGroupedNax = T > 8 && supportsGroupedNaxPrefill && hal.caps.isMetal4TensorCapable
             && s.expOff != nil && s.sortedPair != nil && s.sortedTok != nil
             && s.invPerm != nil && s.tileE != nil && s.tileR != nil
             && s.tileCount != nil && s.gu16 != nil && s.dnHi != nil && s.naxX16 != nil

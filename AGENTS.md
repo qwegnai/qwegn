@@ -37,6 +37,11 @@ the owner's private `docs/agent-retrospective-*.md`.
 9. **Publish only when separation beats the noise floor.** A delta inside
    run-to-run noise means "same speed". Non-regression is a gate: an
    optimization that does not gain is rolled back, not shipped with caveats.
+   Throughput never excuses degraded tokens: every new lossy quant or pruning
+   scheme must beat or match existing formats at equal bpw in an offline
+   quality oracle before entering `Sources/`; sub-2-bit PTQ without QAT is
+   restricted to exact-verified paths (speculative drafters with bit-exact
+   greedy target parity) or cold banks passing `llmprobe` and needle gates.
    Cross-cutting runtime, kernel, or quant changes must compare fresh `master`
    release vs candidate across **every** supported flagship pack in a concise
    4-category table: throughput, UMA/GPU memory (including residency toggles),
@@ -104,6 +109,10 @@ the owner's private `docs/agent-retrospective-*.md`.
     Avoid ambiguous standard library closures (such as `Data.withUnsafeBytes` without explicit buffer signatures or `DispatchData.copyBytes`); use explicit types or direct initializers (e.g. `Data(dispatchData)` or `replaceSubrange`) to prevent overload ambiguities across Swift minor versions.
 26. **CI transparency & diagnostic preservation**:
     CI scripts (`ci.sh`) must never swallow compiler or test failure output through `tail` or silent pipes on nonzero exit. If a gate step exits nonzero, the full captured build/test log must be printed to standard output before terminating. Distinguish CI runner infrastructure timeouts (queue acquisition) from test/build failures before retrying code changes.
+    In GPU unit tests, guard Metal 4 NAX cooperative-tensor (and bare-metal-only) dispatches with `try XCTSkipUnless(Self.hal.caps.isMetal4TensorCapable, ...)` while keeping standard Metal parity assertions active on `macos-26` paravirtual CI runners.
+27. **AGX 32 KiB constant-cache ceiling & mixed-plane capacity sizing**:
+    Apple Silicon AGX spills `constant` address space to device DRAM when a single PSO references `> 32 KiB` of constant arrays; keep per-PSO constant LUTs `<= 32 KiB` by isolating new codebook families into separate `.metalh` headers and PSOs rather than unioning all tables into shared kernels.
+    When sizing mixed raw/quant weight buffers (such as `DFlash` / `DSpine` drafters), always resolve per-entry byte counts via `PlaneLayout.resolve(e)` (`rawOff != nil` checked before quant plane tags, `16 KiB`-aligned).
 
 Verification footer: when you finish and merge to `master`, bump the semantic
 version in `Sources/Foundation/QWCore/QWVersion.swift`, `CHANGELOG.md`,

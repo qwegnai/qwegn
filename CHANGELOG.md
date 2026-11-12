@@ -10,6 +10,52 @@ The single source of the version is `QWVersion.current` in
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-11-12
+
+### Fixed
+- **Non-special XML delimiter token deduplication in `QWToolCallConstraint` (`QWServer`).**
+  - Deduplicated and range-clamped `QWToolCallConstraint.allowedTokens()` so models whose `tokenizer.json` marks XML tool delimiters (`</tool_call>`, `<tool_call>`) with `"special": false` (such as `GLM-5.3-Flash` and `GLM-4.7`) never emit duplicate token IDs in `.closingTag` that trigger `samplingFailed` HTTP 500s under `tool_choice: "required"` or named tool forcing.
+- **Parallel `<tool_call>` boundary matching with embedded literal tags in `QWToolCallParser` (`QWServer`).**
+  - Replaced backward-only `</tool_call>` scanning on the final segment with forward `matchingToolCallClose(in:)` so adjacent parallel tool calls (`<tool_call>...</tool_call><tool_call>...</tool_call>`) never merge across boundaries while still preserving literal `<tool_call>...</tool_call>` substrings inside tool-call argument bodies.
+- **High-water (`>= 75%` physical RAM) automatic `PrefillScratch` eviction across `DenseModule` & `HybridMoEModule` (`QWEngine`).**
+  - Wired `evictPrefillScratch()` into `DenseModule.encodePrefill` and extended `QWPrefillScratchEvictionPolicy.auto` (`shouldEvict(totalRAMBytes:wiredEngineBytes:)`) to evict transient prefill scratch whenever the wired engine arena consumes `>= 75%` of physical RAM (such as `~101 GiB` models on `128 GB` Macs), eliminating sustained-load Metal residency paging dips (`19.2 tok/s → 43.3 tok/s`, `+5.4%` steady over `21m`).
+
+### Verified
+- **Full `llmprobe v0.6.16` `--full` (`1,489,839` tokens) & 100-Task `code` Qualification on `GLM-5.3-Flash-shvq4g32-shvq2g64-shvq3g64`:**
+  - **`184 / 184` (`100%`) API conformance** (`9/9` core endpoints, `0` errors), **`37 / 37` (`100%`, `strong`) capability**, **`81 / 100` (`81.0%`) HumanEval+MBPP** (`46/50` `92.0%` HumanEval, `35/50` `70.0%` MBPP), **`66 / 88` (`75.0%`) agentic execution**, **`99.74%` engine fidelity** (`36/36` correctness, `3/3` greedy determinism, `36/36` logprob argmax consistency), **`53.6 tok/s` predictable / `45.6 tok/s` novel** NextN MTP-1 (`1.98 tok/step`), **`825.3 tok/s` `9.4K` prefill** (`780 tok/s` @`65.6K`), **`96×` (`1,728 → 18 ms`) warm prefix cache**, and **steady `41.1 → 43.3 tok/s` (`+5.4%`) 21-minute sustained thermal load**; updated all GLM infographics and documentation.
+
+## [0.17.0] - 2026-11-12
+
+### Changed
+- **Generalized NoPE MLA MMA/NAX weight & paged-KV acceleration across `SHVQ{1,15,2,3,4}`, `AQ/HQ{2..8}`, and `q8`/`q4` KV (`QWAttn`, `QWMetal`).**
+  - Generalized `qwg_mla_absorb_q(_mma[_sub2])`, `qwg_mla_proj_uv(_mma[_sub2])`, `qwg_mla_sparse_attn_mma`, and Apple10 NAX `qwg_mla_sparse_attn_nax(_split)` via `qw_mla_dequant.metalh` (`ShvqMlaTgLut` threadgroup SRAM staging + AGX-isolated `22 KiB` / `18 KiB <= 32 KiB` constant LUT PSOs + inline `q8`/`q4` paged latent dequantization) and vectorized `qwg_mla_absorb_q[_sub2]` (`128` quads × `4` row-slices), eliminating scalar fallbacks on non-incumbent `kv_b_proj` weights and quantized KV modes across prefill, serial decode, and MTP verify (`mla.sparse_attn` `26,035 → 487 ms` `53.5×`, `mla.absorb_q` `1,115 → 53 ms` `21.1×`, `mla.proj_uv` `924 → 75 ms` `12.3×`, decode MLA `20.44 → 1.72 ms/tok` `11.9×`).
+- **Generalized `SHVQ{1,15,2,3,4}` direct-half & threadgroup SRAM LUT kernels (`QWMetal`, `QWGEMM`).**
+  - Enabled `QW_SHVQ_ROUTED_DIRECT_LUT` (`kShvqLut4DirectBits` / `kShvqLut15DirectBits`, exact `32.000 KiB <= 32 KiB` per specialized PSO) across dense, SwiGLU MLP, GDN, HyperConnection, batched GEMV, and NAX GEMM kernels, and staged `ShvqTgLut<1|2|3>` (`2–4 KiB`) in `threadgroup` SRAM for dense `SHVQ1/2/3` NAX GEMMs and multi-row GEMVs while keeping grouped MoE NAX on `2–4 KiB` resident AGX constant LUTs (`2.23–2.24×` faster cold-streaming `prefill_nax_f32` `SHVQ2/3`).
+- **`PrefillScratch` & `MoEScratch` UMA tightening (`-2.65 GiB`), 1-draft `QWMTPEmbeddingTable` gating, and subquadratic `> 131K` `4,096`-row prefill chunking (`QWEngine`, `QWServer`).**
+  - Removed 11 dead `PrefillScratch` allocations and unused `gdnY`/dense-attn scratch on `gdnVectorDecay` / `usesNoPEMLA`, tightened grouped-NAX `MoEScratch` (`r1Rows <= 8`, `.f16` `dnAcc`, `prefillBytesPerToken` `1.60 MB → 556 KB` on `GLM-5.3-Flash`, `760 KB → 500 KB` on `Qwen3.8-27B`), and unified `decodeAndMTPScratchBytes` + `mlaFixedScratchBytes` across `QWEngineDriver` and `DriverResidency` so out-of-the-box `--no-profile` CLI runs keep `288/288` experts resident (`fixed_scratch` `6.96 → 4.31 GiB` serial, `7.11 → 4.48 GiB` MTP-1; `-1.02 GiB` on `Qwen3.6-35B-A3B` MTP-1).
+  - Gated automatic `QWMTPEmbeddingTable` (`1.48 GiB` `MAP_SHARED` `MTLResidencySet`) to `mtpDrafts > 1` (plus `POSIX_MADV_WILLNEED` when active), eliminating VNODE page-fault stalls (`p95 896 → 39 ms`) on single-draft NextN/MTP-1 speculation where only CPU `embed_tokens` is read.
+  - Exempted subquadratic sparse attention paths (`usesNoPEMLA` and active `QWLSAOperator`) from the `> 131K` `256/128`-row quadratic chunk clamp (preserving full `4,096`-row NAX tiles up to `1M` context with 4-layer command-buffer slicing above `131K`).
+
+### Verified
+- **Cross-Flagship 4-Pack Qualification (`AGENTS.md` Law 9):**
+  - Paired, interleaved `--strict` A/B (`0%/0%` quiet GPU) lifts `GLM-5.3-Flash-shvq4g32-shvq2g64-shvq3g64` (`q4` KV) prefill **`145.8 → 1,005.9 tok/s` (`6.92×`, TTFT `35.64 → 5.17 s`, `1,061.3 tok/s` GPU @4K, `851.8–869.2 tok/s` `qwg serve`)**, serial decode **`23.81 → 44.64 tok/s` (`1.88×` CLI; `46.0` med / `46.4` peak `qwg serve`)**, exact NextN MTP-1 **`23.44 → 47.59 tok/s` (`2.03×` paired CLI, `51.19` standalone, `50.7` peak `qwg serve`, `10 ms` `193.4×` warm cache)**, and `@242.5K` `3/3`-needle long context to **`743.0 / 44.98 tok/s` (`e-means`, `6.29×` prefill & `1.69×` decode vs `@160K` `v0.14.1`)**, with `0.0%` regression (`0.994×–1.008×`), `5/5` bit-exact `SHA-256` determinism, `3/3` needle fidelity, and `9/10` `llmprobe` `code-10` across `GLM-5.3-Flash`, `Qwen3.6-35B-A3B`, `Qwen3.8-Flash-Next`, and `Qwen3.8-27B` (+ `DSpine-b16`).
+
+## [0.16.0] - 2026-11-12
+
+### Added
+- **Sub-2-Bit Spherical Harmonic Vector Quantization (`SHVQ15`, `SHVQ1`) & Multi-Format `DFlash 2` / `DSpine` Speculative Drafters (`QWQuant`, `QWMetal`, `QWEngine`, `Scripts/quantize/`).**
+  - Added `SHVQ15` (1.5-bit 8D 2048-centroid antipodal spherical $e$-means VQ with 0-ULP dyadic scale `int8 * 3 * 2^-7`, 1.75 bpw at G64, 1.625 bpw at G128) and `SHVQ1` (1.0-bit 8D 128-centroid antipodal spherical $e$-means VQ, 1.25 bpw at G64, 1.125 bpw at G128).
+  - Shipped Metal 4 and NAX dequantization headers (`qw_dequant_shvq_sub2.metalh`, `qw_shvq_sub2_tables.metalh`, `qw_shvq_sub2_routed_lut.metalh`), Swift table bindings (`QWSHVQSub2Tables.swift`), and offline quantization pipelines (`shvq_sub2.py`, `shvq_metal_enc.mm`).
+  - Isolated AGX `<= 32 KiB` constant-cache PSOs via `_sub2` kernel variants (`qwg_mla_absorb_q_sub2`, `qwg_dspine_refine_scores_sub2`, and SwiGLU / MoE / GDN dequantizers) to prevent spilling to slow device memory, maintaining peak throughput across all existing formats.
+  - Enabled multi-format speculative drafters in `QWDFlashDrafter+Quant.swift` and `pack_dflash.py` (`HQ*`, `AQ*`, `SHVQ{1,15,2,3,4}`): speculative drafters achieve a mathematically verified 0.0% target quality loss (bit-exact greedy token stream parity) while slashing drafter UMA by -42.0% (`DSpine-b16-shvq15g64` 925.22 MiB vs 1,595.53 MiB) and speeding up serial decode by 1.229× at $B=8$.
+- **4D PLE N-gram Vector Quantization (`QNGRAM v3 VQ4_G32`) (`QWNgramFormat.swift`, `qwple.metal`, `pack_ngram_vq4.py`, `FNGPUPLEEncoders.swift`).**
+  - Added 4D spherical $e$-means vector quantization (`VQ4_G32`, 50 B/row, 2.50 bpw) for HyperPLE n-gram tables.
+  - Slashes `Qwen3.8-Flash-Next` n-gram table footprint from 27.13 GiB to 15.07 GiB (-12.06 GiB UMA saved) while preserving 0.9557 mean cosine similarity and accelerating 480×512 prefill gather by +9.0% (0.4672 ms vs 0.5088 ms).
+
+### Verified
+- **Zero-Regression Flagship Qualification (`AGENTS.md` Law 9):**
+  - Bit-exact token stream parity, 0.0% UMA degradation, and 9/10 `llmprobe` code-10 scores across all 4 flagship model packs: `Qwen3.6-35B-A3B-hq4g32` (1.0028× vs master), `Qwen3.8-27B-hq4g32` (1.0040× vs master), `Qwen3.8-Flash-Next-hq8g32-hq4g64` (1.0235× vs master), and `GLM-5.3-Flash-shvq4g32-shvq2g64-shvq3g64` (0.9889× vs master).
+
 ## [0.15.1] - 2026-11-11
 
 ### Fixed

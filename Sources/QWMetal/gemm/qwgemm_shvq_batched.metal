@@ -1,6 +1,7 @@
 // qwgemm_shvq_batched.metal — NAX/MPP prefill GEMM, GDN in-projection GEMM,
-// and grouped MoE NAX twins for SHVQ{2,3,4}_G{32,64,128,256}.
+// and grouped MoE NAX twins for SHVQ{1,15,2,3,4}_G{32,64,128,256}.
 
+#define QW_SHVQ_ROUTED_DIRECT_LUT 1
 #include <metal_stdlib>
 #include <metal_simdgroup>
 #include "include/qw_moe_tile.metalh"
@@ -16,7 +17,7 @@ struct QWGemmSHVQGroupedParams {
 };
 
 template <const int BM, const int WM, const int WN, const int BITS, const int GROUP,
-          const bool splitLo = true, typename OutT = float>
+          const bool splitLo = true, typename OutT = float, const bool HAS_TG_LUT = false>
 static inline void qmm_t_nax_split_shvq_impl(
     const device char* w,
     const device half* xh,
@@ -24,7 +25,8 @@ static inline void qmm_t_nax_split_shvq_impl(
     device OutT* y,
     int K, int N, int M,
     uint3 tid,
-    uint simd_gid) {
+    uint simd_gid,
+    threadgroup const ushort4* shvqLut16 = nullptr) {
     constexpr int BN = 64;
     constexpr short SM = BM / WM;
     constexpr short SN = BN / WN;
@@ -46,7 +48,7 @@ static inline void qmm_t_nax_split_shvq_impl(
     y += y_row * static_cast<int64_t>(N) + y_col;
 
     const short2 sc = BaseNAXFrag::get_coord();
-    constexpr uint groupBytes = 2u + (uint(GROUP * BITS) >> 3u);
+    constexpr uint groupBytes = qwg_shvq_group_bytes(BITS, GROUP);
     constexpr uint slicesPerGroup = uint(GROUP) >> 5u;
     const uint rowBytes = uint(K / GROUP) * groupBytes;
     const device char* w_tile = w + static_cast<int64_t>(y_col) * rowBytes;
@@ -84,7 +86,7 @@ static inline void qmm_t_nax_split_shvq_impl(
                         if (kAlignedN.value || r_tile < int(tgp_bn)) {
                             const device char* gp = groupBase + static_cast<int64_t>(r_tile) * rowBytes;
                             half4 lo, hi;
-                            qwg_shvq_frag8<BITS, BITS == 4>(gp, colInGroup, lo, hi);
+                            qwg_shvq_frag8_tg<BITS, BITS == 4 || BITS == 15, HAS_TG_LUT>(gp, colInGroup, shvqLut16, lo, hi);
                             f0[i * 4 + 0] = lo.x; f0[i * 4 + 1] = lo.y;
                             f0[i * 4 + 2] = lo.z; f0[i * 4 + 3] = lo.w;
                             f1[i * 4 + 0] = hi.x; f1[i * 4 + 1] = hi.y;
@@ -132,7 +134,7 @@ static inline void qwg_moe_nax_gemm_shvq_body(device const char* w,
     const uint e = uint(tileE[t]);
     const int rowBase = int(expertOff[e]);
     const int rowCount = int(expertOff[e + 1]) - rowBase;
-    constexpr size_t groupBytes = 2u + (uint(GROUP * BITS) >> 3u);
+    constexpr size_t groupBytes = qwg_shvq_group_bytes(BITS, GROUP);
     const size_t rowBytes = (size_t(p.k) / GROUP) * groupBytes;
     const uint residentE = p.experts >> 16u;
     const bool isCold = (residentE > 0u) && (e >= residentE);
@@ -158,13 +160,13 @@ static inline void qwg_moe_nax_gemm_shvq_body(device const char* w,
         device const half* xe = x + size_t(rowBase) * size_t(p.k);
         if (bm == 16) {
             qmm_t_nax_tgp_dual_impl<half, half, true, 16, 64, 64, 1, 4, false, false, false, BITS, GROUP, true>(
-                we, xe, ye, nullptr, nullptr, int(p.k), int(p.n), rowCount, tid, lid, simd_gid, simd_lid);
+                we, xe, ye, nullptr, nullptr, int(p.k), int(p.n), rowCount, tid, lid, simd_gid, simd_lid, nullptr, nullptr);
         } else if (bm == 32) {
             qmm_t_nax_tgp_dual_impl<half, half, true, 32, 64, 64, 2, 2, false, false, false, BITS, GROUP, true>(
-                we, xe, ye, nullptr, nullptr, int(p.k), int(p.n), rowCount, tid, lid, simd_gid, simd_lid);
+                we, xe, ye, nullptr, nullptr, int(p.k), int(p.n), rowCount, tid, lid, simd_gid, simd_lid, nullptr, nullptr);
         } else {
             qmm_t_nax_tgp_dual_impl<half, half, true, 64, 64, 64, 2, 2, false, false, false, BITS, GROUP, true>(
-                we, xe, ye, nullptr, nullptr, int(p.k), int(p.n), rowCount, tid, lid, simd_gid, simd_lid);
+                we, xe, ye, nullptr, nullptr, int(p.k), int(p.n), rowCount, tid, lid, simd_gid, simd_lid, nullptr, nullptr);
         }
     }
 }
@@ -187,7 +189,7 @@ static inline void qwg_moe_nax_split_shvq_f32_body(device const char* w,
     const uint e = uint(tileE[t]);
     const int rowBase = int(expertOff[e]);
     const int rowCount = int(expertOff[e + 1]) - rowBase;
-    constexpr size_t groupBytes = 2u + (uint(GROUP * BITS) >> 3u);
+    constexpr size_t groupBytes = qwg_shvq_group_bytes(BITS, GROUP);
     const size_t rowBytes = (size_t(p.k) / GROUP) * groupBytes;
     const uint residentE = p.experts >> 16u;
     const bool isCold = (residentE > 0u) && (e >= residentE);
@@ -211,7 +213,7 @@ static inline void qwg_moe_nax_split_shvq_f32_body(device const char* w,
     }
 }
 
-#define QW_SHVQ_BATCHED_KERNELS(BITS, GROUP)                                           \
+#define QW_SHVQ_BATCHED_KERNELS_IMPL(BITS, GROUP, HAS_TG, DECL_TG, PREP_TG, LUT_PTR) \
     kernel void qwg_gemm_shvq##BITS##_g##GROUP##_h16(                                   \
         device const char* blocks [[buffer(0)]],                                       \
         device const half* x      [[buffer(1)]],                                       \
@@ -223,10 +225,12 @@ static inline void qwg_moe_nax_split_shvq_f32_body(device const char* w,
         uint  lid      [[thread_index_in_threadgroup]],                                \
         uint  simd_gid [[simdgroup_index_in_threadgroup]],                             \
         uint  simd_lid [[thread_index_in_simdgroup]]) {                                \
+        DECL_TG                                                                        \
+        PREP_TG                                                                        \
         qmm_t_nax_tgp_dual_impl<half, half, false, 64, 64, 64, 2, 2, false, false,     \
-                                false, BITS, GROUP, true>(                             \
+                                false, BITS, GROUP, true, HAS_TG>(                     \
             blocks, x, y16, y32, nullptr, int(K), int(N), int(M), tg, lid,             \
-            simd_gid, simd_lid);                                                       \
+            simd_gid, simd_lid, nullptr, nullptr, LUT_PTR);                            \
     }                                                                                  \
     kernel void qwg_gemm_shvq##BITS##_g##GROUP##_h16_bm128(                             \
         device const char* blocks [[buffer(0)]],                                       \
@@ -239,10 +243,12 @@ static inline void qwg_moe_nax_split_shvq_f32_body(device const char* w,
         uint  lid      [[thread_index_in_threadgroup]],                                \
         uint  simd_gid [[simdgroup_index_in_threadgroup]],                             \
         uint  simd_lid [[thread_index_in_simdgroup]]) {                                \
+        DECL_TG                                                                        \
+        PREP_TG                                                                        \
         qmm_t_nax_tgp_dual_impl<half, half, false, 128, 64, 64, 2, 2, false, false,    \
-                                false, BITS, GROUP, true>(                             \
+                                false, BITS, GROUP, true, HAS_TG>(                     \
             blocks, x, y16, y32, nullptr, int(K), int(N), int(M), tg, lid,             \
-            simd_gid, simd_lid);                                                       \
+            simd_gid, simd_lid, nullptr, nullptr, LUT_PTR);                            \
     }                                                                                  \
     kernel void qwg_gemm_shvq##BITS##_g##GROUP##_h16_gdn_inproj(                        \
         device const char* blocks [[buffer(0)]],                                       \
@@ -256,10 +262,12 @@ static inline void qwg_moe_nax_split_shvq_f32_body(device const char* w,
         uint  lid      [[thread_index_in_threadgroup]],                                \
         uint  simd_gid [[simdgroup_index_in_threadgroup]],                             \
         uint  simd_lid [[thread_index_in_simdgroup]]) {                                \
+        DECL_TG                                                                        \
+        PREP_TG                                                                        \
         qmm_t_nax_tgp_dual_impl<half, half, false, 64, 64, 64, 2, 2, true, true,       \
-                                false, BITS, GROUP, true>(                             \
+                                false, BITS, GROUP, true, HAS_TG>(                     \
             blocks, x, qkv16, y32, nullptr, int(K), int(N), int(M), tg, lid,           \
-            simd_gid, simd_lid, z16);                                                  \
+            simd_gid, simd_lid, z16, nullptr, LUT_PTR);                                \
     }                                                                                  \
     kernel void qwg_gemm_shvq##BITS##_g##GROUP##_nax_f32(                               \
         device const char* w   [[buffer(0)]],                                          \
@@ -269,14 +277,18 @@ static inline void qwg_moe_nax_split_shvq_f32_body(device const char* w,
         constant uint& M [[buffer(4)]], constant uint& N [[buffer(5)]],                \
         constant uint& K [[buffer(6)]],                                                \
         uint3 tg       [[threadgroup_position_in_grid]],                               \
+        uint  lid      [[thread_index_in_threadgroup]],                                \
         uint  simd_gid [[simdgroup_index_in_threadgroup]]) {                           \
+        (void)lid;                                                                     \
+        DECL_TG                                                                        \
+        PREP_TG                                                                        \
         const int realM = int(M & 0x7FFFFFFFu);                                        \
         if ((M & 0x80000000u) != 0u) {                                                 \
-            qmm_t_nax_split_shvq_impl<64, 2, 2, BITS, GROUP, false, half>(             \
-                w, xh, xl, (device half*)y32, int(K), int(N), realM, tg, simd_gid);    \
+            qmm_t_nax_split_shvq_impl<64, 2, 2, BITS, GROUP, false, half, HAS_TG>(     \
+                w, xh, xl, (device half*)y32, int(K), int(N), realM, tg, simd_gid, LUT_PTR); \
         } else {                                                                       \
-            qmm_t_nax_split_shvq_impl<64, 2, 2, BITS, GROUP, false, float>(            \
-                w, xh, xl, y32, int(K), int(N), realM, tg, simd_gid);                  \
+            qmm_t_nax_split_shvq_impl<64, 2, 2, BITS, GROUP, false, float, HAS_TG>(    \
+                w, xh, xl, y32, int(K), int(N), realM, tg, simd_gid, LUT_PTR);         \
         }                                                                              \
     }                                                                                  \
     kernel void qwg_moe_nax_gemm_shvq##BITS##_g##GROUP(                                 \
@@ -317,15 +329,32 @@ static inline void qwg_moe_nax_split_shvq_f32_body(device const char* w,
             tileR, tileCount, p, tileBlock, coldW, tg, simd_gid);                      \
     }
 
-QW_SHVQ_BATCHED_KERNELS(2, 32)
-QW_SHVQ_BATCHED_KERNELS(2, 64)
-QW_SHVQ_BATCHED_KERNELS(2, 128)
-QW_SHVQ_BATCHED_KERNELS(2, 256)
-QW_SHVQ_BATCHED_KERNELS(3, 32)
-QW_SHVQ_BATCHED_KERNELS(3, 64)
-QW_SHVQ_BATCHED_KERNELS(3, 128)
-QW_SHVQ_BATCHED_KERNELS(3, 256)
-QW_SHVQ_BATCHED_KERNELS(4, 32)
-QW_SHVQ_BATCHED_KERNELS(4, 64)
-QW_SHVQ_BATCHED_KERNELS(4, 128)
-QW_SHVQ_BATCHED_KERNELS(4, 256)
+#define QW_SHVQ_BATCHED_KERNELS_TG(BITS, GROUP)                                        \
+    QW_SHVQ_BATCHED_KERNELS_IMPL(BITS, GROUP, true,                                    \
+        threadgroup ShvqTgLut<BITS> tgLut;,                                            \
+        tgLut.load(lid, 128u); threadgroup_barrier(mem_flags::mem_threadgroup);,       \
+        tgLut.ptr16())
+
+#define QW_SHVQ_BATCHED_KERNELS_DIRECT(BITS, GROUP)                                    \
+    QW_SHVQ_BATCHED_KERNELS_IMPL(BITS, GROUP, false, , , nullptr)
+
+QW_SHVQ_BATCHED_KERNELS_TG(1, 32)
+QW_SHVQ_BATCHED_KERNELS_TG(1, 64)
+QW_SHVQ_BATCHED_KERNELS_TG(1, 128)
+QW_SHVQ_BATCHED_KERNELS_TG(1, 256)
+QW_SHVQ_BATCHED_KERNELS_DIRECT(15, 32)
+QW_SHVQ_BATCHED_KERNELS_DIRECT(15, 64)
+QW_SHVQ_BATCHED_KERNELS_DIRECT(15, 128)
+QW_SHVQ_BATCHED_KERNELS_DIRECT(15, 256)
+QW_SHVQ_BATCHED_KERNELS_TG(2, 32)
+QW_SHVQ_BATCHED_KERNELS_TG(2, 64)
+QW_SHVQ_BATCHED_KERNELS_TG(2, 128)
+QW_SHVQ_BATCHED_KERNELS_TG(2, 256)
+QW_SHVQ_BATCHED_KERNELS_TG(3, 32)
+QW_SHVQ_BATCHED_KERNELS_TG(3, 64)
+QW_SHVQ_BATCHED_KERNELS_TG(3, 128)
+QW_SHVQ_BATCHED_KERNELS_TG(3, 256)
+QW_SHVQ_BATCHED_KERNELS_DIRECT(4, 32)
+QW_SHVQ_BATCHED_KERNELS_DIRECT(4, 64)
+QW_SHVQ_BATCHED_KERNELS_DIRECT(4, 128)
+QW_SHVQ_BATCHED_KERNELS_DIRECT(4, 256)

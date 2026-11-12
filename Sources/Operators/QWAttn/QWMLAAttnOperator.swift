@@ -101,7 +101,9 @@ public final class QWMLAAttnOperator: @unchecked Sendable {
     private let psoGateWeightsProj: any MTLComputePipelineState
     private let psoIndexerScoreSelect: any MTLComputePipelineState
     private let psoAbsorbQ: any MTLComputePipelineState
+    private let psoAbsorbQSub2: any MTLComputePipelineState
     private let psoAbsorbQMMA: any MTLComputePipelineState
+    private let psoAbsorbQMMASub2: any MTLComputePipelineState
     private let psoSparseAttn: any MTLComputePipelineState
     private let psoSparseAttnMMA: any MTLComputePipelineState
     /// Pool-parallel MMA scoring + per-row select (32 heads x 128 dims); QW_MLA_IDX_SPLIT=0 keeps the fused kernel.
@@ -119,7 +121,9 @@ public final class QWMLAAttnOperator: @unchecked Sendable {
     /// Coarse `e-means` MLA pruning (`<41K` flat bypass + `>=41K` centroid Top-8); controlled by `lsaConfig.mode` or `QW_MLA_EMEANS`.
     public var emeansCoarseEnabled: Bool
     private let psoProjUV: any MTLComputePipelineState
+    private let psoProjUVSub2: any MTLComputePipelineState
     private let psoProjUVMMA: any MTLComputePipelineState
+    private let psoProjUVMMASub2: any MTLComputePipelineState
     private let coarsePipelines: QWCoarsePoolIndex.Pipelines?
     private let psoEmeansCoarse: (scoreCoarse: any MTLComputePipelineState, scoreCands: any MTLComputePipelineState, flatFallback: any MTLComputePipelineState)?
     private let coarseScratch: QWCoarsePoolIndex.Scratch?
@@ -241,7 +245,9 @@ public final class QWMLAAttnOperator: @unchecked Sendable {
         self.psoGateWeightsProj = try hal.pipeline("qwg_mla_gate_weights_proj")
         self.psoIndexerScoreSelect = try hal.pipeline("qwg_mla_indexer_score_select")
         self.psoAbsorbQ = try hal.pipeline("qwg_mla_absorb_q")
+        self.psoAbsorbQSub2 = try hal.pipeline("qwg_mla_absorb_q_sub2")
         self.psoAbsorbQMMA = try hal.pipeline("qwg_mla_absorb_q_mma")
+        self.psoAbsorbQMMASub2 = try hal.pipeline("qwg_mla_absorb_q_mma_sub2")
         self.psoSparseAttn = try hal.pipeline("qwg_mla_sparse_attn")
         self.psoSparseAttnMMA = try hal.pipeline("qwg_mla_sparse_attn_mma")
         self.psoIndexerSplit = idxHeads == 32 && idxDim == 128
@@ -255,7 +261,9 @@ public final class QWMLAAttnOperator: @unchecked Sendable {
         self.psoSparseAttnSplit = attnSplits > 1
             ? (try hal.pipeline("qwg_mla_sparse_attn_nax_split"), try hal.pipeline("qwg_mla_sparse_attn_combine")) : nil
         self.psoProjUV = try hal.pipeline("qwg_mla_proj_uv")
+        self.psoProjUVSub2 = try hal.pipeline("qwg_mla_proj_uv_sub2")
         self.psoProjUVMMA = try hal.pipeline("qwg_mla_proj_uv_mma")
+        self.psoProjUVMMASub2 = try hal.pipeline("qwg_mla_proj_uv_mma_sub2")
         let useCoarse = (self.psoIndexerSplit != nil) && (self.maxContext >= 32_768)
         if useCoarse {
             self.coarsePipelines = try QWCoarsePoolIndex.Pipelines(hal: hal)
@@ -660,9 +668,16 @@ public final class QWMLAAttnOperator: @unchecked Sendable {
         )
         let mTiles = (rows + 7) / 8
         mark("mla.absorb_q")
-        let absorbMMA = sparseAttnMMAEnabled && rows >= 16 && absP.isIncumbent == 1
+        let isSub2SHVQ = absP.isIncumbent == 2 && (absP.bits == 1 || absP.bits == 15)
+        let weightSupported = absP.group >= 32 && (absP.group % 32 == 0) && (kvLoraRank % Int(absP.group) == 0) && (
+            absP.isIncumbent == 1
+            || (absP.isIncumbent == 2 && (isSub2SHVQ || (absP.bits >= 2 && absP.bits <= 4)))
+            || (absP.isIncumbent == 0 && (absP.bits == 2 || absP.bits == 3 || absP.bits == 4 || absP.bits == 6 || absP.bits == 8))
+        )
+        let absorbMMA = sparseAttnMMAEnabled && rows >= 16 && weightSupported
             && nopeDim == 256 && kvLoraRank == 512
-        enc.setComputePipelineState(absorbMMA ? psoAbsorbQMMA : psoAbsorbQ)
+        enc.setComputePipelineState(absorbMMA ? (isSub2SHVQ ? psoAbsorbQMMASub2 : psoAbsorbQMMA)
+                                              : (isSub2SHVQ ? psoAbsorbQSub2 : psoAbsorbQ))
         mlaQFullScratch.bind(enc, index: 0)
         mlaW.kvBProj.blocks.bind(enc, index: 1)
         qAbsScratch.bind(enc, index: 2)
@@ -689,9 +704,9 @@ public final class QWMLAAttnOperator: @unchecked Sendable {
         mark("mla.sparse_attn")
         // Decode/verify rows split keys across threadgroups (NAX) or keep the per-head scalar kernel:
         // unsplit MMA would launch only qHeads/16 threadgroups per row.
-        let useMMA = sparseAttnMMAEnabled && attnP.kvMode == 0 && rows >= 16
+        let useMMA = sparseAttnMMAEnabled && attnP.kvMode <= 2 && rows >= 16
             && kvLoraRank == 512 && geometry.qHeads % 16 == 0
-        let split = (!useMMA && attnP.kvMode == 0 && rows <= Self.splitMaxRows
+        let split = (sparseAttnMMAEnabled && !useMMA && attnP.kvMode <= 2 && rows <= Self.splitMaxRows
             && geometry.qHeads % 16 == 0) ? psoSparseAttnSplit : nil
         enc.setComputePipelineState(split?.attend ?? (useMMA ? (psoSparseAttnNAX ?? psoSparseAttnMMA) : psoSparseAttn))
         qAbsScratch.bind(enc, index: 0)
@@ -726,7 +741,8 @@ public final class QWMLAAttnOperator: @unchecked Sendable {
         // 4. Value up-projection by W_{UV, h} + fused H_32 rotation -> attOut [rows, qHeads * vHeadDim]
         mark("mla.proj_uv")
         let projUVMMA = absorbMMA && vHeadDim == 256
-        enc.setComputePipelineState(projUVMMA ? psoProjUVMMA : psoProjUV)
+        enc.setComputePipelineState(projUVMMA ? (isSub2SHVQ ? psoProjUVMMASub2 : psoProjUVMMA)
+                                              : (isSub2SHVQ ? psoProjUVSub2 : psoProjUV))
         uLatScratch.bind(enc, index: 0)
         mlaW.kvBProj.blocks.bind(enc, index: 1)
         attOut.bind(enc, index: 2)

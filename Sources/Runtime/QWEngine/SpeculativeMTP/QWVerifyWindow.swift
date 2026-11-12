@@ -29,7 +29,7 @@ struct QWVerifyWindow {
 
     static func allocationBytes(geometry: QWModelGeometry, rows: Int, vocabulary: Int? = nil,
                                 layerMajor: Bool = false, gpuTargets: Bool = false,
-                                q4Head: Bool = false) -> Int {
+                                q4Head: Bool = false, useGroupedNAX: Bool = true) -> Int {
         let vocabulary = vocabulary ?? geometry.vocab
         precondition((2...16).contains(rows) && (1...geometry.vocab).contains(vocabulary))
         func aligned(_ bytes: Int) -> Int { (bytes + 255) / 256 * 256 }
@@ -40,7 +40,8 @@ struct QWVerifyWindow {
             ? aligned(rows * mhcStreams * geometry.hidden * 4) + aligned(rows * mhcCtrlCount * 4)
             : 0
         let moeExtra = (layerMajor && geometry.numExperts > 0)
-            ? QWEngineDriver.moeScratchAllocationBytes(rows: rows, geometry: geometry) + aligned(rows * geometry.hidden * 4)
+            ? QWEngineDriver.moeScratchAllocationBytes(rows: rows, geometry: geometry, useGroupedNAX: useGroupedNAX)
+                + aligned(rows * geometry.hidden * 4)
             : 0
         let effInter = max(geometry.intermediate, geometry.moeIntermediate)
         return base + (layerMajor ? aligned(rows * geometry.hidden * 2) +
@@ -53,7 +54,8 @@ struct QWVerifyWindow {
     }
 
     init(geometry: QWModelGeometry, allocator: QWSubAllocator, rows: Int, vocabulary: Int? = nil,
-         layerMajor: Bool = false, gpuTargets: Bool = false, q4Head: Bool = false) throws {
+         layerMajor: Bool = false, gpuTargets: Bool = false, q4Head: Bool = false,
+         useGroupedNAX: Bool = true) throws {
         let vocabulary = vocabulary ?? geometry.vocab
         self.geometry = geometry
         guard (2...16).contains(rows), (1...geometry.vocab).contains(vocabulary) else {
@@ -72,7 +74,7 @@ struct QWVerifyWindow {
         if layerMajor && geometry.numExperts > 0 {
             moeScratch = try QWEngineDriver.makeMoEScratch(
                 { n, dt in try allocator.allocate(QWTensorShape([n], dt)) },
-                rows: rows, geometry: geometry)
+                rows: rows, geometry: geometry, useGroupedNAX: useGroupedNAX)
             moeDn32 = try allocator.allocate(QWTensorShape([rows * geometry.hidden], .f32))
         } else {
             moeScratch = nil

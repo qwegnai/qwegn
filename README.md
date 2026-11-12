@@ -9,14 +9,14 @@
   <img src="https://img.shields.io/badge/Swift-6.2-orange.svg" alt="Swift 6.2">
   <img src="https://img.shields.io/badge/platform-macOS%2026%20(Apple%20Silicon)-lightgrey.svg" alt="macOS 26, Apple Silicon">
   <a href="https://github.com/qwegnai/qwegn/actions/workflows/ci.yml"><img src="https://github.com/qwegnai/qwegn/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/Release-v0.15.1-green.svg" alt="Release v0.15.1"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/Release-v0.17.1-green.svg" alt="Release v0.17.1"></a>
 </p>
 
 **Qwegn** (`qwg`) is a from-scratch LLM/VLM inference engine for Apple Silicon,
 written in Swift 6.2 and Metal 4 — no MLX, no llama.cpp, no PyTorch at runtime.
 Custom cooperative-tensor kernels, direct Metal command encoding, and zero heap
 or Metal-buffer allocations in steady-state decode, from dense 9B models up to a
-321B MoE streamed from NVMe on a 128 GB Mac.
+321B MoE running 100% UMA-resident (`100.6 GiB` SHVQ) or NVMe-streamed on a 128 GB Mac.
 
 Requires macOS 26+ on Apple Silicon (M-series; M5 recommended for NAX cooperative
 tensors), Xcode 26+ and Python 3.13 for the build. One-line dev loop: `make init && make ci`.
@@ -54,18 +54,18 @@ the toolchain.
 
 - **Codebase & Knowledge Memory Packs (`QWMemoryPack` + `QWMemoryVault`)** — precompute a repository offline (`qwg index`) into a **Two-Tier Hierarchical LSA Memory Pack** (`<repo>/.qwg/*.qwcache` + `.qwg/manifest.json`): **`32.7K`-token Resident Cortex (`265 MiB` `35B` / `465 MiB` `Flash-Next`, `23.7×` smaller `.qwcache`)** + **`< 0.5 ms` Off-Context Vault Recall** across all `294` files, leaving **`96.9%` (`1,015,834` tokens) of the 1M context window free** for coding agents while delivering **`54.4×–74.3×` faster TTFT (`0.12–0.24 s`)**, **`150.5–163.9 tok/s` multi-turn decode (`+53%`)**, and zero-rebuild `<|memory_delta|>` live git edits (`0.40 s` TTFT). [Manual](docs/lsa.md#4-unified-codebase--knowledge-memory-packs-qwg-index--repoqwgqwcache) · [Whitepaper](docs/lsa-codebase-memory-whitepaper.md)
 - **Model-agnostic runtime** — hybrid, looped and MoE architectures driven by the model descriptor (`QWModelDescriptor`), never by model name. [Supported models](#supported-models)
-- **321B MoE on 128 GB Mac (100% UMA Resident SHVQ or NVMe-Streamed)** — `GLM-5.3-Flash` (`321B` total / `18B` active) runs **100% resident in unified memory** at `100.6 GiB` (`SHVQ4_G32 + SHVQ2_G64 + SHVQ3_G64`, **`36.2 tok/s` decode / `44.0 tok/s` speculative**, `0` SSD misses, `0` swap) or cold-expert streamed from NVMe on packs exceeding RAM (`134.4 GiB`, `31.6–34.8 tok/s`). [Cold-expert streaming & SHVQ](docs/tuning.md#cold-expert-streaming)
-- **1M-token context (LSA `Ward-512` & Capacity-Balanced `e-means-4096`)** — **2,317 tok/s prefill / 105.6 tok/s decode at 1M** (`Qwen3.6-35B-A3B`, `13.88×` vs dense @524K), **1,888 tok/s prefill / 63.7 tok/s decode at 1M** (`Qwen3.8-Flash-Next` `+55.3%` `e-means`), **3/3 needle recall** across every model, training-free. [LSA manual](docs/lsa.md)
-- **Speculative decoding & mixed quantization** — MTP / Variational / DSpine (`B=2..16`, up to `4.19×` / `12.7 tok/round`) / DFlash 2 / MoE-Spec across 20 Hadamard `HQ*` & affine `AQ*` formats, 12 Spherical `SHVQ*` e-means VQ formats, and `QNGRAM v3 VQ2_G32` 2-bit PLE tables (`50.9 → 27.1 GiB`, `-46.7%`). [Quantization guide](docs/quantization.md)
+- **321B MoE on 128 GB Mac (100% UMA Resident SHVQ or NVMe-Streamed)** — `GLM-5.3-Flash` (`321B` total / `18B` active) runs **100% resident in unified memory** at `100.6 GiB` (`SHVQ4_G32 + SHVQ2_G64 + SHVQ3_G64`, **`1,006 tok/s` prefill (`825–869` serve), `46.0–46.4 tok/s` decode / `50.7–53.6 tok/s` NextN speculative**, **`743 / 45.0 tok/s` @242.5K `e-means`**, **`81/100` HumanEval+MBPP (`92%` HE), `184/184` API conformance, `37/37` capability, `99.74%` fidelity**, `0` SSD misses, `0` swap) or cold-expert streamed from NVMe on packs exceeding RAM (`134.4 GiB`, `31.6–34.8 tok/s`). [Cold-expert streaming & SHVQ](docs/tuning.md#cold-expert-streaming)
+- **1M-token context (LSA `Ward-512` & Capacity-Balanced `e-means-4096`)** — **2,317 tok/s prefill / 105.6 tok/s decode at 1M** (`Qwen3.6-35B-A3B`, `13.88×` vs dense @524K), **1,888 tok/s prefill / 63.7 tok/s decode at 1M** (`Qwen3.8-Flash-Next` `+55.3%` `e-means`), **743 tok/s prefill / 45.0 tok/s decode at 242.5K** (`GLM-5.3-Flash` `321B` `e-means`), **3/3 needle recall** across every model, training-free. [LSA manual](docs/lsa.md)
+- **Speculative decoding & mixed quantization** — MTP / Variational / DSpine (`B=2..16`, up to `4.19×` / `12.7 tok/round`) / DFlash 2 / MoE-Spec across 20 Hadamard `HQ*` & affine `AQ*` formats, 20 Spherical `SHVQ{1,15,2,3,4}` e-means VQ formats, and `QNGRAM v3 VQ2_G32` / `VQ4_G32` PLE tables (`50.9 → 27.1 → 15.1 GiB`, up to `-70.4%`). [Quantization guide](docs/quantization.md)
 
 ## Benchmarks (headline)
 
-| Model | Prefill (peak) | Decode (spec) | 1M-ctx prefill / decode (LSA · `e-means`) | Repo `.qwcache` / Warm Cache TTFT |
+| Model | Prefill (peak) | Decode (spec) | Long-ctx / 1M prefill / decode (LSA · `e-means`) | Repo `.qwcache` / Warm Cache TTFT |
 | :--- | :---: | :---: | :---: | :---: |
-| Qwen3.6-35B-A3B (`HQ4_G32`) | 6,389 tok/s | 233.4 tok/s | **2,317 / 105.6 tok/s** (`136.8` @64K `e-means`) | **0.12 s** `.qwcache` (`54.4×` vs 6.53 s) |
-| Qwen3.8-Flash-Next (`HQ8+HQ4` + `VQ2` PLE) | 2,696 tok/s | **145.4 tok/s** (`95.1` novel) | **1,888 / 63.7 tok/s** (`e-means` · `1,350 / 41.1` QSA) | **0.24 s** `.qwcache` (`74.3×` vs 17.84 s) |
-| Qwen3.8-27B (+ `DSpine-b16`) | 914 tok/s | **134.5 tok/s** (`4.19×`) | **831 / 36.5 tok/s** (`e-means` / `Ward`) | 6 ms warm cache (`307×`) |
-| GLM-5.3-Flash (`321B`, `SHVQ4/2/3` 100.6 GiB) | 618–968 tok/s | **44.0 tok/s** (`36.2` novel · `34.8` NVMe) | **118.2 / 26.6 tok/s** @160K (`+19.8%` `e-means`) · 1M UMA | 18 ms warm cache (`147×`) |
+| Qwen3.6-35B-A3B (`HQ4_G32`) | 6,389 tok/s | 233.4 tok/s | **2,317 / 105.6 tok/s** @1M (`136.8` @64K `e-means`) | **0.12 s** `.qwcache` (`54.4×` vs 6.53 s) |
+| Qwen3.8-Flash-Next (`HQ8+HQ4` + `VQ2` PLE) | 2,696 tok/s | **145.4 tok/s** (`95.1` novel) | **1,888 / 63.7 tok/s** @1M (`e-means` · `1,350 / 41.1` QSA) | **0.24 s** `.qwcache` (`74.3×` vs 17.84 s) |
+| Qwen3.8-27B (+ `DSpine-b16`) | 914 tok/s | **134.5 tok/s** (`4.19×`) | **831 / 36.5 tok/s** @1M (`e-means` / `Ward`) | 6 ms warm cache (`307×`) |
+| GLM-5.3-Flash (`321B`, `SHVQ4/2/3` 100.6 GiB) | **1,006 tok/s** (`825–869` serve) | **50.7–53.6 tok/s** (`46.0` novel · `81/100` code) | **743 / 45.0 tok/s** @242.5K (`e-means`) · 1M UMA | **10–18 ms** warm cache (`96–193×`) |
 
 <p align="center">
   <img src="assets/qwegn_lsa_emeans_overview.svg" alt="Qwegn 64K to 1M Long-Context Scaling Overview" width="100%">
@@ -80,7 +80,7 @@ Full tables, paired A/B repository memory benchmarks, and thermal protocol: [doc
   <img src="assets/qwegn_model_glm53_flash.svg" alt="GLM-5.3-Flash" width="100%">
 </p>
 
-**GLM-5.3-Flash** · 45L MoE (`321B` total / `18B` active, 288 experts, 8 + 1 active), 11 NoPE MLA (512D latent KV + Key-Pool(4)) + 34 KDA, 4-stream Sinkhorn mHC, NextN MTP, vision (`SHVQ4_G32 + SHVQ2_G64 + SHVQ3_G64`, `100.6 GiB` 100% resident on 128 GB Mac)
+**GLM-5.3-Flash** · 45L MoE (`321B` total / `18B` active, 288 experts, 8 + 1 active), 11 NoPE MLA (512D latent KV + Key-Pool(4)) + 34 KDA, 4-stream Sinkhorn mHC, NextN MTP, vision (`SHVQ4_G32 + SHVQ2_G64 + SHVQ3_G64`, `100.6 GiB` 100% resident on 128 GB Mac — `1,006 tok/s` prefill, `46.0–53.6 tok/s` decode, `81/100` HumanEval+MBPP)
 
 <p align="center">
   <img src="assets/qwegn_model_qwen36_35b_a3b.svg" alt="Qwen3.6-35B-A3B" width="100%">

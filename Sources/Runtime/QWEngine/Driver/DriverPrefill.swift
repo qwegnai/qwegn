@@ -18,6 +18,11 @@ import QWQuant
 import QWState
 
 extension QWEngineDriver {
+    /// Whether full-attention layers run O(T·B) subquadratic prefill at long context (`>= 131K`).
+    var usesSubquadraticLongPrefill: Bool {
+        geometry.usesNoPEMLA || lsaOperator != nil
+    }
+
     func stridedRow(_ tv: QWTensorValue, row: Int, cols: Int, dt: QWDType, rowStrideBytes: Int? = nil) -> QWTensorValue {
         let stride = rowStrideBytes ?? Int((Double(cols) * dt.bytesPerParam).rounded())
         return QWTensorValue(
@@ -95,7 +100,10 @@ extension QWEngineDriver {
             let lw = layersW[p]
             cb = activeCB ?? cb
             enc = activeEnc ?? enc
-            let shouldSlice = (v == 16 || (pos >= 131_072 && v > 16 && v % 8 == 0)) && T >= 16
+            let longWideChunk = pos >= 131_072 && T > 256
+            let shouldSlice = (v == 16
+                || (pos >= 131_072 && v > 16 && v % 8 == 0)
+                || (longWideChunk && v > 0 && v % 4 == 0)) && T >= 16
             if shouldSlice {
                 hal.end(cb, enc)
                 if !pendingColdUnloads.isEmpty {
@@ -229,7 +237,10 @@ extension QWEngineDriver {
             var lastToken = 0
             let maxChunk = psc.maxChunk
             while offset < tokens.count {
-                let stepCap = Self.adaptivePrefillChunkCap(position: session.position, maxChunk: maxChunk)
+                let stepCap = Self.adaptivePrefillChunkCap(
+                    position: session.position,
+                    maxChunk: maxChunk,
+                    isSubquadraticAttention: usesSubquadraticLongPrefill)
                 let count = min(stepCap, tokens.count - offset)
                 let isLast = (offset + count == tokens.count)
                 lastToken = try prefillChunk(session, tokens: tokens,
@@ -237,7 +248,7 @@ extension QWEngineDriver {
                                              runsHead: isLast, mode: effectiveMode, permit: permit)
                 offset += count
             }
-            if prefillScratchEviction.shouldEvict() {
+            if prefillScratchEviction.shouldEvict(wiredEngineBytes: arena.committedBytes) {
                 evictPrefillScratch()
             }
             return lastToken

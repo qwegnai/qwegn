@@ -4,6 +4,7 @@ import QWAlloc
 import QWCore
 import QWGEMM
 import QWHAL
+import QWQuant
 
 // FlashNext per-layer embedding dispatches (Sources/QWMetal/qwple.metal).
 extension QWGemm {
@@ -46,7 +47,7 @@ extension QWGemm {
     }
 }
 
-/// Resident Metal view over a QNGRAM v3 `vq2g32` file for zero-`pread` GPU PLE gather.
+/// Resident Metal view over a QNGRAM v3 `vq2g32` or `vq4g32` file for zero-`pread` GPU PLE gather.
 public struct FNGPUPLETable: @unchecked Sendable {
     public let buffer: any MTLBuffer
     public let headDim: Int
@@ -54,15 +55,18 @@ public struct FNGPUPLETable: @unchecked Sendable {
     public let dataOffset: Int
     public let rowsPerSector: Int
     public let rowBytes: Int
+    public let dtype: QWNgramDType
 
     public init(buffer: any MTLBuffer, headDim: Int, entryCount: Int,
-                dataOffset: Int, rowsPerSector: Int, rowBytes: Int) {
+                dataOffset: Int, rowsPerSector: Int, rowBytes: Int,
+                dtype: QWNgramDType = .vq2g32) {
         self.buffer = buffer
         self.headDim = headDim
         self.entryCount = entryCount
         self.dataOffset = dataOffset
         self.rowsPerSector = rowsPerSector
         self.rowBytes = rowBytes
+        self.dtype = dtype
     }
 
     public init?(binRows: FNNgramBinRows, device: any MTLDevice) {
@@ -73,6 +77,7 @@ public struct FNGPUPLETable: @unchecked Sendable {
         self.dataOffset = binRows.dataOffset
         self.rowsPerSector = binRows.rowsPerSector
         self.rowBytes = binRows.rowBytes
+        self.dtype = binRows.dtype
     }
 
     public static func isResidentMappingAdmissible(binRows: FNNgramBinRows, weightsURL: URL,
@@ -98,7 +103,7 @@ public struct FNGPUPLETable: @unchecked Sendable {
                                         minKVBytes: Int, availableBytes: Int) -> FNGPUPLETable? {
         guard ProcessInfo.processInfo.environment["QWG_PLE_GPU_GATHER"] != "0",
               let binRows = backing as? FNNgramBinRows,
-              binRows.dtype == .vq2g32,
+              (binRows.dtype == .vq2g32 || binRows.dtype == .vq4g32),
               isResidentMappingAdmissible(
                   binRows: binRows, weightsURL: weightsURL, hasPLE: hasPLE, streamNgrams: streamNgrams,
                   hal: hal, weightsEstimate: weightsEstimate, fixedScratchBytes: fixedScratchBytes,
@@ -131,14 +136,15 @@ public struct FNGPUPLETable: @unchecked Sendable {
 }
 
 extension QWGemm {
-    /// Gathers `numTargets * rowsPerTarget` VQ2_G32 rows directly from resident `table.buffer` into `outRegion`.
+    /// Gathers `numTargets * rowsPerTarget` VQ2_G32/VQ4_G32 rows directly from resident `table.buffer`.
     public static func encodeFnPLEVQ2Gather(_ enc: any MTLComputeCommandEncoder, hal: QWHal,
                                             table: FNGPUPLETable, rowIds: QWTensorValue,
                                             targetFloatOffsets: QWTensorValue, outRegion: QWMRegion,
                                             rowsPerTarget: Int, numTargets: Int) throws {
         guard rowsPerTarget > 0, numTargets > 0 else { return }
-        precondition(table.headDim % 32 == 0, "VQ2 PLE gather requires headDim % 32 == 0")
-        enc.setComputePipelineState(try hal.pipeline("qwg_ple_vq2_gather"))
+        precondition(table.headDim % 32 == 0, "VQ PLE gather requires headDim % 32 == 0")
+        let isVQ4 = table.dtype == .vq4g32
+        enc.setComputePipelineState(try hal.pipeline(isVQ4 ? "qwg_ple_vq4_gather" : "qwg_ple_vq2_gather"))
         enc.setBuffer(table.buffer, offset: 0, index: 0)
         rowIds.bind(enc, index: 1)
         targetFloatOffsets.bind(enc, index: 2)
@@ -147,7 +153,8 @@ extension QWGemm {
                        table.dataOffset, table.rowsPerSector, table.rowBytes, startIndex: 4)
         let groupsPerRow = table.headDim / 32
         let totalTeams = numTargets * rowsPerTarget * groupsPerRow
-        let tgs = max(1, min(1024, (totalTeams + 15) / 16))
+        let teamsPerTG = isVQ4 ? 32 : 16
+        let tgs = max(1, min(1024, (totalTeams + teamsPerTG - 1) / teamsPerTG))
         enc.dispatchThreadgroups(MTLSize(width: tgs, height: 1, depth: 1),
                                  threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
     }

@@ -86,6 +86,7 @@ final class QWDFlashDrafter: @unchecked Sendable {
     private let psoDownRowPaired: [Int: any MTLComputePipelineState]
     let psoGateUpFwht32Batched: [Int: any MTLComputePipelineState]
     let dspinePSO: DSpinePipelines
+    let quantPSOs: [DrafterQuantKey: DrafterQuantPipelines]
 
     let sessionSlots: [QWDFlashSessionSlot]
 
@@ -112,7 +113,7 @@ final class QWDFlashDrafter: @unchecked Sendable {
         let pack = try QWQuant.Pack(url: resolvedURL, descriptor: .qwen38_27b, skipIdentityCheck: true)
         let io = PlaneIO(pack: pack, policy: LoadPolicy(descriptor: pack.descriptor))
 
-        let wCapacity = config.isDSpine ? 1_920_000_000 : 1_480_000_000
+        let wCapacity = Self.computeWeightCapacity(pack: pack, isDSpine: config.isDSpine)
         guard let wBuf = hal.device.makeBuffer(length: wCapacity, options: .storageModeShared) else {
             throw QWEngineDriverError.state("QWDFlashDrafter: failed to allocate weight buffer")
         }
@@ -120,43 +121,11 @@ final class QWDFlashDrafter: @unchecked Sendable {
         let wSub = QWSubAllocator(region: QWMRegion(buffer: wBuf, base: 0, length: wCapacity))
 
         func loadQ4(_ name: String, n: Int, k: Int) throws -> QWWeightView {
-            let elems = n * (k / 32) * 10
-            let t = try wSub.allocate(QWTensorShape([elems], .f16))
-            let dst = t.region.buffer.contents().advanced(by: t.region.base + t.offset)
-            try io.load(name, layout: .hq4, into: dst)
-            guard let v = QWWeightView(blocks: t, n: n, k: k,
-                                        isRotated: hal.weightBasis.rotatesActivations) else {
-                throw QWEngineDriverError.weightMissing(name, "invalid DFlash Q4 view")
-            }
-            return v
+            try Self.loadQuantWeight(pack: pack, io: io, wSub: wSub, hal: hal, name: name, n: n, k: k)
         }
 
         func concatQ4(_ specs: [(name: String, n: Int)], k: Int) throws -> (QWWeightView, [QWWeightView]) {
-            let g = k / 32
-            let totalN = specs.reduce(0) { $0 + $1.n }
-            let totalElems = totalN * g * 10
-            let blocks = try wSub.allocate(QWTensorShape([totalElems], .f16))
-            let basePtr = blocks.region.buffer.contents().advanced(by: blocks.region.base + blocks.offset)
-            guard let big = QWWeightView(blocks: blocks, n: totalN, k: k,
-                                          isRotated: hal.weightBasis.rotatesActivations) else {
-                throw QWEngineDriverError.weightMissing(specs.first?.name ?? "concat", "invalid DFlash concat")
-            }
-            var byteOff = 0
-            var subViews: [QWWeightView] = []
-            var row0 = 0
-            for (name, n) in specs {
-                let bytes = n * g * 20
-                try io.load(name, layout: .hq4, into: basePtr.advanced(by: byteOff))
-                let subT = QWTensorValue(region: blocks.region, offset: blocks.offset + byteOff,
-                                         shape: QWTensorShape([n * g * 10], .f16))
-                guard let sv = big.subview(blocks: subT, n: n, k: k) else {
-                    throw QWEngineDriverError.weightMissing(name, "invalid DFlash subview")
-                }
-                subViews.append(sv)
-                byteOff += bytes
-                row0 += n
-            }
-            return (big, subViews)
+            try Self.concatQuantWeights(pack: pack, io: io, wSub: wSub, hal: hal, specs: specs, k: k)
         }
 
         let psoBf16F16 = try hal.pipeline("qwg_bf16_to_f16")
@@ -259,10 +228,11 @@ final class QWDFlashDrafter: @unchecked Sendable {
                 (p + "self_attn.k_proj.weight", kvDim),
                 (p + "self_attn.v_proj.weight", kvDim)
             ], k: H)
-            let kvBlockOffset = qDim * (H / 32) * 20
+            let kvBlockOffset = qDim * qkvBig.rowBytes
+            let kvByteCount = 2 * kvDim * qkvBig.rowBytes
             let kvBlocks = QWTensorValue(region: qkvBig.blocks.region,
                                          offset: qkvBig.blocks.offset + kvBlockOffset,
-                                         shape: QWTensorShape([2 * kvDim * (H / 32) * 10], .f16))
+                                         shape: QWTensorShape([kvByteCount / 2], .f16))
             guard let kvView = qkvBig.subview(blocks: kvBlocks, n: 2 * kvDim, k: H) else {
                 throw QWEngineDriverError.weightMissing(p + "self_attn.k_proj.weight", "invalid kvView")
             }
@@ -361,6 +331,7 @@ final class QWDFlashDrafter: @unchecked Sendable {
         self.psoDownBatched = downMap
         self.psoDownRowPaired = downRowPairedMap
         self.psoGateUpFwht32Batched = guMap
+        self.quantPSOs = try Self.loadQuantPipelines(hal: hal, fc: self.fc, layers: loadedLayers)
     }
 
     func encodeCaptureTargetHidden(_ enc: any MTLComputeCommandEncoder,
@@ -386,6 +357,10 @@ final class QWDFlashDrafter: @unchecked Sendable {
                                 input: QWTensorValue,
                                 output: QWTensorValue,
                                 rows: Int) {
+        if !QWMTPBatchedMLP.usesQ4GMKernel(weight) {
+            encodeAQMatmul(enc, weight: weight, input: input, output: output, rows: rows)
+            return
+        }
         let n = weight.n, k = weight.k
         if rows == 1 {
             enc.setComputePipelineState(psoGemvT4)

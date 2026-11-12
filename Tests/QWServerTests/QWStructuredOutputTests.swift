@@ -216,6 +216,14 @@ final class QWStructuredOutputTests: XCTestCase {
         XCTAssertTrue(hdrAllowed.contains(2), "must allow read_file")
         XCTAssertFalse(hdrAllowed.contains(3), "must block grep")
         try c.accept(2) // read_file
+        let postNameAllowed = try XCTUnwrap(try c.allowedTokens())
+        XCTAssertEqual(postNameAllowed, [1, 4], "non-special </tool_call> must not duplicate toolCallEndToken")
+        var logits = [Float](repeating: 0, count: pieces.count)
+        logits[4] = 5.0
+        let picked = try logits.withUnsafeBufferPointer { buf in
+            try QWSampler(config: .greedy).constrainedToken(logits: buf, allowed: postNameAllowed)
+        }
+        XCTAssertEqual(picked, 4)
         try c.accept(4) // <arg_key>
         XCTAssertEqual(try c.allowedTokens(), [6], "must allow path, not pattern")
         try c.accept(6) // path

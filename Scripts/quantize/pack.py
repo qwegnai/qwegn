@@ -692,9 +692,9 @@ if __name__ == "__main__":
                     help="override quantization format for MoE expert stacks (e.g. hq2_g128)")
     ap.add_argument("--expert-down-quant", default=None,
                     help="override quantization format for MoE expert down_proj (e.g. hq3_g128)")
-    ap.add_argument("--ngram-quant", default="bf16", choices=["bf16", "q8", "q4", "vq2", "vq2_g32"],
+    ap.add_argument("--ngram-quant", default="bf16", choices=["bf16", "q8", "q4", "vq2", "vq2_g32", "vq4", "vq4_g32"],
                     help="the QNGRAM row format of the PLE n-gram table: bf16 "
-                         "(v1), q8 or q4 (v2), or vq2_g32 (v3 e-means)")
+                         "(v1), q8 or q4 (v2), or vq2_g32/vq4_g32 (v3 e-means)")
     ap.add_argument("--l1-hot", type=int, default=0,
                     help="the QNGRAM header's l1Hot field: how many hot rows "
                          "the writer recorded")

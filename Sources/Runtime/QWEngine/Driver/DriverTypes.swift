@@ -694,30 +694,24 @@ extension QWEngineDriver {
         let x: QWTensorValue                             // [maxChunk · H] f16
         let ln1: QWTensorValue                           // [maxChunk · H] f16
         let ln2: QWTensorValue                           // [maxChunk · H] f16
-        let gs: QWTensorValue                            // group sums K=5120: maxChunk · 256 B f32
-        let gs48: QWTensorValue                          // group sums K=6144: maxChunk · 256 B f32
-        let gsI: QWTensorValue                           // group sums K=17408: maxChunk · 768 B f32
-        let gdnY: QWTensorValue                          // [64 · 16480] f32
-        let gdnY16: QWTensorValue                        // [64 · 16480] f16
-        let attnY: QWTensorValue                         // [64 · 14336] f32
-        let attnY16: QWTensorValue                       // [64 · 14336] f16
-        let qkv32: QWTensorValue, qkv16: QWTensorValue   // [64 · 10240] f32 / f16
-        let z32: QWTensorValue, z16: QWTensorValue       // [64 · 6144] f32 / f16
-        let a32: QWTensorValue, b32: QWTensorValue       // [64 · 48] f32 (exact contiguous stride 48 f32)
-        let betas: QWTensorValue, glog: QWTensorValue    // [64 · 48] f32 (exact contiguous stride 48 f32)
-        let convY: QWTensorValue                         // [64 · 10240] f16
-        let oScr: QWTensorValue                          // [64 · 6144] f32
-        let oOut: QWTensorValue                          // [64 · 6144] f16
-        let attOut: QWTensorValue                        // [64 · 6144] f16
-        let attV16: QWTensorValue                        // [(maxChunk + 32) · 1024] f16
-        let attQR16: QWTensorValue                       // [(maxChunk + 32) · 12288] f16
-        let attKR16: QWTensorValue                       // [(maxChunk + 32) · 1024] f16
-        let U: QWTensorValue, W: QWTensorValue           // [64 · 6144] f32
-        let A: QWTensorValue, B: QWTensorValue           // [64 · 6144] f32
-        let o32: QWTensorValue, o16: QWTensorValue       // [64 · H] f32 / f16
-        let guRaw16: QWTensorValue                       // [64 · 34816] f16
-        let gu32: QWTensorValue, gu16: QWTensorValue     // [64 · I] f32 / f16
-        let dn32: QWTensorValue, dn16: QWTensorValue     // [64 · H] f32 / f16
+        let gdnY: QWTensorValue                          // [maxChunk · gdnTotalN] f32 (non-KDA)
+        let attnY16: QWTensorValue                       // [maxChunk · attnTotalN] f16 (non-MLA)
+        let qkv16: QWTensorValue                         // [maxChunk · qkvC] f16
+        let z16: QWTensorValue                           // [maxChunk · zC] f16
+        let betas: QWTensorValue, glog: QWTensorValue    // [maxChunk · vh / glogC] f32
+        let convY: QWTensorValue                         // [maxChunk · qkvC] f16
+        let oScr: QWTensorValue                          // [maxChunk · zC] f32
+        let oOut: QWTensorValue                          // [maxChunk · zC] f16
+        let attOut: QWTensorValue                        // [maxChunk · qC] f16
+        let attV16: QWTensorValue                        // [(maxChunk + 32) · kvE] f16 (non-MLA)
+        let attQR16: QWTensorValue                       // [(maxChunk + 32) · qOut] f16 (non-MLA)
+        let attKR16: QWTensorValue                       // [(maxChunk + 32) · kvE] f16 (non-MLA)
+        let U: QWTensorValue, W: QWTensorValue           // [maxChunk · zC] f32
+        let A: QWTensorValue, B: QWTensorValue           // [maxChunk · zC] f32
+        let o16: QWTensorValue                           // [maxChunk · H] f16
+        let guRaw16: QWTensorValue                       // [maxChunk · max(2I, 2H)] f16
+        let gu16: QWTensorValue                          // [maxChunk · I] f16
+        let dn32: QWTensorValue, dn16: QWTensorValue     // [maxChunk · H] f32 / f16
         /// The sparse-MoE chain's scratch — nil when the model has no MoE layer.
         let moe: MoEScratch?
         let mhcStream: QWTensorValue?
@@ -725,35 +719,25 @@ extension QWEngineDriver {
         let fgb16: QWTensorValue?
 
         init(maxChunk: Int, x: QWTensorValue, ln1: QWTensorValue, ln2: QWTensorValue,
-             gs: QWTensorValue, gs48: QWTensorValue, gsI: QWTensorValue,
-             gdnY: QWTensorValue, gdnY16: QWTensorValue,
-             attnY: QWTensorValue, attnY16: QWTensorValue,
-             qkv32: QWTensorValue, qkv16: QWTensorValue,
-             z32: QWTensorValue, z16: QWTensorValue,
-             a32: QWTensorValue, b32: QWTensorValue,
+             gdnY: QWTensorValue, attnY16: QWTensorValue,
+             qkv16: QWTensorValue, z16: QWTensorValue,
              betas: QWTensorValue, glog: QWTensorValue,
              convY: QWTensorValue, oScr: QWTensorValue, oOut: QWTensorValue,
              attOut: QWTensorValue, attV16: QWTensorValue, attQR16: QWTensorValue, attKR16: QWTensorValue,
              U: QWTensorValue, W: QWTensorValue, A: QWTensorValue, B: QWTensorValue,
-             o32: QWTensorValue, o16: QWTensorValue,
-             guRaw16: QWTensorValue, gu32: QWTensorValue, gu16: QWTensorValue,
+             o16: QWTensorValue, guRaw16: QWTensorValue, gu16: QWTensorValue,
              dn32: QWTensorValue, dn16: QWTensorValue,
              moe: MoEScratch?,
              mhcStream: QWTensorValue? = nil, mhcControls: QWTensorValue? = nil,
              fgb16: QWTensorValue? = nil) {
             self.maxChunk = maxChunk; self.x = x; self.ln1 = ln1; self.ln2 = ln2
-            self.gs = gs; self.gs48 = gs48; self.gsI = gsI
-            self.gdnY = gdnY; self.gdnY16 = gdnY16
-            self.attnY = attnY; self.attnY16 = attnY16
-            self.qkv32 = qkv32; self.qkv16 = qkv16
-            self.z32 = z32; self.z16 = z16
-            self.a32 = a32; self.b32 = b32
+            self.gdnY = gdnY; self.attnY16 = attnY16
+            self.qkv16 = qkv16; self.z16 = z16
             self.betas = betas; self.glog = glog
             self.convY = convY; self.oScr = oScr; self.oOut = oOut
             self.attOut = attOut; self.attV16 = attV16; self.attQR16 = attQR16; self.attKR16 = attKR16
             self.U = U; self.W = W; self.A = A; self.B = B
-            self.o32 = o32; self.o16 = o16
-            self.guRaw16 = guRaw16; self.gu32 = gu32; self.gu16 = gu16
+            self.o16 = o16; self.guRaw16 = guRaw16; self.gu16 = gu16
             self.dn32 = dn32; self.dn16 = dn16
             self.moe = moe
             self.mhcStream = mhcStream; self.mhcControls = mhcControls

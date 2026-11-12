@@ -3,6 +3,7 @@ import Metal
 import QWAlloc
 import QWCore
 import QWHAL
+import QWQuant
 @testable import QWEngine
 
 final class QWDFlashTests: XCTestCase {
@@ -433,5 +434,43 @@ final class QWDFlashTests: XCTestCase {
         let outTokPtr = outTokensBuf.contents().bindMemory(to: Int32.self, capacity: D)
         XCTAssertEqual(outTokPtr[0], 5)
         XCTAssertEqual(outTokPtr[1], 27)
+    }
+
+    func testComputeWeightCapacityPreservesRaw2DAndSub2BitPlanes() throws {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qwg_dflash_cap_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let hdrJSON = """
+        {
+          "provenance": {"source": "unit-test"},
+          "tensors": {
+            "selected_prefix_bridge.codebook": {"shape": [4096, 1024], "raw_off": 64},
+            "fc.weight": {
+              "shape": [128, 256],
+              "hq4_off": 8388672,
+              "hq": {"bits": 15, "group": 64, "vq": "shvq1"}
+            }
+          }
+        }
+        """
+        let hdrBytes = Data(hdrJSON.utf8)
+        var data = Data("QWP1".utf8)
+        let len = UInt64(hdrBytes.count)
+        for shift in stride(from: 0, to: 64, by: 8) {
+            data.append(UInt8(truncatingIfNeeded: len >> shift))
+        }
+        data.append(Data(count: 64))
+        data.append(hdrBytes)
+        let qwpURL = tmpDir.appendingPathComponent("model.qwp")
+        try data.write(to: qwpURL)
+
+        let pack = try QWQuant.Pack(url: tmpDir, descriptor: .qwen38_27b, skipIdentityCheck: true)
+        let cap = QWDFlashDrafter.computeWeightCapacity(pack: pack, isDSpine: true)
+        let rawCodebookBytes = 4096 * 1024 * 2
+        let shvq15Bytes = 128 * (256 / 64) * 14
+        XCTAssertGreaterThanOrEqual(cap, rawCodebookBytes + shvq15Bytes + 64 * 1024 * 1024)
+        XCTAssertLessThan(cap, 128 * 1024 * 1024)
     }
 }

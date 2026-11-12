@@ -1,5 +1,5 @@
-# Signed Hadamard e-means Vector Quantizer (SHVQ{2,3,4}_G{32,64,128,256}).
-# Factors exact coordinate signs + positive-orthant e-means codebooks with 2B f16
+# Signed Hadamard e-means Vector Quantizer (SHVQ{1,15,2,3,4}_G{32,64,128,256}).
+# Factors exact coordinate or antipodal signs + e-means codebooks with 2B f16
 # group scale headers (zero bias) for 0-ULP Python/Swift/Metal parity.
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import argparse
 import hashlib
 import math
 import os
-import struct
 from pathlib import Path
 
 import numpy as np
@@ -21,10 +20,11 @@ from hq_blocks import (
     parse_quant_spec,
     quant_hq_blocks,
 )
+from shvq_sub2 import load_shvq_sub2_tables
 
-SHVQ_VALID_BITS = (2, 3, 4)
+SHVQ_VALID_BITS = (1, 2, 3, 4, 15)
 SHVQ_VALID_GROUPS = (32, 64, 128, 256)
-SHVQ_PREFIXES = ("shvq2", "shvq3", "shvq4")
+SHVQ_PREFIXES = ("shvq15", "shvq1", "shvq2", "shvq3", "shvq4")
 SHVQ_TABLE_MAGIC = b"QSHVQT01"
 TABLES_BIN_PATH = Path(__file__).resolve().parent / "shvq_tables.bin"
 METAL_ENC_SRC_PATH = Path(__file__).resolve().parent / "shvq_metal_enc.mm"
@@ -62,7 +62,9 @@ def _get_metal_enc_lib():
             )
             tmp_out.replace(dylib_path)
         lib = ctypes.CDLL(str(dylib_path))
-        lib.shvq_metal_init.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+        lib.shvq_metal_init.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+        ]
         lib.shvq_metal_init.restype = ctypes.c_int
         lib.shvq_metal_encode.argtypes = [
             ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint64,
@@ -70,11 +72,17 @@ def _get_metal_enc_lib():
         ]
         lib.shvq_metal_encode.restype = ctypes.c_int
         tables = load_shvq_tables()
+        sub2 = load_shvq_sub2_tables()
+        cb1 = np.ascontiguousarray(sub2["lut1_bits"].view(np.float16).astype(np.float32))
+        smap15 = sub2["step_map15_bits"].view(np.float16).astype(np.float32)
+        cb15 = np.ascontiguousarray(smap15[sub2["lut15_u8"]], dtype=np.float32)
         cb2 = np.ascontiguousarray(tables["lut2_bits"].view(np.float16).astype(np.float32))
         cb3 = np.ascontiguousarray(tables["lut3_bits"].view(np.float16).astype(np.float32))
         smap = tables["step_map_bits"].view(np.float16).astype(np.float32)
         cb4 = np.ascontiguousarray(smap[tables["lut4_u8"]], dtype=np.float32)
-        if lib.shvq_metal_init(cb2.ctypes.data, cb3.ctypes.data, cb4.ctypes.data) != 0:
+        if lib.shvq_metal_init(
+            cb1.ctypes.data, cb15.ctypes.data, cb2.ctypes.data, cb3.ctypes.data, cb4.ctypes.data
+        ) != 0:
             _METAL_ENC_FAILED = True
             return None
         _METAL_ENC_LIB = lib
@@ -100,7 +108,7 @@ def parse_shvq_spec(spec: str, default_group: int | None = None) -> tuple[int, i
         g = int(parts[1][1:])
         if b in SHVQ_VALID_BITS and g in SHVQ_VALID_GROUPS:
             return b, g
-    raise ValueError(f"Invalid SHVQ spec {spec!r}; expected shvq{{2,3,4}}_g{{32,64,128,256}}")
+    raise ValueError(f"Invalid SHVQ spec {spec!r}; expected shvq{{1,15,2,3,4}}_g{{32,64,128,256}}")
 
 
 def format_shvq_spec(bits: int, group: int) -> str:
@@ -109,10 +117,14 @@ def format_shvq_spec(bits: int, group: int) -> str:
     return f"shvq{bits}_g{group}"
 
 
-def shvq_block_bytes(bits: int, group: int) -> int:
+def shvq_payload_bytes(bits: int, group: int) -> int:
     if bits not in SHVQ_VALID_BITS or group not in SHVQ_VALID_GROUPS:
         raise ValueError(f"Unsupported SHVQ (bits={bits}, group={group})")
-    return 2 + (group * bits) // 8
+    return (group * 3) // 16 if bits == 15 else (group * bits) // 8
+
+
+def shvq_block_bytes(bits: int, group: int) -> int:
+    return 2 + shvq_payload_bytes(bits, group)
 
 
 def parse_any_quant_spec(spec: str, default_group: int | None = None) -> tuple[int, int, bool, bool]:
@@ -271,12 +283,10 @@ def quant_shvq_blocks(
     else:
         dev = torch.device(device)
 
-    tables = load_shvq_tables()
     bbytes = shvq_block_bytes(bits, eff_group)
     n_groups = k_cols // eff_group
     out = np.empty((n_rows, n_groups, bbytes), dtype=np.uint8)
 
-    # Native Metal register encoder (fixed 146 MiB shared buffer, zero PyTorch MPS overspill).
     if device is None or device == "mps":
         mlib = _get_metal_enc_lib()
         if mlib is not None and n_rows > 0:
@@ -304,22 +314,33 @@ def quant_shvq_blocks(
                     if rc == 0:
                         return out, eff_group
 
-    if bits == 2:
-        cb_f32 = tables["lut2_bits"].view(np.float16).astype(np.float32)
+    is_sub2 = bits in (1, 15)
+    if is_sub2:
+        sub2 = load_shvq_sub2_tables()
+        if bits == 1:
+            cb_f32 = sub2["lut1_bits"].view(np.float16).astype(np.float32)
+        else:
+            smap15 = sub2["step_map15_bits"].view(np.float16).astype(np.float32)
+            cb_f32 = smap15[sub2["lut15_u8"]]
         sub_d = 8
-    elif bits == 3:
-        cb_f32 = tables["lut3_bits"].view(np.float16).astype(np.float32)
-        sub_d = 4
     else:
-        smap = tables["step_map_bits"].view(np.float16).astype(np.float32)
-        cb_f32 = smap[tables["lut4_u8"]]
-        sub_d = 4
+        tables = load_shvq_tables()
+        if bits == 2:
+            cb_f32 = tables["lut2_bits"].view(np.float16).astype(np.float32)
+            sub_d = 8
+        elif bits == 3:
+            cb_f32 = tables["lut3_bits"].view(np.float16).astype(np.float32)
+            sub_d = 4
+        else:
+            smap = tables["step_map_bits"].view(np.float16).astype(np.float32)
+            cb_f32 = smap[tables["lut4_u8"]]
+            sub_d = 4
 
     cb = torch.from_numpy(cb_f32).to(device=dev, dtype=torch.float32)
     cb_n2 = (cb * cb).sum(dim=-1)
 
     row_chunk = max(1, min(n_rows, (32 * 1024 * 1024) // max(1, k_cols)))
-    bs_sub = 131072 if bits == 4 else 524288
+    bs_sub = 131072 if bits in (4, 15) else 524288
     bit_weights8 = (1 << np.arange(8, dtype=np.uint8))[None, None, :]
     bit_weights4 = (1 << np.arange(4, dtype=np.uint16))[None, None, :]
 
@@ -331,9 +352,52 @@ def quant_shvq_blocks(
             if rotate:
                 wf = _fwht32_torch(wf.reshape(-1, 32)).reshape(rc, k_cols)
             wg = wf.reshape(rc * n_groups, eff_group)
+            scale = torch.sqrt(torch.mean(wg * wg, dim=-1, keepdim=True)).clamp(min=1e-8, max=65504.0)
+            n_oct = eff_group // 8
+
+            if is_sub2:
+                idx_all = None
+                sgn_all = None
+                for it in range(als_iters + 1):
+                    sc16 = scale.to(torch.float16).to(torch.float32).clamp(min=1e-8)
+                    u = (wg / sc16).reshape(-1, sub_d)
+                    idx_u = torch.empty(u.shape[0], device=dev, dtype=torch.int64)
+                    sgn_u = torch.empty(u.shape[0], device=dev, dtype=torch.uint8)
+                    for i in range(0, u.shape[0], bs_sub):
+                        ub = u[i : i + bs_sub]
+                        dots = ub @ cb.t()
+                        best_k = (cb_n2[None, :] - 2.0 * dots.abs()).argmin(dim=-1)
+                        sel_dots = dots.gather(1, best_k[:, None]).squeeze(1)
+                        idx_u[i : i + bs_sub] = best_k
+                        sgn_u[i : i + bs_sub] = (sel_dots < 0.0).to(torch.uint8)
+                    if it < als_iters:
+                        c_raw = cb[idx_u]
+                        c_mat = torch.where(sgn_u[:, None] != 0, -c_raw, c_raw).reshape(-1, eff_group)
+                        num = (wg * c_mat).sum(dim=-1, keepdim=True)
+                        den = (c_mat * c_mat).sum(dim=-1, keepdim=True).clamp(min=1e-12)
+                        scale = (num / den).clamp(min=1e-8, max=65504.0)
+                    else:
+                        idx_all = idx_u.cpu().numpy()
+                        sgn_all = sgn_u.cpu().numpy()
+
+                sc_u16 = scale.squeeze(-1).to(torch.float16).cpu().numpy().view(np.uint16).reshape(rc, n_groups)
+                out[r0:r1, :, 0] = (sc_u16 & 0xFF).astype(np.uint8)
+                out[r0:r1, :, 1] = (sc_u16 >> 8).astype(np.uint8)
+                if bits == 1:
+                    b1 = ((idx_all & 0x7F) | (sgn_all.astype(np.int64) << 7)).astype(np.uint8)
+                    out[r0:r1, :, 2:] = b1.reshape(rc, n_groups, n_oct)
+                else:
+                    u12 = ((idx_all & 0x07FF) | (sgn_all.astype(np.int64) << 11)).astype(np.uint16)
+                    u_pair = u12.reshape(rc, n_groups, n_oct // 2, 2)
+                    u0, u1 = u_pair[..., 0], u_pair[..., 1]
+                    p0 = (u0 & 0xFF).astype(np.uint8)
+                    p1 = (((u0 >> 8) & 0x0F) | ((u1 & 0x0F) << 4)).astype(np.uint8)
+                    p2 = ((u1 >> 4) & 0xFF).astype(np.uint8)
+                    out[r0:r1, :, 2:] = np.stack([p0, p1, p2], axis=-1).reshape(rc, n_groups, (n_oct // 2) * 3)
+                continue
+
             neg = torch.signbit(wg)
             w_abs = wg.abs()
-            scale = torch.sqrt(torch.mean(w_abs * w_abs, dim=-1, keepdim=True)).clamp(min=1e-8, max=65504.0)
             idx_all = None
             for it in range(als_iters + 1):
                 sc16 = scale.to(torch.float16).to(torch.float32).clamp(min=1e-8)
@@ -354,7 +418,6 @@ def quant_shvq_blocks(
             out[r0:r1, :, 0] = (sc_u16 & 0xFF).astype(np.uint8)
             out[r0:r1, :, 1] = (sc_u16 >> 8).astype(np.uint8)
             neg_np = neg.cpu().numpy().astype(np.uint8)
-            n_oct = eff_group // 8
 
             if bits == 2:
                 signs8 = (neg_np.reshape(rc * n_groups, n_oct, 8) * bit_weights8).sum(axis=-1).astype(np.uint8)
@@ -381,13 +444,33 @@ def dequant_shvq_blocks_rot(blocks: np.ndarray, bits: int, group: int) -> np.nda
     expected = shvq_block_bytes(bits, group)
     if bbytes != expected:
         raise ValueError(f"Expected {expected} bytes per block for shvq{bits}_g{group}, got {bbytes}")
-    tables = load_shvq_tables()
     sc_bits = b[:, :, 0].astype(np.uint16) | (b[:, :, 1].astype(np.uint16) << 8)
     sc_f32 = sc_bits.view(np.float16).astype(np.float32)[:, :, None]
     pay = b[:, :, 2:]
     n_oct = group // 8
 
-    if bits == 2:
+    if bits == 1:
+        sub2 = load_shvq_sub2_tables()
+        idx7 = pay & 0x7F
+        s_bits = ((pay >> 7) & 1).astype(np.uint16)[:, :, :, None] << 15
+        pos_bits = sub2["lut1_bits"][idx7]
+        w_bits = (pos_bits ^ s_bits).reshape(n_rows, n_groups, group)
+    elif bits == 15:
+        sub2 = load_shvq_sub2_tables()
+        triples = pay.reshape(n_rows, n_groups, n_oct // 2, 3)
+        p0 = triples[..., 0].astype(np.uint16)
+        p1 = triples[..., 1].astype(np.uint16)
+        p2 = triples[..., 2].astype(np.uint16)
+        u_even = p0 | ((p1 & 0x0F) << 8)
+        u_odd = (p1 >> 4) | (p2 << 4)
+        u12 = np.stack([u_even, u_odd], axis=-1).reshape(n_rows, n_groups, n_oct)
+        idx11 = u12 & 0x07FF
+        s_bits = ((u12 & 0x0800) << 4)[:, :, :, None]
+        u8_codes = sub2["lut15_u8"][idx11]
+        pos_bits = sub2["step_map15_bits"][u8_codes]
+        w_bits = (pos_bits ^ s_bits).reshape(n_rows, n_groups, group)
+    elif bits == 2:
+        tables = load_shvq_tables()
         rec = pay.reshape(n_rows, n_groups, n_oct, 2)
         signs8 = rec[:, :, :, 0]
         idx8 = rec[:, :, :, 1]
@@ -395,6 +478,7 @@ def dequant_shvq_blocks_rot(blocks: np.ndarray, bits: int, group: int) -> np.nda
         s_bits = ((signs8[:, :, :, None] >> np.arange(8, dtype=np.uint8)) & 1).astype(np.uint16) << 15
         w_bits = (pos_bits | s_bits).reshape(n_rows, n_groups, group)
     elif bits == 3:
+        tables = load_shvq_tables()
         rec = pay.reshape(n_rows, n_groups, n_oct, 3)
         signs8 = rec[:, :, :, 0]
         idx0 = rec[:, :, :, 1]
@@ -405,6 +489,7 @@ def dequant_shvq_blocks_rot(blocks: np.ndarray, bits: int, group: int) -> np.nda
         s_bits = ((signs8[:, :, :, None] >> np.arange(8, dtype=np.uint8)) & 1).astype(np.uint16) << 15
         w_bits = (pos_bits | s_bits).reshape(n_rows, n_groups, group)
     else:
+        tables = load_shvq_tables()
         u16 = pay.view("<u2").reshape(n_rows, n_groups, n_oct * 2)
         idx12 = u16 & 0x0FFF
         signs4 = (u16 >> 12) & 0x0F

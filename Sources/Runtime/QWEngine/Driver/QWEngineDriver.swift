@@ -394,15 +394,13 @@ public final class QWEngineDriver: @unchecked Sendable {
         // Region sizes (C03): weights = planes + converted matrices; act =
         // one step's scratch; kv = ctx budget (both kinds, all 16 layers) +
         // per-(seq,layer,kind) table slots; gdn = 2 session slots × THE
-        let bytesPerToken = Self.prefillBytesPerToken(geometry: geometry)
+        let useGroupedNAX = hal.caps.isMetal4TensorCapable
+        let bytesPerToken = Self.prefillBytesPerToken(geometry: geometry, useGroupedNAX: useGroupedNAX)
         let pscBytes = self.prefillChunkSize * bytesPerToken
-        let mtpLongPartialsExtra = (mtpDrafts > 0 && maxTokens > 262_144)
-            ? (mtpDrafts + 1) * Self.partialsCarveBytes(geometry: geometry, maxTokens: maxTokens)
-            : 0
-        let verifyExtra = mtpDrafts > 7 ? (48 << 20) : 0
-        let decodeActBytes = Self.prefillBytesPerToken(geometry: geometry) * 2
-            + geometry.vocab * 4 + QWHead.gemvArgmaxSlots(geometry.vocab) * 8 + (32 << 20) + verifyExtra + mtpLongPartialsExtra
-        let actBytes = pscBytes + max(64 << 20, decodeActBytes)
+        let decodeActBytes = Self.decodeAndMTPScratchBytes(
+            geometry: geometry, prefillChunkRows: self.prefillChunkSize,
+            mtpDrafts: mtpDrafts, maxTokens: maxTokens, useGroupedNAX: useGroupedNAX)
+        let actBytes = pscBytes + decodeActBytes
         let gdnLayerCount = gdnLayers.count
         let recB = QWSlotGeometry.recElems(geometry: geometry) * 4
         let ringB = QWSlotGeometry.ringElems(geometry: geometry) * 2
@@ -413,18 +411,20 @@ public final class QWEngineDriver: @unchecked Sendable {
             + (1 << 20)
         let activeAttnLayers = attnLayers.count + (mtpDrafts > 0 ? 1 : 0)
         let mlaPerTokBytes = geometry.usesNoPEMLA ? activeAttnLayers * ((geometry.indexerHeadDim * 2) / 4) : 0
-        let mlaFixedBytes = geometry.usesNoPEMLA ? (48 << 20) : 0
+        let mlaFixedBytes = Self.mlaFixedScratchBytes(
+            geometry: geometry, prefillChunkRows: self.prefillChunkSize, activeAttnLayers: activeAttnLayers)
         let perTokBytes = 2 * activeAttnLayers * (QWKVCache.pageBytes(mode: kvMode, geometry: geometry) / QWKVCache.pageTokens) + mlaPerTokBytes
         let maxMTP = cfg.mtpBackend == .dflash2 ? 15 : 5
         let prelimPlan = try QWWeightAllocationPlan(geometry: geometry, ropeRows: max(ropeRows, maxTokens),
                                                     mtpDrafts: mtpWeightDrafts, headQ4g: headIsQ4g, maxMTPDrafts: maxMTP,
                                                     format: self.weightFormat)
         let arenaCap = max(1 << 30, hal.caps.maxWorkingSetBytes - (64 << 20))
-        let isColdStreamingMoE = geometry.numExperts > 0 && geometry.effectiveResidentExperts < geometry.numExperts
-        let effectiveReserveGiB = isColdStreamingMoE
+        let isMoE = geometry.numExperts > 0
+        let isColdStreamingMoE = isMoE && geometry.effectiveResidentExperts < geometry.numExperts
+        let effectiveReserveGiB = isMoE
             ? Self.effectiveOSReserveGiB(policy: tuning.memoryPolicy, explicitReserveGiB: osReserveGiB)
             : osReserveGiB
-        let availBytes = isColdStreamingMoE
+        let availBytes = isMoE
             ? Self.residencyBudgetBytes(policy: tuning.memoryPolicy, osReserveGiB: osReserveGiB, arenaCap: arenaCap)
             : min(QWCapacityBudget.availableBytes(osReserveGiB: osReserveGiB), arenaCap)
         let requestedMaxTokens = (isColdStreamingMoE && maxTokens == geometry.maxPositionEmbeddings)
@@ -460,7 +460,7 @@ public final class QWEngineDriver: @unchecked Sendable {
             + (self.weightFormatDeclineReason.map { " weights_declined=\($0)" } ?? "")
         self.capacityLogMessage = try QWEngineBootstrap.admit(
             weightsBytes: weightsBytes,
-            fixedScratchBytes: actBytes + gdnBytes,
+            fixedScratchBytes: actBytes + gdnBytes + mlaFixedBytes,
             kvMode: String(describing: kvMode),
             perTokenBytes: perTokBytes,
             maxTokens: effectiveMaxTokens,
@@ -490,9 +490,13 @@ public final class QWEngineDriver: @unchecked Sendable {
 
         let embedName = L.resolveName(Self.P + "embed_tokens.weight")
         embedPlane = embedName
-        let allowDeviceEmbed = mtpDrafts > 0 && (
-            geometry.effectiveResidentExperts == geometry.numExperts
-            || environment["QW_MTP_DEVICE_EMBED"] == "1"
+        let embedBytes = geometry.vocab * geometry.hidden * 2
+        let devEmbedEnv = environment["QW_MTP_DEVICE_EMBEDDING"] ?? environment["QW_MTP_DEVICE_EMBED"]
+        let allowDeviceEmbed = devEmbedEnv != "0" && mtpDrafts > 0 && (
+            devEmbedEnv == "1"
+            || (mtpDrafts > 1
+                && geometry.effectiveResidentExperts == geometry.numExperts
+                && fixedBytes + kvBytes + embedBytes <= availBytes)
         )
         if let pk = pack {
             guard let rawOff = try pk.entry(embedName).rawOff else {
@@ -597,7 +601,8 @@ public final class QWEngineDriver: @unchecked Sendable {
         let builtScratch = try Self.makeDecodeAndPrefillScratch(
             asub: asub, gsub: gsub, geometry: geometry,
             maxPrefillChunk: self.prefillChunkSize,
-            pOff: pOff, pCarveBytes: pCarveBytes)
+            pOff: pOff, pCarveBytes: pCarveBytes,
+            useGroupedNAX: useGroupedNAX)
         sc = builtScratch.sc
         psc = builtScratch.psc
         let gsOff = builtScratch.gsOff
@@ -652,7 +657,9 @@ public final class QWEngineDriver: @unchecked Sendable {
                                                             rows: mtpDrafts + 1, fusedCapture: true)
             _ = try hal.pipeline("qwg_gdn_capture_replay"); _ = try hal.pipeline("qwg_gdn_replay_state"); _ = try hal.pipeline("qwg_verify_copy")
             verifyWindow = try QWVerifyWindow(geometry: geometry, allocator: asub, rows: mtpDrafts + 1,
-                                             layerMajor: true, gpuTargets: true, q4Head: verifyHeadQ4Enabled || headIsQ4g)
+                                             layerMajor: true, gpuTargets: true,
+                                             q4Head: verifyHeadQ4Enabled || headIsQ4g,
+                                             useGroupedNAX: useGroupedNAX)
             mtpBatchedMLP = try QWMTPBatchedMLP(geometry: geometry, hal: hal, allocator: asub, rows: mtpDrafts + 1)
             mtpBatchedTrunk = try QWMTPBatchedTrunk(geometry: geometry, hal: hal, allocator: asub, rows: mtpDrafts + 1)
             let maxDecodeSplits = effectiveMaxTokens > 262_144 ? QWAttnDecode.maxLongContextSplits : QWAttnDecode.maxSplits

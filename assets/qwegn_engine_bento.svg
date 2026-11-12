@@ -42,7 +42,7 @@
   <g transform="translate(28, 24)">
     <rect x="0.0" y="0.0" width="577" height="28" rx="14.0" fill="#17253b" stroke="#38bdf8" stroke-width="1.2"/>
 <circle cx="15.0" cy="14.0" r="4.5" fill="#38bdf8"/>
-<text x="27.0" y="18.6" class="sans" font-size="13" font-weight="700" fill="#7dd3fc" letter-spacing="0.3">QWEGN v0.15.1 · PURE SWIFT 6.2 &amp; METAL 4 · 1M LSA · .QWCACHE · 321B MoE</text>
+<text x="27.0" y="18.6" class="sans" font-size="13" font-weight="700" fill="#7dd3fc" letter-spacing="0.3">QWEGN v0.17.1 · PURE SWIFT 6.2 &amp; METAL 4 · 1M LSA · .QWCACHE · 321B MoE</text>
     <rect x="636.0" y="0.0" width="268" height="28" rx="14.0" fill="#062e22" stroke="#10b981" stroke-width="1.2"/>
 <text x="770.0" y="18.6" text-anchor="middle" class="sans" font-size="13" font-weight="700" fill="#6ee7b7" letter-spacing="0.3">0 MLX · 0 LLAMA.CPP · 0 PYTORCH</text>
     <text x="0" y="64" fill="#f8fafc" class="title" font-size="31">Qwegn — Apple Silicon LLM &amp; VLM Inference Engine</text>
@@ -56,7 +56,7 @@
       <text x="452" y="21" text-anchor="middle" fill="#c084fc" class="mono" font-size="13.5">0 Heap &amp; 0 GPU Decode Allocs</text>
 
       <rect x="612" y="0" width="292" height="32" rx="8" fill="#231a0b" stroke="#78350f" stroke-width="1.2"/>
-      <text x="758" y="21" text-anchor="middle" fill="#fbbf24" class="mono" font-size="13.5">32 HQ · AQ · SHVQ + VQ2 Formats</text>
+      <text x="758" y="21" text-anchor="middle" fill="#fbbf24" class="mono" font-size="13.5">40 HQ · AQ · SHVQ + VQ Formats</text>
 
       <rect x="0" y="42" width="444" height="32" rx="8" fill="#07261e" stroke="#065f46" stroke-width="1.2"/>
       <text x="222" y="63" text-anchor="middle" fill="#34d399" class="mono" font-size="13.5">189× LSA KV Traffic Cut</text>
@@ -76,9 +76,9 @@
     <text x="20" y="120" fill="#f8fafc" class="title" font-size="17">Sustained Long-Prompt Ingestion</text>
     <text x="20" y="144" fill="#e2e8f0" class="subtitle" font-size="14.5">• 6,142 tok/s @64K · 2,317 @1M (35B-A3B)</text>
     <text x="20" y="166" fill="#e2e8f0" class="subtitle" font-size="14.5">• 2,696 peak · 1,888 @1M e-means (Flash-Next)</text>
-    <text x="20" y="188" fill="#e2e8f0" class="subtitle" font-size="14.5">• 968 tok/s @16K on 321B GLM (4–5× NAX MLA)</text>
+    <text x="20" y="188" fill="#e2e8f0" class="subtitle" font-size="14.5">• 1,006 tok/s on 321B GLM SHVQ (743 @242.5K)</text>
     <rect x="20" y="206" width="402" height="30" rx="8" fill="#091526" stroke="#1e3a5f" stroke-width="1"/>
-    <text x="221" y="226" text-anchor="middle" fill="#7dd3fc" class="mono" font-size="13">absorb_q MMA 6.8× · GPU MoE Span Map 4×</text>
+    <text x="221" y="226" text-anchor="middle" fill="#7dd3fc" class="mono" font-size="13">4096-Row NAX MoE Tiles · q4/SHVQ Sparse MLA</text>
   </g>
   <g transform="translate(490, 224)">
     <rect width="442" height="252" rx="16" fill="url(#cardGrad)" stroke="#273252" stroke-width="1.4"/>
@@ -111,16 +111,16 @@
   <g transform="translate(490, 494)">
     <rect width="442" height="252" rx="16" fill="url(#cardGrad)" stroke="#273252" stroke-width="1.4"/>
     <rect x="20.0" y="16.0" width="246" height="26" rx="13.0" fill="#062e22" stroke="#10b981" stroke-width="1.2"/>
-<text x="143.0" y="33.5" text-anchor="middle" class="sans" font-size="13" font-weight="700" fill="#6ee7b7" letter-spacing="0.3">321B MOE · UMA SHVQ &amp; NVME</text>
+<text x="143.0" y="33.5" text-anchor="middle" class="sans" font-size="13" font-weight="700" fill="#6ee7b7" letter-spacing="0.3">321B MOE · 100% UMA RESIDENT</text>
     <text x="422" y="34" text-anchor="end" fill="#6ee7b7" class="mono" font-size="13">0 OS Swap</text>
     <text x="20" y="90" fill="url(#emeraldGrad)" class="title mono" font-size="46">321B</text>
-    <text x="149.6" y="88" fill="#34d399" class="title mono" font-size="18">44.0 tok/s</text>
-    <text x="20" y="120" fill="#f8fafc" class="title" font-size="17">100.6 GiB SHVQ Resident · 134 GiB NVMe</text>
-    <text x="20" y="144" fill="#e2e8f0" class="subtitle" font-size="14.5">• 100% UMA resident @ 2.69 bpp (36.2–44.0 tok/s)</text>
-    <text x="20" y="166" fill="#e2e8f0" class="subtitle" font-size="14.5">• >128 GB packs: GPU LRU cuts SSD reads 4×</text>
-    <text x="20" y="188" fill="#e2e8f0" class="subtitle" font-size="14.5">• ColdEventPipeline overlaps NVMe pread + GPU</text>
+    <text x="149.6" y="88" fill="#34d399" class="title mono" font-size="18">53.6 tok/s</text>
+    <text x="20" y="120" fill="#f8fafc" class="title" font-size="17">100.6 GiB Spherical SHVQ · 288/288 Experts</text>
+    <text x="20" y="144" fill="#e2e8f0" class="subtitle" font-size="14.5">• 1,006 pre · 46.0–53.6 tok/s dec (2.69 bpp UMA)</text>
+    <text x="20" y="166" fill="#e2e8f0" class="subtitle" font-size="14.5">• 81/100 Code (92% HE) · 184/184 API · 37/37 Cap</text>
+    <text x="20" y="188" fill="#e2e8f0" class="subtitle" font-size="14.5">• &gt;128 GB MoE engine: GPU LRU + ColdEventPipeline</text>
     <rect x="20" y="206" width="402" height="30" rx="8" fill="#062019" stroke="#065f46" stroke-width="1"/>
-    <text x="221" y="226" text-anchor="middle" fill="#6ee7b7" class="mono" font-size="13">GLM-5.3-Flash (SHVQ4/2/3 · 288/288 Resident)</text>
+    <text x="221" y="226" text-anchor="middle" fill="#6ee7b7" class="mono" font-size="13">GLM-5.3-Flash (SHVQ4/2/3 · 99.74% Fidelity)</text>
   </g>
   <g transform="translate(28, 764)">
     <rect width="442" height="252" rx="16" fill="url(#cardGrad)" stroke="#273252" stroke-width="1.4"/>
@@ -157,9 +157,9 @@
     <text x="20" y="72" fill="#f8fafc" class="title" font-size="16">NoPE MLA · KDA &amp; GDN · mHC · SHVQ &amp; VQ2</text>
     <text x="20" y="104" fill="#e2e8f0" class="subtitle" font-size="14.5">• NoPE MLA (512-d latent KV + Key-Pool(4))</text>
     <text x="20" y="131" fill="#e2e8f0" class="subtitle" font-size="14.5">• 34L KDA &amp; 36L GDN linear recurrence</text>
-    <text x="20" y="158" fill="#e2e8f0" class="subtitle" font-size="14.5">• 2/4-Stream Sinkhorn-20 mHC (-53%)</text>
-    <text x="20" y="185" fill="#e2e8f0" class="subtitle" font-size="14.5">• VQ2_G32 PLE (50.9 → 27.1 GiB, -28.5G toggle)</text>
-    <text x="20" y="212" fill="#e2e8f0" class="subtitle" font-size="14.5">• 20 HQ/AQ + 12 Spherical SHVQ{2..4} formats</text>
+    <text x="20" y="158" fill="#e2e8f0" class="subtitle" font-size="14.5">• 2/4-Stream Sinkhorn-20 mHC (Gram split)</text>
+    <text x="20" y="185" fill="#e2e8f0" class="subtitle" font-size="14.5">• VQ2/VQ4 PLE (50.9 → 27.1 / 15.1 GiB, -70%)</text>
+    <text x="20" y="212" fill="#e2e8f0" class="subtitle" font-size="14.5">• 20 HQ/AQ + 20 Spherical SHVQ{1..4} formats</text>
     <text x="20" y="239" fill="#e2e8f0" class="subtitle" font-size="14.5">• Mixed per-layer packs + q4/q8/f16 KV</text>
     <rect x="20" y="278" width="402" height="32" rx="8" fill="#131129" stroke="#3730a3" stroke-width="1"/>
     <text x="221" y="299" text-anchor="middle" fill="#a5b4fc" class="mono" font-size="13">100% Descriptor-Driven — 0 Model-Name Branches</text>
@@ -181,7 +181,7 @@
 
   <g transform="translate(28, 1378)">
     <rect x="0" y="0" width="904" height="54" rx="10" fill="#0d1322" stroke="#1e293b" stroke-width="1.2"/>
-    <text x="452" y="23" text-anchor="middle" fill="#cbd5e1" class="mono" font-size="13">Qwegn v0.15.1 · Verified on Apple M5 Max (Mac17,6 · 18C CPU · 40C Apple10 GPU · macOS 26+)</text>
+    <text x="452" y="23" text-anchor="middle" fill="#cbd5e1" class="mono" font-size="13">Qwegn v0.17.1 · Verified on Apple M5 Max (Mac17,6 · 18C CPU · 40C Apple10 GPU · macOS 26+)</text>
     <text x="452" y="43" text-anchor="middle" fill="#94a3b8" class="mono" font-size="13">128 GB Unified Memory · 585 GB/s DRAM · 950 GB/s SLC · Zero Runtime MLX / llama.cpp / PyTorch</text>
   </g>
 </svg>

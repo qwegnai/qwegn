@@ -1,8 +1,9 @@
 // qwgemm_shvq_dense.metal — Dense decode GEMV, general GEMV, and greedy head
-// argmax twins for SHVQ{2,3,4}_G{32,64,128,256}.
+// argmax twins for SHVQ{1,15,2,3,4}_G{32,64,128,256}.
 
 #include <metal_stdlib>
 #include <metal_simdgroup>
+#define QW_SHVQ_ROUTED_DIRECT_LUT 1
 #include "qw_dequant_shvq.metalh"
 using namespace metal;
 
@@ -69,7 +70,7 @@ static inline void qwg_gemv_shvq_dx_body(device const char* blocks,
                 const uint row0 = (tg * simdPerTG + (ti >> 5u)) * 4u;                   \
                 if (row0 < realN) {                                                     \
                     qwg_gemv_shvq_rows4_m<BITS, GROUP, half>(                           \
-                        blocks, x, y16, row0, realN, K, mRows, ti & 31u);               \
+                        blocks, x, y16, row0, realN, K, mRows, ti & 31u, tgLut);        \
                 }                                                                       \
             } else {                                                                    \
                 qwg_gemv_shvq_dx_body<BITS, GROUP, 4u>(blocks, x, N & 0x3FFFFFFFu,      \
@@ -104,7 +105,7 @@ static inline void qwg_gemv_shvq_dx_body(device const char* blocks,
             const uint realN = N & 0x00FFFFFFu;                                         \
             const uint row0 = (tg * simdPerTG + simdId) * 4u;                           \
             if (row0 >= realN) return;                                                  \
-            qwg_gemv_shvq_rows4_m<BITS, GROUP>(blocks, x, y, row0, realN, K, mRows, lane); \
+            qwg_gemv_shvq_rows4_m<BITS, GROUP>(blocks, x, y, row0, realN, K, mRows, lane, tgLut); \
         } else if ((N & 0x40000000u) != 0u) {                                           \
             const uint realN = N & 0x3FFFFFFFu;                                         \
             const uint row0 = (tg * simdPerTG + simdId) * 4u;                           \
@@ -213,6 +214,14 @@ static inline void qwg_gemv_shvq_dx_body(device const char* blocks,
         }                                                                               \
     }
 
+QW_SHVQ_DENSE_KERNELS(1, 32)
+QW_SHVQ_DENSE_KERNELS(1, 64)
+QW_SHVQ_DENSE_KERNELS(1, 128)
+QW_SHVQ_DENSE_KERNELS(1, 256)
+QW_SHVQ_DENSE_KERNELS(15, 32)
+QW_SHVQ_DENSE_KERNELS(15, 64)
+QW_SHVQ_DENSE_KERNELS(15, 128)
+QW_SHVQ_DENSE_KERNELS(15, 256)
 QW_SHVQ_DENSE_KERNELS(2, 32)
 QW_SHVQ_DENSE_KERNELS(2, 64)
 QW_SHVQ_DENSE_KERNELS(2, 128)

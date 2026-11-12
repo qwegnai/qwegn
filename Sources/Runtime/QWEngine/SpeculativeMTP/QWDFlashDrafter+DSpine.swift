@@ -39,6 +39,7 @@ struct DSpinePipelines {
     let psoRefineCodeToMsg: any MTLComputePipelineState
     let psoRefineWrite: any MTLComputePipelineState
     let psoRefineScores: any MTLComputePipelineState
+    let psoRefineScoresSub2: any MTLComputePipelineState
     let psoRefineChain: any MTLComputePipelineState
 
     init(hal: QWHal) throws {
@@ -47,6 +48,7 @@ struct DSpinePipelines {
         self.psoRefineCodeToMsg = try hal.pipeline("qwg_dspine_refine_code_to_msg")
         self.psoRefineWrite = try hal.pipeline("qwg_dspine_refine_write")
         self.psoRefineScores = try hal.pipeline("qwg_dspine_refine_scores")
+        self.psoRefineScoresSub2 = try hal.pipeline("qwg_dspine_refine_scores_sub2")
         self.psoRefineChain = try hal.pipeline("qwg_dspine_refine_chain")
     }
 }
@@ -222,6 +224,10 @@ extension QWDFlashDrafter {
         output: QWTensorValue,
         rows: Int
     ) {
+        if !QWMTPBatchedMLP.usesQ4GMKernel(weight) {
+            encodeAQGateUpMatmul(enc, weight: weight, input: input, output: output, rows: rows)
+            return
+        }
         let H = config.hiddenSize
         let I = config.intermediateSize
         if let guPSO = psoGateUpFwht32Batched[rows] {
@@ -297,14 +303,21 @@ extension QWDFlashDrafter {
         )
 
         var headMode: UInt32
-        enc.setComputePipelineState(dspinePSO.psoRefineScores)
+        var useSub2Refine = false
         switch headStorage {
         case .f16(let hTensor):
             headMode = 0
+            enc.setComputePipelineState(dspinePSO.psoRefineScores)
             hTensor.bind(enc, index: 0)
             bs.refineNorm.bind(enc, index: 1)
         case .q4g(let hw):
-            headMode = hw.view.isIncumbentContainer ? 1 : 2
+            if hw.view.isSHVQ {
+                headMode = 0x8000_0000 | UInt32(hw.view.bits) | (UInt32(hw.view.groupSize) << 8)
+                useSub2Refine = hw.view.bits == 1 || hw.view.bits == 15
+            } else {
+                headMode = hw.view.isIncumbentContainer ? 1 : 2
+            }
+            enc.setComputePipelineState(useSub2Refine ? dspinePSO.psoRefineScoresSub2 : dspinePSO.psoRefineScores)
             hw.view.blocks.bind(enc, index: 0)
             bs.refineRot.bind(enc, index: 1)
         }

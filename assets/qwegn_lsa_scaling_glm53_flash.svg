@@ -35,7 +35,7 @@
     <rect x="0" y="0" width="290" height="28" rx="14" fill="#361620" stroke="#f43f5e" stroke-width="1.2"/>
     <text x="145.0" y="18.6" text-anchor="middle" class="mono" font-size="12.5" font-weight="700" fill="#fda4af" letter-spacing="0.3">321B SHVQ &amp; MLA E-MEANS · 4 / 5</text>
     <text x="0" y="64" class="sans" font-size="28" font-weight="800" fill="#f8fafc">GLM-5.3-Flash (321B SHVQ · 100.6 GiB UMA)</text>
-    <text x="0" y="90" class="mono" font-size="13" fill="#cbd5e1">45L MoE (321B / 18B act · 288 exp) · 11 NoPE MLA + 34 KDA · SHVQ4/2/3 (2.69 bpp · 618 tok/s @4K)</text>
+    <text x="0" y="90" class="mono" font-size="13" fill="#cbd5e1">45L MoE (321B / 18B act · 288 exp) · 11 NoPE MLA + 34 KDA · SHVQ4/2/3 (2.69 bpp · 1,006 tok/s @5K)</text>
   </g>
   <g transform="translate(772, 20)">
     <rect width="200" height="58" rx="13" fill="#0b1222" stroke="#334155" stroke-width="1.3"/>
@@ -47,13 +47,13 @@
 
   <g transform="translate(28, 142)">
     <rect width="224" height="72" rx="12" fill="#0f172a" stroke="#f43f5e" stroke-opacity="0.52" stroke-width="1.2"/>
-    <text x="16" y="34" class="sans" font-size="22" font-weight="800" fill="#fda4af">+19.8%</text>
-    <text x="16" y="56" class="sans" font-size="13" font-weight="600" fill="#cbd5e1">e-means MLA decode @ 160K</text>
+    <text x="16" y="34" class="sans" font-size="22" font-weight="800" fill="#fda4af">743 / 45.0</text>
+    <text x="16" y="56" class="sans" font-size="13" font-weight="600" fill="#cbd5e1">e-means pre/dec @ 242.5K</text>
   </g>
   <g transform="translate(268, 142)">
     <rect width="224" height="72" rx="12" fill="#0f172a" stroke="#f43f5e" stroke-opacity="0.52" stroke-width="1.2"/>
-    <text x="16" y="34" class="sans" font-size="22" font-weight="800" fill="#fda4af">-33.7 GiB</text>
-    <text x="16" y="56" class="sans" font-size="13" font-weight="600" fill="#cbd5e1">SHVQ vs 134.4G HQ pack</text>
+    <text x="16" y="34" class="sans" font-size="22" font-weight="800" fill="#fda4af">2.69 bpp</text>
+    <text x="16" y="56" class="sans" font-size="13" font-weight="600" fill="#cbd5e1">288/288 UMA · 81/100 Code</text>
   </g>
   <g transform="translate(508, 142)">
     <rect width="224" height="72" rx="12" fill="#0f172a" stroke="#f43f5e" stroke-opacity="0.52" stroke-width="1.2"/>
@@ -63,52 +63,48 @@
   <g transform="translate(748, 142)">
     <rect width="224" height="72" rx="12" fill="#0f172a" stroke="#f43f5e" stroke-opacity="0.52" stroke-width="1.2"/>
     <text x="16" y="34" class="sans" font-size="22" font-weight="800" fill="#fda4af">3/3 · 0 swap</text>
-    <text x="16" y="56" class="sans" font-size="13" font-weight="600" fill="#cbd5e1">16K–160K needle &amp; SSD miss</text>
+    <text x="16" y="56" class="sans" font-size="13" font-weight="600" fill="#cbd5e1">15K–242.5K needle &amp; SSD</text>
   </g>
   <g transform="translate(28, 230)">
     <rect width="460" height="384" rx="14" fill="url(#card)" stroke="#1e293b" stroke-width="1.4"/>
-    <text x="20" y="32" class="sans" font-size="15" font-weight="800" fill="#f8fafc" letter-spacing="0.2">PREFILL PROFILE (CHUNK = 1024)</text>
+    <text x="20" y="32" class="sans" font-size="15" font-weight="800" fill="#f8fafc" letter-spacing="0.2">PREFILL PROFILE (CHUNK = 4096)</text>
     <rect x="372" y="15" width="68" height="22" rx="6" fill="#0b1324" stroke="#334155" stroke-width="1"/>
     <text x="406" y="30" text-anchor="middle" class="mono" font-size="11.5" fill="#94a3b8">tok/s</text>
     <line x1="68.0" y1="322.0" x2="424.0" y2="322.0" stroke="#475569" stroke-width="1.4"/>
     <line x1="68.0" y1="82.0" x2="68.0" y2="322.0" stroke="#475569" stroke-width="1.4"/>
     <text x="58.0" y="326.5" text-anchor="end" class="mono" font-size="12" fill="#94a3b8">0</text>
     <line x1="68.0" y1="262.0" x2="424.0" y2="262.0" stroke="#1e293b" stroke-width="1" stroke-dasharray="3 3"/>
-    <text x="58.0" y="266.5" text-anchor="end" class="mono" font-size="12" fill="#94a3b8">45</text>
+    <text x="58.0" y="266.5" text-anchor="end" class="mono" font-size="12" fill="#94a3b8">250</text>
     <line x1="68.0" y1="202.0" x2="424.0" y2="202.0" stroke="#1e293b" stroke-width="1" stroke-dasharray="3 3"/>
-    <text x="58.0" y="206.5" text-anchor="end" class="mono" font-size="12" fill="#94a3b8">90</text>
+    <text x="58.0" y="206.5" text-anchor="end" class="mono" font-size="12" fill="#94a3b8">500</text>
     <line x1="68.0" y1="142.0" x2="424.0" y2="142.0" stroke="#1e293b" stroke-width="1" stroke-dasharray="3 3"/>
-    <text x="58.0" y="146.5" text-anchor="end" class="mono" font-size="12" fill="#94a3b8">135</text>
+    <text x="58.0" y="146.5" text-anchor="end" class="mono" font-size="12" fill="#94a3b8">750</text>
     <line x1="68.0" y1="82.0" x2="424.0" y2="82.0" stroke="#1e293b" stroke-width="1" stroke-dasharray="3 3"/>
-    <text x="58.0" y="86.5" text-anchor="end" class="mono" font-size="12" fill="#94a3b8">180</text>
+    <text x="58.0" y="86.5" text-anchor="end" class="mono" font-size="12" fill="#94a3b8">1000</text>
     <line x1="68.0" y1="322.0" x2="68.0" y2="327.0" stroke="#475569" stroke-width="1.2"/>
-    <text x="68.0" y="345.0" text-anchor="middle" class="mono" font-size="12.5" fill="#cbd5e1">16K</text>
+    <text x="68.0" y="345.0" text-anchor="middle" class="mono" font-size="12.5" fill="#cbd5e1">15K</text>
     <line x1="246.0" y1="322.0" x2="246.0" y2="327.0" stroke="#475569" stroke-width="1.2"/>
-    <text x="246.0" y="345.0" text-anchor="middle" class="mono" font-size="12.5" fill="#cbd5e1">64K</text>
+    <text x="246.0" y="345.0" text-anchor="middle" class="mono" font-size="12.5" fill="#cbd5e1">60K</text>
     <line x1="424.0" y1="322.0" x2="424.0" y2="327.0" stroke="#475569" stroke-width="1.2"/>
-    <text x="424.0" y="345.0" text-anchor="middle" class="mono" font-size="12.5" fill="#cbd5e1">160K</text>
+    <text x="424.0" y="345.0" text-anchor="middle" class="mono" font-size="12.5" fill="#cbd5e1">242.5K</text>
     <text x="246.0" y="370.0" text-anchor="middle" class="mono" font-size="11" fill="#64748b">PROMPT CONTEXT TOKENS</text>
-    <polygon points="68.0,151.1 246.0,158.5 424.0,164.4 424.0,322.0 68.0,322.0" fill="url(#aEm)"/>
-    <polyline points="68.0,150.5 246.0,157.7 424.0,163.9" fill="none" stroke="#fb7185" stroke-width="2.8" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="6 4"/>
-    <circle cx="68.0" cy="150.5" r="4.8" fill="#fb7185" stroke="#0b1220" stroke-width="1.2"/>
-    <circle cx="246.0" cy="157.7" r="4.8" fill="#fb7185" stroke="#0b1220" stroke-width="1.2"/>
-    <circle cx="424.0" cy="163.9" r="4.8" fill="#fb7185" stroke="#0b1220" stroke-width="1.2"/>
-    <polyline points="68.0,151.1 246.0,158.5 424.0,164.4" fill="none" stroke="#10b981" stroke-width="3.4" stroke-linejoin="round" stroke-linecap="round"/>
-    <polygon points="68.0,144.5 74.6,151.1 68.0,157.7 61.4,151.1" fill="#10b981" stroke="#0b1220" stroke-width="1.2"/>
-    <polygon points="246.0,151.9 252.6,158.5 246.0,165.1 239.4,158.5" fill="#10b981" stroke="#0b1220" stroke-width="1.2"/>
-    <polygon points="424.0,157.8 430.6,164.4 424.0,171.0 417.4,164.4" fill="#10b981" stroke="#0b1220" stroke-width="1.2"/>
-    <text x="75.0" y="137.5" text-anchor="start" class="mono" font-size="12" font-weight="700" fill="none" stroke="#0b1120" stroke-width="4.2" stroke-linejoin="round">129</text>
-    <text x="75.0" y="137.5" text-anchor="start" class="mono" font-size="12" font-weight="700" fill="#fda4af">129</text>
-    <text x="75.0" y="171.1" text-anchor="start" class="mono" font-size="12" font-weight="800" fill="none" stroke="#0b1120" stroke-width="4.2" stroke-linejoin="round">128</text>
-    <text x="75.0" y="171.1" text-anchor="start" class="mono" font-size="12" font-weight="800" fill="#34d399">128</text>
-    <text x="246.0" y="144.7" text-anchor="middle" class="mono" font-size="12" font-weight="700" fill="none" stroke="#0b1120" stroke-width="4.2" stroke-linejoin="round">123</text>
-    <text x="246.0" y="144.7" text-anchor="middle" class="mono" font-size="12" font-weight="700" fill="#fda4af">123</text>
-    <text x="246.0" y="178.5" text-anchor="middle" class="mono" font-size="12" font-weight="800" fill="none" stroke="#0b1120" stroke-width="4.2" stroke-linejoin="round">123</text>
-    <text x="246.0" y="178.5" text-anchor="middle" class="mono" font-size="12" font-weight="800" fill="#34d399">123</text>
-    <text x="438.0" y="150.9" text-anchor="end" class="mono" font-size="12" font-weight="700" fill="none" stroke="#0b1120" stroke-width="4.2" stroke-linejoin="round">119</text>
-    <text x="438.0" y="150.9" text-anchor="end" class="mono" font-size="12" font-weight="700" fill="#fda4af">119</text>
-    <text x="438.0" y="184.4" text-anchor="end" class="mono" font-size="12" font-weight="800" fill="none" stroke="#0b1120" stroke-width="4.2" stroke-linejoin="round">118</text>
-    <text x="438.0" y="184.4" text-anchor="end" class="mono" font-size="12" font-weight="800" fill="#34d399">118</text>
+    <polygon points="68.0,121.8 246.0,152.4 424.0,143.7 424.0,322.0 68.0,322.0" fill="url(#aEm)"/>
+    <polyline points="68.0,121.8 246.0,152.4 424.0,148.9" fill="none" stroke="#fb7185" stroke-width="2.8" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="6 4"/>
+    <circle cx="68.0" cy="121.8" r="4.8" fill="#fb7185" stroke="#0b1220" stroke-width="1.2"/>
+    <circle cx="246.0" cy="152.4" r="4.8" fill="#fb7185" stroke="#0b1220" stroke-width="1.2"/>
+    <circle cx="424.0" cy="148.9" r="4.8" fill="#fb7185" stroke="#0b1220" stroke-width="1.2"/>
+    <polyline points="68.0,121.8 246.0,152.4 424.0,143.7" fill="none" stroke="#10b981" stroke-width="3.4" stroke-linejoin="round" stroke-linecap="round"/>
+    <polygon points="68.0,115.2 74.6,121.8 68.0,128.4 61.4,121.8" fill="#10b981" stroke="#0b1220" stroke-width="1.2"/>
+    <polygon points="246.0,145.8 252.6,152.4 246.0,159.0 239.4,152.4" fill="#10b981" stroke="#0b1220" stroke-width="1.2"/>
+    <polygon points="424.0,137.1 430.6,143.7 424.0,150.3 417.4,143.7" fill="#10b981" stroke="#0b1220" stroke-width="1.2"/>
+    <text x="76.0" y="110.0" text-anchor="start" class="mono" font-size="12" font-weight="800" fill="none" stroke="#0b1120" stroke-width="4.2" stroke-linejoin="round">834</text>
+    <text x="76.0" y="110.0" text-anchor="start" class="mono" font-size="12" font-weight="800" fill="#34d399">834</text>
+    <text x="246.0" y="138.0" text-anchor="middle" class="mono" font-size="12" font-weight="800" fill="none" stroke="#0b1120" stroke-width="4.2" stroke-linejoin="round">707</text>
+    <text x="246.0" y="138.0" text-anchor="middle" class="mono" font-size="12" font-weight="800" fill="#34d399">707</text>
+    <text x="436.0" y="129.0" text-anchor="end" class="mono" font-size="12" font-weight="800" fill="none" stroke="#0b1120" stroke-width="4.2" stroke-linejoin="round">743</text>
+    <text x="436.0" y="129.0" text-anchor="end" class="mono" font-size="12" font-weight="800" fill="#34d399">743</text>
+    <text x="436.0" y="170.0" text-anchor="end" class="mono" font-size="12" font-weight="700" fill="none" stroke="#0b1120" stroke-width="4.2" stroke-linejoin="round">721</text>
+    <text x="436.0" y="170.0" text-anchor="end" class="mono" font-size="12" font-weight="700" fill="#fda4af">721</text>
   </g>
   <g transform="translate(512, 230)">
     <rect width="460" height="384" rx="14" fill="url(#card)" stroke="#1e293b" stroke-width="1.4"/>
@@ -119,52 +115,48 @@
     <line x1="68.0" y1="82.0" x2="68.0" y2="322.0" stroke="#475569" stroke-width="1.4"/>
     <text x="58.0" y="326.5" text-anchor="end" class="mono" font-size="12" fill="#94a3b8">0</text>
     <line x1="68.0" y1="262.0" x2="424.0" y2="262.0" stroke="#1e293b" stroke-width="1" stroke-dasharray="3 3"/>
-    <text x="58.0" y="266.5" text-anchor="end" class="mono" font-size="12" fill="#94a3b8">9</text>
+    <text x="58.0" y="266.5" text-anchor="end" class="mono" font-size="12" fill="#94a3b8">15</text>
     <line x1="68.0" y1="202.0" x2="424.0" y2="202.0" stroke="#1e293b" stroke-width="1" stroke-dasharray="3 3"/>
-    <text x="58.0" y="206.5" text-anchor="end" class="mono" font-size="12" fill="#94a3b8">18</text>
+    <text x="58.0" y="206.5" text-anchor="end" class="mono" font-size="12" fill="#94a3b8">30</text>
     <line x1="68.0" y1="142.0" x2="424.0" y2="142.0" stroke="#1e293b" stroke-width="1" stroke-dasharray="3 3"/>
-    <text x="58.0" y="146.5" text-anchor="end" class="mono" font-size="12" fill="#94a3b8">27</text>
+    <text x="58.0" y="146.5" text-anchor="end" class="mono" font-size="12" fill="#94a3b8">45</text>
     <line x1="68.0" y1="82.0" x2="424.0" y2="82.0" stroke="#1e293b" stroke-width="1" stroke-dasharray="3 3"/>
-    <text x="58.0" y="86.5" text-anchor="end" class="mono" font-size="12" fill="#94a3b8">36</text>
+    <text x="58.0" y="86.5" text-anchor="end" class="mono" font-size="12" fill="#94a3b8">60</text>
     <line x1="68.0" y1="322.0" x2="68.0" y2="327.0" stroke="#475569" stroke-width="1.2"/>
-    <text x="68.0" y="345.0" text-anchor="middle" class="mono" font-size="12.5" fill="#cbd5e1">16K</text>
+    <text x="68.0" y="345.0" text-anchor="middle" class="mono" font-size="12.5" fill="#cbd5e1">15K</text>
     <line x1="246.0" y1="322.0" x2="246.0" y2="327.0" stroke="#475569" stroke-width="1.2"/>
-    <text x="246.0" y="345.0" text-anchor="middle" class="mono" font-size="12.5" fill="#cbd5e1">64K</text>
+    <text x="246.0" y="345.0" text-anchor="middle" class="mono" font-size="12.5" fill="#cbd5e1">60K</text>
     <line x1="424.0" y1="322.0" x2="424.0" y2="327.0" stroke="#475569" stroke-width="1.2"/>
-    <text x="424.0" y="345.0" text-anchor="middle" class="mono" font-size="12.5" fill="#cbd5e1">160K</text>
+    <text x="424.0" y="345.0" text-anchor="middle" class="mono" font-size="12.5" fill="#cbd5e1">242.5K</text>
     <text x="246.0" y="370.0" text-anchor="middle" class="mono" font-size="11" fill="#64748b">PROMPT CONTEXT TOKENS</text>
-    <polygon points="68.0,144.3 246.0,151.3 424.0,144.5 424.0,322.0 68.0,322.0" fill="url(#aEm)"/>
-    <polyline points="68.0,144.5 246.0,160.3 424.0,173.8" fill="none" stroke="#fb7185" stroke-width="2.8" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="6 4"/>
-    <circle cx="68.0" cy="144.5" r="4.8" fill="#fb7185" stroke="#0b1220" stroke-width="1.2"/>
-    <circle cx="246.0" cy="160.3" r="4.8" fill="#fb7185" stroke="#0b1220" stroke-width="1.2"/>
-    <circle cx="424.0" cy="173.8" r="4.8" fill="#fb7185" stroke="#0b1220" stroke-width="1.2"/>
-    <polyline points="68.0,144.3 246.0,151.3 424.0,144.5" fill="none" stroke="#10b981" stroke-width="3.4" stroke-linejoin="round" stroke-linecap="round"/>
-    <polygon points="68.0,137.7 74.6,144.3 68.0,150.9 61.4,144.3" fill="#10b981" stroke="#0b1220" stroke-width="1.2"/>
-    <polygon points="246.0,144.7 252.6,151.3 246.0,157.9 239.4,151.3" fill="#10b981" stroke="#0b1220" stroke-width="1.2"/>
-    <polygon points="424.0,137.9 430.6,144.5 424.0,151.1 417.4,144.5" fill="#10b981" stroke="#0b1220" stroke-width="1.2"/>
-    <text x="75.0" y="164.5" text-anchor="start" class="mono" font-size="12" font-weight="700" fill="none" stroke="#0b1120" stroke-width="4.2" stroke-linejoin="round">26.6</text>
-    <text x="75.0" y="164.5" text-anchor="start" class="mono" font-size="12" font-weight="700" fill="#fda4af">26.6</text>
-    <text x="75.0" y="131.3" text-anchor="start" class="mono" font-size="12" font-weight="800" fill="none" stroke="#0b1120" stroke-width="4.2" stroke-linejoin="round">26.6</text>
-    <text x="75.0" y="131.3" text-anchor="start" class="mono" font-size="12" font-weight="800" fill="#34d399">26.6</text>
-    <text x="246.0" y="180.3" text-anchor="middle" class="mono" font-size="12" font-weight="700" fill="none" stroke="#0b1120" stroke-width="4.2" stroke-linejoin="round">24.3</text>
-    <text x="246.0" y="180.3" text-anchor="middle" class="mono" font-size="12" font-weight="700" fill="#fda4af">24.3</text>
-    <text x="246.0" y="138.3" text-anchor="middle" class="mono" font-size="12" font-weight="800" fill="none" stroke="#0b1120" stroke-width="4.2" stroke-linejoin="round">25.6</text>
-    <text x="246.0" y="138.3" text-anchor="middle" class="mono" font-size="12" font-weight="800" fill="#34d399">25.6</text>
-    <text x="438.0" y="193.8" text-anchor="end" class="mono" font-size="12" font-weight="700" fill="none" stroke="#0b1120" stroke-width="4.2" stroke-linejoin="round">22.2</text>
-    <text x="438.0" y="193.8" text-anchor="end" class="mono" font-size="12" font-weight="700" fill="#fda4af">22.2</text>
-    <text x="438.0" y="131.5" text-anchor="end" class="mono" font-size="12" font-weight="800" fill="none" stroke="#0b1120" stroke-width="4.2" stroke-linejoin="round">26.6</text>
-    <text x="438.0" y="131.5" text-anchor="end" class="mono" font-size="12" font-weight="800" fill="#34d399">26.6</text>
+    <polygon points="68.0,135.8 246.0,192.5 424.0,142.1 424.0,322.0 68.0,322.0" fill="url(#aEm)"/>
+    <polyline points="68.0,135.8 246.0,192.5 424.0,146.0" fill="none" stroke="#fb7185" stroke-width="2.8" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="6 4"/>
+    <circle cx="68.0" cy="135.8" r="4.8" fill="#fb7185" stroke="#0b1220" stroke-width="1.2"/>
+    <circle cx="246.0" cy="192.5" r="4.8" fill="#fb7185" stroke="#0b1220" stroke-width="1.2"/>
+    <circle cx="424.0" cy="146.0" r="4.8" fill="#fb7185" stroke="#0b1220" stroke-width="1.2"/>
+    <polyline points="68.0,135.8 246.0,192.5 424.0,142.1" fill="none" stroke="#10b981" stroke-width="3.4" stroke-linejoin="round" stroke-linecap="round"/>
+    <polygon points="68.0,129.2 74.6,135.8 68.0,142.4 61.4,135.8" fill="#10b981" stroke="#0b1220" stroke-width="1.2"/>
+    <polygon points="246.0,185.9 252.6,192.5 246.0,199.1 239.4,192.5" fill="#10b981" stroke="#0b1220" stroke-width="1.2"/>
+    <polygon points="424.0,135.5 430.6,142.1 424.0,148.7 417.4,142.1" fill="#10b981" stroke="#0b1220" stroke-width="1.2"/>
+    <text x="76.0" y="122.0" text-anchor="start" class="mono" font-size="12" font-weight="800" fill="none" stroke="#0b1120" stroke-width="4.2" stroke-linejoin="round">46.5</text>
+    <text x="76.0" y="122.0" text-anchor="start" class="mono" font-size="12" font-weight="800" fill="#34d399">46.5</text>
+    <text x="246.0" y="178.0" text-anchor="middle" class="mono" font-size="12" font-weight="800" fill="none" stroke="#0b1120" stroke-width="4.2" stroke-linejoin="round">32.4</text>
+    <text x="246.0" y="178.0" text-anchor="middle" class="mono" font-size="12" font-weight="800" fill="#34d399">32.4</text>
+    <text x="436.0" y="128.0" text-anchor="end" class="mono" font-size="12" font-weight="800" fill="none" stroke="#0b1120" stroke-width="4.2" stroke-linejoin="round">45.0</text>
+    <text x="436.0" y="128.0" text-anchor="end" class="mono" font-size="12" font-weight="800" fill="#34d399">45.0</text>
+    <text x="436.0" y="167.0" text-anchor="end" class="mono" font-size="12" font-weight="700" fill="none" stroke="#0b1120" stroke-width="4.2" stroke-linejoin="round">44.0</text>
+    <text x="436.0" y="167.0" text-anchor="end" class="mono" font-size="12" font-weight="700" fill="#fda4af">44.0</text>
   </g>
   <g transform="translate(28, 628)">
     <rect width="944" height="54" rx="11" fill="#0f172a" stroke="#1e293b" stroke-width="1.2"/>
     <line x1="20" y1="27" x2="50" y2="27" stroke="#10b981" stroke-width="3.2"/>
     <polygon points="35,21 41,27 35,33 29,27" fill="#10b981"/>
     <text x="60" y="23" class="sans" font-size="13" font-weight="700" fill="#34d399">SHVQ + MLA e-means (4096 macro, QW_MLA_EMEANS=1)</text>
-    <text x="60" y="40" class="mono" font-size="11" fill="#94a3b8">26.6 tok/s flat decode 16K→160K (+19.8% @160K) · 3/3 recall</text>
-    <line x1="488" y1="27" x2="518" y2="27" stroke="#fb7185" stroke-width="3.2" stroke-dasharray="6 4"/>
-    <circle cx="503" cy="27" r="5" fill="#fb7185"/>
-    <text x="528" y="23" class="sans" font-size="13" font-weight="700" fill="#fda4af">SHVQ + NoPE MLA exactFlat (Key-Pool(4) Flat Scan)</text>
-    <text x="528" y="40" class="mono" font-size="11" fill="#94a3b8">Default &lt;41K · drops 26.6 → 22.2 tok/s at 160K · 3/3 recall</text>
+    <text x="60" y="40" class="mono" font-size="11" fill="#94a3b8">743 tok/s prefill &amp; 45.0 tok/s decode @242.5K (+3.0% pre · +2.2% dec) · 3/3</text>
+    <line x1="498" y1="27" x2="528" y2="27" stroke="#fb7185" stroke-width="3.2" stroke-dasharray="6 4"/>
+    <circle cx="513" cy="27" r="5" fill="#fb7185"/>
+    <text x="538" y="23" class="sans" font-size="13" font-weight="700" fill="#fda4af">SHVQ + NoPE MLA exactFlat (Key-Pool(4) Flat Scan)</text>
+    <text x="538" y="40" class="mono" font-size="11" fill="#94a3b8">Default &lt;41K · 721.4 / 44.00 tok/s @242.5K · 3/3 recall</text>
   </g>
   <g transform="translate(28, 696)">
     <rect width="944" height="62" rx="11" fill="#0a101f" stroke="#334155" stroke-width="1.2"/>
@@ -172,8 +164,8 @@
     <text x="62" y="29" text-anchor="middle" class="mono" font-size="11" font-weight="800" fill="#7dd3fc">M5 MAX</text>
     <text x="62" y="43" text-anchor="middle" class="mono" font-size="10.5" fill="#94a3b8">128 GB UMA</text>
     <text x="124" y="27" class="mono" font-size="12" font-weight="700" fill="#e2e8f0">INFERENCE MACHINE · Apple M5 Max (Mac17,6) · 18-Core CPU · 40-Core Apple10 NAX GPU · 128 GB Unified Memory</text>
-    <text x="124" y="46" class="mono" font-size="11.5" fill="#94a3b8">585 GB/s DRAM · 950 GB/s SLC · macOS 26+ · Qwegn v0.14.1 (Swift 6.2 &amp; Metal 4) · q4 KV · Temp 0 · 0 Steady Allocs</text>
+    <text x="124" y="46" class="mono" font-size="11.5" fill="#94a3b8">585 GB/s DRAM · 950 GB/s SLC · macOS 26+ · Qwegn v0.17.1 (Swift 6.2 &amp; Metal 4) · q4 KV · Temp 0 · 0 Steady Allocs</text>
   </g>
-  <text x="500" y="782" text-anchor="middle" class="mono" font-size="12" fill="#94a3b8">SHVQ e-means VQ shrinks 321B weights from 134.4 → 100.6 GiB (-25.1%) so all 288/288 experts + 1M q4 MLA KV fit 100% in 128 GB UMA.</text>
-  <text x="500" y="802" text-anchor="middle" class="mono" font-size="12" fill="#64748b">Below 41K tokens, QWCoarsePoolIndex bypasses Stage-1 coarse scoring for exact parity; at 160K, e-means eliminates MLA index scan decay.</text>
+  <text x="500" y="782" text-anchor="middle" class="mono" font-size="12" fill="#94a3b8">Spherical SHVQ4/2/3 packs 321.3B weights into 100.6 GiB (2.69 bpp) so all 288/288 experts + 1M q4 MLA KV fit 100% in 128 GB UMA.</text>
+  <text x="500" y="802" text-anchor="middle" class="mono" font-size="12" fill="#64748b">Subquadratic MLA keeps full 4096-row NAX chunks beyond 131K (4-layer CB slicing), reaching 743 / 45.0 tok/s at 242.5K with 3/3 needle recall.</text>
 </svg>

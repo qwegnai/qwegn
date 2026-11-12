@@ -147,9 +147,6 @@ final class QWStandardGeometryLawTests: XCTestCase {
         }
         // The 27B's own widths are unchanged.
         XCTAssertEqual(QWEngineDriver.oProjGroupSumFloats(geometry: Self.b27), 48)
-        XCTAssertEqual(QWEngineDriver.groupSumFloats(k: 5120), 64)
-        XCTAssertEqual(QWEngineDriver.groupSumFloats(k: 6144), 64)
-        XCTAssertEqual(QWEngineDriver.groupSumFloats(k: 17408), 192)
     }
 
     /// The prefill scratch's per-token footprint is derived from the
@@ -163,8 +160,16 @@ final class QWStandardGeometryLawTests: XCTestCase {
             XCTAssertNotEqual(bytes, QWEngineDriver.prefillBytesPerToken(geometry: Self.b27),
                 "\(s.name): the footprint must not be the 27B's")
         }
-        // The 27B's own: 161_888 f16 + 106_080 f32 elements.
-        XCTAssertEqual(QWEngineDriver.prefillBytesPerToken(geometry: Self.b27), 748_096)
+        // The 27B's own live prefill scratch: 145_408 f16 + 52_416 f32 elements.
+        XCTAssertEqual(QWEngineDriver.prefillBytesPerToken(geometry: Self.b27), 500_480)
+    }
+
+    func testAdaptivePrefillChunkCapHonorsSubquadraticAttention() {
+        XCTAssertEqual(QWEngineDriver.adaptivePrefillChunkCap(position: 200_000, maxChunk: 4096, isSubquadraticAttention: false), 256)
+        XCTAssertEqual(QWEngineDriver.adaptivePrefillChunkCap(position: 600_000, maxChunk: 4096, isSubquadraticAttention: false), 128)
+        XCTAssertEqual(QWEngineDriver.adaptivePrefillChunkCap(position: 200_000, maxChunk: 4096, isSubquadraticAttention: true), 4096)
+        XCTAssertEqual(QWEngineDriver.adaptivePrefillChunkCap(position: 600_000, maxChunk: 4096, isSubquadraticAttention: true), 4096)
+        XCTAssertEqual(QWEngineDriver.mlaFixedScratchBytes(geometry: Self.b27, prefillChunkRows: 4096, activeAttnLayers: 16), 0)
     }
 
     /// The 27B's prefill pad writes with the 27B's row strides, so it

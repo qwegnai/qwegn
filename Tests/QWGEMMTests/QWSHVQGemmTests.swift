@@ -547,7 +547,7 @@ final class QWSHVQGemmTests: XCTestCase {
             return d
         }
 
-        for (bits, group) in [(2, 64), (4, 64)] {
+        for (bits, group) in [(2, 64), (3, 64), (4, 64)] {
             let guData = fastBank(bits: bits, group: group, n: experts * guRows, k: hidden, seed: 0x1111_2222)
             let dnData = fastBank(bits: bits, group: group, n: experts * hidden, k: inter, seed: 0x3333_4444)
             let arena = try QWArena(hal: Self.hal, weights: guData.count + dnData.count + (2 << 20),

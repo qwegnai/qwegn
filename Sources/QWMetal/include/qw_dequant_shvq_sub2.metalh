@@ -1,0 +1,102 @@
+// qw_dequant_shvq_sub2.metalh — Sub-2-bit antipodal hemisphere unpackers and
+// group-byte size laws for SHVQ{1,15}_G{32,64,128,256}.
+
+#pragma once
+#include <metal_stdlib>
+#include "qw_shvq_sub2_tables.metalh"
+#if defined(QW_SHVQ_ROUTED_DIRECT_LUT) || defined(QW_SHVQ_NEED_DIRECT15)
+#include "qw_shvq_sub2_routed_lut.metalh"
+#endif
+using namespace metal;
+
+METAL_FUNC constexpr uint qwg_shvq_slice_bytes(int bits) {
+    return bits == 15 ? 6u : (4u * uint(bits));
+}
+
+METAL_FUNC constexpr uint qwg_shvq_group_bytes(int bits, int group) {
+    if (bits == 15) {
+        return 2u + (uint(group) >> 5u) * 6u;
+    }
+    return 2u + (uint(group * bits) >> 3u);
+}
+
+template <int BITS, int GROUP>
+METAL_FUNC uint qwg_shvq_byte_in_group(uint col) {
+    if constexpr (BITS == 15) {
+        return ((col % uint(GROUP)) >> 5u) * 6u;
+    } else {
+        return ((col % uint(GROUP)) * uint(BITS)) >> 3u;
+    }
+}
+
+METAL_FUNC half4 qwg_shvq_unpack_quad4_1(device const uchar* p, uint quadIdx) {
+    const uchar b = p[quadIdx >> 1u];
+    const uint vecIdx = (uint(b & 0x7Fu) << 1u) + (quadIdx & 1u);
+    const ushort sMask = ushort(uint(b & 0x80u) << 8u);
+    return as_type<half4>(((constant const ushort4*)kShvqLut1Bits)[vecIdx] ^ ushort4(sMask));
+}
+
+template <bool DIRECT15 = false>
+METAL_FUNC half4 qwg_shvq_unpack_quad4_15(device const uchar* p, uint quadIdx) {
+    const uint oct = quadIdx >> 1u;
+    device const uchar* t = p + 3u * (oct >> 1u);
+    const uint u12 = ((oct & 1u) == 0u)
+        ? (uint(t[0]) | ((uint(t[1]) & 0x0Fu) << 8u))
+        : ((uint(t[1]) >> 4u) | (uint(t[2]) << 4u));
+    const uint vecIdx = ((u12 & 0x07FFu) << 1u) + (quadIdx & 1u);
+    const ushort sMask = ushort((u12 & 0x0800u) << 4u);
+    ushort4 pos;
+#if defined(QW_SHVQ_ROUTED_DIRECT_LUT) || defined(QW_SHVQ_NEED_DIRECT15)
+    if constexpr (DIRECT15) {
+        pos = ((constant const ushort4*)kShvqLut15DirectBits)[vecIdx];
+    } else {
+#ifdef QW_SHVQ_ROUTED_DIRECT_LUT
+        pos = ((constant const ushort4*)kShvqLut15DirectBits)[vecIdx];
+#else
+        const char4 c = as_type<char4>(kShvqLut15PackedI8[vecIdx]);
+        pos = as_type<ushort4>(half4(float4(c) * kShvq15StepScaleF32));
+#endif
+    }
+#else
+    (void)DIRECT15;
+    const char4 c = as_type<char4>(kShvqLut15PackedI8[vecIdx]);
+    pos = as_type<ushort4>(half4(float4(c) * kShvq15StepScaleF32));
+#endif
+    return as_type<half4>(pos ^ ushort4(sMask));
+}
+
+METAL_FUNC void qwg_shvq_unpack_oct8_1(device const uchar* p,
+                                       uint oct,
+                                       thread half4 &uLo,
+                                       thread half4 &uHi) {
+    const uchar b = p[oct];
+    const uint4 raw128 = ((constant const uint4*)kShvqLut1Bits)[uint(b & 0x7Fu)];
+    const ushort4 s4 = ushort4(ushort(uint(b & 0x80u) << 8u));
+    uLo = as_type<half4>(as_type<ushort4>(raw128.xy) ^ s4);
+    uHi = as_type<half4>(as_type<ushort4>(raw128.zw) ^ s4);
+}
+
+METAL_FUNC void qwg_shvq_unpack_oct8_15(device const uchar* p,
+                                        uint oct,
+                                        thread half4 &uLo,
+                                        thread half4 &uHi) {
+    device const uchar* t = p + 3u * (oct >> 1u);
+    const uint u12 = ((oct & 1u) == 0u)
+        ? (uint(t[0]) | ((uint(t[1]) & 0x0Fu) << 8u))
+        : ((uint(t[1]) >> 4u) | (uint(t[2]) << 4u));
+    const uint idx11 = u12 & 0x07FFu;
+    const ushort4 s4 = ushort4(ushort((u12 & 0x0800u) << 4u));
+#ifdef QW_SHVQ_ROUTED_DIRECT_LUT
+    const uint4 raw128 = ((constant const uint4*)kShvqLut15DirectBits)[idx11];
+    const ushort4 pLo = as_type<ushort4>(raw128.xy);
+    const ushort4 pHi = as_type<ushort4>(raw128.zw);
+#else
+    const uint2 raw64 = ((constant const uint2*)kShvqLut15PackedI8)[idx11];
+    const char4 c0 = as_type<char4>(raw64.x);
+    const char4 c1 = as_type<char4>(raw64.y);
+    const ushort4 pLo = as_type<ushort4>(half4(float4(c0) * kShvq15StepScaleF32));
+    const ushort4 pHi = as_type<ushort4>(half4(float4(c1) * kShvq15StepScaleF32));
+#endif
+    uLo = as_type<half4>(pLo ^ s4);
+    uHi = as_type<half4>(pHi ^ s4);
+}

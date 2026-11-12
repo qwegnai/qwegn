@@ -1,5 +1,5 @@
 // qwgemm_moe_shvq_f32.metal — Routed MoE f32 gate/up and down+shared-combine
-// kernels for SHVQ{2,3,4}_G{32,64,128,256}.
+// kernels for SHVQ{1,15,2,3,4}_G{32,64,128,256}.
 
 #include <metal_stdlib>
 #include <metal_simdgroup>
@@ -15,9 +15,9 @@ static inline void qwg_moe_rows4_shvq_f32_2(device const char* blocks,
                                             thread float4 &acc0, thread float4 &acc1,
                                             threadgroup const ShvqTgLut<BITS> &tgLut) {
     const uint nBlocks = K >> 5u;
-    constexpr uint groupBytes = 2u + (uint(GROUP * BITS) >> 3u);
+    constexpr uint groupBytes = qwg_shvq_group_bytes(BITS, GROUP);
     constexpr uint slicesPerGroup = uint(GROUP) >> 5u;
-    constexpr uint slicePayloadBytes = 4u * uint(BITS);
+    constexpr uint slicePayloadBytes = qwg_shvq_slice_bytes(BITS);
     const uint rowBytes = (K / uint(GROUP)) * groupBytes;
     device const char* r0 = blocks + (size_t)rowBase * rowBytes;
     device const char* r1 = (rowsLeft > 1u) ? (r0 + rowBytes) : r0;
@@ -101,10 +101,10 @@ static inline void qwg_moe_gateup_shvq_f32_r1_body(device const char*  w,
         device const char* wSrc = isCold ? coldW : w;
         const uint upHalf = lane >> 4u, hl = lane & 15u;
         const uint nSlices = K >> 5u;
-        constexpr uint groupBytes = 2u + (uint(GROUP * BITS) >> 3u);
+        constexpr uint groupBytes = qwg_shvq_group_bytes(BITS, GROUP);
         const uint rowBytes = (K / uint(GROUP)) * groupBytes;
         constexpr uint slicesPerGroup = uint(GROUP) >> 5u;
-        constexpr uint slicePayloadBytes = 4u * uint(BITS);
+        constexpr uint slicePayloadBytes = qwg_shvq_slice_bytes(BITS);
         const size_t eBase = (size_t)expert * N + (upHalf != 0u ? I : 0u);
         const uint rows = (r0 < I) ? min(4u, I - r0) : 0u;
         device const char* a0 = wSrc + (eBase + (rows != 0u ? r0 : 0u)) * rowBytes;
@@ -251,10 +251,10 @@ static inline void qwg_moe_down_shared_combine_shvq_f32_body(
     const bool routeOutput = (hasOut16 & 2u) != 0u;
     const uint nSlices = K >> 5u;
     if (numToks >= 2u) {
-        constexpr uint groupBytes = 2u + (uint(GROUP * BITS) >> 3u);
+        constexpr uint groupBytes = qwg_shvq_group_bytes(BITS, GROUP);
         const uint rowBytes = (K / uint(GROUP)) * groupBytes;
         constexpr uint slicesPerGroup = uint(GROUP) >> 5u;
-        constexpr uint slicePayloadBytes = 4u * uint(BITS);
+        constexpr uint slicePayloadBytes = qwg_shvq_slice_bytes(BITS);
         float4 accM[4] = {float4(0.0f), float4(0.0f), float4(0.0f), float4(0.0f)};
         for (uint t0 = 0u; t0 < numToks; ++t0) {
             for (uint k0 = 0u; k0 < realE; ++k0) {
@@ -439,10 +439,10 @@ static inline void qwg_moe_down_shared_combine_shvq_f32_body(
     }
     float4 acc = float4(0.0f);
     if (nSlices <= 32u && rowsLeft >= 4u) {
-        constexpr uint groupBytes = 2u + (uint(GROUP * BITS) >> 3u);
+        constexpr uint groupBytes = qwg_shvq_group_bytes(BITS, GROUP);
         const uint rowBytes = (K / uint(GROUP)) * groupBytes;
         constexpr uint slicesPerGroup = uint(GROUP) >> 5u;
-        constexpr uint slicePayloadBytes = 4u * uint(BITS);
+        constexpr uint slicePayloadBytes = qwg_shvq_slice_bytes(BITS);
         const bool active = (lane < nSlices);
         const uint gIdx = lane / slicesPerGroup;
         const uint sub = lane & (slicesPerGroup - 1u);
@@ -480,10 +480,10 @@ static inline void qwg_moe_down_shared_combine_shvq_f32_body(
             }
         }
     } else if ((nSlices & 15u) == 0u && rowsLeft >= 4u) {
-        constexpr uint groupBytes = 2u + (uint(GROUP * BITS) >> 3u);
+        constexpr uint groupBytes = qwg_shvq_group_bytes(BITS, GROUP);
         const uint rowBytes = (K / uint(GROUP)) * groupBytes;
         constexpr uint slicesPerGroup = uint(GROUP) >> 5u;
-        constexpr uint slicePayloadBytes = 4u * uint(BITS);
+        constexpr uint slicePayloadBytes = qwg_shvq_slice_bytes(BITS);
         const uint upHalf = lane >> 4u, hl = lane & 15u;
         for (uint k = 0; k < realE; ++k) {
             const uint slot = t * realE + k;
@@ -605,6 +605,14 @@ static inline void qwg_moe_down_shared_combine_shvq_f32_body(
             gate, out, N, K, E, ids, out16, hasOut16, coldWBytes, tg, tid, sgi, lane, tgLut); \
     }
 
+QW_SHVQ_MOE_F32_KERNELS(1, 32)
+QW_SHVQ_MOE_F32_KERNELS(1, 64)
+QW_SHVQ_MOE_F32_KERNELS(1, 128)
+QW_SHVQ_MOE_F32_KERNELS(1, 256)
+QW_SHVQ_MOE_F32_KERNELS(15, 32)
+QW_SHVQ_MOE_F32_KERNELS(15, 64)
+QW_SHVQ_MOE_F32_KERNELS(15, 128)
+QW_SHVQ_MOE_F32_KERNELS(15, 256)
 QW_SHVQ_MOE_F32_KERNELS(2, 32)
 QW_SHVQ_MOE_F32_KERNELS(2, 64)
 QW_SHVQ_MOE_F32_KERNELS(2, 128)

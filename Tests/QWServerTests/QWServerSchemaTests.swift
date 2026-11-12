@@ -324,6 +324,20 @@ final class QWServerSchemaTests: XCTestCase {
         XCTAssertEqual(parsed.toolCalls?.first?.function.name, "get_weather")
         XCTAssertEqual(parsed.toolCalls?.first?.function.arguments, #"{"city":"Paris","days":3}"#)
 
+        let parallelOutput = "<tool_call>list_files</tool_call><tool_call>run_command<arg_key>cmd</arg_key><arg_value>npm test</arg_value></tool_call>"
+        let parallelParsed = QWToolCallParser.parse(text: parallelOutput)
+        XCTAssertEqual(parallelParsed.toolCalls?.count, 2)
+        XCTAssertEqual(parallelParsed.toolCalls?.first?.function.name, "list_files")
+        XCTAssertEqual(parallelParsed.toolCalls?.first?.function.arguments, "{}")
+        XCTAssertEqual(parallelParsed.toolCalls?.last?.function.name, "run_command")
+        XCTAssertEqual(parallelParsed.toolCalls?.last?.function.arguments, #"{"cmd":"npm test"}"#)
+
+        let literalAndParallel = "<tool_call>write_file<arg_key>body</arg_key><arg_value>a <tool_call>x</tool_call> b</arg_value></tool_call>\n<tool_call>list_files</tool_call>"
+        let literalParsed = QWToolCallParser.parse(text: literalAndParallel)
+        XCTAssertEqual(literalParsed.toolCalls?.count, 2)
+        XCTAssertEqual(literalParsed.toolCalls?.first?.function.arguments, #"{"body":"a <tool_call>x</tool_call> b"}"#)
+        XCTAssertEqual(literalParsed.toolCalls?.last?.function.name, "list_files")
+
         let glm5TemplatePath = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".qwg/models/GLM-5.3-Flash/assets/chat_template.jinja").path
         guard FileManager.default.fileExists(atPath: glm5TemplatePath) else {

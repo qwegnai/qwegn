@@ -8,7 +8,7 @@ Variational MTP relaxes only MTP-sourced draft rows, and only when the verifier 
 
 | Model pack (`~/.qwg/models`) | Architecture | Prefill (4K / 10.4K / 16K / 64K) | Cold TTFT | Warm cache TTFT | Standard decode | Speculative decode | 1M Prefill / Decode (LSA · `e-means`) | Eval / Needle (16K–1M) | 
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | 
-| `GLM-5.3-Flash-shvq4g32-shvq2g64-shvq3g64` | 45L MoE (`321B`/`18B`, 288 exp, `100.63 GiB` 100% UMA resident) | **618 tok/s** @4.2K | 230–366 ms | **18 ms** (`147×`) | **32.9–35.5 tok/s** | **36.2–38.4 tok/s** (`44.0` pred) | **118.2 / 26.6 tok/s** @160K (`+19.8%` `e-means`) · 1M `102.3 GiB` UMA | **2/2 AIME25 · 3/3 needle** |
+| `GLM-5.3-Flash-shvq4g32-shvq2g64-shvq3g64` | 45L MoE (`321B`/`18B`, 288 exp, `100.63 GiB` 100% UMA resident) | **1,006 tok/s** @5.2K (`825–869` serve, `780` @65.6K) | 180–339 ms | **10–18 ms** (`96–193×`) | **44.6–46.4 tok/s** | **48.9–53.6 tok/s** (`51.2` CLI, `1.98/step`) | **743.0 / 45.0 tok/s** @242.5K (`e-means`) · 1M `102.3 GiB` UMA | **81/100 code (`92%` HE) · 184/184 API · 37/37 cap · 99.74% fid · 3/3 needle** |
 | `GLM-5.3-Flash` (`HQ4_G32_M5 + HQ3_G64`) | 45L MoE (`321B`/`18B`, `134.37 GiB` NVMe-streamed) | **858–968 tok/s** @16K (`maxResident`) | — | MLA Key-Pool(4) snapshot | **31.6 tok/s** (`44.8` GPU proxy) | **34.8 tok/s** (NextN MTP-1 · `31.1` MoE-Spec) | 1M arch ready (`1,024 B/tok/L` KV) | **100% (conformance & needle)** |
 | `Qwen3.6-35B-A3B-hq4g32` | 40L MoE (256 exp, 8 act) | **6,142 tok/s** @64K (6,389 peak) | **45–71 ms** | 5–7 ms (55×) | **148.3–155.1 tok/s** | **233.4 tok/s** | **2,317 / 105.6 tok/s** (`136.8` @64K `e-means`) | **3 / 3 (100%)** |
 | `Qwen3.8-Flash-Next-hq8g32-hq4g64` (`+ VQ2 PLE`) | 48L MoE (512 exp, 10 act, `71.3 GiB + 27.1 GiB VQ2`) | 2,528–2,688 tok/s (2,696 peak) | 113–155 ms | 7–11 ms (63×–99×) | 72.3–81.5 tok/s | **95.1–113.7 tok/s** (`145.4` pred) | **1,888 / 63.7 tok/s** (`e-means` · `1,350 / 41.1` QSA) | **10/10 core · 3/3 needle** |
@@ -21,7 +21,7 @@ All models execute with **0 heap and 0 Metal buffer allocations** in steady stat
 
 ## Long-Context Scaling (`64K → 1M` Tokens): Without LSA vs LSA (`Ward-512`) vs Capacity-Balanced `e-means` (`4096`)
 
-Quiet-GPU (`0% / 0%` baseline utilization) long-context scaling and 3-needle passkey retrieval (`10%`, `50%`, `90%` document depth) measured on Apple M5 Max (`Mac17,6`, 18-core CPU, 40-core Apple10 NAX GPU, 128 GB Unified Memory, 585 GB/s DRAM, 950 GB/s SLC, macOS 26+) with `Qwegn v0.14.1`, `--kv-mode q4 --temperature 0 --no-profile --no-load-vision`. Each model compares three attention indexing regimes:
+Quiet-GPU (`0% / 0%` baseline utilization) long-context scaling and 3-needle passkey retrieval (`10%`, `50%`, `90%` document depth) measured on Apple M5 Max (`Mac17,6`, 18-core CPU, 40-core Apple10 NAX GPU, 128 GB Unified Memory, 585 GB/s DRAM, 950 GB/s SLC, macOS 26+) with `Qwegn v0.14.1–v0.17.1`, `--kv-mode q4 --temperature 0 --no-profile --no-load-vision`. Each model compares three attention indexing regimes:
 1. **Without LSA:** Dense attention (`--lsa-mode off`), or flat native QSA (`--lsa-mode auto`) on `Qwen3.8-Flash-Next`, or flat MLA Key-Pool(4) (`exactFlat`) on `GLM-5.3-Flash`.
 2. **LSA (`Ward-512`):** Greedy threadgroup Ward clustering (`64` semantic buckets per `512`-token superblock = `131,072` centroids at `1M`; `--lsa-cluster-block 512`).
 3. **LSA + `e-means` (`4096`, `arXiv:2611.09501`):** Capacity-balanced spherical `e-means` macro-clustering (`QWCoarsePoolIndex`: `64` balanced clusters per `4,096`-token superblock = `16,384` centroids at `1M` — **`8×` fewer than `Ward-512` and `16×` fewer than `262,144` raw 4-token pool blocks**, deterministic `qwg_emeans_collect`, on-device `candState.overflow` exact fallback, `<41K` zero-overhead flat bypass; `--lsa-cluster-block 4096` or `QW_MLA_EMEANS=1`).
@@ -47,9 +47,9 @@ Quiet-GPU (`0% / 0%` baseline utilization) long-context scaling and 3-needle pas
 | *48 GDN, `mtp=3`)* | `262K` (`257,953`) | `351.0 / 25.30 tok/s` | `830.2` / **`43.11 tok/s`** (`310.72 s`) | **`896.5`** / `42.09 tok/s` (`287.72 s`) | `21.82 GiB` | `3/3` · **`3/3`** · **`3/3`** | **`+8.0%` prefill vs `Ward` (`2.55×` vs Dense)** |
 | | `524K` (`517,944`) | — | `831.2` / **`41.07 tok/s`** (`623.13 s`) | **`891.0`** / `36.08 tok/s` (`581.32 s`) | `26.66 GiB` | — · **`3/3`** · **`3/3`** | **`+7.2%` prefill (`-41.8 s` TTFT) vs `Ward-512`** |
 | | **`1M` (`1,039,928`)** | — | `804.6` / **`36.49 tok/s`** (`1,292.5 s`) | **`830.6`** / `35.56 tok/s` (`1,252.0 s`) | **`36.35 GiB`** (`-270 MiB`) | — · **`3/3`** · **`3/3`** | **`+3.2%` prefill (`-40.5 s` TTFT) · `-270 MiB` RSS** |
-| **`GLM-5.3-Flash-shvq4g32-shvq2g64-shvq3g64`** | `16K` (`15,962`) | `128.6 / 26.62 tok/s` *(`exactFlat`)* | — *(native MLA Key-Pool(4))* | `128.2 / 26.65 tok/s` *(`<41K` bypass)* | `103.18 GiB` | **`3/3`** · — · **`3/3`** | Zero Stage-1 overhead below `41K` tokens |
-| *(321B SHVQ `100.63 GiB`,* | `64K` (`64,011`) | `123.2 / 24.26 tok/s` *(`exactFlat`)* | — | `122.6` / **`25.61 tok/s`** (`522.22 s`) | `103.38 GiB` | **`3/3`** · — · **`3/3`** | **`+5.6%` decode (`QW_MLA_EMEANS=1`)** |
-| *11 NoPE MLA + 34 KDA)* | `160K` (`159,957`) | `118.6 / 22.23 tok/s` *(`exactFlat`)* | — | `118.2` / **`26.63 tok/s`** (`1,353.8 s`) | `104.03 GiB` | **`3/3`** · — · **`3/3`** | **`+19.8%` decode — zero decay (`16K → 160K`)** |
+| **`GLM-5.3-Flash-shvq4g32-shvq2g64-shvq3g64`** | `15K` (`15,076`) | **`834.2 / 46.54 tok/s`** *(`exactFlat`)* | — *(native MLA Key-Pool(4))* | **`834.2 / 46.54 tok/s`** *(`<41K` bypass)* | `101.4 GiB` | **`3/3`** · — · **`3/3`** | Zero Stage-1 overhead below `41K` tokens |
+| *(321B SHVQ `100.63 GiB`,* | `60K` (`60,061`) | `706.7 / 32.38 tok/s` *(`exactFlat`)* | — | **`706.7 / 32.38 tok/s`** (`84.99 s`) | `102.3 GiB` | **`3/3`** · — · **`3/3`** | Generalized `q4` NAX sparse MLA (`4,096` chunk) |
+| *11 NoPE MLA + 34 KDA)* | `242.5K` (`242,469`) | `721.4 / 44.00 tok/s` *(`exactFlat`)* | — | **`743.0 / 44.98 tok/s`** (`326.3 s`) | `106.54 GiB` | **`3/3`** · — · **`3/3`** | **`6.29×` pre / `1.69×` dec vs `v0.14.1` (`>131K` `4096` chunk + `e-means`)** |
 | | **`1M` (`1,048,576`)** | `102.27 GiB` planned / `107.18 GiB` RSS | — | **100% UMA resident (`3,696 B/tok` KV)** | `107.18 GiB` | `0` SSD misses · `0` swap | Entire `321B` pack + `1M` KV fits in 128 GB Mac |
 
 *†At `524K` and `1M` on `Qwen3.8-Flash-Next` (`71.29 GiB` `.qwp` + `27.13 GiB` `VQ2` PLE), `--stream-ngrams` streams PLE from NVMe (`-27.30 GiB` Metal GPU RAM saved; dynamic KV + index arena shown).*
@@ -70,13 +70,13 @@ Quiet-GPU (`0% / 0%` baseline utilization) long-context scaling and 3-needle pas
 </p>
 
 ### Regime Summary: When to Use `Ward-512` vs `e-means-4096`
-- **High-Bandwidth Indexers (`Qwen3.8-Flash-Next` 128D QSA, `GLM-5.3-Flash` 64-head 128D MLA, `Qwen3.8-27B` 16L 24Q Prefill) → `e-means-4096` Wins:** Coarse `4,096`-token `e-means` macro-clustering cuts Stage-1 centroid scoring by **`8×` vs `Ward-512`** and **`16×` vs flat 4-token pooling**, lifting `Flash-Next` `@1M` by **`+39.8%` prefill & `+55.3%` decode**, `GLM-5.3-Flash` `@160K` decode by **`+19.8%`** (flat `26.6 tok/s` from `16K` to `160K`), and `Qwen3.8-27B` prefill by **`+3.2%–9.0%`** across `64K–1M`.
+- **High-Bandwidth Indexers (`Qwen3.8-Flash-Next` 128D QSA, `GLM-5.3-Flash` 64-head 128D MLA, `Qwen3.8-27B` 16L 24Q Prefill) → `e-means-4096` Wins:** Coarse `4,096`-token `e-means` macro-clustering cuts Stage-1 centroid scoring by **`8×` vs `Ward-512`** and **`16×` vs flat 4-token pooling**, lifting `Flash-Next` `@1M` by **`+39.8%` prefill & `+55.3%` decode**, `GLM-5.3-Flash` `@242.5K` to **`743.0 / 44.98 tok/s`** (`+3.0%` prefill & `+2.2%` decode over `721.4 / 44.00` `exactFlat`, `6.29×` faster prefill than pre-`v0.17.0` `chunk=1024` scalar `q4`), and `Qwen3.8-27B` prefill by **`+3.2%–9.0%`** across `64K–1M`.
 - **Ultra-Light 64D 2-KV GQA (`Qwen3.6-35B-A3B`, 10 Attn Layers) → `Ward-512` Default Wins Beyond `128K`:** Because `Ward-512` Radix selection already completes in `0.062 ms` at `1M` on `d_idx=64` / `2` KV heads, `Ward-512` (`2,317 / 105.6 tok/s` @1M) outperforms `e-means-4096`'s two-stage expand (`2,315 / 88.5 tok/s` @1M), while `e-means-4096` wins `@64K` decode (`136.8` vs `126.2 tok/s`) and saves `-180 MiB` cluster state RAM.
 
 ## 321B UMA-Resident SHVQ (`100.6 GiB`) & Cold-Expert NVMe Streaming (`134.4 GiB`, `GLM-5.3-Flash`)
 
 `GLM-5.3-Flash` (`321.32 B` parameters, `18 B` active) runs in two native Qwegn pack tiers on a 128 GB Mac:
-- **100% UMA-Resident SHVQ Pack (`GLM-5.3-Flash-shvq4g32-shvq2g64-shvq3g64`, `100.63 GiB`, `2.69 bits/param`):** `SHVQ4_G32` dense/MLA/MTP trunk (`2.58%` params) + `SHVQ2_G64` routed `gate_up` (`64.66%`) + `SHVQ3_G64` routed `down_proj` (`32.33%`) + `BF16` embeddings/routers (`0.43%`). Fits 100% resident in unified memory (`99.56 GiB` RSS, `0` SSD misses, `0` OS swap, `-33.74 GiB` / `-25.1%` smaller than `HQ4+HQ3`), reaching **`36.2 tok/s` median decode (`38.4` peak, `44.0 tok/s` speculative predictable)** and **`18 ms` warm prefix-cache TTFT (`147.1×`)**.
+- **100% UMA-Resident SHVQ Pack (`GLM-5.3-Flash-shvq4g32-shvq2g64-shvq3g64`, `100.63 GiB`, `2.69 bits/param`):** `SHVQ4_G32` dense/MLA/MTP trunk (`2.58%` params) + `SHVQ2_G64` routed `gate_up` (`64.66%`) + `SHVQ3_G64` routed `down_proj` (`32.33%`) + `BF16` embeddings/routers (`0.43%`). Fits 100% resident in unified memory (`97.84 GiB` RSS serial / `100.14 GiB` MTP-1, `0` SSD misses, `0` OS swap, `-33.74 GiB` / `-25.1%` smaller than `HQ4+HQ3`), reaching **`1,005.9 tok/s` prefill (`825–869` in `qwg serve`, `780` @65.6K), `46.0 tok/s` median decode (`46.4` peak, `44.64` CLI), `48.9–53.6 tok/s` NextN MTP-1 speculative decode (`51.19` CLI, `1.98 tok/step`, `41.1 → 43.3 tok/s` `+5.4%` steady 21m thermal load)**, **`10–18 ms` warm prefix-cache TTFT (`96–193.4×`)**, and **`81/100` HumanEval+MBPP (`46/50` HE, `35/50` MBPP), `184/184` API conformance, `37/37` capability, `66/88` agentic, and `99.74%` engine fidelity** on full `llmprobe`.
 - **Cold-Expert NVMe Streaming Pack (`134.37 GiB`, `HQ4_G32_M5 + HQ3_G64`, `3.59 bits/param`):** Exceeds 128 GB unified memory by `6.4 GiB` before OS, KV, and scratch buffers. Qwegn executes packs larger than RAM with zero OS swap through five coordinated subsystems:
 
 | Subsystem / Optimization | Measured Gain / Metric |
@@ -128,6 +128,74 @@ Comparing the **Monolithic 1M Linear Pack** (`1,008,064–1,011,738` tokens) aga
 | **Free Context Window for Coding Agents (`1M` Ceiling)** | `36,838` tok (`3.6%`, fails at `170K` agent prompt) | **`1,015,831` tok (`96.9%`) + Elastic Budget Guard** | **`27.6×` more free agent context (`0` overflows)** |
 | **Turns 1–2 (Resident Cortex: `Makefile`, `docs/lsa.md`)** | `0.08–0.35 s` TTFT · `91.9–101.6 tok/s` decode | **`0.10–0.15 s` TTFT (`repl`) · `102.7–143.4 ms` (`serve`) · `153.8–154.2 tok/s` decode** | **`+53%` faster decode (`96.8–99.2%` MTP accept)** |
 | **Turns 3–4 (Off-Context Vault Recall: `QWSlotPinnedLRUStore`, `QwgIndex`)** | N/A (monolithic linear prefix) | **`< 0.5 ms` Vault recall · `100%` `[warm_ram]` hit on prior turns (`40,550/44,054` tok) · `147.5–163.7 tok/s` decode** | **`11.8×` lower warm RAM (`390–533 MB`, `0` SSD spill)** |
+
+## Sub-2-Bit Antipodal `SHVQ15` / `SHVQ1`, `QNGRAM v3 VQ4_G32` PLE & `v0.16.0` Qualification
+
+All numbers below were measured on an idle (`0% / 0%` baseline GPU utilization) Apple M5 Max (`Mac17,6`, 18-core CPU, 40-core Apple10 NAX GPU, 128 GB Unified Memory, 585 GB/s DRAM, macOS 26+) against frozen `master` (`v0.15.1`).
+
+### 1. Cold-Streaming Sub-2-Bit `SHVQ` Kernel Race (`256 MiB` Ring Flush, `qwg-bench-kernels --only-shvq`)
+
+| Kernel Suite | Matrix Shape | Sub-2-Bit `SHVQ` (`G64`) | `AQ2_G64` (`2.50 bpw`) | `SHVQ2_G64` (`2.25 bpw`) | Latency Ratio vs `AQ2_G64` (`< 1.0×` = Faster) |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **`decode_dx_t4` (`SHVQ1_G64`, `1.25 bpw`)** | `12288 × 4096` | **`0.0367 ms`** | `0.0516 ms` | `0.1320 ms` | **`0.712×` (`1.41×` faster than `AQ2`, `3.60×` vs `SHVQ2`)** |
+| **`decode_dx_t4` (`SHVQ15_G64`, `1.75 bpw`)** | `12288 × 4096` | **`0.0480 ms`** | `0.0627 ms` | `0.1320 ms` | **`0.765×` (`1.31×` faster than `AQ2`, `2.75×` vs `SHVQ2`)** |
+| **`moe_gateup_glm` (`SHVQ1_G64`)** | `k=8 · 4096 × 2048` | **`0.0517 ms`** | `0.0592 ms` | `0.0654 ms` | **`0.872×` (`1.15×` faster than `AQ2`)** |
+| **`moe_gateup_fn` (`SHVQ1_G64`)** | `k=10 · 2048 × 4096` | **`0.0435 ms`** | `0.0512 ms` | `0.1223 ms` | **`0.850×` (`1.18×` faster than `AQ2`, `2.81×` vs `SHVQ2`)** |
+| **`moe_down_combine` (`SHVQ1_G64`)** | `k=8 · 2048 × 2048` | **`0.0606 ms`** | `0.0781 ms` | `0.0584 ms` | **`0.776×` (`1.29×` faster than `AQ2`)** |
+| **`prefill_nax_f32` (`SHVQ1_G64`)** | `m=64 · 4096 × 4096` | **`0.0784 ms`** | `0.0887 ms` | `0.3073 ms` | **`0.884×` (`3.92×` faster than `SHVQ2`)** |
+| **`prefill_nax_f32` (`SHVQ15_G64`)** | `m=64 · 4096 × 4096` | **`0.1518 ms`** | `0.0817 ms` | `0.3073 ms` | `1.858×` vs `AQ2` (**`2.02×` faster than `SHVQ2`**) |
+
+### 2. Multi-Format `DSpine` Drafter Qualification on `Qwen3.8-27B-hq4g32` (`5` Alternating Rounds, Novel Swift Prompt)
+
+*Provenance note:* Sub-2-bit drafter packs were quantized via `pack_dflash.py --quant {shvq15_g64,shvq1_g64}` from standard-domain `BF16` reconstructed from `Qwen3.8-27B-DSpine-b16-hq4g32` (`dequant_hq4_g32_m5`); the `Qwen3.8-27B-hq4g32` target verifier is untouched. Every single run (`35/35` across all 7 arms) produced the **identical stdout `SHA-256` (`fec7456a...`, `0.0%` target quality loss)**, and `Qwen3.8-27B` + `DSpine-b16-shvq15g64` scored **`9/10` (`90%`)** on `llmprobe` `code-10` (matching serial `9/10`). On open-ended novel prose/code where draft acceptance is `~3.0–3.4` tokens/round, `B=8` (`M=8` row-paired target verify) outperforms `B=16` (`M=16` padded target GEMM tile):
+
+| Arm (`Qwen3.8-27B-hq4g32` Target) | Drafter `.qwp` Size | Resident RAM | Mean Emitted / Round | Decode Median (MAD) | Speedup vs Serial | Output Parity |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| `serial` (`--mtp-drafts 0`) | — | `16.62 GiB` | `1.00 tok` | `29.71 tok/s` (`0.35`) | `1.000×` | `SHA-256` exact |
+| `dspine_hq4_b8` (`HQ4_G32_M5`, `5.00 bpw`) | `1,595.53 MiB` | `19.79 GiB` | `3.34 tok` | **`50.58 tok/s`** (`0.34`) | **`1.702×`** | `SHA-256` exact |
+| **`dspine_shvq15_b8` (`SHVQ15_G64`, `1.75 bpw`)** | **`925.22 MiB` (`-42.0%`)** | **`19.05 GiB` (`-0.74 GiB`)** | **`3.02 tok` (`90.4%`)** | **`36.52 tok/s`** (`1.17`) | **`1.229×`** | **`SHA-256` exact (`9/10` code)** |
+| `dspine_shvq1_b8` (`SHVQ1_G64`, `1.25 bpw`) | **`822.10 MiB` (`-48.5%`)** | **`18.93 GiB` (`-0.86 GiB`)** | `2.19 tok` | `27.77 tok/s` (`0.53`) | `0.935×` | `SHA-256` exact |
+
+### 3. `QNGRAM v3 VQ4_G32` vs `VQ2_G32` PLE Table Qualification (`Qwen3.8-Flash-Next`, `320,001,536` Entries × `160D`)
+
+| PLE Format (`ngram.bin`) | Row Bytes / bpw | Rows per `4096 B` Sector | Full Table Size (`UMA` Saved) | Mean Cosine / Rel RMSE | `480×1` Decode Gather | `480×512` Prefill Gather |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| `QNGRAM v3 VQ2_G32` (`dtype=3`, 2D) | `90 B` (`4.50 bpw`) | `45` | `27.13 GiB` *(baseline)* | — | `0.0132 ms` | `0.5088 ms` |
+| **`QNGRAM v3 VQ4_G32` (`dtype=4`, 4D)** | **`50 B` (`2.50 bpw`)** | **`81`** | **`15.07 GiB` (`-12.06 GiB` / `-44.4%`)** | **`0.9557` / `0.2943`** | **`0.0135 ms` (`1.029×`)** | **`0.4672 ms` (`0.917×`, `+9.0%`)** |
+
+### 4. `v0.16.0` Flagship 4-Pack Zero-Regression Gate (`Scripts/paired_perf.py --strict`, `v0.15.1` vs `v0.16.0`)
+
+| Flagship Model Pack | Prefill Ratio (MAD) | Decode Ratio (MAD) | Planned Weight / Residency Toggles | `llmprobe` `code-10` | Determinism & `16K` 3-Needle |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| `Qwen3.6-35B-A3B-hq4g32` | **`1.0235×`** (`0.0038`) | **`0.9979×`** (`0.0260`) | Identical (`20.44 GiB` `--load-vision` / `--no-load-vision`) | **`9/10`** | `SHA-256` exact (`2/3` both) |
+| `Qwen3.8-27B-hq4g32` | **`0.9949×`** (`0.0060`) | **`1.0003×`** (`0.0094`) | Identical (`15.17 GiB` `--load-vision` / `--no-load-vision`) | **`9/10`** | `SHA-256` exact (**`3/3`**) |
+| `Qwen3.8-Flash-Next-hq8g32-hq4g64` | **`1.0097×`** (`0.0066`) | **`1.0011×`** (`0.0018`) | Identical (`98.42 GiB` GPU PLE / `71.29 GiB` `--stream-ngrams`) | **`9/10`** | `SHA-256` exact (**`3/3`**) |
+| `GLM-5.3-Flash-shvq4g32-shvq2g64-shvq3g64` | **`0.9916×`** (`0.0178`) | **`0.9889×`** (`0.0228`) | Identical (`98.56 GiB` `SHVQ4_G32 + SHVQ2/3_G64`) | **`9/10`** | `SHA-256` exact (**`3/3`**) |
+
+## Generalized NoPE MLA, `SHVQ` Direct/SRAM LUTs, UMA Scratch Tightening & `v0.17.0` Qualification
+
+Measured on an idle (`0% / 0%` baseline GPU utilization) Apple M5 Max (`Mac17,6`, 18-core CPU, 40-core Apple10 NAX GPU, 128 GB Unified Memory, 585 GB/s DRAM, macOS 26+) via `Scripts/paired_perf.py --strict` (`5` cooled alternating pairs + `1` warmup), `qwg serve` + `llmprobe`, and long-context needle harnesses (`--kv-mode q4 --temperature 0`):
+
+| Flagship Model Pack | Paired Prefill (`tok/s` · Ratio) | Paired Decode (`tok/s` · Ratio) | UMA / GPU Memory & Residency Toggles | `llmprobe` `code-10` | Determinism & Long-Ctx 3-Needle |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **`GLM-5.3-Flash-shvq4g32-shvq2g64-shvq3g64`** | `145.8 →` **`1,005.9`** (**`6.92×`**, `869` serve) | `23.81 →` **`44.64`** (**`1.88×`**, `46.4` serve)<br>MTP-1: `23.44 →` **`47.59`** (**`2.03×`**, `50.7` serve) | `fixed_scratch` `6.96 →` **`4.31 GiB`** (`-2.65 GiB`), `288/288` exp (`cold=0`), `0` allocs | **`9/10`** (`1.97×` faster) | `5/5 SHA-256` exact · **`3/3`** (`15K`, `60K`, `130K`, **`242.5K` @ `743 / 45.0`**) |
+| **`Qwen3.6-35B-A3B-hq4g32`** | `6,153.6 →` **`6,146.9`** (`0.9985×`) | `130.24 →` **`129.79`** (`0.9939×`)<br>MTP-1: `143.80 →` **`146.57`** (`1.019×`) | MTP-1 RSS **`-1.02 GiB`** (`23.55 → 22.53 GiB`); `--no-load-vision` `-1.66 GiB`, `0` allocs | **`9/10`** | `5/5 SHA-256` exact · **`3/3`** (`@16K`) |
+| **`Qwen3.8-Flash-Next-hq8g32-hq4g64`** | `2,715.5 →` **`2,667.8`** (`1.0009×` paired) | `52.71 →` **`52.88`** (`1.0049×`)<br>MTP-1: `72.01 →` **`72.33`** (`1.0077×`) | `--stream-ngrams` `107.00 →` **`79.88 GiB`** GPU (`-27.12 GiB`); `--no-load-vision` `-1.66 GiB`, `0` allocs | **`9/10`** | `5/5 SHA-256` exact · **`3/3`** (`@15K`) |
+| **`Qwen3.8-27B-hq4g32` (+ `DSpine-b16`)** | `843.6 →` **`840.6`** (`0.9959×`)<br>MTP-3: `877.9 →` **`880.8`** (`1.0026×`) | `29.63 →` **`29.59`** (`0.9987×`)<br>DSpine: `44.41 →` **`44.49`** / `50.22 →` **`50.14`** (`1.00×`) | `prefillBytesPerToken` `760 →` **`500 KB`**; `--no-load-vision` `-1.43 GiB`, `0` allocs | **`9/10`** (serial & DSpine) | `5/5 SHA-256` exact · **`3/3`** (`@15K`) |
+
+### Full `llmprobe` (`--full` + 100-Task `code`) Verification on `GLM-5.3-Flash` (`v0.17.1`)
+
+Uncontested (`0% / 0%` GPU idle, `114.13 GiB` free+reclaimable RAM) `llmprobe v0.6.16` `--full` (`1,489,839` tokens: `1,394,256` in + `95,583` out, `0` HTTP errors) plus `--eval-suite code --reasoning off` (`100` tasks) against `GLM-5.3-Flash-shvq4g32-shvq2g64-shvq3g64` (`--kv-mode q4 --context-tokens 65536 --mtp-backend standard --mtp-drafts 1 --no-load-vision`, automatic `>= 75%` UMA prefill-scratch eviction active):
+
+| `llmprobe` Suite / Phase | Score / Result | Key Sub-Metrics |
+| :--- | :---: | :--- |
+| **API Conformance (`conformance`, `--full`)** | **`184 / 184` (`100%`)** | Core endpoints **`9/9` (`100%`)**, Extended `10/15`, Frontier `1/10`, Ollama `/api/chat` & `/api/tags`, `0` failures, `0` warnings |
+| **Model Capability (`capability`)** | **`37 / 37` (`100%`, `strong`)** | `tool-selection` `6/6`, `tool-restraint` `6/6`, `tool-args` `6/6`, `multiturn` `3/3`, `instructions` `3/3`, `json-discipline` `6/6`, `16 KB` `long-context` `1/1`, `reasoning` `3/3`, `knowledge` `3/3` |
+| **100-Task Coding Eval (`--eval-suite code`)** | **`81 / 100` (`81.0%`)** | **HumanEval `46 / 50` (`92.0%`)** · **MBPP `35 / 50` (`70.0%`)** · `code-10` `9/10` · `AIME 2025` `2/2` · `nested-schema` `3/3` |
+| **Agentic Execution (`agentic`, `88` tasks)** | **`66 / 88` (`75.0%`)** | `3/3` workspace `agentic-*` read/edit/indirect · `3/5` multi-file `coding-*` · `60/80` multi-step adversarial `tc*` |
+| **Engine Fidelity (`fidelity`)** | **`99.74%`** | Correctness **`36/36` (`100%`)** · Greedy determinism **`3/3` (`100%`)** · Logprob consistency **`36/36` (`100%`)** · Confidence `98.96%` (`top-1 prob 0.891`, `margin 0.822`) |
+| **Server Throughput & Prefix Cache (`bench`)** | **`53.6` pred / `45.6 tok/s` novel (`1.98/step`)** | `9.4K` prefill **`825.3 tok/s` med (`816–833`, `869` cold peak)** · Warm prefix cache **`96×` (`1,728 → 18 ms`, `1,419/1,419` tok; `10 ms` / `193×` standalone)** |
+| **Sustained Thermal Load (`21m 3s`) & Scaling (`0.5K → 65.6K`)** | **Steady `+5.4%` (`41.1 → 43.3 tok/s`)** | Prefill / spec decode (`tok/step`): `0.5K` `658 / 39.4 (1.96)` · `4.2K` `790 / 44.8 (1.96)` · `8.3K` `814 / 43.1 (1.94)` · `16.3K` `828 / 41.7 (1.90)` · `32.8K` `817 / 35.3 (1.96)` · **`65.6K` `780 / 42.3 (1.98)`** |
 
 ## Reproducing these numbers
 

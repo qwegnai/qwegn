@@ -44,7 +44,10 @@ public enum QWPrefillScratchEvictionPolicy: String, Sendable, CaseIterable {
         }
     }
 
-    public func shouldEvict(totalMemoryBytes: UInt64 = ProcessInfo.processInfo.physicalMemory) -> Bool {
+    public func shouldEvict(
+        totalMemoryBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
+        wiredEngineBytes: Int = 0
+    ) -> Bool {
         switch self {
         case .always:
             return true
@@ -52,7 +55,8 @@ public enum QWPrefillScratchEvictionPolicy: String, Sendable, CaseIterable {
             return false
         case .auto:
             let ramGB = Double(totalMemoryBytes) / 1_000_000_000.0
-            return ramGB <= 36.5
+            if ramGB <= 36.5 { return true }
+            return wiredEngineBytes > 0 && UInt64(wiredEngineBytes) * 4 >= totalMemoryBytes * 3
         }
     }
 }

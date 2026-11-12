@@ -8,8 +8,10 @@ import XCTest
 final class QWSHVQTests: XCTestCase {
 
     func testSupportedPairsAndByteLayouts() {
-        XCTAssertEqual(QWSHVQBlock.supported.count, 12)
+        XCTAssertEqual(QWSHVQBlock.supported.count, 20)
         let expectedBPW: [Int: [Int: Double]] = [
+            1: [32: 1.5, 64: 1.25, 128: 1.125, 256: 1.0625],
+            15: [32: 2.0, 64: 1.75, 128: 1.625, 256: 1.5625],
             2: [32: 2.5, 64: 2.25, 128: 2.125, 256: 2.0625],
             3: [32: 3.5, 64: 3.25, 128: 3.125, 256: 3.0625],
             4: [32: 4.5, 64: 4.25, 128: 4.125, 256: 4.0625],
@@ -17,14 +19,17 @@ final class QWSHVQTests: XCTestCase {
         for (bits, group) in QWSHVQBlock.supported {
             XCTAssertTrue(QWSHVQBlock.isSupported(bits: bits, group: group))
             let b = QWSHVQBlock.bytes(bits: bits, group: group)
-            XCTAssertEqual(b, 2 + (group * bits) / 8)
+            let expectedPay = bits == 15 ? (group * 3) / 16 : (group * bits) / 8
+            XCTAssertEqual(QWSHVQBlock.payloadBytes(bits: bits, group: group), expectedPay)
+            XCTAssertEqual(b, 2 + expectedPay)
             XCTAssertEqual(QWSHVQBlock.bytesIfSupported(bits: bits, group: group), b)
             XCTAssertEqual(QWSHVQBlock.bitsPerWeight(bits: bits, group: group),
                            expectedBPW[bits]![group]!, accuracy: 1e-12)
             XCTAssertEqual(QWSHVQBlock.formatName(bits: bits, group: group),
                            "SHVQ\(bits)_G\(group)")
-            // Verify 2-byte savings per group over HQ/AQ (which carry 4-byte scale+bias).
-            XCTAssertEqual(QWAQBlock.bytes(bits: bits, group: group) - b, 2)
+            if bits >= 2 && bits <= 4 {
+                XCTAssertEqual(QWAQBlock.bytes(bits: bits, group: group) - b, 2)
+            }
         }
         XCTAssertFalse(QWSHVQBlock.isSupported(bits: 5, group: 32))
         XCTAssertNil(QWSHVQBlock.bytesIfSupported(bits: 6, group: 32))
@@ -68,7 +73,26 @@ final class QWSHVQTests: XCTestCase {
             negBlock[1] = posBlock[1]
 
             let nOct = group / 8
-            if bits == 2 {
+            if bits == 1 {
+                for oct in 0..<nOct {
+                    let c7 = UInt8((oct * 41 + 13) & 0x7F)
+                    posBlock[2 + oct] = c7
+                    negBlock[2 + oct] = c7 | 0x80
+                }
+            } else if bits == 15 {
+                for pr in 0..<(nOct / 2) {
+                    let idx0 = UInt32((pr * 313 + 17) & 0x07FF)
+                    let idx1 = UInt32((pr * 509 + 29) & 0x07FF)
+                    let pos24 = idx0 | (idx1 << 12)
+                    let neg24 = (idx0 | 0x0800) | ((idx1 | 0x0800) << 12)
+                    posBlock[2 + 3 * pr] = UInt8(pos24 & 0xFF)
+                    posBlock[2 + 3 * pr + 1] = UInt8((pos24 >> 8) & 0xFF)
+                    posBlock[2 + 3 * pr + 2] = UInt8((pos24 >> 16) & 0xFF)
+                    negBlock[2 + 3 * pr] = UInt8(neg24 & 0xFF)
+                    negBlock[2 + 3 * pr + 1] = UInt8((neg24 >> 8) & 0xFF)
+                    negBlock[2 + 3 * pr + 2] = UInt8((neg24 >> 16) & 0xFF)
+                }
+            } else if bits == 2 {
                 for oct in 0..<nOct {
                     let code = UInt8((oct * 37 + 19) & 0xFF)
                     posBlock[2 + 2 * oct] = 0x00

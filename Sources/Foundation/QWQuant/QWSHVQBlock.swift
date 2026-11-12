@@ -1,13 +1,15 @@
 // QWSHVQBlock.swift — Size law and 0-ULP host reference unpacker for the
-// Signed Hadamard e-means Vector Quantized family (SHVQ{2,3,4}_G{32,64,128,256}).
-// Each group stores a 2-byte f16 scale header (zero bias) plus group*bits/8 payload bytes.
+// Signed Hadamard e-means Vector Quantized family (SHVQ{1,15,2,3,4}_G{32,64,128,256}).
+// Each group stores a 2-byte f16 scale header (zero bias) plus payload bytes.
 
 import Foundation
 
 /// Signed Hadamard `e-means` (`arXiv:2611.09501`) vector-quantized block family.
 public enum QWSHVQBlock {
-    /// Supported `(bits, group)` pairs for `SHVQ`.
+    /// Supported `(bits, group)` pairs for `SHVQ` (`15` encodes `1.5`-bit).
     public static let supported: [(bits: Int, group: Int)] = [
+        (1, 32), (1, 64), (1, 128), (1, 256),
+        (15, 32), (15, 64), (15, 128), (15, 256),
         (2, 32), (2, 64), (2, 128), (2, 256),
         (3, 32), (3, 64), (3, 128), (3, 256),
         (4, 32), (4, 64), (4, 128), (4, 256),
@@ -21,8 +23,9 @@ public enum QWSHVQBlock {
     /// Payload bytes of one group, excluding the 2-byte `f16` scale header.
     public static func payloadBytes(bits: Int, group: Int) -> Int {
         precondition(group % 32 == 0 && group > 0, "group must be a positive multiple of 32")
-        precondition((2...4).contains(bits), "SHVQ bits must be 2...4")
-        return (group * bits) / 8
+        precondition(bits == 1 || bits == 15 || (2...4).contains(bits),
+                     "SHVQ bits must be 1, 15 (1.5-bit), or 2...4")
+        return bits == 15 ? (group * 3) / 16 : (group * bits) / 8
     }
 
     /// Total bytes per group (`2`-byte `f16` scale + payload).
@@ -72,7 +75,37 @@ public enum QWSHVQBlock {
         let nOct = group / 8
         out.removeAll(keepingCapacity: true)
         out.reserveCapacity(group)
-        if bits == 2 {
+        if bits == 1 {
+            for oct in 0..<nOct {
+                let b = payload[oct]
+                let lutBase = Int(b & 0x7F) * 8
+                let sBit = UInt16((b >> 7) & 1) << 15
+                for j in 0..<8 {
+                    let wBits = QWSHVQSub2Tables.lut1Bits[lutBase + j] ^ sBit
+                    out.append(Float(Float16(bitPattern: wBits)) * sc)
+                }
+            }
+        } else if bits == 15 {
+            for pr in 0..<(nOct / 2) {
+                let p0 = UInt16(payload[3 * pr])
+                let p1 = UInt16(payload[3 * pr + 1])
+                let p2 = UInt16(payload[3 * pr + 2])
+                let uEven = p0 | ((p1 & 0x000F) << 8)
+                let uOdd = (p1 >> 4) | (p2 << 4)
+                for u12 in [uEven, uOdd] {
+                    let idx11 = Int(u12 & 0x07FF)
+                    let sBit = (u12 & 0x0800) << 4
+                    for half in 0..<2 {
+                        let word = QWSHVQSub2Tables.lut15PackedI8[idx11 * 2 + half]
+                        for j in 0..<4 {
+                            let stepIdx = Int((word >> (j * 8)) & 0xFF)
+                            let wBits = QWSHVQSub2Tables.stepMap15Bits[stepIdx] ^ sBit
+                            out.append(Float(Float16(bitPattern: wBits)) * sc)
+                        }
+                    }
+                }
+            }
+        } else if bits == 2 {
             for oct in 0..<nOct {
                 let signs = UInt16(payload[2 * oct])
                 let lutBase = Int(payload[2 * oct + 1]) * 8

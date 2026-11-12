@@ -99,11 +99,11 @@ struct Quantize: ParsableCommand {
         abstract: "Shell out to the proven Python packer (Scripts/quantize/pack.py) — Swift never reimplements the quantizer.")
     @Argument(help: "Source model directory (holds *.safetensors).") var model: String
     @Option(name: .customLong("out"), help: "New output model directory (model.qwp and assets/).") var outPack: String
-    @Option(name: .customLong("quant"), help: "Quantization format (q4g, hq{2,3,4,6,8}_g{32,64,128,256}, shvq{2,3,4}_g{32,64,128,256}).") var quant: String = "q4g"
+    @Option(name: .customLong("quant"), help: "Quantization format (q4g, hq{2,3,4,6,8}_g{32,64,128,256}, shvq{1,15,2,3,4}_g{32,64,128,256}).") var quant: String = "q4g"
     @Option(name: .customLong("dense-quant"), help: "Optional override for 2D dense/shared tensors.") var denseQuant: String?
     @Option(name: .customLong("expert-quant"), help: "Optional override for routed MoE gate/up tensors.") var expertQuant: String?
     @Option(name: .customLong("expert-down-quant"), help: "Optional override for routed MoE down_proj tensors.") var expertDownQuant: String?
-    @Option(name: .customLong("ngram-quant"), help: "Optional PLE ngram table format (q8_g32 or vq2_g32).") var ngramQuant: String?
+    @Option(name: .customLong("ngram-quant"), help: "Optional PLE ngram table format (q8_g32, vq2_g32, or vq4_g32).") var ngramQuant: String?
 
     func run() throws {
         let lowerQ = quant.lowercased()

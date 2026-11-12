@@ -51,9 +51,9 @@ All runs measured on an idle Apple M5 Max (`Mac17,6`, 128 GB Unified Memory, 40-
 | | 262K | `351.0 / 25.3` | `830.2` / **`43.1`** | **`896.5`** / `42.1` (`287.7 s`) | `3/3` · **`3/3`** · **`3/3`** | **`+8.0%` prefill vs `Ward` (`2.55×` vs Dense)** |
 | | 524K | — | `831.2` / **`41.1`** | **`891.0`** / `36.1` (`581.3 s`) | — · **`3/3`** · **`3/3`** | **`+7.2%` prefill (`-41.8 s` TTFT) vs `Ward-512`** |
 | | **1M** | — | `804.6` / **`36.5`** (`1,292.5 s`) | **`830.6`** / `35.6` (`1,252.0 s`) | — · **`3/3`** · **`3/3`** | **`+3.2%` prefill (`-40.5 s` TTFT) · `-270 MiB` RSS** |
-| **`GLM-5.3-Flash-shvq4g32-shvq2g64-shvq3g64`** | 16K | `128.6 / 26.62` *(`exactFlat`)* | — | `128.2 / 26.65` *(`<41K` bypass)* | **`3/3`** · — · **`3/3`** | Exact parity below `41K` (`0` Stage-1 overhead) |
-| *(321B SHVQ `100.63 GiB`,* | 64K | `123.2 / 24.26` *(`exactFlat`)* | — | `122.6` / **`25.61`** | **`3/3`** · — · **`3/3`** | **`+5.6%` decode (`QW_MLA_EMEANS=1`)** |
-| *11 NoPE MLA + 34 KDA)* | 160K | `118.6 / 22.23` *(`exactFlat`)* | — | `118.2` / **`26.63`** | **`3/3`** · — · **`3/3`** | **`+19.8%` decode — zero decay (`16K → 160K`)** |
+| **`GLM-5.3-Flash-shvq4g32-shvq2g64-shvq3g64`** | 15K | **`834.2 / 46.54`** *(`exactFlat`)* | — | **`834.2 / 46.54`** *(`<41K` bypass)* | **`3/3`** · — · **`3/3`** | Zero Stage-1 overhead below `41K` tokens |
+| *(321B SHVQ `100.63 GiB`,* | 60K | `706.7 / 32.38` *(`exactFlat`)* | — | **`706.7 / 32.38`** (`84.99 s`) | **`3/3`** · — · **`3/3`** | Generalized `q4`/`SHVQ` NAX sparse MLA (`4,096` chunk) |
+| *11 NoPE MLA + 34 KDA)* | 242.5K | `721.4 / 44.00` *(`exactFlat`)* | — | **`743.0 / 44.98`** (`326.3 s`) | **`3/3`** · — · **`3/3`** | **`+3.0%` prefill · `+2.2%` decode (`QW_MLA_EMEANS=1`)** |
 | | **1M** | `102.3 GiB` plan / `107.2 GiB` RSS | — | **100% UMA resident (`3,696 B/tok` KV)** | `0` SSD misses · `0` swap | `321B` weights + `1M` KV fit in 128 GB Mac |
 | **`SenseNova-Loop-9B-Preview`** | 64K | `1,207 / 65.0` | **`1,749 / 75.2`** | — | `0/3` · **`3/3`** · — | **`1.45×` prefill · `1.16×` decode** |
 | *(32→56L 2× Loop + mHC)* | 262K | `568 / 38.6` | **`1,606 / 70.4`** | — | `1/3` · **`3/3`** · — | **`2.83×` prefill · `1.82×` decode** |

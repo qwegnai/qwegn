@@ -5,39 +5,41 @@
 #include <metal_stdlib>
 #include <metal_simdgroup>
 #include <metal_simdgroup_matrix>
-#include "../include/qw_dequant_multi.metalh"
-#include "../include/qw_mla_params.metalh"
+#include "../include/qw_mla_dequant.metalh"
 using namespace metal;
 
 // simdgroup 8x8 accumulator fragment map: lane -> (row, first of two adjacent columns).
 static inline uint qw_mla_row(uint l) { return ((l >> 4) & 1u) * 4u + ((l >> 2) & 1u) * 2u + ((l >> 1) & 1u); }
 static inline uint qw_mla_col(uint l) { return ((l >> 3) & 1u) * 4u + (l & 1u) * 2u; }
 
-// 4b. Absorbed query projection on simdgroup MMA for the HQ4_G32 container (nope 256, rank 512).
-// Per head: q_abs[32 rows, 128 cols] = q_nope[32, 256] * W_UK,h[256, 128]. Each K step stages a
-// 32x32 q tile and dequantizes a 32x128 weight tile (one HQ4 block per thread) to half.
+// 4b. Absorbed query projection on simdgroup MMA for HQ4_G32, SHVQ, and AQ/HQ (nope 256, rank 512).
 // Grid: (qHeads, (T + 31) / 32, kvLoraRank / 128), Threadgroup: (128, 1, 1).
 #define MLA_ABS_TM 32u
 #define MLA_ABS_TN 128u
 #define MLA_ABS_TK 32u
 
-kernel void qwg_mla_absorb_q_mma(
-    device const half*       mlaQFull   [[buffer(0)]],
-    device const char*       kvBBlocks  [[buffer(1)]],
-    device half*             qAbsOut    [[buffer(2)]],
-    constant MLAAbsorbParams& p         [[buffer(3)]],
-    uint3                    tg         [[threadgroup_position_in_grid]],
-    uint                     tid        [[thread_index_in_threadgroup]],
-    uint                     sg         [[simdgroup_index_in_threadgroup]],
-    uint                     lane       [[thread_index_in_simdgroup]]
+template <bool SUB2>
+static inline void qwg_mla_absorb_q_mma_impl(
+    device const half*       mlaQFull,
+    device const char*       kvBBlocks,
+    device half*             qAbsOut,
+    constant MLAAbsorbParams& p,
+    uint3                    tg,
+    uint                     tid,
+    uint                     sg,
+    uint                     lane,
+    threadgroup half*        qs,
+    threadgroup half*        ws,
+    threadgroup ShvqMlaTgLut& tgLut
 ) {
     const uint h = tg.x;
     const uint tBase = tg.y * MLA_ABS_TM;
     const uint cBase = tg.z * MLA_ABS_TN;
     if (h >= p.qHeads || tBase >= p.T) return;
 
-    threadgroup half qs[MLA_ABS_TM * (MLA_ABS_TK + 8u)];
-    threadgroup half ws[MLA_ABS_TK * (MLA_ABS_TN + 8u)];
+    if (p.isIncumbent == 2u && qw_mla_load_shvq_lut<SUB2>(tgLut, p.bits, tid, 128u)) {
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
     const uint qsStride = MLA_ABS_TK + 8u, wsStride = MLA_ABS_TN + 8u;
 
     simdgroup_float8x8 acc[4][4];
@@ -48,11 +50,7 @@ kernel void qwg_mla_absorb_q_mma(
     }
 
     const uint headRowBase = h * (p.nopeDim + p.vHeadDim);
-    device const Block_HQ4_G32* wBase = (device const Block_HQ4_G32*)kvBBlocks
-        + (size_t)headRowBase * 16u + (cBase >> 5u);
-    // Weight staging: thread -> (row tid/4, block tid%4) of the 32x128 tile.
     const uint wRow = tid >> 2u, wBlk = tid & 3u;
-    // q staging: thread -> (row tid/4, 8 halves at (tid%4)*8).
     const uint qRow = tid >> 2u, qCol = (tid & 3u) * 8u;
     const bool qValid = tBase + qRow < p.T;
     device const half* qSrc = mlaQFull + (size_t)(tBase + qRow) * p.qFullStride + h * p.nopeDim + qCol;
@@ -67,21 +65,8 @@ kernel void qwg_mla_absorb_q_mma(
             *(threadgroup half4*)(qs + qRow * qsStride + qCol) = a;
             *(threadgroup half4*)(qs + qRow * qsStride + qCol + 4u) = b;
         }
-        {
-            device const Block_HQ4_G32* blk = wBase + (size_t)(k0 + wRow) * 16u + wBlk;
-            const half scale = blk->scale, bias = blk->bias;
-            threadgroup half* dst = ws + wRow * wsStride + wBlk * 32u;
-            #pragma unroll
-            for (uint w = 0u; w < 4u; ++w) {
-                const ushort2 raw = as_type<ushort2>(blk->qs[w]);
-                #pragma unroll
-                for (uint sub = 0u; sub < 8u; ++sub) {
-                    const ushort hw = ((sub & 1u) == 0u) ? raw.x : raw.y;
-                    const half fp = as_type<half>(ushort(((hw >> ((sub >> 1u) * 4u)) & 0x000Fu) | 0x6400u));
-                    dst[w * 8u + sub] = fma(fp, scale, bias);
-                }
-            }
-        }
+        qw_mla_unpack_slice32<SUB2>(kvBBlocks, headRowBase + k0 + wRow, cBase + wBlk * 32u,
+                                    p, tgLut, ws + wRow * wsStride + wBlk * 32u, 1u);
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
         #pragma unroll
@@ -114,11 +99,40 @@ kernel void qwg_mla_absorb_q_mma(
     }
 }
 
-// 5b. MQA-shared sparse latent attention on simdgroup MMA (f16 KV only).
-// Every head of a row attends the same selected latent rows, so one threadgroup serves
-// MLA_MMA_HG heads: each 16-token tile of c_KV (512 dims) is staged once in threadgroup
-// memory and reused by all of them (the scalar kernel re-reads it per head).
-// S = q_abs * c^T and O += P * c run on 8x8 MMA with an fp32 online softmax.
+kernel void qwg_mla_absorb_q_mma(
+    device const half*       mlaQFull   [[buffer(0)]],
+    device const char*       kvBBlocks  [[buffer(1)]],
+    device half*             qAbsOut    [[buffer(2)]],
+    constant MLAAbsorbParams& p         [[buffer(3)]],
+    uint3                    tg         [[threadgroup_position_in_grid]],
+    uint                     tid        [[thread_index_in_threadgroup]],
+    uint                     sg         [[simdgroup_index_in_threadgroup]],
+    uint                     lane       [[thread_index_in_simdgroup]]
+) {
+    threadgroup half qs[MLA_ABS_TM * (MLA_ABS_TK + 8u)];
+    threadgroup half ws[MLA_ABS_TK * (MLA_ABS_TN + 8u)];
+    threadgroup ShvqMlaTgLut tgLut;
+    qwg_mla_absorb_q_mma_impl<false>(mlaQFull, kvBBlocks, qAbsOut, p, tg, tid, sg, lane, qs, ws, tgLut);
+}
+
+kernel void qwg_mla_absorb_q_mma_sub2(
+    device const half*       mlaQFull   [[buffer(0)]],
+    device const char*       kvBBlocks  [[buffer(1)]],
+    device half*             qAbsOut    [[buffer(2)]],
+    constant MLAAbsorbParams& p         [[buffer(3)]],
+    uint3                    tg         [[threadgroup_position_in_grid]],
+    uint                     tid        [[thread_index_in_threadgroup]],
+    uint                     sg         [[simdgroup_index_in_threadgroup]],
+    uint                     lane       [[thread_index_in_simdgroup]]
+) {
+    threadgroup half qs[MLA_ABS_TM * (MLA_ABS_TK + 8u)];
+    threadgroup half ws[MLA_ABS_TK * (MLA_ABS_TN + 8u)];
+    threadgroup ShvqMlaTgLut tgLut;
+    qwg_mla_absorb_q_mma_impl<true>(mlaQFull, kvBBlocks, qAbsOut, p, tg, tid, sg, lane, qs, ws, tgLut);
+}
+
+// 5b. MQA-shared sparse latent attention on simdgroup MMA (f16/q8/q4 KV).
+// Stages 16-token tiles of c_KV (512 dims) once in threadgroup SRAM across MLA_MMA_HG heads.
 // Grid: (T, qHeads / MLA_MMA_HG, 1), Threadgroup: (128, 1, 1).
 #define MLA_MMA_HG   16u
 #define MLA_MMA_TK   16u
@@ -193,10 +207,10 @@ kernel void qwg_mla_sparse_attn_mma(
                 const uint pageSlot = j >> 8u, pageOff = j & 255u;
                 if (c4 < halfRank) {
                     const uint pg = uint(kTable[pageSlot]);
-                    v = *(device const half4*)(kPool + ((size_t)pg * 256u + pageOff) * halfRank + c4);
+                    v = qw_mla_load_kv_half4((device const uchar*)kPool, pg, pageOff, c4, p.kvMode);
                 } else {
                     const uint pg = uint(vTable[pageSlot]);
-                    v = *(device const half4*)(vPool + ((size_t)pg * 256u + pageOff) * halfRank + (c4 - halfRank));
+                    v = qw_mla_load_kv_half4((device const uchar*)vPool, pg, pageOff, c4 - halfRank, p.kvMode);
                 }
             }
             *(threadgroup half4*)(ks + r * MLA_MMA_KS + c4) = v;
@@ -298,27 +312,31 @@ kernel void qwg_mla_sparse_attn_mma(
     }
 }
 
-// 6b. Value up-projection on simdgroup MMA, HQ4_G32 (rank 512, v 256): out[32, 128] = uLat[32, 512]
-// * W_UV,h^T, thread r dequantizing W row r per K step; fp32 tile gets qwg_mla_proj_uv's H_32 on store.
+// 6b. Value up-projection on simdgroup MMA for HQ4_G32, SHVQ, and AQ/HQ (rank 512, v 256).
 // Grid: (qHeads, (T + 31) / 32, vHeadDim / 128), Threadgroup: (128, 1, 1).
-kernel void qwg_mla_proj_uv_mma(
-    device const half*       uLat       [[buffer(0)]],
-    device const char*       kvBBlocks  [[buffer(1)]],
-    device half*             attOut     [[buffer(2)]],
-    constant MLAAbsorbParams& p         [[buffer(3)]],
-    uint3                    tg         [[threadgroup_position_in_grid]],
-    uint                     tid        [[thread_index_in_threadgroup]],
-    uint                     sg         [[simdgroup_index_in_threadgroup]],
-    uint                     lane       [[thread_index_in_simdgroup]]
+template <bool SUB2>
+static inline void qwg_mla_proj_uv_mma_impl(
+    device const half*       uLat,
+    device const char*       kvBBlocks,
+    device half*             attOut,
+    constant MLAAbsorbParams& p,
+    uint3                    tg,
+    uint                     tid,
+    uint                     sg,
+    uint                     lane,
+    threadgroup half*        us,
+    threadgroup half*        ws,
+    threadgroup float*       os,
+    threadgroup ShvqMlaTgLut& tgLut
 ) {
     const uint h = tg.x;
     const uint tBase = tg.y * MLA_ABS_TM;
     const uint cBase = tg.z * MLA_ABS_TN;
     if (h >= p.qHeads || tBase >= p.T) return;
 
-    threadgroup half us[MLA_ABS_TM * (MLA_ABS_TK + 8u)];
-    threadgroup half ws[MLA_ABS_TK * (MLA_ABS_TN + 8u)];
-    threadgroup float os[MLA_ABS_TM * (MLA_ABS_TN + 4u)];
+    if (p.isIncumbent == 2u && qw_mla_load_shvq_lut<SUB2>(tgLut, p.bits, tid, 128u)) {
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
     const uint usStride = MLA_ABS_TK + 8u, wsStride = MLA_ABS_TN + 8u, osStride = MLA_ABS_TN + 4u;
 
     simdgroup_float8x8 acc[4][4];
@@ -328,9 +346,7 @@ kernel void qwg_mla_proj_uv_mma(
         for (uint j = 0u; j < 4u; ++j) acc[i][j] = simdgroup_float8x8(0.0f);
     }
 
-    const uint blocksPerRow = p.kvLoraRank >> 5u;
-    device const Block_HQ4_G32* wRowBase = (device const Block_HQ4_G32*)kvBBlocks
-        + (size_t)(h * (p.nopeDim + p.vHeadDim) + p.nopeDim + cBase + tid) * blocksPerRow;
+    const uint wRow = h * (p.nopeDim + p.vHeadDim) + p.nopeDim + cBase + tid;
     const uint uRow = tid >> 2u, uCol = (tid & 3u) * 8u;
     const bool uValid = tBase + uRow < p.T;
     device const half* uSrc = uLat + ((size_t)(tBase + uRow) * p.qHeads + h) * p.kvLoraRank + uCol;
@@ -345,20 +361,7 @@ kernel void qwg_mla_proj_uv_mma(
             *(threadgroup half4*)(us + uRow * usStride + uCol) = a;
             *(threadgroup half4*)(us + uRow * usStride + uCol + 4u) = b;
         }
-        {
-            device const Block_HQ4_G32* blk = wRowBase + (k0 >> 5u);
-            const half scale = blk->scale, bias = blk->bias;
-            #pragma unroll
-            for (uint w = 0u; w < 4u; ++w) {
-                const ushort2 raw = as_type<ushort2>(blk->qs[w]);
-                #pragma unroll
-                for (uint sub = 0u; sub < 8u; ++sub) {
-                    const ushort hw = ((sub & 1u) == 0u) ? raw.x : raw.y;
-                    const half fp = as_type<half>(ushort(((hw >> ((sub >> 1u) * 4u)) & 0x000Fu) | 0x6400u));
-                    ws[(w * 8u + sub) * wsStride + tid] = fma(fp, scale, bias);
-                }
-            }
-        }
+        qw_mla_unpack_slice32<SUB2>(kvBBlocks, wRow, k0, p, tgLut, ws + tid, wsStride);
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
         #pragma unroll
@@ -390,4 +393,38 @@ kernel void qwg_mla_proj_uv_mma(
         const float rot = qwg_fwht32_lane_f32(os[m * osStride + sg * 32u + lane], lane);
         attOut[(size_t)(tBase + m) * outStride + h * p.vHeadDim + cBase + sg * 32u + lane] = half(rot);
     }
+}
+
+kernel void qwg_mla_proj_uv_mma(
+    device const half*       uLat       [[buffer(0)]],
+    device const char*       kvBBlocks  [[buffer(1)]],
+    device half*             attOut     [[buffer(2)]],
+    constant MLAAbsorbParams& p         [[buffer(3)]],
+    uint3                    tg         [[threadgroup_position_in_grid]],
+    uint                     tid        [[thread_index_in_threadgroup]],
+    uint                     sg         [[simdgroup_index_in_threadgroup]],
+    uint                     lane       [[thread_index_in_simdgroup]]
+) {
+    threadgroup half us[MLA_ABS_TM * (MLA_ABS_TK + 8u)];
+    threadgroup half ws[MLA_ABS_TK * (MLA_ABS_TN + 8u)];
+    threadgroup float os[MLA_ABS_TM * (MLA_ABS_TN + 4u)];
+    threadgroup ShvqMlaTgLut tgLut;
+    qwg_mla_proj_uv_mma_impl<false>(uLat, kvBBlocks, attOut, p, tg, tid, sg, lane, us, ws, os, tgLut);
+}
+
+kernel void qwg_mla_proj_uv_mma_sub2(
+    device const half*       uLat       [[buffer(0)]],
+    device const char*       kvBBlocks  [[buffer(1)]],
+    device half*             attOut     [[buffer(2)]],
+    constant MLAAbsorbParams& p         [[buffer(3)]],
+    uint3                    tg         [[threadgroup_position_in_grid]],
+    uint                     tid        [[thread_index_in_threadgroup]],
+    uint                     sg         [[simdgroup_index_in_threadgroup]],
+    uint                     lane       [[thread_index_in_simdgroup]]
+) {
+    threadgroup half us[MLA_ABS_TM * (MLA_ABS_TK + 8u)];
+    threadgroup half ws[MLA_ABS_TK * (MLA_ABS_TN + 8u)];
+    threadgroup float os[MLA_ABS_TM * (MLA_ABS_TN + 4u)];
+    threadgroup ShvqMlaTgLut tgLut;
+    qwg_mla_proj_uv_mma_impl<true>(uLat, kvBBlocks, attOut, p, tg, tid, sg, lane, us, ws, os, tgLut);
 }

@@ -16,15 +16,17 @@ NGRAM_ROW_BYTES = HEAD_DIM * 2
 
 _NG_MAGIC = b"QNGRAM\x00\x00"
 # Header version and dtype pairing: v1 is BF16, v2 is scalar group quantised,
-# v3 carries a 1 KiB e-means 2D codebook at byte 1024..2048 for VQ2_G32.
-_NG_VERSION = {"bf16": 1, "q8": 2, "q4": 2, "vq2": 3}
-_NG_DTYPE = {"bf16": 0, "q8": 1, "q4": 2, "vq2": 3}
+# v3 carries an e-means codebook at byte 1024..2048 (VQ2) or 1024..3072 (VQ4).
+_NG_VERSION = {"bf16": 1, "q8": 2, "q4": 2, "vq2": 3, "vq4": 3}
+_NG_DTYPE = {"bf16": 0, "q8": 1, "q4": 2, "vq2": 3, "vq4": 4}
 _NG_QUANT_BY_DTYPE = {v: k for k, v in _NG_DTYPE.items()}
 _NG_SECTOR = 4096
 _NG_GROUP = 32
 _NG_NOTE_LEN = 64
 _NG_VQ2_CB_OFF = 1024
 _NG_VQ2_CB_BYTES = 1024
+_NG_VQ4_CB_OFF = 1024
+_NG_VQ4_CB_BYTES = 2048
 # The largest finite f16. A Q8 group's scale is `amax / 127` and it is stored
 # as f16, so a group above this cannot be represented.
 _F16_MAX = 65504.0
@@ -173,6 +175,8 @@ def _row_bytes(dtype: str, head_dim: int) -> int:
         return groups * 20
     if dtype == "vq2":
         return groups * 18
+    if dtype == "vq4":
+        return groups * 10
     raise ValueError(f"ngram.bin: unknown row format {dtype!r}")
 
 
@@ -446,6 +450,8 @@ def _encode_rows(quant: str, bf16_bytes: bytes, codebook_f16=None, device: str =
     import numpy as np
     if quant == "vq2_g32":
         quant = "vq2"
+    elif quant == "vq4_g32":
+        quant = "vq4"
     rows = _bf16_rows_to_f32(bf16_bytes, np)
     if not np.isfinite(rows).all():
         raise ValueError("ngram.bin: a non-finite value in an n-gram row")
@@ -459,6 +465,11 @@ def _encode_rows(quant: str, bf16_bytes: bytes, codebook_f16=None, device: str =
         if voronoi_ctx is not None:
             return _encode_vq2_voronoi_mps(rows, voronoi_ctx, np)
         return _encode_vq2(rows, codebook_f16, np, device=device)
+    if quant == "vq4":
+        if codebook_f16 is None:
+            raise ValueError("ngram.bin: vq4 encoding requires a trained codebook")
+        from pack_ngram_vq4 import encode_vq4
+        return encode_vq4(rows, codebook_f16, device=device)
     raise ValueError(f"ngram.bin: unknown row format {quant!r}")
 
 
@@ -500,14 +511,16 @@ def _validate_vq2_codebook_bytes(cb_bytes: bytes) -> None:
 def build_ngram_bin(shards: list[dict], source: Path, out_path: Path,
                     quant: str = "bf16", l1_seed: int = 0,
                     codebook_f16=None, device: str | None = None) -> dict:
-    """Write the sector-aligned QNGRAM table (`bf16`, `q8`, `q4`, or `vq2`)."""
+    """Write the sector-aligned QNGRAM table (`bf16`, `q8`, `q4`, `vq2`, or `vq4`)."""
     out_path = Path(out_path)
     if quant == "vq2_g32":
         quant = "vq2"
+    elif quant == "vq4_g32":
+        quant = "vq4"
     if quant not in _NG_DTYPE:
         raise ValueError(f"ngram.bin: unknown row format {quant!r}")
     if device is None:
-        if quant == "vq2":
+        if quant in ("vq2", "vq4"):
             import torch
             device = "mps" if torch.backends.mps.is_available() else "cpu"
         else:
@@ -520,6 +533,10 @@ def build_ngram_bin(shards: list[dict], source: Path, out_path: Path,
     if quant == "vq2" and codebook_f16 is None:
         sample = _sample_shard_rows_for_vq2(shards, source)
         codebook_f16 = train_vq2_codebook(sample, seed=0, device=device)
+    elif quant == "vq4" and codebook_f16 is None:
+        from pack_ngram_vq4 import train_vq4_codebook
+        sample = _sample_shard_rows_for_vq2(shards, source)
+        codebook_f16 = train_vq4_codebook(sample, seed=0, device=device)
     if quant == "vq2":
         import numpy as np
         cb_bytes = np.asarray(codebook_f16, dtype="<f2").tobytes()
@@ -529,6 +546,12 @@ def build_ngram_bin(shards: list[dict], source: Path, out_path: Path,
             if (device == "mps" and entry_count >= 1_000_000)
             else None
         )
+    elif quant == "vq4":
+        import numpy as np
+        from pack_ngram_vq4 import validate_vq4_codebook_bytes
+        cb_bytes = np.asarray(codebook_f16, dtype="<f2").tobytes()
+        validate_vq4_codebook_bytes(cb_bytes)
+        voronoi_ctx = None
     else:
         cb_bytes = b""
         voronoi_ctx = None
@@ -539,7 +562,7 @@ def build_ngram_bin(shards: list[dict], source: Path, out_path: Path,
     sector = bytearray(_NG_SECTOR)
     fill = 0
     written = 0
-    chunk_rows = (rps * 2048) if quant == "vq2" else 4096
+    chunk_rows = (rps * 2048) if quant in ("vq2", "vq4") else 4096
     import numpy as _np_sec
     with out_path.open("wb") as out:
         try:
@@ -605,7 +628,7 @@ def build_ngram_bin(shards: list[dict], source: Path, out_path: Path,
         header[44] = _NG_NOTE_LEN
         header[45:45 + _NG_NOTE_LEN] = note
         if cb_bytes:
-            header[_NG_VQ2_CB_OFF:_NG_VQ2_CB_OFF + _NG_VQ2_CB_BYTES] = cb_bytes
+            header[_NG_VQ2_CB_OFF:_NG_VQ2_CB_OFF + len(cb_bytes)] = cb_bytes
         out.seek(0)
         out.write(bytes(header))
     return {"entry_count": entry_count, "table_sha256": hn.hexdigest(),
@@ -637,6 +660,9 @@ def audit_ngram_bin(path: Path) -> dict:
             raise ValueError(f"ngram.bin: v{version} cannot carry dtype {dtype}")
         if quant == "vq2":
             _validate_vq2_codebook_bytes(head[_NG_VQ2_CB_OFF:_NG_VQ2_CB_OFF + _NG_VQ2_CB_BYTES])
+        elif quant == "vq4":
+            from pack_ngram_vq4 import validate_vq4_codebook_bytes
+            validate_vq4_codebook_bytes(head[_NG_VQ4_CB_OFF:_NG_VQ4_CB_OFF + _NG_VQ4_CB_BYTES])
         entry_count, dim, row_bytes = struct.unpack_from("<QHH", head, 16)
         l1_hot, = struct.unpack_from("<I", head, 28)
         data_offset, = struct.unpack_from("<Q", head, 32)

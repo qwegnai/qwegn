@@ -15,11 +15,11 @@ You do **not** need to tune flags to get peak speed and accuracy. Out of the box
   - **Short prompts (`<= 2,564` tokens):** Automatically bypasses sparse indexing and runs **bit-exact dense attention** (`0%` overhead).
   - **GQA / Hybrid models (`Qwen3.6-35B-A3B`, `Qwen3.8-27B`, `SenseNova-Loop-9B`):** Automatically loads `<model>/model.qlsa` if present (or synthesizes Weight-SVD projections at load), avoiding the `13.9×` dense prefill cliff at long context.
   - **QSA models (`Qwen3.8-Flash-Next`):** Uses native flat QSA up to `262K` tokens and automatically engages **`e-means-4096` coarse clustering** above `262K` (`+39.8%` prefill / `+55.3%` decode at `1M`).
-  - **NoPE MLA models (`GLM-5.3-Flash`):** Runs zero-overhead flat indexing below `41K` tokens and automatically engages **`e-means` coarse pruning** at `>= 41K` tokens (`+19.8%` decode at `160K`, zero decode decay from `16K → 160K`).
+  - **NoPE MLA models (`GLM-5.3-Flash`):** Runs zero-overhead flat indexing below `41K` tokens and automatically engages **`e-means` coarse pruning** at `>= 41K` tokens (`743.0 / 44.98 tok/s` at `242.5K` — `+3.0%` prefill / `+2.2%` decode vs `exactFlat`, `3/3` needle recall, `1M` UMA ready).
 - **Smart Unified-Memory Residency (`--memory-policy maxResident`, `--no-load-vision`, `--no-stream-ngrams`):**
   - Vision towers stay unloaded on text turns (saving **`1.60 GiB` RSS**) and load automatically on demand when an image is supplied.
-  - External Per-Layer Embedding tables (`ngram.bin`, `27.1 GiB` `VQ2_G32`) wire into Metal GPU RAM when headroom allows, and **automatically fall back to NVMe SSD streaming** (`64 MiB` L1 cache, saving **`27.30 GiB` GPU RAM**) when long contexts or lower-RAM Macs require room.
-- **Drafter Auto-Detection (`DFlash 2` & `DSpine`):** Passing `--dflash-window` or choosing a drafter pack in `Qwegn.app` inspects the drafter's `config.json` to select `dspine` (`B = 16`, up to `15` drafts) vs `dflash2` (`B = 8`, up to `7` drafts) automatically.
+  - External Per-Layer Embedding tables (`ngram.bin`: `27.1 GiB` `VQ2_G32` or `15.1 GiB` `VQ4_G32`) wire into Metal GPU RAM when headroom allows, and **automatically fall back to NVMe SSD streaming** (`64 MiB` L1 cache, saving **`15.1–27.3 GiB` GPU RAM**) when long contexts or lower-RAM Macs require room.
+- **Drafter Auto-Detection (`DFlash 2` & `DSpine`):** Passing `--dflash-window` or choosing a drafter pack (`HQ*`, `AQ*`, or sub-2-bit `SHVQ{1,15}*`) in `Qwegn.app` inspects the drafter's `config.json` to select `dspine` (`B = 16`, up to `15` drafts) vs `dflash2` (`B = 8`, up to `7` drafts) automatically.
 
 ### Precedence & Scope
 
@@ -106,12 +106,12 @@ qwg serve Qwen3.8-Flash-Next-hq8g32-hq4g64 \
 
 ### Scenario 6 — `321B` Flagship Reasoning (`GLM-5.3-Flash`)
 
-On a `128 GB` Mac with co-runners closed (`~108 GiB` free unified memory), the `100.6 GiB` mixed `SHVQ` pack loads **100% resident** (`288/288` experts per layer in RAM, zero SSD expert misses) and uses `e-means` MLA indexing automatically up to `160K+`:
+On a `128 GB` Mac with co-runners closed (`~108 GiB` free unified memory), the `100.6 GiB` mixed `SHVQ` pack loads **100% resident** (`288/288` experts per layer in RAM, zero SSD expert misses, `1,006 tok/s` prefill, `46.0–53.6 tok/s` decode, `81/100` HumanEval+MBPP) and uses `e-means` MLA indexing automatically up to `242.5K+` (`1M` UMA-capable):
 
 ```bash
 # 100% UMA-resident 321B reasoning with NextN MTP-1 speculation
 qwg serve GLM-5.3-Flash-shvq4g32-shvq2g64-shvq3g64 \
-  -c 163840 \
+  -c 202752 \
   --mtp-backend standard --mtp-drafts 1 \
   --thinking --reasoning-effort medium
 
@@ -153,7 +153,7 @@ qwg run Qwen3.6-35B-A3B-hq5g64-hq4g64 \
 | **`Qwen3.6-35B-A3B`** (`HQ5/HQ4`) | `~20.1 GiB` | `q4` · `32K–1M` | `model.qlsa` · `Ward-512` (`--lsa-cluster-block 512`) | `variational` (`3` drafts) or `standard` | `2,317–6,389` pre · `105–233 tok/s` dec |
 | **`Qwen3.8-Flash-Next`** (`HQ8/HQ4` + `VQ2` PLE) | `98.9 GiB` (`71.6 GiB` w/ `--stream-ngrams`) | `q4` · `32K–1M` | Flat QSA `<= 262K` · auto `e-means-4096` `> 262K` | `variational` (`3` drafts) or `standard` | `1,888–2,696` pre · `64–145 tok/s` dec |
 | **`Qwen3.8-27B`** (`HQ4_G32`) | `~16.8 GiB` (`+0.6 GiB` DSpine) | `q4` · `32K–524K` | `model.qlsa` (`4096` max prefill, `512` max `>=262K` dec) | `dspine` (`--dflash-window 16`, `15` drafts) | `831–914` pre · `100.5–134.5 tok/s` dec |
-| **`GLM-5.3-Flash`** (`321B`, `SHVQ4/2/3`) | `~101.8 GiB` (`100%` resident) | `q4` · `16K–160K+` | `< 41K` flat bypass · `>= 41K` `e-means` coarse | `standard` (`1` draft, NextN MTP) | `618–968` pre · `36.2–44.0 tok/s` dec |
+| **`GLM-5.3-Flash`** (`321B`, `SHVQ4/2/3`) | `~101.8 GiB` (`100%` resident) | `q4` · `16K–242.5K+` (`1M` UMA) | `< 41K` flat bypass · `>= 41K` `e-means` coarse | `standard` (`1` draft, NextN MTP) | **`825–1,006` pre · `46.0–53.6 tok/s` dec** |
 
 ---
 
@@ -222,7 +222,7 @@ Every control below can be set in `~/.qwg/profiles/<model>.json` or via `/v1/eng
 | `osReserveGiB` | `--os-reserve` (`run`/`repl`/`serve`) | Performance | `8.0` GiB | `0...256` GiB | RAM reserved for macOS and co-running desktop apps (`16–24 GiB` recommended when multitasking). |
 | `loadVision` | `--load-vision` / `--no-load-vision` | Model | `false` | `true`, `false` | Keep `false` (`-1.60 GiB` RSS saved); toggles live in `Qwegn.app` without resetting KV cache! |
 | `streamNgrams` | `--stream-ngrams` / `--no-stream-ngrams` | Performance | `false` | `true`, `false` | Enable on `Flash-Next` (`ngram.bin`) to free **`~27.3 GiB` GPU RAM** via NVMe + `64 MiB` L1 streaming. Auto-enabled if context exceeds UMA headroom. |
-| `evictPrefillScratch` | `--evict-prefill-scratch` (`run`/`repl`/`serve`) | Performance | `"auto"` | `auto`, `always`, `never` | `auto` retains prefill scratch on Macs `> 36.5 GB` RAM; set `always` to reclaim `1–2 GiB` immediately after prompt prefill. |
+| `evictPrefillScratch` | `--evict-prefill-scratch` (`run`/`repl`/`serve`) | Performance | `"auto"` | `auto`, `always`, `never` | `auto` retains prefill scratch on Macs `> 36.5 GB` RAM unless wired engine arena `>= 75%` of physical RAM (where eviction prevents UMA paging); set `always` to reclaim `1–2 GiB` immediately after prompt prefill. |
 | `prefillChunkRows` | `--prefill-chunk-size` (`run`/`repl`/`serve`) | Performance | `512` (`4096` MoE on `>36.5 GB`) | `32...8192` | `4096` maximizes MoE prefill throughput; lower to `512–1024` to reduce peak activation scratch RAM. |
 | `maxConcurrentSessions` | `--max-concurrent-sessions` (`serve`) | Performance | `8` | `1...16` | Number of isolated warm KV cache slots protected against mutual eviction when running parallel coding subagents. |
 | `residentExpertsPerLayer`| `--resident-experts-per-layer` (`run`/`repl`/`serve`) | Performance (`MoE`) | `0` (auto) | `0...4096` | `0` sizes hot resident experts automatically from `memoryPolicy`; set `> 0` to pin an exact hot-expert count per MoE layer. |

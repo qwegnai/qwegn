@@ -52,6 +52,7 @@ final class QWMTPEmbeddingTable {
               address != MAP_FAILED else {
             throw QWEngineDriverError.state("embedding mmap: \(String(cString: strerror(errno)))")
         }
+        _ = posix_madvise(address, length, POSIX_MADV_WILLNEED)
         guard let mapped = hal.device.makeBuffer(bytesNoCopy: address, length: length,
             options: .storageModeShared, deallocator: { pointer, size in munmap(pointer, size) }) else {
             munmap(address, length)

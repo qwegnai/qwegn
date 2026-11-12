@@ -419,8 +419,32 @@ final class QWStandardMoEKernelTests: XCTestCase {
                        "the 27B has no MoE layer")
         let g = try Self.geometry(normTopKProb: true)
         XCTAssertGreaterThan(QWEngineDriver.moeBytesPerToken(geometry: g), 0)
-        // The dense prefill law is unchanged for the 27B.
-        XCTAssertEqual(QWEngineDriver.prefillBytesPerToken(geometry: .qwen38_27b), 748_096)
+        // The dense prefill law excludes unreferenced prefill group-sum/f32 duplicates.
+        XCTAssertEqual(QWEngineDriver.prefillBytesPerToken(geometry: .qwen38_27b), 500_480)
+    }
+
+    func testGroupedNAXMoEScratchAllocationMatchesSuballocatorCarve() throws {
+        let g = try Self.geometry(normTopKProb: true)
+        let arena = try QWArena(hal: Self.hal, weights: 0, activations: 8 << 20, kv: 0, gdnStates: 0)
+        let a = arena.activationsRegion()
+        for useNax in [true, false] {
+            for rows in [1, 8, 64] {
+                let before = a.usedBytes
+                let scratch = try QWEngineDriver.makeMoEScratch(
+                    { n, dt in try a.allocate(QWTensorShape([max(1, n)], dt)) },
+                    rows: rows, geometry: g, useGroupedNAX: useNax)
+                let carved = a.usedBytes - before
+                XCTAssertEqual(
+                    carved,
+                    QWEngineDriver.moeScratchAllocationBytes(rows: rows, geometry: g, useGroupedNAX: useNax),
+                    "rows=\(rows) useNax=\(useNax)")
+                if rows > 8 && useNax {
+                    XCTAssertEqual(scratch.gu32.shape.elementCount, 8 * g.expertsPerTok * 2 * g.moeIntermediate)
+                    XCTAssertEqual(scratch.act32.shape.elementCount, 8 * g.expertsPerTok * g.moeIntermediate)
+                    XCTAssertGreaterThanOrEqual(scratch.dnAcc.bytes, rows * g.expertsPerTok * g.hidden * 2)
+                }
+            }
+        }
     }
 
     /// The scratch's byte law and its allocation are ONE number: a budget

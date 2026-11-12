@@ -1,0 +1,367 @@
+// qw_mla_dequant.metalh — Generalized weight-slice unpackers, simdgroup dots,
+// and paged KV dequantizers for NoPE MLA (HQ4_G32, SHVQ{1,15,2,3,4}, AQ/HQ{2..8}).
+
+#pragma once
+#include <metal_stdlib>
+#include "qw_dequant_multi.metalh"
+#include "qw_dequant_shvq.metalh"
+#include "qw_mla_params.metalh"
+using namespace metal;
+
+union ShvqMlaTgLut {
+    uint4   lut1[128];
+    uint4   lut2[256];
+    ushort4 lut3[256];
+};
+
+template <bool SUB2 = false>
+METAL_FUNC bool qw_mla_load_shvq_lut(threadgroup ShvqMlaTgLut& tgLut,
+                                     uint bits, uint tid, uint tptg) {
+    if constexpr (SUB2) {
+        if (bits == 1u) {
+            constant const uint4* src = (constant const uint4*)kShvqLut1Bits;
+            for (uint i = tid; i < 128u; i += tptg) tgLut.lut1[i] = src[i];
+            return true;
+        }
+        return false;
+    } else {
+        if (bits == 2u) {
+            constant const uint4* src = (constant const uint4*)kShvqLut2Bits;
+            for (uint i = tid; i < 256u; i += tptg) tgLut.lut2[i] = src[i];
+            return true;
+        } else if (bits == 3u) {
+            constant const ushort4* src = (constant const ushort4*)kShvqLut3Bits;
+            for (uint i = tid; i < 256u; i += tptg) tgLut.lut3[i] = src[i];
+            return true;
+        }
+        return false;
+    }
+}
+
+template <bool SUB2 = false>
+METAL_FUNC void qw_mla_shvq_oct8(device const uchar* pay, uint oct, uint bits,
+                                 threadgroup const ShvqMlaTgLut& tgLut,
+                                 thread half4& uLo, thread half4& uHi) {
+    if constexpr (SUB2) {
+        if (bits == 15u) {
+            qwg_shvq_unpack_oct8_15(pay, oct, uLo, uHi);
+        } else {
+            const uchar b = pay[oct];
+            const uint4 raw128 = tgLut.lut1[uint(b & 0x7Fu)];
+            const ushort4 s4 = ushort4(ushort(uint(b & 0x80u) << 8u));
+            uLo = as_type<half4>(as_type<ushort4>(raw128.xy) ^ s4);
+            uHi = as_type<half4>(as_type<ushort4>(raw128.zw) ^ s4);
+        }
+    } else if (bits == 4u) {
+        uLo = qwg_shvq_unpack_quad4<4, false>(pay, 2u * oct);
+        uHi = qwg_shvq_unpack_quad4<4, false>(pay, 2u * oct + 1u);
+    } else if (bits == 3u) {
+        const ushort signs = ushort(pay[3u * oct]);
+        const ushort4 pLo = tgLut.lut3[uint(pay[3u * oct + 1u])];
+        const ushort4 pHi = tgLut.lut3[uint(pay[3u * oct + 2u])];
+        const ushort4 sLo = (ushort4(signs) << ushort4(15u, 14u, 13u, 12u)) & ushort4(0x8000u);
+        const ushort4 sHi = (ushort4(signs) << ushort4(11u, 10u, 9u, 8u)) & ushort4(0x8000u);
+        uLo = as_type<half4>(pLo | sLo);
+        uHi = as_type<half4>(pHi | sHi);
+    } else {
+        const ushort signs = ushort(pay[2u * oct]);
+        const uint4 raw128 = tgLut.lut2[uint(pay[2u * oct + 1u])];
+        const ushort4 pLo = as_type<ushort4>(raw128.xy);
+        const ushort4 pHi = as_type<ushort4>(raw128.zw);
+        const ushort4 sLo = (ushort4(signs) << ushort4(15u, 14u, 13u, 12u)) & ushort4(0x8000u);
+        const ushort4 sHi = (ushort4(signs) << ushort4(11u, 10u, 9u, 8u)) & ushort4(0x8000u);
+        uLo = as_type<half4>(pLo | sLo);
+        uHi = as_type<half4>(pHi | sHi);
+    }
+}
+
+template <bool SUB2 = false>
+METAL_FUNC half4 qw_mla_shvq_quad4(device const uchar* pay, uint quadIdx,
+                                   uint bits, threadgroup const ShvqMlaTgLut& tgLut) {
+    if constexpr (SUB2) {
+        if (bits == 15u) {
+            return qwg_shvq_unpack_quad4_15<false>(pay, quadIdx);
+        } else {
+            const uchar b = pay[quadIdx >> 1u];
+            const uint vecIdx = (uint(b & 0x7Fu) << 1u) + (quadIdx & 1u);
+            const ushort4 pos = ((threadgroup const ushort4*)tgLut.lut1)[vecIdx];
+            return as_type<half4>(pos ^ ushort4(ushort(uint(b & 0x80u) << 8u)));
+        }
+    } else if (bits == 4u) {
+        return qwg_shvq_unpack_quad4<4, false>(pay, quadIdx);
+    } else if (bits == 3u) {
+        const uint oct = quadIdx >> 1u, halfId = quadIdx & 1u;
+        const uint signs4 = (uint(pay[3u * oct]) >> (halfId * 4u)) & 0x0Fu;
+        const ushort4 pos = tgLut.lut3[uint(pay[3u * oct + 1u + halfId])];
+        const ushort4 sMask = (ushort4(ushort(signs4)) << ushort4(15u, 14u, 13u, 12u)) & ushort4(0x8000u);
+        return as_type<half4>(pos | sMask);
+    } else {
+        const uint oct = quadIdx >> 1u, halfId = quadIdx & 1u;
+        const uint signs4 = (uint(pay[2u * oct]) >> (halfId * 4u)) & 0x0Fu;
+        const uint4 raw128 = tgLut.lut2[uint(pay[2u * oct + 1u])];
+        const ushort4 pos = halfId == 0u ? as_type<ushort4>(raw128.xy) : as_type<ushort4>(raw128.zw);
+        const ushort4 sMask = (ushort4(ushort(signs4)) << ushort4(15u, 14u, 13u, 12u)) & ushort4(0x8000u);
+        return as_type<half4>(pos | sMask);
+    }
+}
+
+template <bool SUB2 = false>
+METAL_FUNC void qw_mla_absorb_quad_slice(device const char* kvBBlocks,
+                                         uint headRowBase, uint r0, uint r1, uint col0,
+                                         uint validM,
+                                         constant MLAAbsorbParams& p,
+                                         threadgroup const float (&shQ)[8][256],
+                                         threadgroup const ShvqMlaTgLut& tgLut,
+                                         thread float4 (&acc)[8]) {
+    if (p.isIncumbent == 1u) {
+        const uint blk = col0 >> 5u;
+        const uint idx = col0 & 31u;
+        const uint wIdx = idx >> 3u;
+        const ushort baseShift = ushort((idx & 4u) << 1u);
+        const uint blocksPerRow = p.kvLoraRank >> 5u;
+        device const Block_HQ4_G32* bPtr = (device const Block_HQ4_G32*)kvBBlocks
+            + (size_t)(headRowBase + r0) * blocksPerRow + blk;
+        if (validM == 1u) {
+            float4 a0 = float4(0.0f);
+            for (uint r = r0; r < r1; ++r, bPtr += blocksPerRow) {
+                const half2 s2 = half2(bPtr->scale), b2 = half2(bPtr->bias);
+                const ushort2 rsh = as_type<ushort2>(bPtr->qs[wIdx]) >> baseShift;
+                const half2 w01 = fma(as_type<half2>((rsh & ushort2(0x000Fu)) | ushort2(0x6400u)), s2, b2);
+                const half2 w23 = fma(as_type<half2>(((rsh >> 4u) & ushort2(0x000Fu)) | ushort2(0x6400u)), s2, b2);
+                const float4 w4 = float4(float(w01.x), float(w01.y), float(w23.x), float(w23.y));
+                a0 = fma(float4(shQ[0][r]), w4, a0);
+            }
+            acc[0] = a0;
+            return;
+        }
+        for (uint r = r0; r < r1; ++r, bPtr += blocksPerRow) {
+            const half2 s2 = half2(bPtr->scale), b2 = half2(bPtr->bias);
+            const ushort2 rsh = as_type<ushort2>(bPtr->qs[wIdx]) >> baseShift;
+            const half2 w01 = fma(as_type<half2>((rsh & ushort2(0x000Fu)) | ushort2(0x6400u)), s2, b2);
+            const half2 w23 = fma(as_type<half2>(((rsh >> 4u) & ushort2(0x000Fu)) | ushort2(0x6400u)), s2, b2);
+            const float4 w4 = float4(float(w01.x), float(w01.y), float(w23.x), float(w23.y));
+            #pragma unroll
+            for (uint m = 0u; m < 8u; ++m) {
+                if (m < validM) acc[m] = fma(float4(shQ[m][r]), w4, acc[m]);
+            }
+        }
+    } else if (p.isIncumbent == 2u) {
+        const uint nGroups = p.kvLoraRank / p.group;
+        const uint bytesPerGroup = qwg_shvq_group_bytes(int(p.bits), int(p.group));
+        const size_t rowBytes = (size_t)nGroups * bytesPerGroup;
+        const uint gIdx = col0 / p.group;
+        const uint quadInGroup = (col0 - gIdx * p.group) >> 2u;
+        device const char* gp = kvBBlocks + ((size_t)(headRowBase + r0) * nGroups + gIdx) * bytesPerGroup;
+        if (validM == 1u) {
+            float4 a0 = float4(0.0f);
+            #pragma unroll 4
+            for (uint r = r0; r < r1; ++r, gp += rowBytes) {
+                const float sc = float(*(device const half*)gp);
+                const float4 w4 = float4(qw_mla_shvq_quad4<SUB2>((device const uchar*)(gp + 2), quadInGroup, p.bits, tgLut)) * sc;
+                a0 = fma(float4(shQ[0][r]), w4, a0);
+            }
+            acc[0] = a0;
+            return;
+        }
+        if (validM == 2u) {
+            float4 a0 = float4(0.0f), a1 = float4(0.0f);
+            #pragma unroll 4
+            for (uint r = r0; r < r1; ++r, gp += rowBytes) {
+                const float sc = float(*(device const half*)gp);
+                const float4 w4 = float4(qw_mla_shvq_quad4<SUB2>((device const uchar*)(gp + 2), quadInGroup, p.bits, tgLut)) * sc;
+                a0 = fma(float4(shQ[0][r]), w4, a0);
+                a1 = fma(float4(shQ[1][r]), w4, a1);
+            }
+            acc[0] = a0;
+            acc[1] = a1;
+            return;
+        }
+        for (uint r = r0; r < r1; ++r, gp += rowBytes) {
+            const float sc = float(*(device const half*)gp);
+            const float4 w4 = float4(qw_mla_shvq_quad4<SUB2>((device const uchar*)(gp + 2), quadInGroup, p.bits, tgLut)) * sc;
+            #pragma unroll
+            for (uint m = 0u; m < 8u; ++m) {
+                if (m < validM) acc[m] = fma(float4(shQ[m][r]), w4, acc[m]);
+            }
+        }
+    } else {
+        const uint nGroups = p.kvLoraRank / p.group;
+        const uint bytesPerGroup = 4u + ((p.group * p.bits) >> 3u);
+        const size_t rowBytes = (size_t)nGroups * bytesPerGroup;
+        const uint gIdx = col0 / p.group;
+        const int inGroup = int(col0 - gIdx * p.group);
+        const int bitsI = int(p.bits);
+        device const char* gp = kvBBlocks + ((size_t)(headRowBase + r0) * nGroups + gIdx) * bytesPerGroup;
+        for (uint r = r0; r < r1; ++r, gp += rowBytes) {
+            const float sc = float(*(device const half*)gp);
+            const float bi = float(*(device const half*)(gp + 2));
+            device const uchar* pay = (device const uchar*)(gp + 4);
+            const float4 q4 = float4(
+                float(qwg_aq_read_bits(pay, bitsI, inGroup + 0)),
+                float(qwg_aq_read_bits(pay, bitsI, inGroup + 1)),
+                float(qwg_aq_read_bits(pay, bitsI, inGroup + 2)),
+                float(qwg_aq_read_bits(pay, bitsI, inGroup + 3)));
+            const float4 w4 = fma(q4, float4(sc), float4(bi));
+            #pragma unroll
+            for (uint m = 0u; m < 8u; ++m) {
+                if (m < validM) acc[m] = fma(float4(shQ[m][r]), w4, acc[m]);
+            }
+        }
+    }
+}
+
+template <bool SUB2 = false>
+METAL_FUNC void qw_mla_unpack_slice32(device const char* kvBBlocks,
+                                      uint row, uint col0,
+                                      constant MLAAbsorbParams& p,
+                                      threadgroup const ShvqMlaTgLut& tgLut,
+                                      threadgroup half* dst, uint dstStride) {
+    if (p.isIncumbent == 1u) {
+        device const Block_HQ4_G32* blk = (device const Block_HQ4_G32*)kvBBlocks
+            + (size_t)row * (p.kvLoraRank >> 5u) + (col0 >> 5u);
+        const half scale = blk->scale, bias = blk->bias;
+        #pragma unroll
+        for (uint w = 0u; w < 4u; ++w) {
+            const ushort2 raw = as_type<ushort2>(blk->qs[w]);
+            #pragma unroll
+            for (uint sub = 0u; sub < 8u; ++sub) {
+                const ushort hw = ((sub & 1u) == 0u) ? raw.x : raw.y;
+                const half fp = as_type<half>(ushort(((hw >> ((sub >> 1u) * 4u)) & 0x000Fu) | 0x6400u));
+                dst[(w * 8u + sub) * dstStride] = fma(fp, scale, bias);
+            }
+        }
+    } else if (p.isIncumbent == 2u) {
+        const uint nGroups = p.kvLoraRank / p.group;
+        const uint bytesPerGroup = qwg_shvq_group_bytes(int(p.bits), int(p.group));
+        const uint gIdx = col0 / p.group;
+        const uint inGroup = col0 - gIdx * p.group;
+        device const char* gp = kvBBlocks + ((size_t)row * nGroups + gIdx) * bytesPerGroup;
+        const half sc = *(device const half*)gp;
+        const uint payOff = (inGroup >> 5u) * qwg_shvq_slice_bytes(int(p.bits));
+        device const uchar* pay = (device const uchar*)(gp + 2 + payOff);
+        #pragma unroll
+        for (uint w = 0u; w < 4u; ++w) {
+            half4 uLo, uHi;
+            qw_mla_shvq_oct8<SUB2>(pay, w, p.bits, tgLut, uLo, uHi);
+            uLo *= sc;
+            uHi *= sc;
+            const uint base = w * 8u;
+            dst[(base + 0u) * dstStride] = uLo.x;
+            dst[(base + 1u) * dstStride] = uLo.y;
+            dst[(base + 2u) * dstStride] = uLo.z;
+            dst[(base + 3u) * dstStride] = uLo.w;
+            dst[(base + 4u) * dstStride] = uHi.x;
+            dst[(base + 5u) * dstStride] = uHi.y;
+            dst[(base + 6u) * dstStride] = uHi.z;
+            dst[(base + 7u) * dstStride] = uHi.w;
+        }
+    } else {
+        const uint nGroups = p.kvLoraRank / p.group;
+        const uint bytesPerGroup = 4u + ((p.group * p.bits) >> 3u);
+        const uint gIdx = col0 / p.group;
+        const uint inGroup = col0 - gIdx * p.group;
+        device const char* gp = kvBBlocks + ((size_t)row * nGroups + gIdx) * bytesPerGroup;
+        const float sc = float(*(device const half*)gp);
+        const float bi = float(*(device const half*)(gp + 2));
+        device const uchar* pay = (device const uchar*)(gp + 4);
+        if (p.bits == 4u) {
+            device const uchar* bPtr = pay + (inGroup >> 1u);
+            #pragma unroll
+            for (uint i = 0u; i < 16u; ++i) {
+                const uchar b = bPtr[i];
+                dst[(2u * i + 0u) * dstStride] = half(fma(float(b & 0x0Fu), sc, bi));
+                dst[(2u * i + 1u) * dstStride] = half(fma(float(b >> 4u), sc, bi));
+            }
+        } else if (p.bits == 8u) {
+            device const uchar* bPtr = pay + inGroup;
+            #pragma unroll
+            for (uint i = 0u; i < 32u; ++i) {
+                dst[i * dstStride] = half(fma(float(bPtr[i]), sc, bi));
+            }
+        } else {
+            for (uint i = 0u; i < 32u; ++i) {
+                const uint q = qwg_aq_read_bits(pay, int(p.bits), int(inGroup + i));
+                dst[i * dstStride] = half(fma(float(q), sc, bi));
+            }
+        }
+    }
+}
+
+template <bool SUB2 = false>
+METAL_FUNC void qw_mla_unpack_slice32_reg(device const char* kvBBlocks,
+                                          uint row, uint col0,
+                                          constant MLAAbsorbParams& p,
+                                          threadgroup const ShvqMlaTgLut& tgLut,
+                                          thread float4 (&wLo)[4],
+                                          thread float4 (&wHi)[4]) {
+    if (p.isIncumbent == 1u) {
+        const Block_HQ4_G32 blk = *((device const Block_HQ4_G32*)kvBBlocks
+            + (size_t)row * (p.kvLoraRank >> 5u) + (col0 >> 5u));
+        const half2 s2 = half2(blk.scale), b2 = half2(blk.bias);
+        #pragma unroll
+        for (uint w = 0u; w < 4u; ++w) {
+            half2 a01, a23, a45, a67;
+            unpack_hq4_word8(blk.qs[w], s2, b2, a01, a23, a45, a67);
+            wLo[w] = float4(float(a01.x), float(a01.y), float(a23.x), float(a23.y));
+            wHi[w] = float4(float(a45.x), float(a45.y), float(a67.x), float(a67.y));
+        }
+    } else if (p.isIncumbent == 2u) {
+        const uint nGroups = p.kvLoraRank / p.group;
+        const uint bytesPerGroup = qwg_shvq_group_bytes(int(p.bits), int(p.group));
+        const uint gIdx = col0 / p.group;
+        const uint inGroup = col0 - gIdx * p.group;
+        device const char* gp = kvBBlocks + ((size_t)row * nGroups + gIdx) * bytesPerGroup;
+        const float sc = float(*(device const half*)gp);
+        const uint payOff = (inGroup >> 5u) * qwg_shvq_slice_bytes(int(p.bits));
+        device const uchar* pay = (device const uchar*)(gp + 2 + payOff);
+        #pragma unroll
+        for (uint w = 0u; w < 4u; ++w) {
+            half4 uLo, uHi;
+            qw_mla_shvq_oct8<SUB2>(pay, w, p.bits, tgLut, uLo, uHi);
+            wLo[w] = float4(uLo) * sc;
+            wHi[w] = float4(uHi) * sc;
+        }
+    } else {
+        const uint nGroups = p.kvLoraRank / p.group;
+        const uint bytesPerGroup = 4u + ((p.group * p.bits) >> 3u);
+        const uint gIdx = col0 / p.group;
+        const uint inGroup = col0 - gIdx * p.group;
+        device const char* gp = kvBBlocks + ((size_t)row * nGroups + gIdx) * bytesPerGroup;
+        const float sc = float(*(device const half*)gp);
+        const float bi = float(*(device const half*)(gp + 2));
+        device const uchar* pay = (device const uchar*)(gp + 4);
+        #pragma unroll
+        for (uint w = 0u; w < 4u; ++w) {
+            const uint base = inGroup + w * 8u;
+            wLo[w] = float4(
+                fma(float(qwg_aq_read_bits(pay, int(p.bits), int(base + 0u))), sc, bi),
+                fma(float(qwg_aq_read_bits(pay, int(p.bits), int(base + 1u))), sc, bi),
+                fma(float(qwg_aq_read_bits(pay, int(p.bits), int(base + 2u))), sc, bi),
+                fma(float(qwg_aq_read_bits(pay, int(p.bits), int(base + 3u))), sc, bi));
+            wHi[w] = float4(
+                fma(float(qwg_aq_read_bits(pay, int(p.bits), int(base + 4u))), sc, bi),
+                fma(float(qwg_aq_read_bits(pay, int(p.bits), int(base + 5u))), sc, bi),
+                fma(float(qwg_aq_read_bits(pay, int(p.bits), int(base + 6u))), sc, bi),
+                fma(float(qwg_aq_read_bits(pay, int(p.bits), int(base + 7u))), sc, bi));
+        }
+    }
+}
+
+METAL_FUNC half4 qw_mla_load_kv_half4(device const uchar* poolBytes,
+                                      uint pg, uint pageOff,
+                                      uint localCol, uint kvMode) {
+    if (kvMode == 0u) {
+        return *(device const half4*)((device const half*)poolBytes + ((size_t)pg * 256u + pageOff) * 256u + localCol);
+    } else if (kvMode == 1u) {
+        device const uchar* pageBase = poolBytes + (size_t)pg * 66048ul;
+        const half sc = *((device const half*)(pageBase + 65536ul + (size_t)pageOff * 2ul));
+        const char4 q4 = *(device const char4*)(pageBase + (size_t)pageOff * 256ul + localCol);
+        return half4(q4) * sc;
+    } else {
+        device const uchar* pageBase = poolBytes + (size_t)pg * 34816ul;
+        const half2 sm = *((device const half2*)(pageBase + 32768ul) + (size_t)pageOff * 2ul + (localCol >> 7u));
+        const ushort packed = *(device const ushort*)(pageBase + (size_t)pageOff * 128ul + (localCol >> 1u));
+        const ushort4 nibs = (ushort4(packed) >> ushort4(0u, 4u, 8u, 12u)) & ushort4(0x000Fu);
+        return fma(half4(nibs), half4(sm.x), half4(sm.y));
+    }
+}

@@ -268,7 +268,10 @@ open class DenseModule: QWInferenceModule, QWInferenceEngine, @unchecked Sendabl
         var offset = chunk.lowerBound
         var token = 0
         while offset < chunk.upperBound {
-            let stepCap = QWEngineDriver.adaptivePrefillChunkCap(position: engineSession.position, maxChunk: engine.prefillChunkSize)
+            let stepCap = QWEngineDriver.adaptivePrefillChunkCap(
+                position: engineSession.position,
+                maxChunk: engine.prefillChunkSize,
+                isSubquadraticAttention: engine.usesSubquadraticLongPrefill)
             let count = min(stepCap, chunk.upperBound - offset)
             let last = offset + count == chunk.upperBound
             token = try engine.prefillChunk(engineSession, tokens: tokens,
@@ -280,6 +283,9 @@ open class DenseModule: QWInferenceModule, QWInferenceEngine, @unchecked Sendabl
         if runsHead {
             // The prefill's GPU time, as the engine's ledger measured it.
             session.prefillGPUSec = engine.prefillGPUSecondsSince(mark: session.prefillMark)
+            if engine.prefillScratchEviction.shouldEvict(wiredEngineBytes: engine.arena.committedBytes) {
+                engine.evictPrefillScratch()
+            }
         }
         return token
     }

@@ -193,14 +193,18 @@ public enum QWWeightFormat: Sendable, Hashable {
         }
     }
 
+    private static func shvqPayloadBytes(bits: Int, group: Int) -> Int {
+        bits == 15 ? (group * 3) / 16 : (group * bits) / 8
+    }
+
     /// The bytes one row of `k` weights takes in this container.
     public func rowBytes(k: Int) -> Int {
         switch self {
         case .hq4G32:
             return (k / 32) * 20
         case .hqBlock(let bits, let groupSize, _, _, _, _, _, _, _, let ds, _, _):
-            let hdr = ds ? 2 : 4
-            return (k / groupSize) * (groupSize * bits / 8 + hdr)
+            let pay = ds ? Self.shvqPayloadBytes(bits: bits, group: groupSize) : (groupSize * bits / 8)
+            return (k / groupSize) * (pay + (ds ? 2 : 4))
         case .nativeAffine(let bits, let groupSize):
             return (k / groupSize) * (groupSize * bits / 8 + 4)
         }
@@ -210,15 +214,15 @@ public enum QWWeightFormat: Sendable, Hashable {
     public func expertRowBytes(k: Int) -> Int {
         let b = expertBits
         let g = expertGroupSize
-        let hdr = expertIsSHVQ ? 2 : 4
-        return (k / g) * (g * b / 8 + hdr)
+        let pay = expertIsSHVQ ? Self.shvqPayloadBytes(bits: b, group: g) : (g * b / 8)
+        return (k / g) * (pay + (expertIsSHVQ ? 2 : 4))
     }
 
     /// The bytes one row of `k` routed expert down_proj weights takes in this container.
     public func expertDownRowBytes(k: Int) -> Int {
         let b = expertDownBits
         let g = expertDownGroupSize
-        let hdr = expertDownIsSHVQ ? 2 : 4
-        return (k / g) * (g * b / 8 + hdr)
+        let pay = expertDownIsSHVQ ? Self.shvqPayloadBytes(bits: b, group: g) : (g * b / 8)
+        return (k / g) * (pay + (expertDownIsSHVQ ? 2 : 4))
     }
 }

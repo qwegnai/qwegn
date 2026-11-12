@@ -5,6 +5,7 @@
 #include <metal_stdlib>
 #include <metal_simdgroup>
 #include "include/qw_dequant.metalh"
+#include "include/qw_dequant_shvq.metalh"
 using namespace metal;
 
 struct DSpineH8 { half v[8]; } __attribute__((__packed__, __aligned__(16)));
@@ -210,18 +211,19 @@ kernel void qwg_dspine_refine_write(
     }
 }
 
-// Kernel 5: Fused 16-state indexed target LM head scorer (HQ4_G32_M5 / AQ4 / F16).
+// Kernel 5: Fused 16-state indexed target LM head scorer (HQ4 / AQ4 / SHVQ / F16).
 // Grid = (16, D, 1), threadsPerThreadgroup = (32, 1, 1).
-kernel void qwg_dspine_refine_scores(
-        device const void* headWeights [[buffer(0)]],
-        device const half* refineAct   [[buffer(1)]],
-        device const int* candidates   [[buffer(2)]],
-        device float* refineTable      [[buffer(3)]],
-        constant uint& H               [[buffer(4)]],
-        constant uint& topK            [[buffer(5)]],
-        constant uint& headMode        [[buffer(6)]],
-        uint2 tg [[threadgroup_position_in_grid]],
-        uint lane [[thread_index_in_threadgroup]]) {
+template <bool SUB2>
+static inline void qwg_dspine_refine_scores_impl(
+        device const void* headWeights,
+        device const half* refineAct,
+        device const int* candidates,
+        device float* refineTable,
+        uint H,
+        uint topK,
+        uint headMode,
+        uint2 tg,
+        uint lane) {
     const uint kCurr = tg.x;
     const uint d = tg.y;
     if (kCurr >= topK) return;
@@ -248,6 +250,51 @@ kernel void qwg_dspine_refine_scores(
             float val = simd_sum(acc[kp]);
             if (lane == 0u) refineTable[(d * 16u + kp) * 16u + kCurr] = val;
         }
+    } else if ((headMode & 0x80000000u) != 0u) {
+        const uint bits = headMode & 0xFFu;
+        const uint group = (headMode >> 8u) & 0xFFFFu;
+        const uint groupBytes = qwg_shvq_group_bytes(int(bits), int(group));
+        const uint sliceBytes = qwg_shvq_slice_bytes(int(bits));
+        const uint rowBytes = (H / group) * groupBytes;
+        device const char* wRow = (device const char*)headWeights + (size_t)cand * rowBytes;
+        const uint kLimit = (d == 0u) ? 1u : topK;
+        const uint nSlices = H >> 5u;
+        float acc[16] = {0.0f};
+        for (uint g = lane; g < nSlices; g += 32u) {
+            const uint col = g << 5u;
+            device const char* gp = wRow + size_t(col / group) * groupBytes;
+            const float sc = float(*(device const half*)gp);
+            device const uchar* p = (device const uchar*)(gp + 2 + ((col % group) >> 5u) * sliceBytes);
+            float4 wLo[4], wHi[4];
+            #pragma unroll
+            for (uint w = 0u; w < 4u; ++w) {
+                half4 uLo, uHi;
+                if constexpr (SUB2) {
+                    if (bits == 1u) qwg_shvq_unpack_oct8<1>(p, w, uLo, uHi);
+                    else qwg_shvq_unpack_oct8<15>(p, w, uLo, uHi);
+                } else {
+                    if (bits == 2u) qwg_shvq_unpack_oct8<2>(p, w, uLo, uHi);
+                    else if (bits == 3u) qwg_shvq_unpack_oct8<3>(p, w, uLo, uHi);
+                    else qwg_shvq_unpack_oct8<4>(p, w, uLo, uHi);
+                }
+                wLo[w] = float4(uLo) * sc;
+                wHi[w] = float4(uHi) * sc;
+            }
+            for (uint kp = 0u; kp < kLimit; ++kp) {
+                half4 xLo[4], xHi[4];
+                qwg_shvq_load_half32(xBase + (size_t)kp * H + col, xLo, xHi);
+                float s = 0.0f;
+                #pragma unroll
+                for (uint w = 0u; w < 4u; ++w) {
+                    s += dot(wLo[w], float4(xLo[w])) + dot(wHi[w], float4(xHi[w]));
+                }
+                acc[kp] += s;
+            }
+        }
+        for (uint kp = 0u; kp < kLimit; ++kp) {
+            const float val = simd_sum(acc[kp]);
+            if (lane == 0u) refineTable[(d * 16u + kp) * 16u + kCurr] = val;
+        }
     } else if (d == 0u) {
         float out1[1];
         qwg_gemv_hq4_row_m<1>((device const Block_HQ4_G32*)headWeights, xBase, cand, H, lane, out1, headMode == 2u);
@@ -261,6 +308,32 @@ kernel void qwg_dspine_refine_scores(
             }
         }
     }
+}
+
+kernel void qwg_dspine_refine_scores(
+        device const void* headWeights [[buffer(0)]],
+        device const half* refineAct   [[buffer(1)]],
+        device const int* candidates   [[buffer(2)]],
+        device float* refineTable      [[buffer(3)]],
+        constant uint& H               [[buffer(4)]],
+        constant uint& topK            [[buffer(5)]],
+        constant uint& headMode        [[buffer(6)]],
+        uint2 tg [[threadgroup_position_in_grid]],
+        uint lane [[thread_index_in_threadgroup]]) {
+    qwg_dspine_refine_scores_impl<false>(headWeights, refineAct, candidates, refineTable, H, topK, headMode, tg, lane);
+}
+
+kernel void qwg_dspine_refine_scores_sub2(
+        device const void* headWeights [[buffer(0)]],
+        device const half* refineAct   [[buffer(1)]],
+        device const int* candidates   [[buffer(2)]],
+        device float* refineTable      [[buffer(3)]],
+        constant uint& H               [[buffer(4)]],
+        constant uint& topK            [[buffer(5)]],
+        constant uint& headMode        [[buffer(6)]],
+        uint2 tg [[threadgroup_position_in_grid]],
+        uint lane [[thread_index_in_threadgroup]]) {
+    qwg_dspine_refine_scores_impl<true>(headWeights, refineAct, candidates, refineTable, H, topK, headMode, tg, lane);
 }
 
 // Kernel 6: Sequential D-step transition chain walker (32 threads, single SIMD group).

@@ -5,10 +5,8 @@
 
 #include <metal_stdlib>
 #include <metal_simdgroup>
-#include "../include/qw_dequant_multi.metalh"
-#include "../include/qw_dequant_shvq.metalh"
+#include "../include/qw_mla_dequant.metalh"
 #include "../include/qw_geometry_constants.metalh"
-#include "../include/qw_mla_params.metalh"
 using namespace metal;
 
 METAL_FUNC float qwg_mla_read_kv_elem(device const uchar* poolBytes,
@@ -41,6 +39,7 @@ METAL_FUNC float qwg_mla_read_kv_elem(device const uchar* poolBytes,
     }
 }
 
+template <bool SUB2 = false>
 METAL_FUNC float qwg_mla_read_weight(device const char* blocks,
                                      uint row,
                                      uint col,
@@ -61,9 +60,15 @@ METAL_FUNC float qwg_mla_read_weight(device const char* blocks,
         return float(fma(fp, b->scale, b->bias));
     } else if (isIncumbent == 2u) {
         const uint nGroups = K / group;
-        const uint bytesPerGroup = (group * bits) / 8u + 2u;
-        device const char* gp = blocks + ((size_t)row * nGroups + (col / group)) * bytesPerGroup;
-        return qwg_shvq_read_elem(gp, bits, col % group);
+        if constexpr (SUB2) {
+            const uint bytesPerGroup = qwg_shvq_group_bytes(int(bits), int(group));
+            device const char* gp = blocks + ((size_t)row * nGroups + (col / group)) * bytesPerGroup;
+            return qwg_shvq_read_elem_t<true>(gp, bits, col % group);
+        } else {
+            const uint bytesPerGroup = (group * bits) / 8u + 2u;
+            device const char* gp = blocks + ((size_t)row * nGroups + (col / group)) * bytesPerGroup;
+            return qwg_shvq_read_elem_t<false>(gp, bits, col % group);
+        }
     } else {
         const uint nGroups = K / group;
         const uint bytesPerGroup = (group * bits) / 8u + 4u;
@@ -77,6 +82,78 @@ METAL_FUNC float qwg_mla_read_weight(device const char* blocks,
 
 // 4. Matrix-Absorbed Query Projection: q_abs[t, h, c] = sum_{r=0..255} q_nope[t, h, r] * W_{UK, h}[r, c].
 // Grid: (qHeads, (T + 7) / 8, 1), Threadgroup: (512, 1, 1).
+template <bool SUB2>
+static inline void qwg_mla_absorb_q_impl(
+    device const half*       mlaQFull,
+    device const char*       kvBBlocks,
+    device half*             qAbsOut,
+    constant MLAAbsorbParams& p,
+    uint3                    tgPos,
+    uint                     c,
+    threadgroup float (&shQ)[8][256],
+    threadgroup ShvqMlaTgLut& tgLut
+) {
+    const uint h = tgPos.x;
+    const uint tBase = tgPos.y * 8u;
+    if (h >= p.qHeads || tBase >= p.T) return;
+    const uint validM = min(8u, p.T - tBase);
+
+    if (p.isIncumbent == 2u) {
+        qw_mla_load_shvq_lut<SUB2>(tgLut, p.bits, c, 512u);
+    }
+    for (uint idx = c; idx < validM * p.nopeDim; idx += 512u) {
+        const uint m = idx / p.nopeDim;
+        const uint r = idx - m * p.nopeDim;
+        shQ[m][r] = float(mlaQFull[(size_t)(tBase + m) * p.qFullStride + h * p.nopeDim + r]);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    const uint headRowBase = h * (p.nopeDim + p.vHeadDim);
+    if (p.kvLoraRank == 512u && p.nopeDim >= 32u && p.nopeDim <= 256u && (p.nopeDim & 3u) == 0u
+        && p.group >= 32u && (p.group & 31u) == 0u && p.isIncumbent <= 2u) {
+        const uint rSlice = c >> 7u;
+        const uint quadIdx = c & 127u;
+        const uint sliceRows = p.nopeDim >> 2u;
+        const uint r0 = rSlice * sliceRows;
+        float4 acc4[8] = {
+            float4(0.0f), float4(0.0f), float4(0.0f), float4(0.0f),
+            float4(0.0f), float4(0.0f), float4(0.0f), float4(0.0f)
+        };
+        qw_mla_absorb_quad_slice<SUB2>(kvBBlocks, headRowBase, r0, r0 + sliceRows, quadIdx * 4u,
+                                       validM, p, shQ, tgLut, acc4);
+        threadgroup float4* shPart = (threadgroup float4*)shQ;
+        for (uint m = 0u; m < validM; ++m) {
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            shPart[c] = acc4[m];
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            if (rSlice == 0u) {
+                const float4 sum4 = (shPart[quadIdx] + shPart[quadIdx + 128u])
+                    + (shPart[quadIdx + 256u] + shPart[quadIdx + 384u]);
+                *(device half4*)(qAbsOut + ((size_t)(tBase + m) * p.qHeads + h) * 512u + quadIdx * 4u) = half4(sum4);
+            }
+        }
+        return;
+    }
+
+    if (c >= p.kvLoraRank) return;
+
+    float acc[8] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    for (uint r = 0u; r < p.nopeDim; ++r) {
+        const float w = qwg_mla_read_weight<SUB2>(kvBBlocks, headRowBase + r, c,
+                                                  p.kvLoraRank, p.bits, p.group, p.isIncumbent);
+        #pragma unroll
+        for (uint m = 0u; m < 8u; ++m) {
+            if (m < validM) {
+                acc[m] = fma(shQ[m][r], w, acc[m]);
+            }
+        }
+    }
+
+    for (uint m = 0u; m < validM; ++m) {
+        qAbsOut[((size_t)(tBase + m) * p.qHeads + h) * p.kvLoraRank + c] = half(acc[m]);
+    }
+}
+
 kernel void qwg_mla_absorb_q(
     device const half*       mlaQFull   [[buffer(0)]],
     device const char*       kvBBlocks  [[buffer(1)]],
@@ -85,88 +162,22 @@ kernel void qwg_mla_absorb_q(
     uint3                    tgPos      [[threadgroup_position_in_grid]],
     uint                     c          [[thread_index_in_threadgroup]]
 ) {
-    const uint h = tgPos.x;
-    const uint tBase = tgPos.y * 8u;
-    if (h >= p.qHeads || tBase >= p.T) return;
-    const uint validM = min(8u, p.T - tBase);
+    alignas(16) threadgroup float shQ[8][256];
+    threadgroup ShvqMlaTgLut tgLut;
+    qwg_mla_absorb_q_impl<false>(mlaQFull, kvBBlocks, qAbsOut, p, tgPos, c, shQ, tgLut);
+}
 
-    threadgroup float shQ[8][256];
-    for (uint idx = c; idx < validM * p.nopeDim; idx += 512u) {
-        const uint m = idx / p.nopeDim;
-        const uint r = idx - m * p.nopeDim;
-        shQ[m][r] = float(mlaQFull[(size_t)(tBase + m) * p.qFullStride + h * p.nopeDim + r]);
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    if (c >= p.kvLoraRank) return;
-
-    float acc[8] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
-    const uint headRowBase = h * (p.nopeDim + p.vHeadDim);
-    if (p.isIncumbent == 1u && p.kvLoraRank == 512u && p.nopeDim == 256u) {
-        const uint blk = c >> 5u;
-        const uint idx = c & 31u;
-        const uint wIdx = idx >> 3u;
-        const bool isOdd = (idx & 1u) != 0u;
-        const ushort shift = ushort(((idx & 7u) >> 1u) * 4u);
-        device const Block_HQ4_G32* bPtr = ((device const Block_HQ4_G32*)kvBBlocks)
-            + (size_t)headRowBase * 16u + blk;
-        if (validM == 1u) {
-            float acc0 = 0.0f;
-            #pragma unroll 4
-            for (uint r = 0u; r < 256u; ++r, bPtr += 16u) {
-                const ushort2 raw = as_type<ushort2>(bPtr->qs[wIdx]);
-                const ushort hw = isOdd ? raw.y : raw.x;
-                const half fp = as_type<half>(ushort(((hw >> shift) & 0x000Fu) | 0x6400u));
-                const float w = float(fma(fp, bPtr->scale, bPtr->bias));
-                acc0 = fma(shQ[0][r], w, acc0);
-            }
-            qAbsOut[((size_t)tBase * p.qHeads + h) * 512u + c] = half(acc0);
-            return;
-        }
-        if (validM == 2u) {
-            float acc0 = 0.0f;
-            float acc1 = 0.0f;
-            #pragma unroll 4
-            for (uint r = 0u; r < 256u; ++r, bPtr += 16u) {
-                const ushort2 raw = as_type<ushort2>(bPtr->qs[wIdx]);
-                const ushort hw = isOdd ? raw.y : raw.x;
-                const half fp = as_type<half>(ushort(((hw >> shift) & 0x000Fu) | 0x6400u));
-                const float w = float(fma(fp, bPtr->scale, bPtr->bias));
-                acc0 = fma(shQ[0][r], w, acc0);
-                acc1 = fma(shQ[1][r], w, acc1);
-            }
-            qAbsOut[((size_t)(tBase + 0u) * p.qHeads + h) * 512u + c] = half(acc0);
-            qAbsOut[((size_t)(tBase + 1u) * p.qHeads + h) * 512u + c] = half(acc1);
-            return;
-        }
-        for (uint r = 0u; r < 256u; ++r, bPtr += 16u) {
-            const ushort2 raw = as_type<ushort2>(bPtr->qs[wIdx]);
-            const ushort hw = isOdd ? raw.y : raw.x;
-            const half fp = as_type<half>(ushort(((hw >> shift) & 0x000Fu) | 0x6400u));
-            const float w = float(fma(fp, bPtr->scale, bPtr->bias));
-            #pragma unroll
-            for (uint m = 0u; m < 8u; ++m) {
-                if (m < validM) {
-                    acc[m] = fma(shQ[m][r], w, acc[m]);
-                }
-            }
-        }
-    } else {
-        for (uint r = 0u; r < p.nopeDim; ++r) {
-            const float w = qwg_mla_read_weight(kvBBlocks, headRowBase + r, c,
-                                                p.kvLoraRank, p.bits, p.group, p.isIncumbent);
-            #pragma unroll
-            for (uint m = 0u; m < 8u; ++m) {
-                if (m < validM) {
-                    acc[m] = fma(shQ[m][r], w, acc[m]);
-                }
-            }
-        }
-    }
-
-    for (uint m = 0u; m < validM; ++m) {
-        qAbsOut[((size_t)(tBase + m) * p.qHeads + h) * p.kvLoraRank + c] = half(acc[m]);
-    }
+kernel void qwg_mla_absorb_q_sub2(
+    device const half*       mlaQFull   [[buffer(0)]],
+    device const char*       kvBBlocks  [[buffer(1)]],
+    device half*             qAbsOut    [[buffer(2)]],
+    constant MLAAbsorbParams& p         [[buffer(3)]],
+    uint3                    tgPos      [[threadgroup_position_in_grid]],
+    uint                     c          [[thread_index_in_threadgroup]]
+) {
+    alignas(16) threadgroup float shQ[8][256];
+    threadgroup ShvqMlaTgLut tgLut;
+    qwg_mla_absorb_q_impl<true>(mlaQFull, kvBBlocks, qAbsOut, p, tgPos, c, shQ, tgLut);
 }
 
 // 5. Sparse Matrix-Absorbed Latent Attention over 4-token pools + causal tail.
@@ -490,21 +501,26 @@ kernel void qwg_mla_sparse_attn(
 // 6. Value Up-Projection + Fused H_32 Rotation:
 //    attOut[t, h, r] = fwht32(sum_{c=0..511} uLat[t, h, c] * W_{UV, h}[r, c]).
 // Grid: (qHeads, (T + 7) / 8, 1), Threadgroup: (256, 1, 1).
-kernel void qwg_mla_proj_uv(
-    device const half*       uLat      [[buffer(0)]],
-    device const char*       kvBBlocks [[buffer(1)]],
-    device half*             attOut    [[buffer(2)]],
-    constant MLAAbsorbParams& p        [[buffer(3)]],
-    uint3                    tgPos     [[threadgroup_position_in_grid]],
-    uint                     r         [[thread_index_in_threadgroup]],
-    uint                     lane      [[thread_index_in_simdgroup]]
+template <bool SUB2>
+static inline void qwg_mla_proj_uv_impl(
+    device const half*       uLat,
+    device const char*       kvBBlocks,
+    device half*             attOut,
+    constant MLAAbsorbParams& p,
+    uint3                    tgPos,
+    uint                     r,
+    uint                     lane,
+    threadgroup half (&shU)[8][512],
+    threadgroup ShvqMlaTgLut& tgLut
 ) {
     const uint h = tgPos.x;
     const uint tBase = tgPos.y * 8u;
     if (h >= p.qHeads || tBase >= p.T) return;
     const uint validM = min(8u, p.T - tBase);
 
-    threadgroup half shU[8][512];
+    if (p.isIncumbent == 2u) {
+        qw_mla_load_shvq_lut<SUB2>(tgLut, p.bits, r, 256u);
+    }
     for (uint idx = r; idx < validM * p.kvLoraRank; idx += 256u) {
         const uint m = idx / p.kvLoraRank;
         const uint c = idx - m * p.kvLoraRank;
@@ -605,13 +621,81 @@ kernel void qwg_mla_proj_uv(
             attOut[(size_t)(tBase + m) * outStride + h * 256u + r] = half(rot);
         }
         return;
+    } else if (p.kvLoraRank == 512u && p.vHeadDim == 256u && p.group >= 32u && (p.group & 31u) == 0u
+               && ((p.isIncumbent == 2u && (SUB2 ? (p.bits == 1u || p.bits == 15u) : (p.bits >= 2u && p.bits <= 4u)))
+                   || (!SUB2 && p.isIncumbent == 0u))) {
+        const uint sg = r >> 5u;
+        const uint subRow = lane >> 4u;
+        const uint blkIdx = lane & 15u;
+        const uint baseRow = h * (p.nopeDim + 256u) + p.nopeDim + sg * 32u;
+        const uint col0 = blkIdx * 32u;
+        if (validM == 1u) {
+            float4 uLo0[4], uHi0[4];
+            threadgroup const half* xg0 = &shU[0][col0];
+            #pragma unroll
+            for (uint w = 0u; w < 4u; ++w) {
+                half4 lo, hi;
+                qwg_load_half8(xg0 + w * 8u, lo, hi);
+                uLo0[w] = float4(lo);
+                uHi0[w] = float4(hi);
+            }
+            float myOut = 0.0f;
+            for (uint pIdx = 0u; pIdx < 16u; ++pIdx) {
+                float4 wLo[4], wHi[4];
+                qw_mla_unpack_slice32_reg<SUB2>(kvBBlocks, baseRow + pIdx * 2u + subRow, col0, p, tgLut, wLo, wHi);
+                float s = 0.0f;
+                #pragma unroll
+                for (uint w = 0u; w < 4u; ++w) {
+                    s += dot(wLo[w], uLo0[w]) + dot(wHi[w], uHi0[w]);
+                }
+                s += simd_shuffle_xor(s, ushort(8));
+                s += simd_shuffle_xor(s, ushort(4));
+                s += simd_shuffle_xor(s, ushort(2));
+                s += simd_shuffle_xor(s, ushort(1));
+                const float r0 = simd_broadcast(s, ushort(0));
+                const float r1 = simd_broadcast(s, ushort(16));
+                if (lane == pIdx * 2u)      myOut = r0;
+                if (lane == pIdx * 2u + 1u) myOut = r1;
+            }
+            const float rot = qwg_fwht32_lane_f32(myOut, lane);
+            attOut[(size_t)tBase * outStride + h * 256u + r] = half(rot);
+            return;
+        }
+        float myOut[8] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+        for (uint pIdx = 0u; pIdx < 16u; ++pIdx) {
+            float4 wLo[4], wHi[4];
+            qw_mla_unpack_slice32_reg<SUB2>(kvBBlocks, baseRow + pIdx * 2u + subRow, col0, p, tgLut, wLo, wHi);
+            for (uint m = 0u; m < validM; ++m) {
+                threadgroup const half* xg = &shU[m][col0];
+                float s = 0.0f;
+                #pragma unroll
+                for (uint w = 0u; w < 4u; ++w) {
+                    half4 lo, hi;
+                    qwg_load_half8(xg + w * 8u, lo, hi);
+                    s += dot(wLo[w], float4(lo)) + dot(wHi[w], float4(hi));
+                }
+                s += simd_shuffle_xor(s, ushort(8));
+                s += simd_shuffle_xor(s, ushort(4));
+                s += simd_shuffle_xor(s, ushort(2));
+                s += simd_shuffle_xor(s, ushort(1));
+                const float r0 = simd_broadcast(s, ushort(0));
+                const float r1 = simd_broadcast(s, ushort(16));
+                if (lane == pIdx * 2u)      myOut[m] = r0;
+                if (lane == pIdx * 2u + 1u) myOut[m] = r1;
+            }
+        }
+        for (uint m = 0u; m < validM; ++m) {
+            const float rot = qwg_fwht32_lane_f32(myOut[m], lane);
+            attOut[(size_t)(tBase + m) * outStride + h * 256u + r] = half(rot);
+        }
+        return;
     }
 
     float acc[8] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
     const uint uvRow = h * (p.nopeDim + p.vHeadDim) + p.nopeDim + r;
     for (uint c = 0u; c < p.kvLoraRank; ++c) {
-        const float w = qwg_mla_read_weight(kvBBlocks, uvRow, c,
-                                            p.kvLoraRank, p.bits, p.group, p.isIncumbent);
+        const float w = qwg_mla_read_weight<SUB2>(kvBBlocks, uvRow, c,
+                                                  p.kvLoraRank, p.bits, p.group, p.isIncumbent);
         #pragma unroll
         for (uint m = 0u; m < 8u; ++m) {
             if (m < validM) {
@@ -624,4 +708,32 @@ kernel void qwg_mla_proj_uv(
         const float rot = qwg_fwht32_lane_f32(acc[m], lane);
         attOut[(size_t)(tBase + m) * outStride + h * p.vHeadDim + r] = half(rot);
     }
+}
+
+kernel void qwg_mla_proj_uv(
+    device const half*       uLat      [[buffer(0)]],
+    device const char*       kvBBlocks [[buffer(1)]],
+    device half*             attOut    [[buffer(2)]],
+    constant MLAAbsorbParams& p        [[buffer(3)]],
+    uint3                    tgPos     [[threadgroup_position_in_grid]],
+    uint                     r         [[thread_index_in_threadgroup]],
+    uint                     lane      [[thread_index_in_simdgroup]]
+) {
+    threadgroup half shU[8][512];
+    threadgroup ShvqMlaTgLut tgLut;
+    qwg_mla_proj_uv_impl<false>(uLat, kvBBlocks, attOut, p, tgPos, r, lane, shU, tgLut);
+}
+
+kernel void qwg_mla_proj_uv_sub2(
+    device const half*       uLat      [[buffer(0)]],
+    device const char*       kvBBlocks [[buffer(1)]],
+    device half*             attOut    [[buffer(2)]],
+    constant MLAAbsorbParams& p        [[buffer(3)]],
+    uint3                    tgPos     [[threadgroup_position_in_grid]],
+    uint                     r         [[thread_index_in_threadgroup]],
+    uint                     lane      [[thread_index_in_simdgroup]]
+) {
+    threadgroup half shU[8][512];
+    threadgroup ShvqMlaTgLut tgLut;
+    qwg_mla_proj_uv_impl<true>(uLat, kvBBlocks, attOut, p, tgPos, r, lane, shU, tgLut);
 }

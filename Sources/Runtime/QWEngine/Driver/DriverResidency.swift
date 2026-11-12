@@ -47,31 +47,40 @@ extension QWEngineDriver {
         let arenaCap0 = max(1 << 30, hal.caps.maxWorkingSetBytes - (64 << 20))
         let avail0 = Self.residencyBudgetBytes(policy: tuning.memoryPolicy, osReserveGiB: osReserveGiB, arenaCap: arenaCap0)
         let chunk0 = max(32, min(4096, (prefillChunkSize / 32) * 32))
-        let bpt0 = Self.prefillBytesPerToken(geometry: raw)
-        let act0 = chunk0 * bpt0 + max(64 << 20, bpt0 * 2 + raw.vocab * 4 + QWHead.gemvArgmaxSlots(raw.vocab) * 8 + (32 << 20))
+        let useNax0 = hal.caps.isMetal4TensorCapable
+        let bpt0 = Self.prefillBytesPerToken(geometry: raw, useGroupedNAX: useNax0)
+        let act0 = chunk0 * bpt0 + Self.decodeAndMTPScratchBytes(
+            geometry: raw, prefillChunkRows: chunk0, mtpDrafts: mtpDrafts,
+            maxTokens: maxTokens, useGroupedNAX: useNax0)
         let numV0 = raw.numVirtualLayers
-        let gdnCount0 = (0..<numV0).filter { !raw.isVirtualLayerFullAttention($0) }.count
+        let attnCount0 = (0..<numV0).filter { raw.isVirtualLayerFullAttention($0) }.count
+        let gdnCount0 = numV0 - attnCount0
         let slotB0 = gdnCount0 * (QWSlotGeometry.recElems(geometry: raw) * 4 + QWSlotGeometry.ringElems(geometry: raw) * 2)
         let gdn0 = 2 * slotB0 + Self.partialsScratchBytes(geometry: raw, mtpDrafts: mtpDrafts, maxTokens: maxTokens)
             + (mtpDrafts > 0 ? QWGDNReplayCheckpoint.allocationBytes(geometry: raw, layers: gdnCount0, rows: mtpDrafts + 1) : 0)
             + (mtpDrafts > 0 ? 2 * raw.hidden * 2 : 0)
             + (1 << 20)
-        let mlaFixed0 = raw.usesNoPEMLA ? (48 << 20) : 0
+        let activeAttn0 = attnCount0 + (mtpDrafts > 0 ? 1 : 0)
+        let mlaFixed0 = Self.mlaFixedScratchBytes(geometry: raw, prefillChunkRows: chunk0, activeAttnLayers: activeAttn0)
         let minFitTokens0 = max(16_384, min(maxTokens, 32_768))
         let kv0 = Self.kvBudgetBytes(maxTokens: minFitTokens0, mtpDrafts: mtpDrafts, kvMode: kvMode, geometry: raw)
-        let forceDeviceEmbed = cfg.environment["QW_MTP_DEVICE_EMBED"] == "1"
-        let baseReserve = act0 + gdn0 + mlaFixed0 + kv0 + (4096 << 20)
+        let devEmbedEnv = cfg.environment["QW_MTP_DEVICE_EMBEDDING"] ?? cfg.environment["QW_MTP_DEVICE_EMBED"]
+        let forceDeviceEmbed = devEmbedEnv == "1"
+        let disableDeviceEmbed = devEmbedEnv == "0"
+        let baseReserve = act0 + gdn0 + mlaFixed0 + kv0 + (1024 << 20)
         let safeCapWithoutEmbed = max(1 << 30, avail0 - baseReserve)
         let fullWPlan = try? QWWeightAllocationPlan(
             geometry: raw, ropeRows: max(ropeRows, maxTokens),
             mtpDrafts: mtpWeightDrafts, headQ4g: cfg.headIsQ4g, maxMTPDrafts: maxMTP0,
             format: format)
-        let isColdStreamingMoE = (fullWPlan?.bytes ?? 0) > safeCapWithoutEmbed
-        let mtpEmbed0 = (mtpDrafts > 0 && (!isColdStreamingMoE || forceDeviceEmbed))
-            ? raw.vocab * raw.hidden * 2 : 0
+        let fullBytes0 = fullWPlan?.bytes ?? 0
+        let embedBytes0 = raw.vocab * raw.hidden * 2
+        let canFitDeviceEmbed = fullBytes0 > 0 && (fullBytes0 + embedBytes0 <= safeCapWithoutEmbed)
+        let mtpEmbed0 = (!disableDeviceEmbed && mtpDrafts > 0
+            && (forceDeviceEmbed || (mtpDrafts > 1 && canFitDeviceEmbed))) ? embedBytes0 : 0
         let nonWeightReserve = baseReserve + mtpEmbed0
         let safeWeightCap = max(1 << 30, avail0 - nonWeightReserve)
-        if let fullBytes = fullWPlan?.bytes, fullBytes > safeWeightCap {
+        if fullBytes0 > safeWeightCap {
             let minE = max(8, raw.expertsPerTok)
             var chosenE = minE
             var cand = ((raw.numExperts - 2) / 2) * 2
@@ -160,12 +169,8 @@ extension QWEngineDriver {
         }()
         let chunkRows = max(32, min(4096, (prefillChunkSize / 32) * 32))
         let bpt = Self.prefillBytesPerToken(geometry: rawGeometry)
-        let mtpLongExtra = (effDrafts > 0 && clampedContext > 262_144)
-            ? (effDrafts + 1) * Self.partialsCarveBytes(geometry: rawGeometry, maxTokens: clampedContext) : 0
-        let verifyExtra = effDrafts > 7 ? (48 << 20) : 0
-        let decodeActBytes = bpt * 2 + rawGeometry.vocab * 4 + QWHead.gemvArgmaxSlots(rawGeometry.vocab) * 8
-            + (32 << 20) + verifyExtra + mtpLongExtra
-        let actBytes = chunkRows * bpt + max(64 << 20, decodeActBytes)
+        let actBytes = chunkRows * bpt + Self.decodeAndMTPScratchBytes(
+            geometry: rawGeometry, prefillChunkRows: chunkRows, mtpDrafts: effDrafts, maxTokens: clampedContext)
         let numV = rawGeometry.numVirtualLayers
         let attnCount = (0..<numV).filter { rawGeometry.isVirtualLayerFullAttention($0) }.count
         let gdnCount = numV - attnCount
@@ -174,7 +179,9 @@ extension QWEngineDriver {
         let gdnBytes = 2 * slotBytes + Self.partialsScratchBytes(geometry: rawGeometry, mtpDrafts: effDrafts, maxTokens: clampedContext)
             + (effDrafts > 0 ? QWGDNReplayCheckpoint.allocationBytes(geometry: rawGeometry, layers: gdnCount, rows: effDrafts + 1) : 0)
             + (effDrafts > 0 ? 2 * rawGeometry.hidden * 2 : 0) + (1 << 20)
-        let mlaFixedBytes = rawGeometry.usesNoPEMLA ? (48 << 20) : 0
+        let activeAttnLayers = attnCount + (effDrafts > 0 ? 1 : 0)
+        let mlaFixedBytes = Self.mlaFixedScratchBytes(
+            geometry: rawGeometry, prefillChunkRows: chunkRows, activeAttnLayers: activeAttnLayers)
         let ropeRows = max(rawGeometry.maxPositionEmbeddings, clampedContext)
         let isMoE = rawGeometry.numExperts > 0
         let reserveGiB = isMoE
@@ -185,7 +192,7 @@ extension QWEngineDriver {
             guard isMoE, tuning.residentExpertsPerLayer == nil, availBytes > 0 else { return rawGeometry }
             let minFitKV = Self.kvBudgetBytes(maxTokens: max(16_384, min(clampedContext, 32_768)),
                                               mtpDrafts: effDrafts, kvMode: kvMode, geometry: rawGeometry)
-            let safeWeightCap = max(1 << 30, availBytes - (actBytes + gdnBytes + mlaFixedBytes + minFitKV + (4096 << 20)))
+            let safeWeightCap = max(1 << 30, availBytes - (actBytes + gdnBytes + mlaFixedBytes + minFitKV + (1024 << 20)))
             let fullPlan = try? QWWeightAllocationPlan(geometry: rawGeometry, ropeRows: ropeRows, mtpDrafts: mtpWeightDrafts,
                                                        headQ4g: true, maxMTPDrafts: maxMTP, format: format)
             guard let fullBytes = fullPlan?.bytes, fullBytes > safeWeightCap else { return rawGeometry }
@@ -206,7 +213,6 @@ extension QWEngineDriver {
         let weightsBytes = (try? QWWeightAllocationPlan(
             geometry: geometry, ropeRows: ropeRows, mtpDrafts: mtpWeightDrafts,
             headQ4g: true, maxMTPDrafts: maxMTP, format: format).bytes) ?? 0
-        let activeAttnLayers = attnCount + (effDrafts > 0 ? 1 : 0)
         let mlaPerTokBytes = geometry.usesNoPEMLA ? activeAttnLayers * ((geometry.indexerHeadDim * 2) / 4) : 0
         let perTokBytes = 2 * activeAttnLayers * (QWKVCache.pageBytes(mode: kvMode, geometry: geometry) / QWKVCache.pageTokens) + mlaPerTokBytes
         let kvBytes = Self.kvBudgetBytes(maxTokens: clampedContext, mtpDrafts: effDrafts, kvMode: kvMode, geometry: geometry)

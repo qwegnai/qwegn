@@ -9,6 +9,7 @@ public enum QWNgramDType: UInt32, Sendable, Equatable, CaseIterable {
     case q8g32 = 1
     case q4g32 = 2
     case vq2g32 = 3
+    case vq4g32 = 4
 
     /// The bytes one row of `headDim` values takes.
     /// Size-preserving (Law L8): `groups × (payload + scale)`, never more.
@@ -32,6 +33,11 @@ public enum QWNgramDType: UInt32, Sendable, Equatable, CaseIterable {
                 throw QWNgramFormatError.badRowSize(headDim)
             }
             return (headDim / QWNgramFormat.group) * 18
+        case .vq4g32:
+            guard headDim % QWNgramFormat.group == 0 else {
+                throw QWNgramFormatError.badRowSize(headDim)
+            }
+            return (headDim / QWNgramFormat.group) * 10
         }
     }
 }
@@ -98,6 +104,9 @@ public enum QWNgramFormat {
     public static let vq2CodebookOffset = 1024
     public static let vq2CodebookBytes = 1024
     public static let vq2CodebookScalars = 512
+    public static let vq4CodebookOffset = 1024
+    public static let vq4CodebookBytes = 2048
+    public static let vq4CodebookScalars = 1024
 
     private static func validateVQ2Codebook(_ rawU16: [UInt16]) throws -> [Float] {
         guard rawU16.count == vq2CodebookScalars else {
@@ -122,6 +131,29 @@ public enum QWNgramFormat {
         return out
     }
 
+    private static func validateVQ4Codebook(_ rawU16: [UInt16]) throws -> [Float] {
+        guard rawU16.count == vq4CodebookScalars else {
+            throw QWNgramFormatError.badHeader("v3 vq4 codebook must hold 1024 f16 values")
+        }
+        guard rawU16[0] == 0 && rawU16[1] == 0 && rawU16[2] == 0 && rawU16[3] == 0 else {
+            throw QWNgramFormatError.badHeader("v3 codebook[0] must be canonical +0.0")
+        }
+        var out = [Float](repeating: 0, count: vq4CodebookScalars)
+        var anyLive = false
+        for (i, bits) in rawU16.enumerated() {
+            let v = QWQuant.f16tof32Bits(bits)
+            guard v.isFinite else {
+                throw QWNgramFormatError.badHeader("non-finite value in v3 codebook")
+            }
+            out[i] = v
+            if i >= 4 && v != 0 { anyLive = true }
+        }
+        guard anyLive else {
+            throw QWNgramFormatError.badHeader("v3 codebook is all zero")
+        }
+        return out
+    }
+
     private static func checkVersionPairing(version: UInt16, dtype: QWNgramDType) throws {
         guard version == 1 || version == 2 || version == 3 else {
             throw QWNgramFormatError.unsupportedVersion(version)
@@ -129,11 +161,11 @@ public enum QWNgramFormat {
         if version == 1, dtype != .bf16 {
             throw QWNgramFormatError.badHeader("version 1 cannot carry dtype \(dtype.rawValue)")
         }
-        if version == 2, (dtype == .bf16 || dtype == .vq2g32) {
+        if version == 2, (dtype == .bf16 || dtype == .vq2g32 || dtype == .vq4g32) {
             throw QWNgramFormatError.badHeader("version 2 cannot carry dtype \(dtype.rawValue)")
         }
-        if version == 3, dtype != .vq2g32 {
-            throw QWNgramFormatError.badHeader("version 3 must carry dtype vq2g32")
+        if version == 3, dtype != .vq2g32 && dtype != .vq4g32 {
+            throw QWNgramFormatError.badHeader("version 3 must carry dtype vq2g32 or vq4g32")
         }
     }
 
@@ -160,6 +192,9 @@ public enum QWNgramFormat {
         if dtype == .vq2g32 {
             let raw = (0..<vq2CodebookScalars).map { u16(vq2CodebookOffset + $0 * 2) }
             codebook = try validateVQ2Codebook(raw)
+        } else if dtype == .vq4g32 {
+            let raw = (0..<vq4CodebookScalars).map { u16(vq4CodebookOffset + $0 * 2) }
+            codebook = try validateVQ4Codebook(raw)
         } else {
             codebook = []
         }
@@ -215,8 +250,10 @@ public enum QWNgramFormat {
         try checkVersionPairing(version: version, dtype: dtype)
         if dtype == .vq2g32 {
             _ = try validateVQ2Codebook(codebook)
+        } else if dtype == .vq4g32 {
+            _ = try validateVQ4Codebook(codebook)
         } else if !codebook.isEmpty {
-            throw QWNgramFormatError.badHeader("codebook is only valid for v3 vq2g32")
+            throw QWNgramFormatError.badHeader("codebook is only valid for v3 vq2g32 or vq4g32")
         }
         guard rowBytes == (try dtype.rowBytes(headDim: Int(headDim))) else {
             throw QWNgramFormatError.badRowSize(Int(rowBytes))
@@ -247,7 +284,7 @@ public enum QWNgramFormat {
         put32(28, l1Hot); put64(32, UInt64(headerBytes))
         h[44] = UInt8(self.noteBytes)
         for (i, b) in noteBytes.enumerated() { h[45 + i] = b }
-        if dtype == .vq2g32 {
+        if dtype == .vq2g32 || dtype == .vq4g32 {
             for (i, u) in codebook.enumerated() { put16(vq2CodebookOffset + i * 2, u) }
         }
         return h
@@ -316,6 +353,26 @@ extension QWNgramFormat {
                     let outIdx = g * group + 2 * p
                     dst[outIdx] = cb[code * 2] * scale
                     dst[outIdx + 1] = cb[code * 2 + 1] * scale
+                }
+            }
+        case .vq4g32:
+            precondition(headDim % group == 0, "ngram.bin: a VQ4 row holds whole groups")
+            guard let cb = codebook else {
+                preconditionFailure("ngram.bin: VQ4 decode requires its e-means codebook")
+            }
+            let quads = group / 4
+            let stride = quads + 2
+            for g in 0..<(headDim / group) {
+                let base = g * stride
+                let scale = QWQuant.f16tof32Bits(QWQuant.u16le(bytes, base + quads))
+                for q in 0..<quads {
+                    let code = Int(bytes.loadUnaligned(fromByteOffset: base + q, as: UInt8.self))
+                    let outIdx = g * group + 4 * q
+                    let cbIdx = code * 4
+                    dst[outIdx] = cb[cbIdx] * scale
+                    dst[outIdx + 1] = cb[cbIdx + 1] * scale
+                    dst[outIdx + 2] = cb[cbIdx + 2] * scale
+                    dst[outIdx + 3] = cb[cbIdx + 3] * scale
                 }
             }
         }

@@ -1,9 +1,10 @@
 // qwgemm_shvq_f32.metal — Float32 GEMM/GEMV and argmax-epilogue twins
-// (f32_bm, f32_v4, f32_v4_am, f32_v4_am2) for SHVQ{2,3,4}_G{32,64,128,256}.
+// (f32_bm, f32_v4, f32_v4_am, f32_v4_am2) for SHVQ{1,15,2,3,4}_G{32,64,128,256}.
 
 #include <metal_stdlib>
 #include <metal_simdgroup>
 #include <metal_simdgroup_matrix>
+#define QW_SHVQ_ROUTED_DIRECT_LUT 1
 #include "qw_dequant_shvq.metalh"
 using namespace metal;
 
@@ -27,7 +28,7 @@ static inline void qwg_gemm_shvq_f32_bm_body(device const char*  w,
     const uint sg = tid >> 5u, gi = tid >> 3u, dl = tid & 7u;
     const int nBlocks = int(K >> 5u);
     const int nRow = min(nBase + int(gi), int(N) - 1);
-    constexpr uint groupBytes = 2u + (uint(GROUP * BITS) >> 3u);
+    constexpr uint groupBytes = qwg_shvq_group_bytes(BITS, GROUP);
     const uint rowBytes = (K / uint(GROUP)) * groupBytes;
     device const char* wrow = w + size_t(nRow) * rowBytes;
 
@@ -442,6 +443,14 @@ static inline void qwg_gemv_shvq_f32_v4_am2_body(device const char*  w,
         qwg_gemv_shvq_f32_v4_am2_body<BITS, GROUP>(w, x, keysHi, keysLo, N, K, y, tg, tid, sg, lane, bHi0, bLo0, bHi1, bLo1, tgLut); \
     }
 
+QW_SHVQ_F32_KERNELS(1, 32)
+QW_SHVQ_F32_KERNELS(1, 64)
+QW_SHVQ_F32_KERNELS(1, 128)
+QW_SHVQ_F32_KERNELS(1, 256)
+QW_SHVQ_F32_KERNELS(15, 32)
+QW_SHVQ_F32_KERNELS(15, 64)
+QW_SHVQ_F32_KERNELS(15, 128)
+QW_SHVQ_F32_KERNELS(15, 256)
 QW_SHVQ_F32_KERNELS(2, 32)
 QW_SHVQ_F32_KERNELS(2, 64)
 QW_SHVQ_F32_KERNELS(2, 128)

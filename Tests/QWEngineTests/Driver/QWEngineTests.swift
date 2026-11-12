@@ -58,4 +58,24 @@ final class QWEngineTests: XCTestCase {
         c.gdnPrefillMode = .chunked
         XCTAssertEqual(c.gdnPrefillMode, .chunked)
     }
+
+    func testPrefillScratchEvictionAutoTriggersOnHighWiredArenaRatio() {
+        let uma128 = UInt64(128) << 30
+        XCTAssertFalse(
+            QWPrefillScratchEvictionPolicy.auto.shouldEvict(
+                totalMemoryBytes: uma128,
+                wiredEngineBytes: 22 << 30))
+        XCTAssertTrue(
+            QWPrefillScratchEvictionPolicy.auto.shouldEvict(
+                totalMemoryBytes: uma128,
+                wiredEngineBytes: 100 << 30))
+        XCTAssertTrue(
+            QWPrefillScratchEvictionPolicy.always.shouldEvict(
+                totalMemoryBytes: uma128,
+                wiredEngineBytes: 0))
+        XCTAssertFalse(
+            QWPrefillScratchEvictionPolicy.never.shouldEvict(
+                totalMemoryBytes: UInt64(32) << 30,
+                wiredEngineBytes: 28 << 30))
+    }
 }

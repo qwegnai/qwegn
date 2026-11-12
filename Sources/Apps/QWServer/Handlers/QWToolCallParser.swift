@@ -101,12 +101,7 @@ public enum QWToolCallParser {
             let afterOpen = rest[open.upperBound...]
             let inner: Substring
             let closed: Bool
-            if let close = afterOpen.range(of: "</tool_call>", options: .backwards),
-               afterOpen[close.upperBound...].range(of: "<tool_call>") == nil {
-                inner = afterOpen[..<close.lowerBound]
-                rest = afterOpen[close.upperBound...]
-                closed = true
-            } else if let close = afterOpen.range(of: "</tool_call>") {
+            if let close = matchingToolCallClose(in: afterOpen) {
                 inner = afterOpen[..<close.lowerBound]
                 rest = afterOpen[close.upperBound...]
                 closed = true
@@ -125,6 +120,18 @@ public enum QWToolCallParser {
             }
         }
         return (calls, incomplete)
+    }
+
+    private static func matchingToolCallClose(in afterOpen: Substring) -> Range<String.Index>? {
+        var searchFrom = afterOpen.startIndex
+        while let close = afterOpen[searchFrom...].range(of: "</tool_call>") {
+            let tail = afterOpen[close.upperBound...].drop(while: { $0.isWhitespace })
+            if tail.isEmpty || tail.hasPrefix("<tool_call>") || tail.range(of: "</tool_call>") == nil {
+                return close
+            }
+            searchFrom = close.upperBound
+        }
+        return nil
     }
 
     private static func parseSingleToolCall(inner: String, schemas: ToolSchemas) -> ToolCall? {

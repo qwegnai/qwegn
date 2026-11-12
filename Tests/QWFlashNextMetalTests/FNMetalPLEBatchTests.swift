@@ -321,4 +321,107 @@ final class FNMetalPLEBatchTests: XCTestCase {
         XCTAssertNil(streamed.gpuTable)
         XCTAssertEqual(streamed.residentBytes, 0)
     }
+
+    func testVQ4MetalGatherMatchesCPUAndSpansSectorBoundariesBitExact() throws {
+        let hal = try QWHal(geometry: .qwen38_27b)
+        for entryCount in [100, 200, 4500] {
+            var cbBits = [UInt16](repeating: 0, count: 1024)
+            for c in 1..<256 {
+                let base = Float(c) * 0.093
+                let rad = 0.12 + 0.85 * Float(c % 19) / 18.0
+                cbBits[4 * c + 0] = Float16(rad * cos(base)).bitPattern
+                cbBits[4 * c + 1] = Float16(rad * sin(base)).bitPattern
+                cbBits[4 * c + 2] = Float16(rad * cos(base * 1.7)).bitPattern
+                cbBits[4 * c + 3] = Float16(rad * sin(base * 1.7)).bitPattern
+            }
+            let headDim = 160, rowBytes = 50, rps = 81
+            let header = try QWNgramFormat.makeHeader(version: 3, dtype: .vq4g32,
+                                                      entryCount: UInt64(entryCount),
+                                                      headDim: UInt16(headDim),
+                                                      rowBytes: UInt16(rowBytes),
+                                                      l1Hot: 0, codebook: cbBits)
+            let sectors = (entryCount + rps - 1) / rps
+            var fileBytes = [UInt8](repeating: 0, count: 4096 + sectors * 4096)
+            fileBytes.replaceSubrange(0..<4096, with: header)
+            for r in 0..<entryCount {
+                let sec = r / rps, inSec = r % rps
+                let rowOff = 4096 + sec * 4096 + inSec * rowBytes
+                for g in 0..<5 {
+                    let grpOff = rowOff + g * 10
+                    let isZero = (r == 17 && g == 3) || r == 0
+                    let s16 = isZero ? Float16(0.0) : Float16(0.0025 * Float(1 + ((r * 11 + g * 5) % 31)))
+                    let sBits = s16.bitPattern
+                    fileBytes[grpOff + 8] = UInt8(sBits & 0xFF)
+                    fileBytes[grpOff + 9] = UInt8(sBits >> 8)
+                    for t in 0..<8 {
+                        fileBytes[grpOff + t] = isZero ? 0 : UInt8((r * 23 + g * 13 + t * 7 + 1) & 0xFF)
+                    }
+                }
+            }
+            let tmpDir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("qwg_vq4_test_\(UUID().uuidString)", isDirectory: true)
+            let assetsDir = tmpDir.appendingPathComponent("assets", isDirectory: true)
+            try FileManager.default.createDirectory(at: assetsDir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: tmpDir) }
+            let tmpURL = assetsDir.appendingPathComponent("ngram.bin")
+            try Data(fileBytes).write(to: tmpURL)
+
+            let preadRows = try FNNgramBinRows(url: tmpURL, mapped: false)
+            let mmapRows = try FNNgramBinRows(url: tmpURL, mapped: true)
+            for r in 0..<min(entryCount, 180) {
+                XCTAssertEqual(preadRows.row(r), mmapRows.row(r))
+            }
+
+            let table = try XCTUnwrap(FNGPUPLETable(binRows: preadRows, device: hal.device))
+            let arena = try QWArena(hal: hal, weights: 1 << 20, activations: 16 << 20, kv: 0, gdnStates: 0)
+            let act = arena.activationsRegion()
+            let numTargets = 12, rowsPerTarget = entryCount == 4500 ? 64 : 16
+            let rowIds = try act.allocate(QWTensorShape([numTargets * rowsPerTarget], .i32))
+            let dstOffsets = try act.allocate(QWTensorShape([numTargets], .i32))
+            let outs = try (0..<numTargets).map { _ in try act.allocate(QWTensorShape([rowsPerTarget * headDim], .f32)) }
+            let pickedIds: [UInt32] = (0..<(numTargets * rowsPerTarget)).map { i in
+                UInt32((i * 59 + 41) % entryCount)
+            }
+            let dstWordOffsets: [UInt32] = outs.map { out in
+                UInt32((out.region.base - act.region.base + out.offset) / 4)
+            }
+            arena.write(rowIds, from: pickedIds)
+            arena.write(dstOffsets, from: dstWordOffsets)
+
+            let pair = try XCTUnwrap(hal.begin(.concurrent))
+            try QWGemm.encodeFnPLEVQ2Gather(pair.1, hal: hal, table: table, rowIds: rowIds,
+                                            targetFloatOffsets: dstOffsets, outRegion: act.region,
+                                            rowsPerTarget: rowsPerTarget, numTargets: numTargets)
+            hal.end(pair.0, pair.1)
+            pair.0.waitUntilCompleted()
+            XCTAssertNil(pair.0.error)
+
+            for t in 0..<numTargets {
+                let gpuVals = arena.read(outs[t], as: Float.self, count: rowsPerTarget * headDim)
+                var cpuVals = [Float]()
+                cpuVals.reserveCapacity(rowsPerTarget * headDim)
+                for r in 0..<rowsPerTarget {
+                    let id = Int(pickedIds[t * rowsPerTarget + r])
+                    cpuVals.append(contentsOf: preadRows.row(id))
+                }
+                XCTAssertEqual(gpuVals, cpuVals, "VQ4 0-ULP mismatch for entryCount=\(entryCount) target=\(t)")
+            }
+
+            if entryCount == 100 {
+                let weightsURL = tmpDir.appendingPathComponent("model.qwp")
+                try Data([UInt8](repeating: 0, count: 64)).write(to: weightsURL)
+                let resident = try FNGPUPLETable.resolveBacking(
+                    assetsURL: assetsDir, weightsURL: weightsURL, hasPLE: true, streamNgrams: false,
+                    hal: hal, weightsEstimate: 1 << 20, fixedScratchBytes: 1 << 20,
+                    minKVBytes: 1 << 20, availableBytes: 16 << 30)
+                XCTAssertNotNil(resident.gpuTable)
+                let streamed = try FNGPUPLETable.resolveBacking(
+                    assetsURL: assetsDir, weightsURL: weightsURL, hasPLE: true, streamNgrams: true,
+                    hal: hal, weightsEstimate: 1 << 20, fixedScratchBytes: 1 << 20,
+                    minKVBytes: 1 << 20, availableBytes: 16 << 30)
+                XCTAssertNil(streamed.gpuTable)
+                XCTAssertEqual(streamed.residentBytes, 0)
+            }
+        }
+    }
 }

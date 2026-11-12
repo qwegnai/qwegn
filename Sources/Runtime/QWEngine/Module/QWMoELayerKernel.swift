@@ -89,6 +89,7 @@ enum QWMoEChain {
         let K = geometry.expertsPerTok
         let ISh = geometry.sharedExpertIntermediate
         let isGroupedNax = rows > 8 && geometry.supportsGroupedNAXMoEPrefill
+            && hal.caps.isMetal4TensorCapable
             && (streamer == nil || (moe.coldGateUp != nil && moe.coldDown != nil))
             && s.expOff != nil && s.sortedPair != nil && s.sortedTok != nil
             && s.invPerm != nil && s.tileE != nil && s.tileR != nil

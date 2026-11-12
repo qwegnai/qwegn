@@ -370,9 +370,9 @@ public final class FNNgramBinRows: FNNgramRows, @unchecked Sendable {
         if fd >= 0 { close(fd) }
     }
 
-    /// Maps a v3 `vq2g32` table into a single page-aligned `MTLBuffer` for zero-`pread` GPU gather.
+    /// Maps a v3 `vq2g32` or `vq4g32` table into a page-aligned `MTLBuffer` for zero-`pread` GPU gather.
     public func makeResidentGPUBuffer(device: any MTLDevice) -> (any MTLBuffer)? {
-        guard dtype == .vq2g32 else { return nil }
+        guard dtype == .vq2g32 || dtype == .vq4g32 else { return nil }
         let page = max(1, Int(getpagesize()))
         let alignedLen = ((fileBytes + page - 1) / page) * page
         guard alignedLen > 0, alignedLen <= Int(device.maxBufferLength) else { return nil }

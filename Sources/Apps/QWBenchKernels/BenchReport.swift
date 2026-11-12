@@ -56,7 +56,9 @@ enum BenchReport {
             out += "|---|---|---|---|---|---|---|---|---|\n"
             for r in shvq {
                 let ratio = r.shvqMs / max(r.aqMs, 1e-9)
-                out += "| \(r.suite) | \(r.shape) | \(r.bits)-bit G\(r.group) | "
+                let pairTag = r.bits == 15 ? "1.5-bit G\(r.group) vs AQ2"
+                    : (r.bits == 1 ? "1-bit G\(r.group) vs AQ2" : "\(r.bits)-bit G\(r.group)")
+                out += "| \(r.suite) | \(r.shape) | \(pairTag) | "
                 out += String(format: "%.4f", r.shvqMs) + " | "
                 out += String(format: "%.4f", r.aqMs) + " | "
                 out += String(format: "%.3fx", ratio) + " | "

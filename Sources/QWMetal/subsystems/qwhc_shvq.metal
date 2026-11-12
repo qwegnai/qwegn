@@ -1,10 +1,11 @@
-// qwhc_shvq.metal — Hyper-connection mixer kernels over SHVQ{2,3,4}_G{32,64,128,256}
+// qwhc_shvq.metal — Hyper-connection mixer kernels over SHVQ{1,15,2,3,4}_G{32,64,128,256}
 // hc.up and hc.down weights, f32 end to end.
 
 #include <metal_stdlib>
 #include <metal_simdgroup>
 #include "qw_dequant.metalh"
 #include "qw_dequant_f32.metalh"
+#define QW_SHVQ_ROUTED_DIRECT_LUT 1
 #include "qw_dequant_shvq.metalh"
 #include "qwhc_common.metalh"
 using namespace metal;
@@ -48,9 +49,9 @@ static inline void qwg_hc_up_mix_h32_shvq_f32_body(device const char*  upBytes,
                                                    threadgroup float* sMix) {
     const uint b = tg.x, realHC = hc & 0xFFu, nBlocks = R >> 5u;
     const uint halfId = lane >> 4u, s = lane & 15u, h0 = b * 32u + sg * 4u;
-    constexpr uint groupBytes = 2u + (uint(GROUP * BITS) >> 3u);
+    constexpr uint groupBytes = qwg_shvq_group_bytes(BITS, GROUP);
     constexpr uint slicesPerGroup = uint(GROUP) >> 5u;
-    constexpr uint slicePayloadBytes = 4u * uint(BITS);
+    constexpr uint slicePayloadBytes = qwg_shvq_slice_bytes(BITS);
     const uint rowBytes = (R / uint(GROUP)) * groupBytes;
     const size_t hOff = size_t(s / slicesPerGroup) * groupBytes;
     const uint byteInGroup = (s & (slicesPerGroup - 1u)) * slicePayloadBytes;
@@ -187,9 +188,9 @@ static inline void qwg_hc_norm_down_inject_shvq_f32_body(
 
     if (tg < nDownTG) {
         const uint row0 = tg * 4u;
-        constexpr uint groupBytes = 2u + (uint(GROUP * BITS) >> 3u);
+        constexpr uint groupBytes = qwg_shvq_group_bytes(BITS, GROUP);
         constexpr uint slicesPerGroup = uint(GROUP) >> 5u;
-        constexpr uint slicePayloadBytes = 4u * uint(BITS);
+        constexpr uint slicePayloadBytes = qwg_shvq_slice_bytes(BITS);
         const uint rowBytes = (K / uint(GROUP)) * groupBytes;
         device const char* r0 = downBytes + (size_t)row0 * rowBytes;
         device const char* r1 = (row0 + 1u < NDown) ? (r0 + rowBytes) : r0;
@@ -311,6 +312,14 @@ static inline void qwg_hc_norm_down_inject_shvq_f32_body(
             xXn, yInj, NDown, K, scale, CH, tgp, sg, lane, part4);                     \
     }
 
+QW_SHVQ_HC_F32_KERNELS(1, 32)
+QW_SHVQ_HC_F32_KERNELS(1, 64)
+QW_SHVQ_HC_F32_KERNELS(1, 128)
+QW_SHVQ_HC_F32_KERNELS(1, 256)
+QW_SHVQ_HC_F32_KERNELS(15, 32)
+QW_SHVQ_HC_F32_KERNELS(15, 64)
+QW_SHVQ_HC_F32_KERNELS(15, 128)
+QW_SHVQ_HC_F32_KERNELS(15, 256)
 QW_SHVQ_HC_F32_KERNELS(2, 32)
 QW_SHVQ_HC_F32_KERNELS(2, 64)
 QW_SHVQ_HC_F32_KERNELS(2, 128)

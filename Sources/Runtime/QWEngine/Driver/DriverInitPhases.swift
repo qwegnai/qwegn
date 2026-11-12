@@ -179,7 +179,8 @@ extension QWEngineDriver {
     static func makeDecodeAndPrefillScratch(
         asub: QWSubAllocator, gsub: QWSubAllocator,
         geometry: QWModelGeometry, maxPrefillChunk: Int,
-        pOff: Int, pCarveBytes: Int
+        pOff: Int, pCarveBytes: Int,
+        useGroupedNAX: Bool = true
     ) throws -> (sc: Scratch, psc: PrefillScratch, gsOff: Int) {
         func tv(_ n: Int, _ dt: QWDType) throws -> QWTensorValue {
             try asub.allocate(QWTensorShape([max(1, n)], dt))
@@ -234,48 +235,42 @@ extension QWEngineDriver {
             token: try tv(1, .i32),
             partials: QWMRegion(buffer: gsub.region.buffer, base: gsub.region.base + pOff,
                                 length: pCarveBytes),
-            moe: geometry.numExperts > 0 ? try Self.makeMoEScratch(tv, rows: 1, geometry: geometry) : nil,
+            moe: geometry.numExperts > 0 ? try Self.makeMoEScratch(tv, rows: 1, geometry: geometry, useGroupedNAX: useGroupedNAX) : nil,
             mhcStream: try geometry.mhcConfig.map { try tv($0.streams * H, .f32) },
             mhcControls: try geometry.mhcConfig.map { try tv($0.streams + $0.streams * $0.streams, .f32) },
             fgb16: geometry.gdnVectorDecay ? try tv(fgbC, .f16) : nil
         )
 
         let maxT = maxPrefillChunk
-        let gsFloats = Self.groupSumFloats(k: H)
-        let gs48Floats = (Self.oProjGroupSumFloats(geometry: geometry) + 63) / 64 * 64
-        let gsIFloats = Self.groupSumFloats(k: I)
-        let gsOff = try asub.allocate(bytes: maxT * gsFloats * 4)
-        let gs48Off = try asub.allocate(bytes: maxT * gs48Floats * 4)
-        let gsIOff = try asub.allocate(bytes: maxT * gsIFloats * 4)
+        let pscStartOff = asub.usedBytes
+        let usesMLA = geometry.usesNoPEMLA
         let psc = PrefillScratch(
             maxChunk: maxT,
             x: try tv(maxT * H, .f16),
             ln1: try tv(maxT * H, .f16),
             ln2: try tv(maxT * H, .f16),
-            gs: QWTensorValue(region: asub.region, offset: gsOff, shape: QWTensorShape([maxT * gsFloats], .f32)),
-            gs48: QWTensorValue(region: asub.region, offset: gs48Off, shape: QWTensorShape([maxT * gs48Floats], .f32)),
-            gsI: QWTensorValue(region: asub.region, offset: gsIOff, shape: QWTensorShape([maxT * gsIFloats], .f32)),
-            gdnY: try tv(maxT * geometry.gdnTotalN, .f32), gdnY16: try tv(maxT * geometry.gdnTotalN, .f16),
-            attnY: try tv(maxT * geometry.attnTotalN, .f32), attnY16: try tv(maxT * geometry.attnTotalN, .f16),
-            qkv32: try tv(maxT * qkvC, .f32), qkv16: try tv(maxT * qkvC, .f16),
-            z32: try tv(maxT * zC, .f32), z16: try tv(maxT * zC, .f16),
-            a32: try tv(maxT * gdnVH, .f32), b32: try tv(maxT * gdnVH, .f32),
+            gdnY: try tv(geometry.gdnVectorDecay ? 0 : maxT * geometry.gdnTotalN, .f32),
+            attnY16: try tv(usesMLA ? 0 : maxT * geometry.attnTotalN, .f16),
+            qkv16: try tv(maxT * qkvC, .f16),
+            z16: try tv(maxT * zC, .f16),
             betas: try tv(maxT * gdnVH, .f32), glog: try tv(maxT * glogC, .f32),
             convY: try tv(maxT * qkvC, .f16), oScr: try tv(maxT * zC, .f32),
             oOut: try tv(maxT * zC, .f16), attOut: try tv(maxT * qC, .f16),
-            attV16: try tv((maxT + QWAttnPrefill.padRows) * kvE, .f16),
-            attQR16: try tv((maxT + QWAttnPrefill.padRows) * qOut, .f16),
-            attKR16: try tv((maxT + QWAttnPrefill.padRows) * kvE, .f16),
+            attV16: try tv(usesMLA ? 0 : (maxT + QWAttnPrefill.padRows) * kvE, .f16),
+            attQR16: try tv(usesMLA ? 0 : (maxT + QWAttnPrefill.padRows) * qOut, .f16),
+            attKR16: try tv(usesMLA ? 0 : (maxT + QWAttnPrefill.padRows) * kvE, .f16),
             U: try tv(maxT * zC, .f32), W: try tv(maxT * zC, .f32),
             A: try tv(maxT * zC, .f32), B: try tv(maxT * zC, .f32),
-            o32: try tv(maxT * H, .f32), o16: try tv(maxT * H, .f16),
-            guRaw16: try tv(maxT * max(2 * I, 2 * H), .f16), gu32: try tv(maxT * I, .f32),
+            o16: try tv(maxT * H, .f16),
+            guRaw16: try tv(maxT * max(2 * I, 2 * H), .f16),
             gu16: try tv(maxT * I, .f16), dn32: try tv(maxT * H, .f32), dn16: try tv(maxT * H, .f16),
-            moe: geometry.numExperts > 0 ? try Self.makeMoEScratch(tv, rows: maxT, geometry: geometry) : nil,
+            moe: geometry.numExperts > 0
+                ? try Self.makeMoEScratch(tv, rows: maxT, geometry: geometry, useGroupedNAX: useGroupedNAX)
+                : nil,
             mhcStream: try geometry.mhcConfig.map { try tv(maxT * $0.streams * H, .f32) },
             mhcControls: try geometry.mhcConfig.map { try tv(maxT * ($0.streams + $0.streams * $0.streams), .f32) },
             fgb16: geometry.gdnVectorDecay ? try tv(maxT * fgbC, .f16) : nil
         )
-        return (sc, psc, gsOff)
+        return (sc, psc, pscStartOff)
     }
 }
