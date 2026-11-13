@@ -663,4 +663,68 @@ final class QWSHVQGemmTests: XCTestCase {
             XCTAssertLessThan(rel, 5e-3, "SHVQ\(bits)_G\(group) indirect grouped NAX vs f32 reference rel=\(rel)")
         }
     }
+
+    func testSmallMTilesMatchBM64AndEncodeNaxF32Parity() throws {
+        try XCTSkipUnless(Self.hal.caps.isMetal4TensorCapable, "Small-M NAX tiles require Apple10+")
+        let n = 256, k = 256
+        for (bits, group) in [(3, 64), (15, 64)] {
+            let bank = makeSHVQBank(bits: bits, group: group, n: n, k: k)
+            let wRows = unpackBankRows(bits: bits, group: group, n: n, k: k, bank: bank)
+            let arena = try QWArena(hal: Self.hal, weights: bank.count + (1 << 20), activations: 8 << 20, kv: 0, gdnStates: 0)
+            let wr = arena.weightsRegion(), ar = arena.activationsRegion()
+            let wBuf = try wr.allocate(QWTensorShape([(bank.count + 1) / 2], .f16))
+            arena.copyIn(wBuf, from: bank)
+            let weight = try XCTUnwrap(QWWeightView(blocks: wBuf, n: n, k: k,
+                                                    bits: bits, groupSize: group, isRotated: true, isSHVQ: true))
+            let psoH16 = try Self.hal.pipeline(try XCTUnwrap(QWGemmAQ.gemmKernelName(
+                bits: bits, group: group, bm128: false, isSHVQ: true)))
+            for (r, bm, bn, modeBits) in [(11, 16, 128, 0x2000_0000), (29, 32, 64, 0x4000_0000)] {
+                let xVals = makeActivations(count: r * k, seedInit: UInt32(0x700 + r + bits)).map { Float16($0) }
+                let xT = try ar.allocate(QWTensorShape([r * k], .f16))
+                let yRef = try ar.allocate(QWTensorShape([r * n], .f16))
+                let yGot = try ar.allocate(QWTensorShape([r * n], .f16))
+                arena.write(xT, from: xVals)
+                try step { enc in
+                    enc.setComputePipelineState(psoH16)
+                    enc.bindTensors(wBuf, xT, yRef, yRef, startIndex: 0)
+                    enc.setUInt32s(r, n, k, startIndex: 4)
+                    enc.dispatchThreadgroups(MTLSize(width: n / 64, height: (r + 63) / 64, depth: 1),
+                                             threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
+                    enc.setComputePipelineState(psoH16)
+                    enc.bindTensors(wBuf, xT, yGot, yGot, startIndex: 0)
+                    enc.setUInt32s(r | modeBits, n, k, startIndex: 4)
+                    enc.dispatchThreadgroups(MTLSize(width: n / bn, height: (r + bm - 1) / bm, depth: 1),
+                                             threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
+                }
+                XCTAssertEqual(arena.read(yGot, as: UInt16.self, count: r * n),
+                               arena.read(yRef, as: UInt16.self, count: r * n),
+                               "SHVQ\(bits)_G\(group) h16 r=\(r) bm=\(bm) bn=\(bn) must be bit-exact to BM64")
+            }
+
+            for rows in [11, 29, 64] {
+                let xVals = makeActivations(count: rows * k, seedInit: UInt32(0x880 + rows + bits))
+                let x32 = try ar.allocate(QWTensorShape([rows * k], .f32))
+                let naxX = try ar.allocate(QWTensorShape([rows * k], .f16))
+                let naxY = try ar.allocate(QWTensorShape([rows * k], .f16))
+                let y32 = try ar.allocate(QWTensorShape([rows * n], .f32))
+                arena.write(x32, from: xVals)
+                try step { enc in
+                    try QWGemm.encodeCast(enc, hal: Self.hal, x32: x32, y16: naxX, count: rows * k)
+                    enc.memoryBarrier(scope: .buffers)
+                    try QWGemm.encodeNaxF32(enc, hal: Self.hal, weight: weight,
+                                            x16: naxX, y16: naxY, y32: y32, rows: rows)
+                }
+                let got = arena.read(y32, as: Float.self, count: rows * n)
+                var maxErr: Float = 0
+                for t in 0..<rows {
+                    let xSlice = xVals[(t * k)..<((t + 1) * k)]
+                    for row in 0..<n {
+                        let ref = dotRef(w: wRows[row], x: xSlice).val
+                        maxErr = max(maxErr, abs(got[t * n + row] - ref))
+                    }
+                }
+                XCTAssertLessThan(maxErr, 5e-3, "encodeNaxF32 SHVQ\(bits)_G\(group) rows=\(rows) maxErr=\(maxErr)")
+            }
+        }
+    }
 }

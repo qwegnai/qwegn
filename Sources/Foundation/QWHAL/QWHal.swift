@@ -180,11 +180,23 @@ public final class QWHal: @unchecked Sendable {
         fc.setConstantValue(&gdnGateMin, type: .float, index: 223)
         var swigluLim = Float(geometry.swigluLimit ?? 0.0)
         fc.setConstantValue(&swigluLim, type: .float, index: 224)
-        var routedScale = Float(geometry.routedScalingFactor)
+        var routedScale = geometry.descriptor.routedScalingFactorLearnable ? Float(1.0) : Float(geometry.routedScalingFactor)
         fc.setConstantValue(&routedScale, type: .float, index: 225)
         setU32(geometry.kvLoraRank, at: 226)
         var indexKPool = geometry.indexKPoolCompress
         fc.setConstantValue(&indexKPool, type: .bool, index: 227)
+        var situBeta: Float = 0.0
+        var situLinBeta: Float = 0.0
+        if case let .situ(beta, linearBeta) = geometry.descriptor.activationKind {
+            situBeta = beta
+            situLinBeta = linearBeta
+        }
+        fc.setConstantValue(&situBeta, type: .float, index: 228)
+        fc.setConstantValue(&situLinBeta, type: .float, index: 229)
+        var mhcAdditiveEps = geometry.mhcConfig?.hasExitHead == true
+        fc.setConstantValue(&mhcAdditiveEps, type: .bool, index: 230)
+        var mhcHcEps = geometry.mhcConfig?.hcEps ?? (geometry.mhcConfig?.streams == 4 ? Float(1e-6) : Float(0.0))
+        fc.setConstantValue(&mhcHcEps, type: .float, index: 231)
         // The activation basis is NOT a function constant. It is a build-time
         // property of the metallib — see `QWWeightBasis.metallibFileName` —
         // because the rotation is a chain of `simd_shuffle_xor` calls and a

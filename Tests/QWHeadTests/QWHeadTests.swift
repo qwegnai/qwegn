@@ -283,4 +283,44 @@ final class QWHeadTests: XCTestCase {
                            + ") for non-incumbent isRotated=\(isRotated)")
         }
     }
+
+    func testMultiMaxF32MatchesPythonGolden() throws {
+        let head = try QWHead(hal: Self.hal, geometry: .qwen38_27b)
+        let jsonData = try Self.load("ernie55_synthetic_goldens.json")
+        let root = try XCTUnwrap(JSONSerialization.jsonObject(with: jsonData) as? [String: Any])
+        let mm = try XCTUnwrap(root["multimax"] as? [String: Any])
+        let baseLogits = try XCTUnwrap(mm["logits"] as? [Double]).map { Float($0) }
+        let ranges = try XCTUnwrap(mm["ranges"] as? [Double]).map { Float($0) }
+        let ts = try XCTUnwrap(mm["ts"] as? [Double]).map { Float($0) }
+        let wantSingle = try XCTUnwrap(mm["out"] as? [Double]).map { Float($0) }
+        let paramsVec = ranges + ts
+        let paramsData = paramsVec.withUnsafeBufferPointer { Data(buffer: $0) }
+        let paramsBuf = Self.buf(paramsData)
+        let paramsTV = Self.tv(paramsBuf, 8, .f32)
+
+        for rows in [1, 3] {
+            var tiled = [Float]()
+            var want = [Float]()
+            for _ in 0..<rows {
+                tiled.append(contentsOf: baseLogits)
+                want.append(contentsOf: wantSingle)
+            }
+            let count = tiled.count
+            let logitsBuf = Self.buf(tiled.withUnsafeBufferPointer { Data(buffer: $0) })
+            let logitsTV = Self.tv(logitsBuf, count, .f32)
+            guard let (cb, enc) = Self.hal.begin() else { XCTFail("no cmdbuffer"); return }
+            try head.encodeMultiMax(enc, logits: logitsTV, params: paramsTV, count: count)
+            Self.run(cb, enc)
+            let got = logitsBuf.contents().bindMemory(to: Float.self, capacity: count)
+            for i in 0..<count {
+                XCTAssertEqual(got[i], want[i], accuracy: 1e-5, "MultiMax rows=\(rows) idx=\(i)")
+            }
+        }
+
+        let shortParams = Self.tv(Self.zeros(4, .f32), 4, .f32)
+        let dummyLogits = Self.tv(Self.zeros(6, .f32), 6, .f32)
+        guard let (_, enc) = Self.hal.begin() else { XCTFail("no cmdbuffer"); return }
+        XCTAssertThrowsError(try head.encodeMultiMax(enc, logits: dummyLogits, params: shortParams, count: 6))
+        enc.endEncoding()
+    }
 }

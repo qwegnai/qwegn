@@ -1,65 +1,21 @@
-"""QW weight packer: BF16/FP32 -> HQ4_G32_M5 model directory (27B & Flash-Next).
-
+"""QW weight packer: BF16/FP32 -> QWP1 model directory (HQ*, SHVQ*, PLE N-gram).
 Layout (kernel order = storage order):
-  hq4_g32_m5 per group-32: 20 B Block_HQ4_G32 (f16 scale, f16 bias, uint32 qs[4])
-                           = 20 B / 32 params = 0.625 B/param (5.0 bits/weight)
-  3D expert stacks [E, N, K]: 16 KiB VM-page-aligned Block_HQ4_G32 slab with
-                              experts=E, e_hq4=N*(K//32)*20, hq4_off=off.
+  hq4_g32_m5: 20 B Block_HQ4_G32 (f16 scale, f16 bias, uint32 qs[4]) = 5.0 bpw.
+  3D expert stacks [E, N, K]: 16 KiB VM-page-aligned slab (experts=E, e_hq4, hq4_off).
 """
-import hashlib
-import json
-import math
-import os
-import re
-import shutil
-import sys
-import tempfile
+import hashlib, json, math, os, re, shutil, sys, tempfile
 from pathlib import Path
-
 import numpy as np
-
-from hq4 import (
-    BLOCK_BYTES,
-    GROUP,
-    INV_SQRT32,
-    dequant_hq4_g32_m5,
-    dequant_hq4_g32_m5_rot,
-    fwht32_ortho,
-    quant_hq4_g32_m5,
-)
-from hq_blocks import (
-    VALID_GROUPS,
-    dequant_fp8_blockwise,
-    dequant_hq8_g32_m5,
-    dequant_hq8_g32_m5_rot,
-    dequant_hq_blocks,
-    format_quant_spec,
-    hq_block_bytes,
-    parse_quant_spec,
-    quant_hq8_g32_m5,
-    quant_hq_blocks,
-)
-
-from pack_ngram import (
-    HEAD_DIM,
-    NGRAM_BIN_NAME,
-    NGRAM_ROW_BYTES,
-    PLE_LOCATION_NAME,
-    _NG_RPS,
-    _NG_SECTOR,
-    audit_ngram_bin,
-    build_ngram_bin,
-    is_ple_ngram,
-    scan_ple_and_router,
-    write_ple_location_file,
-)
-from shvq import (
-    any_block_bytes,
-    dequant_any_blocks,
-    format_any_quant_spec,
-    parse_any_quant_spec,
-    quant_any_blocks,
-)
+from hq4 import (BLOCK_BYTES, GROUP, INV_SQRT32, dequant_hq4_g32_m5,
+                 dequant_hq4_g32_m5_rot, fwht32_ortho, quant_hq4_g32_m5)
+from hq_blocks import (VALID_GROUPS, dequant_fp8_blockwise, dequant_hq8_g32_m5,
+                       dequant_hq8_g32_m5_rot, dequant_hq_blocks, format_quant_spec,
+                       hq_block_bytes, parse_quant_spec, quant_hq8_g32_m5, quant_hq_blocks)
+from pack_ngram import (HEAD_DIM, NGRAM_BIN_NAME, NGRAM_ROW_BYTES, PLE_LOCATION_NAME,
+                        _NG_RPS, _NG_SECTOR, audit_ngram_bin, build_ngram_bin,
+                        is_ple_ngram, scan_ple_and_router, write_ple_location_file)
+from shvq import (any_block_bytes, dequant_any_blocks, format_any_quant_spec,
+                  parse_any_quant_spec, quant_any_blocks)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "oracle"))
 from emit_pack_identity import MODEL_ID, geo_v2  # noqa: E402
@@ -69,18 +25,12 @@ HQ8_SCALE_BYTES = 2
 Q4G_ALIGNMENT = 16384
 MAGIC = b"QWP1"
 
-# The markers of a FLAT model root: the config and the n-gram table sitting
-# beside the weights instead of under an `assets/` subfolder. The engine's
-# resolver (Sources/Foundation/QWCore/QWModelRoot.swift) uses the same list.
+# Flat model root markers (resolved identically to QWModelRoot.swift).
 FLAT_ROOT_MARKERS = ("config.json", NGRAM_BIN_NAME, PLE_LOCATION_NAME)
 
 
 def resolve_assets_dir(root: Path) -> Path:
-    """The assets directory of a model root.
-
-    A flat root keeps its assets beside the weights, so the root IS the
-    assets directory. A legacy root keeps them under `assets/`. Flat wins.
-    """
+    """Resolve flat vs assets/ directory for a model root."""
     for name in FLAT_ROOT_MARKERS:
         if (root / name).is_file():
             return root
@@ -142,6 +92,13 @@ def _as_bf16_u16(arr) -> np.ndarray:
     if isinstance(arr, torch.Tensor):
         return arr.detach().to(torch.bfloat16).view(torch.uint16).cpu().numpy()
     return torch.from_numpy(np.ascontiguousarray(arr)).to(torch.bfloat16).view(torch.uint16).numpy()
+
+
+def _as_f32(arr) -> np.ndarray:
+    import torch
+    if isinstance(arr, torch.Tensor):
+        return np.ascontiguousarray(arr.detach().to(torch.float32).cpu().numpy(), dtype="<f4")
+    return np.ascontiguousarray(arr, dtype="<f4")
 
 
 def expert_stack(name: str, shape) -> bool:
@@ -209,13 +166,32 @@ def pack_file(tensors, out_path: Path, provenance: dict,
             name, arr, kind = (item if len(item) == 3 else (item[0], item[1], False))
             if name in index:
                 raise ValueError(f"duplicate tensor: {name}")
+            if isinstance(kind, tuple) and len(kind) == 3 and kind[0] == "prepacked_hq4":
+                _, shape, hq_meta = kind
+                pad_q4g()
+                entry = {"shape": list(shape), "hq4_off": off}
+                if hq_meta:
+                    entry["hq"] = dict(hq_meta)
+                f.write(memoryview(np.ascontiguousarray(arr)))
+                pad_q4g()
+                index[name] = entry
+                continue
             shape = list(arr.shape if hasattr(arr, "shape") else np.asarray(arr).shape)
-            if kind is True:
+            if kind is True or kind == "bf16":
                 u16 = _as_bf16_u16(arr)
                 entry = {"shape": shape, "kind": "bf16"}
                 pad256()
                 entry["raw_off"] = off
                 f.write(memoryview(np.ascontiguousarray(u16)))
+                pad256()
+                index[name] = entry
+                continue
+            if kind == "f32":
+                f32 = _as_f32(arr)
+                entry = {"shape": shape, "kind": "f32"}
+                pad256()
+                entry["raw_off"] = off
+                f.write(memoryview(f32))
                 pad256()
                 index[name] = entry
                 continue
@@ -359,6 +335,26 @@ def is_raw_plane(name: str) -> bool:
             or name.startswith("model.visual."))
 
 
+def synthesize_base_chat_template(source: Path) -> str:
+    tok_obj = json.loads((source / "tokenizer.json").read_text())
+    pp = tok_obj.get("post_processor") or {}
+    single = pp.get("single") if isinstance(pp, dict) and pp.get("type") == "TemplateProcessing" else None
+    sp0 = single[0].get("SpecialToken", {}).get("id", "") if isinstance(single, list) and single else ""
+    lead = json.dumps(sp0 if isinstance(sp0, str) else "")
+    bo, bc, vo, vc = "{" + "%-", " %" + "}", "{" + "{-", " }" + "}"
+    return "\n".join([
+        f"{bo} set ns = namespace(multi=false) {bc}",
+        f"{bo} for m in messages {bc}{bo} if m['role'] == 'assistant' {bc}{bo} set ns.multi = true {bc}{bo} endif {bc}{bo} endfor {bc}",
+        f"{vo} {lead} {vc}",
+        f"{bo} for m in messages {bc}",
+        f"{bo} if not loop.first {bc}{vo} '\\n\\n' {vc}{bo} endif {bc}",
+        f"{bo} if ns.multi and m['role'] == 'user' {bc}{vo} 'User: ' {vc}{bo} elif ns.multi and m['role'] == 'assistant' {bc}{vo} 'Assistant: ' {vc}{bo} endif {bc}",
+        f"{bo} if m['content'] is string {bc}{vo} m['content'] {vc}{bo} elif m['content'] is iterable {bc}{bo} for it in m['content'] {bc}{bo} if 'text' in it {bc}{vo} it['text'] {vc}{bo} endif {bc}{bo} endfor {bc}{bo} endif {bc}",
+        f"{bo} endfor {bc}",
+        f"{bo} if ns.multi and add_generation_prompt {bc}{vo} '\\n\\nAssistant: ' {vc}{bo} endif {bc}",
+    ])
+
+
 def resolve_snapshot_dir(root: Path) -> Path:
     root = root.expanduser()
     snaps = root / "snapshots"
@@ -424,6 +420,13 @@ def quantize_model(source: Path, destination: Path,
     if not files:
         raise ValueError(f"no .safetensors under {source}")
     config = json.loads((source / "config.json").read_text())
+    tc0 = config["text_config"] if "text_config" in config else config
+    if tc0.get("model_type") in ("ernie5_5_moe", "ernie5_5_moe_text"):
+        from ernie55_adapter import quantize_ernie55_model
+        return quantize_ernie55_model(
+            source=source, destination=destination, flat_root=flat_root,
+            quant=quant, group_size=group_size, dense_quant=dense_quant,
+            expert_quant=expert_quant, expert_down_quant=expert_down_quant)
     qcfg = config.get("quantization_config")
     fp8_block_size = 128
     if qcfg is not None:
@@ -442,7 +445,7 @@ def quantize_model(source: Path, destination: Path,
             if isinstance(tok_cfg.get("chat_template"), str):
                 embedded_chat_template = tok_cfg["chat_template"]
         if not embedded_chat_template:
-            raise FileNotFoundError(f"required asset missing: {source / 'chat_template.jinja'}")
+            embedded_chat_template = synthesize_base_chat_template(source)
 
     shard_names, expected_shapes, raw_all_shapes = {}, {}, {}
     for path in files:
@@ -634,10 +637,7 @@ def quantize_model(source: Path, destination: Path,
                 "bytes": ngram_path.stat().st_size,
             }
             if ng_meta:
-                # The header is the authority on the row format; the manifest
-                # repeats it so a reader need not open the table to know it.
-                # A table reused from an older pack has no such keys, and
-                # must not be read as if it did.
+                # Repeat header row format in manifest; older reused tables omit these keys.
                 for key in ("version", "dtype", "row_bytes"):
                     if ng_meta.get(key) is not None:
                         manifest[NGRAM_BIN_NAME][key] = ng_meta[key]

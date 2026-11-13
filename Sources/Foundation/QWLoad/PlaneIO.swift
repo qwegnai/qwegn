@@ -188,12 +188,13 @@ public final class PlaneIO: @unchecked Sendable {
         return out
     }
 
-    /// bf16 `raw_off` slice by element offset (chunked uploads / GPU converts).
+    /// `raw_off` slice by element offset (chunked uploads / GPU converts).
     public func loadRaw(_ name: String, elemOffset: Int, elems: Int,
                         into dst: UnsafeMutableRawPointer) throws {
         let e = try pack.entry(name)
         guard let base = e.rawOff else { throw PlaneIOError.layoutUnavailable(name: name, layout: "raw") }
-        try read(name, offset: base + elemOffset * 2, count: elems * 2, into: dst)
+        let eb = e.rawElemBytes
+        try read(name, offset: base + elemOffset * eb, count: elems * eb, into: dst)
     }
 
     private func region(_ name: String, _ layout: PlaneLayout) throws -> (Int, Int) {

@@ -451,3 +451,21 @@ QW_HEAD_AQ_ARGMAX(8, 32, qwg_head_gemv_aq8_g32_argmax)
 QW_HEAD_AQ_ARGMAX(8, 64, qwg_head_gemv_aq8_g64_argmax)
 QW_HEAD_AQ_ARGMAX(8, 128, qwg_head_gemv_aq8_g128_argmax)
 QW_HEAD_AQ_ARGMAX(8, 256, qwg_head_gemv_aq8_g256_argmax)
+
+// Piecewise linear-quadratic MultiMax logit calibration: params[0..3]=ranges, params[4..7]=ts.
+kernel void qwg_multimax_f32(device float*   logits [[buffer(0)]],
+                             constant float* params [[buffer(1)]],
+                             constant uint&  count  [[buffer(2)]],
+                             uint gid [[thread_position_in_grid]]) {
+    if (gid >= count) return;
+    const float x = logits[gid];
+    const float r0 = max(params[0] - x, 0.0f);
+    const float r1 = max(x - params[1], 0.0f);
+    const float r2 = max(params[2] - x, 0.0f);
+    const float r3 = max(x - params[3], 0.0f);
+    logits[gid] = x
+        + params[4] * r0
+        + params[5] * r1
+        + params[6] * (r2 * r2)
+        + params[7] * (r3 * r3);
+}

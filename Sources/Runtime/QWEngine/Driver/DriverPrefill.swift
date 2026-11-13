@@ -20,7 +20,7 @@ import QWState
 extension QWEngineDriver {
     /// Whether full-attention layers run O(T·B) subquadratic prefill at long context (`>= 131K`).
     var usesSubquadraticLongPrefill: Bool {
-        geometry.usesNoPEMLA || lsaOperator != nil
+        geometry.usesLatentOrCompressedAttention || lsaOperator != nil
     }
 
     func stridedRow(_ tv: QWTensorValue, row: Int, cols: Int, dt: QWDType, rowStrideBytes: Int? = nil) -> QWTensorValue {
@@ -102,6 +102,7 @@ extension QWEngineDriver {
             enc = activeEnc ?? enc
             let longWideChunk = pos >= 131_072 && T > 256
             let shouldSlice = (v == 16
+                || (T >= 1024 && v > 0 && v % 8 == 0)
                 || (pos >= 131_072 && v > 16 && v % 8 == 0)
                 || (longWideChunk && v > 0 && v % 4 == 0)) && T >= 16
             if shouldSlice {
@@ -140,10 +141,25 @@ extension QWEngineDriver {
         }
 
         if let mtpPromptEmbeddings {
-            enc.endEncoding()
+            if T >= 1024 {
+                hal.end(cb, enc)
+                committedCbs.append(cb)
+                stepCBs?.append(cb)
+                guard let seedCB = hal.queue.makeCommandBuffer() else {
+                    throw QWEngineDriverError.state("MTP seed cmdbuffer slice")
+                }
+                cb = seedCB
+                activeCB = cb
+                activeEnc = nil
+            } else {
+                enc.endEncoding()
+            }
+            let seedHidden = echoDrafter != nil
+                ? prefixRows(psc.mhcStream!, rows: T, cols: (geometry.mhcConfig?.streams ?? 4) * H, dt: .f32)
+                : prefixRows(psc.ln1, rows: T, cols: H, dt: .f16)
             try encodeMTPSeeding(cb, session: session,
                                  embeddings: prefixRows(mtpPromptEmbeddings, rows: T, cols: H, dt: .f16),
-                                 hidden: prefixRows(psc.ln1, rows: T, cols: H, dt: .f16),
+                                 hidden: seedHidden,
                                  count: T, cacheRows: mtpRows)
             cb.commit()
         } else {
@@ -196,9 +212,9 @@ extension QWEngineDriver {
         // same single-cursor law as append()/markWritten from decodeStep).
         kvCache.markWritten(session.kv, upTo: pos + T)
         commitMTPSeeding(session, position: pos, count: T, cacheRows: mtpRows)
-        if mtpCache != nil, runsHead {
+        session.roundRecord.outputCount = session.generated
+        if runsHead {
             session.roundRecord.pendingToken = nextId
-            session.roundRecord.outputCount = session.generated
         }
         return nextId
     }

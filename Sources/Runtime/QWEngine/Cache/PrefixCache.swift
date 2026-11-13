@@ -43,6 +43,10 @@ extension QWEngineDriver {
         guard flight.try() else { throw QWEngineDriverError.busy }
         defer { flight.unlock() }
         try requestGate.validate()
+        try configurePrefixCacheLocked(config: config)
+    }
+
+    private func configurePrefixCacheLocked(config: QWCacheConfig) throws {
         guard config.warmByteLimit >= 0, config.entryLimit > 0, verifiedSession == nil else {
             throw QWEngineDriverError.state("invalid prefix cache limits or unresolved verification")
         }
@@ -166,10 +170,8 @@ extension QWEngineDriver {
             throw QWEngineDriverError.state("cached intermediate chunk has invalid prediction count")
         }
         session.generated = 0
-        if mtpCache != nil {
-            session.roundRecord.outputCount = 0
-            session.roundRecord.pendingToken = nil
-        }
+        session.roundRecord.outputCount = 0
+        session.roundRecord.pendingToken = nil
         return (session, nil, resolvedHit.tokenCount, hitTier)
     }
 
@@ -301,9 +303,7 @@ extension QWEngineDriver {
             if let cached = loaded.first {
                 unconditionedFirst = cached
                 first = try selectConstrainedToken(session: session, rawArgmax: cached)
-                if mtpCache != nil {
-                    session.roundRecord.pendingToken = first
-                }
+                session.roundRecord.pendingToken = first
             } else {
                 if loaded.matched > 0 {
                     // Reserve COW for the entire suffix before its first GPU
@@ -356,10 +356,8 @@ extension QWEngineDriver {
                     )
                     // Reset intermediate head prediction counters and reserve COW for tail tokens
                     session.generated = 0
-                    if mtpCache != nil {
-                        session.roundRecord.outputCount = 0
-                        session.roundRecord.pendingToken = nil
-                    }
+                    session.roundRecord.outputCount = 0
+                    session.roundRecord.pendingToken = nil
                     try prefixPagePressure(store, session: session) {
                         flight.lock()
                         defer { flight.unlock() }
@@ -549,7 +547,7 @@ extension QWEngineDriver {
         defer { flight.unlock() }
         try requestGate.validate()
         if prefixStore == nil {
-            try configurePrefixCache(config: QWCacheConfig(warmByteLimit: 512 << 20, ssdByteLimit: 0, entryLimit: 32))
+            try configurePrefixCacheLocked(config: QWCacheConfig(warmByteLimit: 512 << 20, ssdByteLimit: 0, entryLimit: 32))
         }
         guard let store = prefixStore else {
             throw QWEngineDriverError.state("prefix store unavailable for mounting memory pack")

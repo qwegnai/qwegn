@@ -26,6 +26,8 @@ public enum QWSequenceMixerKind: String, Sendable, Equatable, Codable {
     case qsaSparse
     /// Multi-head Latent Attention (`QWMLAOperator`).
     case mla
+    /// Hybrid Compressed Attention (`QWHCAAttnOperator`).
+    case hca
 }
 
 /// Channel mixer (FFN) operator seam across model architectures.
@@ -72,16 +74,16 @@ public struct QWCompiledLayerStack: Sendable, Equatable {
     public init(plan: QWEnginePlan, descriptor: QWModelDescriptor? = nil) {
         let usesHC = plan.modelCapabilities.contains(.hyperConnections) || (descriptor?.hcCount ?? 1) > 1
         let mhcRange: Range<Int>? = descriptor?.mhcConfig.map { $0.start..<$0.end }
-        let usesMLA = (descriptor?.kvLoraRank ?? 0) > 0
+        let usesMLA = descriptor?.hasMLAAttention ?? ((descriptor?.kvLoraRank ?? 0) > 0)
 
         var compiled: [QWCompiledLayer] = []
         compiled.reserveCapacity(plan.layers.count)
         for layer in plan.layers {
             let carrier: QWStreamCarrierKind
-            if usesHC {
-                carrier = .hyperConnection
-            } else if let mhcRange, mhcRange.contains(layer.index) {
+            if let mhcRange, mhcRange.contains(layer.index) {
                 carrier = .mhc
+            } else if usesHC {
+                carrier = .hyperConnection
             } else {
                 carrier = .singleStream
             }
@@ -91,7 +93,9 @@ public struct QWCompiledLayerStack: Sendable, Equatable {
             case .gdn:
                 seqMixer = .gdn
             case .qsaSparse:
-                seqMixer = .qsaSparse
+                seqMixer = usesMLA ? .mla : .qsaSparse
+            case .hcaCompressed:
+                seqMixer = .hca
             case .fullAttention:
                 seqMixer = usesMLA ? .mla : .fullAttention
             }

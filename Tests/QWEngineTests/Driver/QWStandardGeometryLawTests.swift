@@ -6,6 +6,7 @@ import Metal
 @testable import QWEngine
 import QWCore
 import QWHAL
+import QWHead
 @testable import QWAttn
 
 final class QWStandardGeometryLawTests: XCTestCase {
@@ -210,6 +211,69 @@ final class QWStandardGeometryLawTests: XCTestCase {
             XCTAssertLessThan(tgs * 256 - q, 256, "q=\(q): the tail must stay under one threadgroup")
         }
         XCTAssertEqual(QWEngineDriver.zeroPadThreadgroups(qProjOut: 12288), 48)
+    }
+
+    func testLatentAttentionPartialsCarveCoversDraftHeadArgmax() throws {
+        let glmJSON = """
+        {
+          "architectures": ["Glm5NextForConditionalGeneration"],
+          "text_config": {
+            "model_type": "glm5_next_text",
+            "hidden_size": 4096,
+            "intermediate_size": 12288,
+            "vocab_size": 154880,
+            "num_hidden_layers": 2,
+            "layer_types": ["deepseek_sparse_attention", "deepseek_sparse_attention"],
+            "max_position_embeddings": 131072,
+            "rms_norm_eps": 1e-5,
+            "num_attention_heads": 64,
+            "num_key_value_heads": 64,
+            "qk_head_dim": 256,
+            "qk_nope_head_dim": 192,
+            "qk_rope_head_dim": 64,
+            "v_head_dim": 256,
+            "kv_lora_rank": 512,
+            "q_lora_rank": 1536,
+            "mla_use_nope": true,
+            "rope_theta": 1000000.0,
+            "eos_token_id": 2
+          }
+        }
+        """.data(using: .utf8)!
+        let ernieJSON = """
+        {
+          "architectures": ["Ernie5_5_MoeForCausalLM"],
+          "model_type": "ernie5_5_moe",
+          "hidden_size": 4096,
+          "intermediate_size": 14336,
+          "vocab_size": 201216,
+          "num_hidden_layers": 2,
+          "compress_ratios": [128, -2],
+          "max_position_embeddings": 1048576,
+          "rms_norm_eps": 1e-6,
+          "num_attention_heads": 64,
+          "num_key_value_heads": 1,
+          "head_dim": 512,
+          "qk_nope_head_dim": 448,
+          "qk_rope_head_dim": 64,
+          "v_head_dim": 512,
+          "q_lora_rank": 1024,
+          "kv_lora_rank": 512,
+          "sliding_window": 128,
+          "compress_rope_theta": 160000.0,
+          "rope_theta": 8000000.0,
+          "hybrid_mla_attention": "mqa_dsa",
+          "eos_token_id": 2
+        }
+        """.data(using: .utf8)!
+        for data in [glmJSON, ernieJSON] {
+            let g = QWModelGeometry(descriptor: try QWModelDescriptor.decode(configJSON: data))
+            XCTAssertTrue(g.usesLatentOrCompressedAttention)
+            let carve = QWEngineDriver.partialsCarveBytes(geometry: g)
+            let needed = 2 * max((g.vocab + 31) / 32, QWHead.gemvArgmaxSlots(g.vocab)) * 4
+            XCTAssertGreaterThanOrEqual(carve, needed)
+            XCTAssertLessThan(carve, 256 * 1024)
+        }
     }
 
     /// A geometry built from a shape, through the same descriptor the

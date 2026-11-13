@@ -113,7 +113,8 @@ METAL_FUNC void qw_mla_absorb_quad_slice(device const char* kvBBlocks,
                                          threadgroup const float (&shQ)[8][256],
                                          threadgroup const ShvqMlaTgLut& tgLut,
                                          thread float4 (&acc)[8]) {
-    if (p.isIncumbent == 1u) {
+    const uint inc = p.isIncumbent & 0xFFu;
+    if (inc == 1u) {
         const uint blk = col0 >> 5u;
         const uint idx = col0 & 31u;
         const uint wIdx = idx >> 3u;
@@ -145,7 +146,7 @@ METAL_FUNC void qw_mla_absorb_quad_slice(device const char* kvBBlocks,
                 if (m < validM) acc[m] = fma(float4(shQ[m][r]), w4, acc[m]);
             }
         }
-    } else if (p.isIncumbent == 2u) {
+    } else if (inc == 2u) {
         const uint nGroups = p.kvLoraRank / p.group;
         const uint bytesPerGroup = qwg_shvq_group_bytes(int(p.bits), int(p.group));
         const size_t rowBytes = (size_t)nGroups * bytesPerGroup;
@@ -213,10 +214,11 @@ METAL_FUNC void qw_mla_absorb_quad_slice(device const char* kvBBlocks,
 template <bool SUB2 = false>
 METAL_FUNC void qw_mla_unpack_slice32(device const char* kvBBlocks,
                                       uint row, uint col0,
-                                      constant MLAAbsorbParams& p,
+                                      MLAAbsorbParams p,
                                       threadgroup const ShvqMlaTgLut& tgLut,
                                       threadgroup half* dst, uint dstStride) {
-    if (p.isIncumbent == 1u) {
+    const uint inc = p.isIncumbent & 0xFFu;
+    if (inc == 1u) {
         device const Block_HQ4_G32* blk = (device const Block_HQ4_G32*)kvBBlocks
             + (size_t)row * (p.kvLoraRank >> 5u) + (col0 >> 5u);
         const half scale = blk->scale, bias = blk->bias;
@@ -230,7 +232,7 @@ METAL_FUNC void qw_mla_unpack_slice32(device const char* kvBBlocks,
                 dst[(w * 8u + sub) * dstStride] = fma(fp, scale, bias);
             }
         }
-    } else if (p.isIncumbent == 2u) {
+    } else if (inc == 2u) {
         const uint nGroups = p.kvLoraRank / p.group;
         const uint bytesPerGroup = qwg_shvq_group_bytes(int(p.bits), int(p.group));
         const uint gIdx = col0 / p.group;
@@ -290,11 +292,12 @@ METAL_FUNC void qw_mla_unpack_slice32(device const char* kvBBlocks,
 template <bool SUB2 = false>
 METAL_FUNC void qw_mla_unpack_slice32_reg(device const char* kvBBlocks,
                                           uint row, uint col0,
-                                          constant MLAAbsorbParams& p,
+                                          MLAAbsorbParams p,
                                           threadgroup const ShvqMlaTgLut& tgLut,
                                           thread float4 (&wLo)[4],
                                           thread float4 (&wHi)[4]) {
-    if (p.isIncumbent == 1u) {
+    const uint inc = p.isIncumbent & 0xFFu;
+    if (inc == 1u) {
         const Block_HQ4_G32 blk = *((device const Block_HQ4_G32*)kvBBlocks
             + (size_t)row * (p.kvLoraRank >> 5u) + (col0 >> 5u));
         const half2 s2 = half2(blk.scale), b2 = half2(blk.bias);
@@ -305,7 +308,7 @@ METAL_FUNC void qw_mla_unpack_slice32_reg(device const char* kvBBlocks,
             wLo[w] = float4(float(a01.x), float(a01.y), float(a23.x), float(a23.y));
             wHi[w] = float4(float(a45.x), float(a45.y), float(a67.x), float(a67.y));
         }
-    } else if (p.isIncumbent == 2u) {
+    } else if (inc == 2u) {
         const uint nGroups = p.kvLoraRank / p.group;
         const uint bytesPerGroup = qwg_shvq_group_bytes(int(p.bits), int(p.group));
         const uint gIdx = col0 / p.group;

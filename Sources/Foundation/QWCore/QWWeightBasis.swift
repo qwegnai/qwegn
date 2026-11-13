@@ -225,4 +225,28 @@ public enum QWWeightFormat: Sendable, Hashable {
         let pay = expertDownIsSHVQ ? Self.shvqPayloadBytes(bits: b, group: g) : (g * b / 8)
         return (k / g) * (pay + (expertDownIsSHVQ ? 2 : 4))
     }
+
+    private static func containerBpw(bits: Int, group: Int, isSHVQ: Bool) -> Double {
+        let payBits = isSHVQ ? (bits == 15 ? (group * 3) / 2 : group * bits) : (group * bits)
+        let hdrBits = isSHVQ ? 16 : 32
+        return Double(payBits + hdrBits) / Double(max(1, group))
+    }
+
+    /// Effective bits per weight across dense and routed expert planes.
+    public func effectiveBitsPerWeight(geometry: QWModelGeometry? = nil) -> Double {
+        let denseBpw = Self.containerBpw(bits: bits, group: groupSize, isSHVQ: denseIsSHVQ)
+        let expGuBpw = Self.containerBpw(bits: expertBits, group: expertGroupSize, isSHVQ: expertIsSHVQ)
+        let expDnBpw = Self.containerBpw(bits: expertDownBits, group: expertDownGroupSize, isSHVQ: expertDownIsSHVQ)
+        guard let g = geometry, g.numExperts > 0, (expGuBpw != denseBpw || expDnBpw != denseBpw) else {
+            return denseBpw
+        }
+        let nMoe = max(1, (0..<g.numLayers).filter { g.isMoELayer($0) }.count)
+        let routedDim = (g.moeLatentSize ?? 0) > 0 ? g.moeLatentSize! : g.hidden
+        let guWeights = Double(nMoe) * Double(g.numExperts) * 2.0 * Double(g.moeIntermediate) * Double(routedDim)
+        let dnWeights = Double(nMoe) * Double(g.numExperts) * Double(routedDim) * Double(g.moeIntermediate)
+        let densePerLayer = Double(4 * g.hidden * g.hidden + 3 * g.hidden * max(g.intermediate, g.sharedExpertIntermediate))
+        let denseWeights = Double(g.vocab * g.hidden) + Double(g.numLayers) * densePerLayer
+        let totalWeights = max(1.0, denseWeights + guWeights + dnWeights)
+        return (denseWeights * denseBpw + guWeights * expGuBpw + dnWeights * expDnBpw) / totalWeights
+    }
 }

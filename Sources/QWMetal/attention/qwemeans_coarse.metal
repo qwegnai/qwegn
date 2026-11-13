@@ -457,7 +457,7 @@ kernel void qwg_emeans_collect(device const ushort*      memberPools  [[buffer(0
     if (tid == 0u) {
         const uint totalValid = baseTail + tailLen;
         candState[unit * 2u] = min(totalValid, p.candCap);
-        candState[unit * 2u + 1u] = (totalValid > p.candCap) ? 1u : 0u;
+        candState[unit * 2u + 1u] = (totalValid > p.candCap || totalValid < g.kEff) ? 1u : 0u;
     }
 }
 
@@ -532,8 +532,10 @@ kernel void qwg_emeans_finalize(device int*               blockList  [[buffer(0)
         }
 
         const uint needTies = kTarget - greaterAccum;
+        const uint totalAtOrAbove = sgTotal;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
         uint minTiePool = 0u;
-        if (sgTotal > kTarget && needTies > 0u) {
+        if (totalAtOrAbove > kTarget && needTies > 0u) {
             if (tid == 0u) greaterAccum = 0u;
             threadgroup_barrier(mem_flags::mem_threadgroup);
             uint tieMask = 0u;

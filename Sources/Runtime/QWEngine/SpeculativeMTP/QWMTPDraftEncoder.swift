@@ -60,18 +60,23 @@ struct QWMTPDraftScratch {
         let intermediate = intermediate ?? defaultInter
         let vocabulary = vocabulary ?? geometry.vocab
         let maxInter = max(geometry.intermediate, defaultInter)
+        let minPartials = geometry.usesLatentOrCompressedAttention
+            ? QWEngineDriver.draftHeadArgmaxPartialsBytes(vocab: vocabulary)
+            : QWAttnDecode.decodePartialsBytes(geometry: geometry)
         guard intermediate > 0, intermediate <= maxInter, intermediate % 128 == 0,
               vocabulary > 0, vocabulary <= geometry.vocab,
-              partials.length >= QWAttnDecode.decodePartialsBytes(geometry: geometry) else {
+              partials.length >= minPartials else {
             throw QWEngineDriverError.state("MTP scratch geometry or attention partials are invalid")
         }
-        let h = geometry.hidden, kv = geometry.kvHeads * geometry.headDim
+        let h = geometry.hidden, kv = max(1, geometry.kvHeads * geometry.headDim)
+        let qOut = max(1, geometry.qProjOut)
+        let qCols = max(128, geometry.qHeads * geometry.headDim)
         func allocate(_ n: Int, _ type: QWDType = .f16) throws -> QWTensorValue {
-            try allocator.allocate(QWTensorShape([n], type))
+            try allocator.allocate(QWTensorShape([max(1, n)], type))
         }
         func view(_ tensor: QWTensorValue, start: Int, count: Int) -> QWTensorValue {
             QWTensorValue(region: tensor.region, offset: tensor.offset + start * 2,
-                          shape: QWTensorShape([count], .f16))
+                          shape: QWTensorShape([max(1, count)], .f16))
         }
         embedding = try allocate(h)
         concat = try allocate(2 * h)
@@ -80,14 +85,14 @@ struct QWMTPDraftScratch {
         fcOut32 = try allocate(h, .f32)
         fcOut16 = try allocate(h)
         ln1 = try allocate(h)
-        qkv32 = try allocate(geometry.qProjOut + 2 * kv, .f32)
-        qkv16 = try allocate(geometry.qProjOut + 2 * kv)
-        q16 = view(qkv16, start: 0, count: geometry.qProjOut)
-        k16 = view(qkv16, start: geometry.qProjOut, count: kv)
-        v16 = view(qkv16, start: geometry.qProjOut + kv, count: kv)
-        qRope = try allocate(geometry.qProjOut)
+        qkv32 = try allocate(qOut + 2 * kv, .f32)
+        qkv16 = try allocate(qOut + 2 * kv)
+        q16 = view(qkv16, start: 0, count: qOut)
+        k16 = view(qkv16, start: qOut, count: kv)
+        v16 = view(qkv16, start: qOut + kv, count: kv)
+        qRope = try allocate(qOut)
         kRope = try allocate(kv)
-        attOut = try allocate(geometry.qHeads * geometry.headDim)
+        attOut = try allocate(qCols)
         oProjOut = try allocate(h)
         ln2 = try allocate(h)
         mlp32 = try allocate(intermediate, .f32)
@@ -98,7 +103,7 @@ struct QWMTPDraftScratch {
         greedySelector = try QWMTPGreedySelector(geometry: geometry, allocator: allocator, vocabulary: vocabulary)
         gsFc = try allocate(2 * h / 128, .f32)
         gsHidden = try allocate(h / 128, .f32)
-        gsAttn = try allocate(geometry.qHeads * geometry.headDim / 128, .f32)
+        gsAttn = try allocate(max(1, qCols / 128), .f32)
         gsMLP = try allocate(intermediate / 128, .f32)
         gsHead = try allocate(h / 128, .f32)
         self.partials = partials

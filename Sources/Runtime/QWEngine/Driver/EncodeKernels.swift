@@ -118,17 +118,21 @@ extension QWEngineDriver {
         enc.setUInt32s(n, k, startIndex: 5)
         let xs = xStride ?? k, ys = yStride ?? n
         enc.setUInt32s(xs, ys, startIndex: 9)
+        let useSmallTile = hal.caps.isMetal4TensorCapable
         let chunk = QWGemm.naxRowChunk(rows: m, k: k)
         var r0 = 0
         while r0 < m {
             let r = min(chunk, m - r0)
+            let bm = useSmallTile ? (r <= 16 ? 16 : (r <= 32 ? 32 : 64)) : 64
+            let bn = (useSmallTile && r <= 16) ? 128 : 64
+            let modeBits = useSmallTile ? (r <= 16 ? 0x2000_0000 : (r <= 32 ? 0x4000_0000 : 0)) : 0
             if r0 > 0 {
                 x.slice(byteOffset: r0 * xs * 2, count: r * xs).bind(enc, index: 1)
                 let y = y16.slice(byteOffset: r0 * ys * 2, count: r * ys)
                 y.bind(enc, index: 2); y.bind(enc, index: 3)
             }
-            enc.setUInt32s(r, startIndex: 4)
-            enc.dispatchThreadgroups(MTLSize(width: (n + 63) / 64, height: (r + 63) / 64, depth: 1),
+            enc.setUInt32s(r | modeBits, startIndex: 4)
+            enc.dispatchThreadgroups(MTLSize(width: (n + bn - 1) / bn, height: (r + bm - 1) / bm, depth: 1),
                                      threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
             r0 += r
         }
@@ -430,6 +434,28 @@ extension QWEngineDriver {
                                  threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
     }
 
+    func encodeMHCExitHead(_ enc: any MTLComputeCommandEncoder,
+                           stream: QWTensorValue, headW: QWTensorValue, headB: QWTensorValue,
+                           normGamma: QWTensorValue, outNorm: QWTensorValue,
+                           outRot32: QWTensorValue? = nil,
+                           rows: Int = 1, applyNorm: Bool = true) throws {
+        try checkNormGeometry()
+        guard let pso = psoMHCExitHead else {
+            throw QWEngineDriverError.state("qwg_mhc_exit_head_f16 pipeline is absent")
+        }
+        let preScale = geometry.mhcConfig?.preScale ?? 1.0
+        let flags = (applyNorm ? 1 : 0) | (outRot32 != nil ? 2 : 0)
+        enc.setComputePipelineState(pso)
+        enc.bindTensors(stream, headW, headB, normGamma, outNorm, startIndex: 0)
+        (outRot32 ?? outNorm).bind(enc, index: 5)
+        enc.setUInt32s(geometry.hidden, startIndex: 6)
+        enc.setPod(geometry.rmsEps, index: 7)
+        enc.setPod(preScale, index: 8)
+        enc.setUInt32s(flags, startIndex: 9)
+        enc.dispatchThreadgroups(MTLSize(width: rows, height: 1, depth: 1),
+                                 threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
+    }
+
     func encodeTargetHead(_ enc: any MTLComputeCommandEncoder, x: QWTensorValue) throws {
         switch headStorage {
         case .f16(let weight):
@@ -446,16 +472,22 @@ extension QWEngineDriver {
         case .q4g:
             try head.encode(enc, storage: headStorage, x: x, gs: sc.gs, y: sc.logits)
         }
+        if let mm = multimaxParams {
+            enc.memoryBarrier(scope: .buffers)
+            try head.encodeMultiMax(enc, logits: sc.logits, params: mm, count: geometry.vocab)
+        }
     }
 
     func encodeTargetHeadGreedy(_ enc: any MTLComputeCommandEncoder, x: QWTensorValue,
                                 writeLogits: Bool = true) throws {
-        if case .q4g(let weight) = headStorage, head.splits == 1 || !weight.view.isIncumbentContainer {
+        if multimaxParams == nil, case .q4g(let weight) = headStorage,
+           head.splits == 1 || !weight.view.isIncumbentContainer {
             try head.encodeGreedyQ4g(enc, x: x, w: weight, y: sc.logits,
                                      keysHi: sc.keysHi, keysLo: sc.keysLo, token: sc.token,
                                      writeLogits: writeLogits)
         } else {
             try encodeTargetHead(enc, x: x)
+            enc.memoryBarrier(scope: .buffers)
             try head.encodeArgmax(enc, y: sc.logits, keysHi: sc.keysHi, keysLo: sc.keysLo,
                                   token: sc.token, N: geometry.vocab)
         }

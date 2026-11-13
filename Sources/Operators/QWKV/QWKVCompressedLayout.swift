@@ -25,8 +25,8 @@ public struct QWKVCompressedLayout: Sendable {
     public init(mode: QWKVMode, geometry: QWModelGeometry) {
         self.mode = mode
         let pageTokens = QWKVCache.pageTokens
-        let kvHeads = geometry.usesNoPEMLA ? 1 : geometry.kvHeads
-        let headDim = geometry.usesNoPEMLA ? geometry.kvChannels : geometry.headDim
+        let kvHeads = geometry.usesAnyMLA ? 1 : geometry.kvHeads
+        let headDim = geometry.usesAnyMLA ? geometry.kvChannels : geometry.headDim
         let totalElements = pageTokens * geometry.kvChannels
 
         switch mode {

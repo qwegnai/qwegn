@@ -33,6 +33,18 @@ public struct QWModelGeometry: Sendable, Equatable {
     /// A sparse MoE layer's expert intermediate width. Zero for a dense
     /// model — the MoE's width, not the dense MLP's.
     public var moeIntermediate: Int { descriptor.moeIntermediate ?? 0 }
+    /// Effective routed-expert input/output dimension (`moe_latent_size` when Latent-MoE is active, else `hidden`).
+    public var moeRoutedDim: Int {
+        if let lat = descriptor.moeLatentSize, lat > 0 { return lat }
+        return hidden
+    }
+    public var moeLatentSize: Int? { descriptor.moeLatentSize }
+    public var latentMoeUseNorm: Bool { descriptor.latentMoeUseNorm }
+    public var moeSplitFeatureRouting: Bool { descriptor.moeSplitFeatureRouting }
+    public var routedScalingFactorLearnable: Bool { descriptor.routedScalingFactorLearnable }
+    public var activationKind: QWModelDescriptor.ActivationKind { descriptor.activationKind }
+    public var multimaxHead: Bool { descriptor.multimaxHead }
+    public var mtpSharedLastLayer: Bool { descriptor.mtpSharedLastLayer }
     /// The number of experts (zero for a dense model).
     public var numExperts: Int { descriptor.numExperts ?? 0 }
     /// How many experts a token routes to.
@@ -82,6 +94,14 @@ public struct QWModelGeometry: Sendable, Equatable {
         descriptor.isFullAttention(layer)
     }
 
+    public func isCompressedAttention(_ layer: Int) -> Bool {
+        descriptor.isCompressedAttention(layer)
+    }
+
+    public func isLinearAttention(_ layer: Int) -> Bool {
+        descriptor.isLinearAttention(layer)
+    }
+
     /// Authoritative per-virtual-layer kind along `executionPlan`.
     public func isVirtualLayerFullAttention(_ virtualLayer: Int) -> Bool {
         let plan = descriptor.executionPlan
@@ -89,11 +109,28 @@ public struct QWModelGeometry: Sendable, Equatable {
         return descriptor.isFullAttention(plan[virtualLayer])
     }
 
+    public func isVirtualLayerCompressedAttention(_ virtualLayer: Int) -> Bool {
+        let plan = descriptor.executionPlan
+        guard (0..<plan.count).contains(virtualLayer) else { return false }
+        return descriptor.isCompressedAttention(plan[virtualLayer])
+    }
+
+    public func isVirtualLayerGDN(_ virtualLayer: Int) -> Bool {
+        let plan = descriptor.executionPlan
+        guard (0..<plan.count).contains(virtualLayer) else { return false }
+        return descriptor.isLinearAttention(plan[virtualLayer])
+    }
+
     public var qHeads: Int { descriptor.qHeads }
     public var kvHeads: Int { descriptor.kvHeads }
     public var headDim: Int { descriptor.headDim }
     public var attnOutputGate: Bool { descriptor.attnOutputGate }
     public var usesNoPEMLA: Bool { descriptor.mlaUseNoPE && (descriptor.kvLoraRank ?? 0) > 0 }
+    public var hcaConfig: QWModelDescriptor.HCAConfig? { descriptor.hcaConfig }
+    public var hybridMLAConfig: QWModelDescriptor.HybridMLAConfig? { descriptor.hybridMLAConfig }
+    public var usesDecoupledRopeMLA: Bool { descriptor.hybridMLAConfig?.decoupledRope == true }
+    public var usesAnyMLA: Bool { usesNoPEMLA || descriptor.hybridMLAConfig != nil }
+    public var usesLatentOrCompressedAttention: Bool { usesAnyMLA || descriptor.hcaConfig != nil }
     public var kvLoraRank: Int { descriptor.kvLoraRank ?? 0 }
     public var qLoraRank: Int { descriptor.qLoraRank ?? 0 }
     public var qkNopeHeadDim: Int { descriptor.qkNopeHeadDim ?? 0 }
@@ -106,13 +143,24 @@ public struct QWModelGeometry: Sendable, Equatable {
     public var indexerHeads: Int { descriptor.indexerHeads ?? 0 }
     public var indexerHeadDim: Int { descriptor.indexerHeadDim ?? 0 }
     public var indexerBudget: Int { descriptor.indexerBudget ?? 0 }
+    public var indexerCompressRatio: Int { max(1, descriptor.indexerCompressRatio ?? 1) }
+    /// Block-shift (`log2(compressRatio)`) for `QWCoarsePoolIndex` on MLA/QSA indexers (`2` for Key-Pool-4, `0` for 1-token DSA).
+    public var indexerPoolShift: Int {
+        let r = indexerCompressRatio
+        return r > 1 ? r.trailingZeroBitCount : 0
+    }
+    /// Block-shift (`log2(compressRatio)`) for `QWCoarsePoolIndex` on HCA compressed pools (`7` for 128-token HCA).
+    public var hcaPoolShift: Int {
+        let r = max(1, descriptor.hcaConfig?.defaultCompressRatio ?? 128)
+        return r > 1 ? r.trailingZeroBitCount : 0
+    }
     /// True when the model's norm weights are already stored as `γ − 1`:
     /// the engine's law is `1 + w` and the Qwen3.8 checkpoint stores
     /// `w = γ − 1` under it, while a standard HF checkpoint stores γ.
     public var normGammaIsPlusOne: Bool { descriptor.usesPlusOneRMSNorm }
     public var qProjOut: Int { descriptor.qProjOut }
     public var qChannels: Int { qHeads * headDim }
-    public var kvChannels: Int { usesNoPEMLA ? max(1, kvLoraRank / 2) : (kvHeads * headDim) }
+    public var kvChannels: Int { usesAnyMLA ? max(1, kvLoraRank / 2) : (kvHeads * headDim) }
     public var attnKRow0: Int { qProjOut }
     public var attnVRow0: Int { qProjOut + kvChannels }
     public var attnTotalN: Int { qProjOut + 2 * kvChannels }
@@ -141,6 +189,9 @@ public struct QWModelGeometry: Sendable, Equatable {
     public var gdnBRow0: Int { gdnQKVChannels + gdnZChannels + gdnVHeads }
     public var gdnTotalN: Int { gdnQKVChannels + gdnZChannels + 2 * gdnVHeads }
     public var fullAttentionLayerCount: Int { executionPlan.filter { descriptor.isFullAttention($0) }.count }
+    public var hcaLayerCount: Int { executionPlan.filter { descriptor.isCompressedAttention($0) }.count }
+    public var gdnLayerCount: Int { executionPlan.filter { descriptor.isLinearAttention($0) }.count }
+    public var mlaLayerCount: Int { usesAnyMLA ? fullAttentionLayerCount : 0 }
 
     public var mtpLayers: Int { descriptor.mtpLayers }
     public var mtpUseDedicatedEmbeddings: Bool { descriptor.mtpUseDedicatedEmbeddings }
@@ -191,6 +242,7 @@ public struct QWModelGeometry: Sendable, Equatable {
     /// Requires <= 512 experts and 64-element tile alignment on hidden and moeIntermediate.
     public var supportsGroupedNAXMoEPrefill: Bool {
         numExperts > 0 && numExperts <= 512 && hidden > 0 && hidden % 64 == 0
+            && moeRoutedDim > 0 && moeRoutedDim % 64 == 0
             && moeIntermediate > 0 && moeIntermediate % 64 == 0
     }
 

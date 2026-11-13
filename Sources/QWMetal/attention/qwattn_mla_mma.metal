@@ -36,8 +36,9 @@ static inline void qwg_mla_absorb_q_mma_impl(
     const uint tBase = tg.y * MLA_ABS_TM;
     const uint cBase = tg.z * MLA_ABS_TN;
     if (h >= p.qHeads || tBase >= p.T) return;
+    const uint inc = p.isIncumbent & 0xFFu;
 
-    if (p.isIncumbent == 2u && qw_mla_load_shvq_lut<SUB2>(tgLut, p.bits, tid, 128u)) {
+    if (inc == 2u && qw_mla_load_shvq_lut<SUB2>(tgLut, p.bits, tid, 128u)) {
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
     const uint qsStride = MLA_ABS_TK + 8u, wsStride = MLA_ABS_TN + 8u;
@@ -333,8 +334,9 @@ static inline void qwg_mla_proj_uv_mma_impl(
     const uint tBase = tg.y * MLA_ABS_TM;
     const uint cBase = tg.z * MLA_ABS_TN;
     if (h >= p.qHeads || tBase >= p.T) return;
+    const uint inc = p.isIncumbent & 0xFFu;
 
-    if (p.isIncumbent == 2u && qw_mla_load_shvq_lut<SUB2>(tgLut, p.bits, tid, 128u)) {
+    if (inc == 2u && qw_mla_load_shvq_lut<SUB2>(tgLut, p.bits, tid, 128u)) {
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
     const uint usStride = MLA_ABS_TK + 8u, wsStride = MLA_ABS_TN + 8u, osStride = MLA_ABS_TN + 4u;
@@ -389,8 +391,10 @@ static inline void qwg_mla_proj_uv_mma_impl(
 
     const uint outStride = p.qHeads * p.vHeadDim;
     const uint rows = min(MLA_ABS_TM, p.T - tBase);
+    const bool skipFwht = (p.isIncumbent & 0x10000u) != 0u;
     for (uint m = 0u; m < rows; ++m) {
-        const float rot = qwg_fwht32_lane_f32(os[m * osStride + sg * 32u + lane], lane);
+        const float raw = os[m * osStride + sg * 32u + lane];
+        const float rot = skipFwht ? raw : qwg_fwht32_lane_f32(raw, lane);
         attOut[(size_t)(tBase + m) * outStride + h * p.vHeadDim + cBase + sg * 32u + lane] = half(rot);
     }
 }
@@ -427,4 +431,195 @@ kernel void qwg_mla_proj_uv_mma_sub2(
     threadgroup float os[MLA_ABS_TM * (MLA_ABS_TN + 4u)];
     threadgroup ShvqMlaTgLut tgLut;
     qwg_mla_proj_uv_mma_impl<true>(uLat, kvBBlocks, attOut, p, tg, tid, sg, lane, us, ws, os, tgLut);
+}
+
+#define MLA_MMA_KPS 72u
+
+kernel void qwg_mla_dsa_sparse_attn_mma(
+    device const half*              qAbs      [[buffer(0)]],
+    device const half*              kPool     [[buffer(1)]],
+    device const half*              vPool     [[buffer(2)]],
+    device const int*               kTable    [[buffer(3)]],
+    device const int*               vTable    [[buffer(4)]],
+    device const int*               blockList [[buffer(5)]],
+    device half*                    uLatOut   [[buffer(6)]],
+    constant MLADSASparseAttnParams& p        [[buffer(7)]],
+    device const half*              mlaQFull  [[buffer(8)]],
+    device const half*              kPeCache  [[buffer(9)]],
+    device const float*             attnSink  [[buffer(10)]],
+    uint2                           tg        [[threadgroup_position_in_grid]],
+    uint                            tid       [[thread_index_in_threadgroup]],
+    uint                            sg        [[simdgroup_index_in_threadgroup]],
+    uint                            lane      [[thread_index_in_simdgroup]]
+) {
+    const uint t = tg.x;
+    const uint h0 = tg.y * MLA_MMA_HG;
+    if (t >= p.T) return;
+
+    threadgroup half  ks[MLA_MMA_TK * MLA_MMA_KS];
+    threadgroup half  kps[MLA_MMA_TK * MLA_MMA_KPS];
+    threadgroup float sbuf[MLA_MMA_HG * MLA_MMA_TK];
+    threadgroup half  pbuf[MLA_MMA_HG * MLA_MMA_TK];
+    threadgroup float corrH[MLA_MMA_HG];
+    threadgroup float mH[MLA_MMA_HG];
+    threadgroup float lH[MLA_MMA_HG];
+    threadgroup uint  blkIdx[2560];
+
+    const uint halfRank = MLA_MMA_RANK / 2u;
+    const uint seqLen = p.pos0 + t + 1u;
+    const uint denseLim = p.topK + p.windowTokens;
+    const uint slots = min(min(seqLen, denseLim), 2560u);
+    const float scale = rsqrt(float(p.headDim));
+
+    if (seqLen <= denseLim) {
+        for (uint i = tid; i < slots; i += 128u) blkIdx[i] = i;
+    } else {
+        device const int* rowList = blockList + (size_t)t * p.listStride;
+        for (uint i = tid; i < slots; i += 128u) blkIdx[i] = min(uint(max(rowList[i], 0)), seqLen - 1u);
+    }
+    if (tid < MLA_MMA_HG) {
+        const float sk = (p.hasSink != 0u) ? attnSink[h0 + tid] : -INFINITY;
+        mH[tid] = (sk > -1e29f) ? sk : -INFINITY;
+        lH[tid] = (sk > -1e29f) ? 1.0f : 0.0f;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    const uint rl = qw_mla_row(lane), cl = qw_mla_col(lane);
+    const uint sHb = sg & 1u, sTb = sg >> 1u;
+    device const half* qBase = qAbs + ((size_t)t * p.qHeads + h0 + sHb * 8u) * MLA_MMA_RANK;
+    device const half* qRopeBase = mlaQFull + (size_t)t * p.qFullStride + p.qRopeOffset + (size_t)(h0 + sHb * 8u) * p.ropeDim;
+    simdgroup_float8x8 oacc[2][16];
+    #pragma unroll
+    for (uint a = 0u; a < 2u; ++a) {
+        #pragma unroll
+        for (uint b = 0u; b < 16u; ++b) oacc[a][b] = simdgroup_float8x8(0.0f);
+    }
+
+    for (uint s0 = 0u; s0 < slots; s0 += MLA_MMA_TK) {
+        for (uint i = tid; i < MLA_MMA_TK * (MLA_MMA_RANK / 4u); i += 128u) {
+            const uint r = i / (MLA_MMA_RANK / 4u);
+            const uint c4 = (i - r * (MLA_MMA_RANK / 4u)) * 4u;
+            const uint slot = s0 + r;
+            half4 v = half4(0.0h);
+            if (slot < slots) {
+                const uint j = blkIdx[slot];
+                const uint pageSlot = j >> 8u, pageOff = j & 255u;
+                if (c4 < halfRank) {
+                    const uint pg = uint(kTable[pageSlot]);
+                    v = qw_mla_load_kv_half4((device const uchar*)kPool, pg, pageOff, c4, p.kvMode);
+                } else {
+                    const uint pg = uint(vTable[pageSlot]);
+                    v = qw_mla_load_kv_half4((device const uchar*)vPool, pg, pageOff, c4 - halfRank, p.kvMode);
+                }
+            }
+            *(threadgroup half4*)(ks + r * MLA_MMA_KS + c4) = v;
+        }
+        if (p.ropeDim == 64u) {
+            for (uint i = tid; i < MLA_MMA_TK * 16u; i += 128u) {
+                const uint r = i >> 4u, c4 = (i & 15u) * 4u;
+                const uint slot = s0 + r;
+                const half4 rv = (slot < slots)
+                    ? *(device const half4*)(kPeCache + (size_t)blkIdx[slot] * 64u + c4)
+                    : half4(0.0h);
+                *(threadgroup half4*)(kps + r * MLA_MMA_KPS + c4) = rv;
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        {
+            simdgroup_float8x8 sacc = simdgroup_float8x8(0.0f);
+            for (uint d = 0u; d < MLA_MMA_RANK / 8u; ++d) {
+                simdgroup_half8x8 qf, kf;
+                simdgroup_load(qf, qBase + d * 8u, MLA_MMA_RANK);
+                simdgroup_load(kf, ks + sTb * 8u * MLA_MMA_KS + d * 8u, MLA_MMA_KS, ulong2(0, 0), true);
+                simdgroup_multiply_accumulate(sacc, qf, kf, sacc);
+            }
+            if (p.ropeDim == 64u) {
+                for (uint d = 0u; d < 8u; ++d) {
+                    simdgroup_half8x8 qf, kf;
+                    simdgroup_load(qf, qRopeBase + d * 8u, 64u);
+                    simdgroup_load(kf, kps + sTb * 8u * MLA_MMA_KPS + d * 8u, MLA_MMA_KPS, ulong2(0, 0), true);
+                    simdgroup_multiply_accumulate(sacc, qf, kf, sacc);
+                }
+            }
+            auto e = sacc.thread_elements();
+            const uint hr = sHb * 8u + rl;
+            #pragma unroll
+            for (uint i = 0u; i < 2u; ++i) {
+                const uint col = sTb * 8u + cl + i;
+                sbuf[hr * MLA_MMA_TK + col] = (s0 + col < slots) ? e[i] * scale : -INFINITY;
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        {
+            const uint hr = tid >> 3u, c0 = (tid & 7u) * 2u;
+            const float a = sbuf[hr * MLA_MMA_TK + c0];
+            const float b = sbuf[hr * MLA_MMA_TK + c0 + 1u];
+            float mx = max(a, b);
+            mx = max(mx, simd_shuffle_xor(mx, 1u));
+            mx = max(mx, simd_shuffle_xor(mx, 2u));
+            mx = max(mx, simd_shuffle_xor(mx, 4u));
+            const float mOld = mH[hr];
+            const float mNew = max(mOld, mx);
+            const float pa = exp(a - mNew), pb = exp(b - mNew);
+            pbuf[hr * MLA_MMA_TK + c0] = half(pa);
+            pbuf[hr * MLA_MMA_TK + c0 + 1u] = half(pb);
+            float sm = pa + pb;
+            sm += simd_shuffle_xor(sm, 1u);
+            sm += simd_shuffle_xor(sm, 2u);
+            sm += simd_shuffle_xor(sm, 4u);
+            const float corr = (mOld == -INFINITY) ? 0.0f : exp(mOld - mNew);
+            simdgroup_barrier(mem_flags::mem_threadgroup);
+            if ((tid & 7u) == 0u) {
+                corrH[hr] = corr;
+                mH[hr] = mNew;
+                lH[hr] = lH[hr] * corr + sm;
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        {
+            const float c0 = corrH[rl], c1 = corrH[8u + rl];
+            simdgroup_half8x8 pf[2][2];
+            #pragma unroll
+            for (uint a = 0u; a < 2u; ++a) {
+                #pragma unroll
+                for (uint k = 0u; k < 2u; ++k)
+                    simdgroup_load(pf[a][k], pbuf + a * 8u * MLA_MMA_TK + k * 8u, MLA_MMA_TK);
+            }
+            #pragma unroll
+            for (uint b = 0u; b < 16u; ++b) {
+                const uint col = sg * 128u + b * 8u;
+                simdgroup_half8x8 kf0, kf1;
+                simdgroup_load(kf0, ks + col, MLA_MMA_KS);
+                simdgroup_load(kf1, ks + 8u * MLA_MMA_KS + col, MLA_MMA_KS);
+                auto e0 = oacc[0][b].thread_elements();
+                e0[0] *= c0; e0[1] *= c0;
+                oacc[0][b].thread_elements() = e0;
+                auto e1 = oacc[1][b].thread_elements();
+                e1[0] *= c1; e1[1] *= c1;
+                oacc[1][b].thread_elements() = e1;
+                simdgroup_multiply_accumulate(oacc[0][b], pf[0][0], kf0, oacc[0][b]);
+                simdgroup_multiply_accumulate(oacc[0][b], pf[0][1], kf1, oacc[0][b]);
+                simdgroup_multiply_accumulate(oacc[1][b], pf[1][0], kf0, oacc[1][b]);
+                simdgroup_multiply_accumulate(oacc[1][b], pf[1][1], kf1, oacc[1][b]);
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    #pragma unroll
+    for (uint a = 0u; a < 2u; ++a) {
+        const uint h = h0 + a * 8u + rl;
+        const float l = lH[a * 8u + rl];
+        const float inv = (l > 0.0f) ? (1.0f / l) : 0.0f;
+        device half* dst = uLatOut + ((size_t)t * p.qHeads + h) * MLA_MMA_RANK;
+        #pragma unroll
+        for (uint b = 0u; b < 16u; ++b) {
+            auto e = oacc[a][b].thread_elements();
+            const uint col = sg * 128u + b * 8u + cl;
+            *(device half2*)(dst + col) = half2(half(e[0] * inv), half(e[1] * inv));
+        }
+    }
 }

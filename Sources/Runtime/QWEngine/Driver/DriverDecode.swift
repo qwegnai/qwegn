@@ -113,8 +113,9 @@ extension QWEngineDriver {
         if let mtpScratch {
             enc.endEncoding()
             encoderEnded = true
+            let seedHidden: QWTensorValue = echoDrafter != nil ? sc.mhcStream! : sc.ln1
             try encodeMTPSeeding(cb, session: session, embeddings: mtpScratch.embedding,
-                                 hidden: sc.ln1, count: 1, cacheRows: mtpRows)
+                                 hidden: seedHidden, count: 1, cacheRows: mtpRows)
             cb.commit()
         } else {
             encoderEnded = true
@@ -199,10 +200,8 @@ extension QWEngineDriver {
             .advanced(by: sc.token.region.base + sc.token.offset)
             .assumingMemoryBound(to: Int32.self).pointee)
         let next = try selectConstrainedToken(session: session, rawArgmax: rawId)
-        if mtpCache != nil {
-            session.roundRecord.pendingToken = next
-            session.roundRecord.outputCount = session.generated
-        }
+        session.roundRecord.pendingToken = next
+        session.roundRecord.outputCount = session.generated
         return next
     }
 

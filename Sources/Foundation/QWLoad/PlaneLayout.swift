@@ -25,7 +25,7 @@ public enum PlaneLayout: Sendable, Hashable {
         guard !e.shape.isEmpty else { return nil }
         switch self {
         case .raw:
-            return e.shape.reduce(1, *) * 2
+            return e.shape.reduce(1, *) * e.rawElemBytes
         case .hq4:
             if let experts = e.experts, let per = e.eHq4, e.shape.count == 3 {
                 return experts * per

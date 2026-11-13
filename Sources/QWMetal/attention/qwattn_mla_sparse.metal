@@ -97,8 +97,9 @@ static inline void qwg_mla_absorb_q_impl(
     const uint tBase = tgPos.y * 8u;
     if (h >= p.qHeads || tBase >= p.T) return;
     const uint validM = min(8u, p.T - tBase);
+    const uint inc = p.isIncumbent & 0xFFu;
 
-    if (p.isIncumbent == 2u) {
+    if (inc == 2u) {
         qw_mla_load_shvq_lut<SUB2>(tgLut, p.bits, c, 512u);
     }
     for (uint idx = c; idx < validM * p.nopeDim; idx += 512u) {
@@ -110,7 +111,7 @@ static inline void qwg_mla_absorb_q_impl(
 
     const uint headRowBase = h * (p.nopeDim + p.vHeadDim);
     if (p.kvLoraRank == 512u && p.nopeDim >= 32u && p.nopeDim <= 256u && (p.nopeDim & 3u) == 0u
-        && p.group >= 32u && (p.group & 31u) == 0u && p.isIncumbent <= 2u) {
+        && p.group >= 32u && (p.group & 31u) == 0u && inc <= 2u) {
         const uint rSlice = c >> 7u;
         const uint quadIdx = c & 127u;
         const uint sliceRows = p.nopeDim >> 2u;
@@ -140,7 +141,7 @@ static inline void qwg_mla_absorb_q_impl(
     float acc[8] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
     for (uint r = 0u; r < p.nopeDim; ++r) {
         const float w = qwg_mla_read_weight<SUB2>(kvBBlocks, headRowBase + r, c,
-                                                  p.kvLoraRank, p.bits, p.group, p.isIncumbent);
+                                                  p.kvLoraRank, p.bits, p.group, inc);
         #pragma unroll
         for (uint m = 0u; m < 8u; ++m) {
             if (m < validM) {
@@ -517,8 +518,10 @@ static inline void qwg_mla_proj_uv_impl(
     const uint tBase = tgPos.y * 8u;
     if (h >= p.qHeads || tBase >= p.T) return;
     const uint validM = min(8u, p.T - tBase);
+    const uint inc = p.isIncumbent & 0xFFu;
+    const bool skipFwht = (p.isIncumbent & 0x10000u) != 0u;
 
-    if (p.isIncumbent == 2u) {
+    if (inc == 2u) {
         qw_mla_load_shvq_lut<SUB2>(tgLut, p.bits, r, 256u);
     }
     for (uint idx = r; idx < validM * p.kvLoraRank; idx += 256u) {
@@ -531,7 +534,7 @@ static inline void qwg_mla_proj_uv_impl(
     if (r >= p.vHeadDim) return;
 
     const uint outStride = p.qHeads * p.vHeadDim;
-    if (p.isIncumbent == 1u && p.kvLoraRank == 512u && p.vHeadDim == 256u) {
+    if (inc == 1u && p.kvLoraRank == 512u && p.vHeadDim == 256u) {
         const uint sg = r >> 5u;
         const uint subRow = lane >> 4u;
         const uint blkIdx = lane & 15u;
@@ -552,7 +555,7 @@ static inline void qwg_mla_proj_uv_impl(
                 if (lane == pIdx * 2u)      myOut = r0;
                 if (lane == pIdx * 2u + 1u) myOut = r1;
             }
-            const float rot = qwg_fwht32_lane_f32(myOut, lane);
+            const float rot = skipFwht ? myOut : qwg_fwht32_lane_f32(myOut, lane);
             attOut[(size_t)tBase * outStride + h * 256u + r] = half(rot);
             return;
         }
@@ -574,8 +577,8 @@ static inline void qwg_mla_proj_uv_impl(
                 if (lane == pIdx * 2u)      { myOut0 = r0.x; myOut1 = r0.y; }
                 if (lane == pIdx * 2u + 1u) { myOut0 = r1.x; myOut1 = r1.y; }
             }
-            const float rot0 = qwg_fwht32_lane_f32(myOut0, lane);
-            const float rot1 = qwg_fwht32_lane_f32(myOut1, lane);
+            const float rot0 = skipFwht ? myOut0 : qwg_fwht32_lane_f32(myOut0, lane);
+            const float rot1 = skipFwht ? myOut1 : qwg_fwht32_lane_f32(myOut1, lane);
             attOut[(size_t)(tBase + 0u) * outStride + h * 256u + r] = half(rot0);
             attOut[(size_t)(tBase + 1u) * outStride + h * 256u + r] = half(rot1);
             return;
@@ -617,13 +620,13 @@ static inline void qwg_mla_proj_uv_impl(
             }
         }
         for (uint m = 0u; m < validM; ++m) {
-            const float rot = qwg_fwht32_lane_f32(myOut[m], lane);
+            const float rot = skipFwht ? myOut[m] : qwg_fwht32_lane_f32(myOut[m], lane);
             attOut[(size_t)(tBase + m) * outStride + h * 256u + r] = half(rot);
         }
         return;
     } else if (p.kvLoraRank == 512u && p.vHeadDim == 256u && p.group >= 32u && (p.group & 31u) == 0u
-               && ((p.isIncumbent == 2u && (SUB2 ? (p.bits == 1u || p.bits == 15u) : (p.bits >= 2u && p.bits <= 4u)))
-                   || (!SUB2 && p.isIncumbent == 0u))) {
+               && ((inc == 2u && (SUB2 ? (p.bits == 1u || p.bits == 15u) : (p.bits >= 2u && p.bits <= 4u)))
+                   || (!SUB2 && inc == 0u))) {
         const uint sg = r >> 5u;
         const uint subRow = lane >> 4u;
         const uint blkIdx = lane & 15u;
@@ -657,7 +660,7 @@ static inline void qwg_mla_proj_uv_impl(
                 if (lane == pIdx * 2u)      myOut = r0;
                 if (lane == pIdx * 2u + 1u) myOut = r1;
             }
-            const float rot = qwg_fwht32_lane_f32(myOut, lane);
+            const float rot = skipFwht ? myOut : qwg_fwht32_lane_f32(myOut, lane);
             attOut[(size_t)tBase * outStride + h * 256u + r] = half(rot);
             return;
         }
@@ -685,7 +688,7 @@ static inline void qwg_mla_proj_uv_impl(
             }
         }
         for (uint m = 0u; m < validM; ++m) {
-            const float rot = qwg_fwht32_lane_f32(myOut[m], lane);
+            const float rot = skipFwht ? myOut[m] : qwg_fwht32_lane_f32(myOut[m], lane);
             attOut[(size_t)(tBase + m) * outStride + h * 256u + r] = half(rot);
         }
         return;
@@ -695,7 +698,7 @@ static inline void qwg_mla_proj_uv_impl(
     const uint uvRow = h * (p.nopeDim + p.vHeadDim) + p.nopeDim + r;
     for (uint c = 0u; c < p.kvLoraRank; ++c) {
         const float w = qwg_mla_read_weight<SUB2>(kvBBlocks, uvRow, c,
-                                                  p.kvLoraRank, p.bits, p.group, p.isIncumbent);
+                                                  p.kvLoraRank, p.bits, p.group, inc);
         #pragma unroll
         for (uint m = 0u; m < 8u; ++m) {
             if (m < validM) {
@@ -705,7 +708,7 @@ static inline void qwg_mla_proj_uv_impl(
     }
 
     for (uint m = 0u; m < validM; ++m) {
-        const float rot = qwg_fwht32_lane_f32(acc[m], lane);
+        const float rot = skipFwht ? acc[m] : qwg_fwht32_lane_f32(acc[m], lane);
         attOut[(size_t)(tBase + m) * outStride + h * p.vHeadDim + r] = half(rot);
     }
 }

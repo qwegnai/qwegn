@@ -399,4 +399,71 @@ final class QWTokenTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(mbPerSec, minMBPerSec, "Encode throughput must meet calibrated floor")
 
     }
+
+    func testChainedDigitsAndR2LSplitSequence() throws {
+        var vocab: [String: Int] = [:]
+        var nextId = 0
+        let specials = [
+            "<|ERNIE_PAD|>", "<|ERNIE_BEGIN|>", "<|ERNIE_MASK|>", "<|ERNIE_endofprompt|>",
+            "<|ernie:im_start|>", "<|ernie:im_end|>", "<ernie:think>", "</ernie:think>"
+        ]
+        var addedTokens: [[String: Any]] = []
+        for s in specials {
+            addedTokens.append(["id": nextId, "content": s, "special": true])
+            nextId += 1
+        }
+        var n = 0
+        for b in 0..<256 {
+            let idc = Unicode.Scalar(UInt8(b))
+            let printable = (b >= 0x21 && b <= 0x7E) || (b >= 0xA1 && b <= 0xAC) || (b >= 0xAE && b <= 0xFF)
+            let sc: Unicode.Scalar = printable ? idc : Unicode.Scalar(0x100 + n)!
+            if !printable { n += 1 }
+            if b == 0xC0 || b == 0xC1 || b >= 0xF5 { continue }
+            vocab[String(sc)] = nextId
+            nextId += 1
+        }
+        var merges: [[String]] = []
+        for (a, b) in [("4", "8"), ("48", "2"), ("7", "1"), ("71", "6"), ("3", "5"), ("35", "0"), ("0", "2"), ("02", "6")] {
+            merges.append([a, b])
+            vocab[a + b] = nextId
+            nextId += 1
+        }
+        let pretokenizers: [[String: Any]] = [
+            ["type": "Digits", "individual_digits": false],
+            ["type": "Split", "pattern": ["Regex": "\\p{Nd}{1,510}(?=(?>\\p{Nd}{510})*(?:\\P{Nd}|$))|\\G\\p{Nd}{510}"], "behavior": "Isolated", "invert": false],
+            ["type": "Split", "pattern": ["Regex": "\\A\\p{Nd}{1,2}(?=\\p{Nd}{3}+\\z)"], "behavior": "Isolated", "invert": false],
+            ["type": "Split", "pattern": ["Regex": "\\A\\p{Nd}{3}|\\G\\p{Nd}{3}"], "behavior": "Isolated", "invert": false],
+            ["type": "Split", "pattern": ["Regex": "[\u{4e00}-\u{9fa5}\u{3040}-\u{309f}\u{30a0}-\u{30ff}]+"], "behavior": "Isolated", "invert": false],
+            ["type": "Split", "pattern": ["Regex": "[!\"#$%&'()*+,\\-./:;<=>?@\\[\\\\\\]^_`{|}~][A-Za-z]+|[^\r\n\\p{L}\\p{P}\\p{S}]?[\\p{L}\\p{M}]+| ?[\\p{P}\\p{S}]+[\r\n]*|\\s*[\r\n]+|\\s+(?!\\S)|\\s+"], "behavior": "Isolated", "invert": false],
+            ["type": "ByteLevel", "add_prefix_space": false, "trim_offsets": true, "use_regex": false]
+        ]
+        let root: [String: Any] = [
+            "added_tokens": addedTokens,
+            "model": ["type": "BPE", "vocab": vocab, "merges": merges],
+            "pre_tokenizer": ["type": "Sequence", "pretokenizers": pretokenizers]
+        ]
+        let json = try JSONSerialization.data(withJSONObject: root)
+        let tok = try QWTokenizer(json: json)
+
+        let ids = try tok.encode("<|ERNIE_MASK|>Code 2026 key 9482716350.<|ernie:im_end|>")
+        XCTAssertEqual(ids.first, 2)
+        XCTAssertEqual(ids.last, 5)
+        XCTAssertTrue(ids.contains(vocab["026"]!), "2026 must split R2L as '2' + '026'")
+        XCTAssertTrue(ids.contains(vocab["482"]!), "9482716350 must split R2L into '9','482','716','350'")
+        XCTAssertTrue(ids.contains(vocab["716"]!))
+        XCTAssertTrue(ids.contains(vocab["350"]!))
+        let decoded = try tok.decode(ids, skipSpecialTokens: true)
+        XCTAssertEqual(decoded, "Code 2026 key 9482716350.")
+
+        let resolved = tok.resolveSpecialTokens(
+            fallback: QWModelSpecialTokens(eosTokenId: 2, usesChatTemplateIds: false)
+        )
+        XCTAssertEqual(resolved.imStartTokenId, 4)
+        XCTAssertEqual(resolved.imEndTokenId, 5)
+        XCTAssertEqual(resolved.thinkTokenId, 6)
+        XCTAssertEqual(resolved.endThinkTokenId, 7)
+        XCTAssertTrue(resolved.defaultStopTokenIds.contains(2))
+        XCTAssertTrue(resolved.defaultStopTokenIds.contains(3))
+        XCTAssertTrue(resolved.defaultStopTokenIds.contains(5))
+    }
 }

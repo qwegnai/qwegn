@@ -15,6 +15,18 @@ struct MLAIndexerParams {
     uint scoreStride;
 };
 
+METAL_FUNC uint qw_mla_idx_heads(constant MLAIndexerParams& p) {
+    return p.idxHeads & 0xFFu;
+}
+
+METAL_FUNC uint qw_mla_idx_pool_shift(constant MLAIndexerParams& p) {
+    return ((p.idxHeads & 0x1000u) != 0u) ? ((p.idxHeads >> 8u) & 0xFu) : 2u;
+}
+
+METAL_FUNC uint qw_mla_idx_window_blocks(constant MLAIndexerParams& p) {
+    return p.idxHeads >> 16u;
+}
+
 METAL_FUNC uint qwg_mla_float_to_sortable_u32(float f) {
     const uint u = as_type<uint>(f);
     return (u & 0x80000000u) ? ~u : (u | 0x80000000u);
@@ -88,15 +100,25 @@ METAL_FUNC void qwg_mla_select_pools(device const float* rowScores, uint nPools,
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    if (tid == 0u) {
-        uint cur = 0u;
-        for (uint g = 0u; g < 8u; ++g) cur += atomic_load_explicit(&hist[g], memory_order_relaxed);
-        for (uint i = 0u; i < nPools && cur < topKPools; ++i) {
-            const uint key = qwg_mla_float_to_sortable_u32(rowScores[i]);
-            if (key == threshKey) {
-                dstList[cur++] = int(i);
+    uint baseAbove = 0u;
+    for (uint g = 0u; g < 8u; ++g) baseAbove += atomic_load_explicit(&hist[g], memory_order_relaxed);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (baseAbove < topKPools) {
+        uint ties = 0u;
+        for (uint i = b0; i < b1; ++i) ties += qwg_mla_float_to_sortable_u32(rowScores[i]) == threshKey ? 1u : 0u;
+        uint tieSlot = baseAbove + simd_prefix_exclusive_sum(ties);
+        const uint sgTies = simd_sum(ties);
+        if (lane == 0u) atomic_store_explicit(&hist[sg], sgTies, memory_order_relaxed);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint g = 0u; g < sg; ++g) tieSlot += atomic_load_explicit(&hist[g], memory_order_relaxed);
+        for (uint i = b0; i < b1 && tieSlot < topKPools; ++i) {
+            if (qwg_mla_float_to_sortable_u32(rowScores[i]) == threshKey) {
+                dstList[tieSlot++] = int(i);
             }
         }
+    }
+    if (tid == 0u) {
         *countOut = int(topKPools);
     }
 }

@@ -10,6 +10,16 @@ extension QWModelDescriptor {
             let rope_theta: Double?
             let partial_rotary_factor: Double?
         }
+        struct RopeScaling: Decodable {
+            let type: String?
+            let rope_type: String?
+            let factor: Double?
+            let original_max_position_embeddings: Int?
+            let beta_fast: Double?
+            let beta_slow: Double?
+            let mscale: Double?
+            let mscale_all_dim: Double?
+        }
         struct VisionConfig: Decodable {
             let depth: Int?
             let hidden_size: Int?
@@ -62,7 +72,8 @@ extension QWModelDescriptor {
             let hidden_size: Int
             let vocab_size: Int
             let num_hidden_layers: Int
-            let layer_types: [String]
+            var layer_types: [String]? = nil
+            var compress_ratios: [Int]? = nil
             var full_attention_interval: Int? = nil
             let rms_norm_eps: Double
             let max_position_embeddings: Int
@@ -75,12 +86,36 @@ extension QWModelDescriptor {
             var v_head_dim: Int? = nil
             var kv_lora_rank: Int? = nil
             var q_lora_rank: Int? = nil
+            var o_groups: Int? = nil
+            var o_lora_rank: Int? = nil
+            var sliding_window: Int? = nil
             var mla_use_nope: Bool? = nil
+            var use_mla: Bool? = nil
             var partial_rotary_factor: Double? = nil
+            var rotary_percent: Double? = nil
             let rope_theta: Double?
+            var compress_rope_theta: Double? = nil
             var rope_parameters: RopeParameters? = nil
+            var rope_scaling: RopeScaling? = nil
+            var rope_type: String? = nil
+            var hca_rope_type: String? = nil
+            var rope_interleave: Bool? = nil
             let output_gate_type: String?
             var attn_output_gate: Bool? = nil
+            var use_gated_attn: Bool? = nil
+            var use_attn_merger: Bool? = nil
+            var use_vha_attention: Bool? = nil
+            var add_full_attention_sink_bias: Bool? = nil
+            var gated_attn_use_q_lora: Bool? = nil
+            var hybrid_mla_attention: String? = nil
+            var hybrid_mla_num_attention_heads: Int? = nil
+            var hybrid_mla_q_lora_rank: Int? = nil
+            var hybrid_mla_kv_lora_rank: Int? = nil
+            var hybrid_mla_qk_nope_head_dim: Int? = nil
+            var hybrid_mla_qk_rope_head_dim: Int? = nil
+            var hybrid_mla_v_head_dim: Int? = nil
+            var use_fast_hadamard: Bool? = nil
+            var mqa_split_kv_b_proj: Bool? = nil
             let linear_key_head_dim: Int?
             let linear_num_key_heads: Int?
             let linear_num_value_heads: Int?
@@ -91,17 +126,25 @@ extension QWModelDescriptor {
             var n_routed_experts: Int? = nil
             let num_experts_per_tok: Int?
             let moe_intermediate_size: Int?
+            var moe_latent_size: Int? = nil
+            var latent_moe_use_norm: Bool? = nil
             let shared_expert_intermediate_size: Int?
             var n_shared_experts: Int? = nil
+            var moe_shared_expert_gate: Bool? = nil
+            var moe_split_feature_routing: Bool? = nil
             var first_k_dense_replace: Int? = nil
             var moe_layer_freq: Int? = nil
             var routed_scaling_factor: Float? = nil
+            var routed_scaling_factor_learnable: Bool? = nil
             var scoring_func: String? = nil
             var topk_method: String? = nil
             var mlp_clamp: Bool? = nil
             var swiglu_limit: Float? = nil
             var swiglu_limits: Float? = nil
             var norm_topk_prob: Bool? = nil
+            var hidden_act: String? = nil
+            var activation_situ_beta: Float? = nil
+            var activation_situ_linear_beta: Float? = nil
             let indexer_budget: Int?
             var index_topk: Int? = nil
             let indexer_compress_ratio: Int?
@@ -117,8 +160,10 @@ extension QWModelDescriptor {
             var indexer_rope_interleave: Bool? = nil
             let hc_count: Int?
             let hc_lowrank: Int?
+            var enable_hyper_connections: Bool? = nil
             var hc_mult: Int? = nil
             var hc_sinkhorn_iters: Int? = nil
+            var hc_eps: Float? = nil
             let ple_layer_ids: [Int]?
             let ple_embed_dim: Int?
             let ple_conv_kernel_size: Int?
@@ -130,6 +175,9 @@ extension QWModelDescriptor {
             let mtp_num_hidden_layers: Int?
             var num_nextn_predict_layers: Int? = nil
             let mtp_use_dedicated_embeddings: Bool?
+            var mtp_shared_last_layer: Bool? = nil
+            var multimax: String? = nil
+            var tie_word_embeddings: Bool? = nil
             let eos_token_id: JSONIntOrList
             let intermediate_size: Int?           // dense models / first_k_dense_replace
             var quantization: QWQuantizationSpec? = nil
@@ -148,39 +196,6 @@ extension QWModelDescriptor {
         let model_type: String?
         let loop_settings: RawLoopSettings?
         let mhc: MHCValue?
-        // top-level fallback fields (dense configs have no text_config wrapper)
-        let hidden_size: Int?
-        let vocab_size: Int?
-        let num_hidden_layers: Int?
-        let layer_types: [String]?
-        let full_attention_interval: Int?
-        let rms_norm_eps: Double?
-        let max_position_embeddings: Int?
-        let num_attention_heads: Int?
-        let num_key_value_heads: Int?
-        let head_dim: Int?
-        let qk_head_dim: Int?
-        let qk_nope_head_dim: Int?
-        let qk_rope_head_dim: Int?
-        let v_head_dim: Int?
-        let kv_lora_rank: Int?
-        let q_lora_rank: Int?
-        let mla_use_nope: Bool?
-        let partial_rotary_factor: Double?
-        let rope_theta: Double?
-        let rope_parameters: RopeParameters?
-        let linear_key_head_dim: Int?
-        let linear_num_key_heads: Int?
-        let linear_num_value_heads: Int?
-        let linear_value_head_dim: Int?
-        let linear_conv_kernel_dim: Int?
-        let linear_attn_config: RawLinearAttnConfig?
-        let mtp_num_hidden_layers: Int?
-        let num_nextn_predict_layers: Int?
-        let mtp_use_dedicated_embeddings: Bool?
-        let eos_token_id: JSONIntOrList?
-        let intermediate_size: Int?
-        let output_router_logits: Bool?
     }
 
     public enum DescriptorError: Error, CustomStringConvertible, Equatable {
@@ -219,70 +234,48 @@ extension QWModelDescriptor {
         if let tc = env.text_config {
             t = tc
         } else {
-            func need<T>(_ v: T?, _ name: String) throws -> T {
-                guard let v else { throw DescriptorError.invariant("flat config missing \(name)") }
-                return v
+            do {
+                t = try JSONDecoder().decode(ConfigEnvelope.Text.self, from: data)
+            } catch DecodingError.keyNotFound(let key, _) {
+                throw DescriptorError.invariant("flat config missing \(key.stringValue)")
+            } catch DecodingError.valueNotFound(_, let ctx) {
+                let name = ctx.codingPath.last?.stringValue ?? "required field"
+                throw DescriptorError.invariant("flat config missing \(name)")
             }
-            t = try ConfigEnvelope.Text(
-                model_type: need(env.model_type, "model_type"),
-                hidden_size: need(env.hidden_size, "hidden_size"),
-                vocab_size: need(env.vocab_size, "vocab_size"),
-                num_hidden_layers: need(env.num_hidden_layers, "num_hidden_layers"),
-                layer_types: need(env.layer_types, "layer_types"),
-                full_attention_interval: env.full_attention_interval,
-                rms_norm_eps: need(env.rms_norm_eps, "rms_norm_eps"),
-                max_position_embeddings: need(env.max_position_embeddings, "max_position_embeddings"),
-                num_attention_heads: need(env.num_attention_heads, "num_attention_heads"),
-                num_key_value_heads: need(env.num_key_value_heads, "num_key_value_heads"),
-                head_dim: env.head_dim,
-                qk_head_dim: env.qk_head_dim,
-                qk_nope_head_dim: env.qk_nope_head_dim,
-                qk_rope_head_dim: env.qk_rope_head_dim,
-                v_head_dim: env.v_head_dim,
-                kv_lora_rank: env.kv_lora_rank,
-                q_lora_rank: env.q_lora_rank,
-                mla_use_nope: env.mla_use_nope,
-                partial_rotary_factor: env.partial_rotary_factor,
-                rope_theta: env.rope_theta, rope_parameters: env.rope_parameters,
-                output_gate_type: nil,
-                linear_key_head_dim: env.linear_key_head_dim,
-                linear_num_key_heads: env.linear_num_key_heads,
-                linear_num_value_heads: env.linear_num_value_heads,
-                linear_value_head_dim: env.linear_value_head_dim,
-                linear_conv_kernel_dim: env.linear_conv_kernel_dim,
-                linear_attn_config: env.linear_attn_config,
-                num_experts: nil, num_experts_per_tok: nil, moe_intermediate_size: nil,
-                shared_expert_intermediate_size: nil,
-                indexer_budget: nil, indexer_compress_ratio: nil, indexer_head_dim: nil,
-                indexer_kv_heads: nil, indexer_n_heads: nil,
-                hc_count: nil, hc_lowrank: nil,
-                ple_layer_ids: nil, ple_embed_dim: nil, ple_conv_kernel_size: nil,
-                ngram_size: nil, heads_per_ngram: nil, ngram_vocab_size_base: nil,
-                make_ngram_vocab_size_divisible_by: nil, split_ngram_parts: nil,
-                mtp_num_hidden_layers: env.mtp_num_hidden_layers ?? env.num_nextn_predict_layers,
-                num_nextn_predict_layers: env.num_nextn_predict_layers,
-                mtp_use_dedicated_embeddings: env.mtp_use_dedicated_embeddings,
-                eos_token_id: need(env.eos_token_id, "eos_token_id"),
-                intermediate_size: env.intermediate_size,
-                loop_settings: env.loop_settings,
-                mhc: env.mhc)
         }
         func inv(_ cond: Bool, _ msg: String) throws {
             if !cond { throw DescriptorError.invariant(msg) }
         }
-        let normalizedLayerTypes = t.layer_types.map { kind -> String in
+        let rawLayerTypes: [String]
+        if let explicitTypes = t.layer_types {
+            rawLayerTypes = explicitTypes
+        } else if let ratios = t.compress_ratios {
+            try inv(ratios.count >= t.num_hidden_layers,
+                    "compress_ratios count \(ratios.count) < num_hidden_layers \(t.num_hidden_layers)")
+            rawLayerTypes = (0..<t.num_hidden_layers).map { l in
+                ratios[l] > 0 ? "compressed_attention" : "full_attention"
+            }
+        } else {
+            throw DescriptorError.invariant("flat config missing layer_types")
+        }
+        let normalizedLayerTypes = rawLayerTypes.map { kind -> String in
             kind == "deepseek_sparse_attention" ? "full_attention" : kind
         }
         try inv(normalizedLayerTypes.count == t.num_hidden_layers,
                 "layer_types count \(normalizedLayerTypes.count) != num_hidden_layers \(t.num_hidden_layers)")
-        let kindsOK = normalizedLayerTypes.allSatisfy { $0 == "full_attention" || $0 == "linear_attention" }
+        let kindsOK = normalizedLayerTypes.allSatisfy {
+            $0 == "full_attention" || $0 == "linear_attention" || $0 == "compressed_attention"
+        }
         try inv(kindsOK, "layer_types contain unknown kind")
 
         let resolvedFAInterval: Int
         if let explicitInterval = t.full_attention_interval {
             resolvedFAInterval = explicitInterval
         } else if let firstFA = normalizedLayerTypes.firstIndex(of: "full_attention") {
-            resolvedFAInterval = firstFA + 1
+            let candidate = firstFA + 1
+            let fullIndices = normalizedLayerTypes.indices.filter { normalizedLayerTypes[$0] == "full_attention" }
+            let uniformCadence = fullIndices.allSatisfy { ($0 + 1) % candidate == 0 }
+            resolvedFAInterval = uniformCadence ? candidate : 0
         } else {
             resolvedFAInterval = 1
         }
@@ -298,11 +291,14 @@ extension QWModelDescriptor {
             throw DescriptorError.invariant("flat config missing head_dim")
         }
 
-        let isNoPEMLA = t.mla_use_nope ?? (t.kv_lora_rank != nil)
+        let hasHybridMLA = t.hybrid_mla_kv_lora_rank != nil || t.hybrid_mla_attention != nil
+        let isNoPEMLA = t.mla_use_nope ?? (t.kv_lora_rank != nil && t.use_mla != false && t.compress_ratios == nil && !hasHybridMLA)
         let resolvedPartialRotary: Double
         if let prf = t.partial_rotary_factor ?? t.rope_parameters?.partial_rotary_factor {
             resolvedPartialRotary = prf
-        } else if isNoPEMLA {
+        } else if let rp = t.rotary_percent {
+            resolvedPartialRotary = rp
+        } else if isNoPEMLA || hasHybridMLA || t.compress_ratios != nil {
             resolvedPartialRotary = 1.0
         } else {
             throw DescriptorError.invariant("flat config missing partial_rotary_factor")
@@ -322,24 +318,27 @@ extension QWModelDescriptor {
         }
 
         let resolvedNumExperts = t.num_experts ?? t.n_routed_experts
-        if resolvedNumExperts == nil {
+        if resolvedNumExperts == nil && resolvedFAInterval > 0 {
             for l in 0..<t.num_hidden_layers {
                 let want = (l + 1) % resolvedFAInterval == 0
                 try inv((normalizedLayerTypes[l] == "full_attention") == want, "layer \(l) cadence")
             }
         }
+        let hasLinearLayers = normalizedLayerTypes.contains("linear_attention")
         let linCfg = t.linear_attn_config
-        let qkHeads = t.linear_num_key_heads ?? linCfg?.num_heads ?? 0
-        let vHeads = t.linear_num_value_heads ?? linCfg?.num_heads ?? 0
-        let gHeadDim = t.linear_key_head_dim ?? linCfg?.head_dim ?? 0
-        let gConv = t.linear_conv_kernel_dim ?? linCfg?.short_conv_kernel_size ?? 0
-        try inv(qkHeads > 0 && vHeads > 0 && gHeadDim > 0, "GDN heads/dim missing")
-        try inv((t.linear_value_head_dim ?? gHeadDim) == gHeadDim, "GDN v-head dim != qk head dim")
+        let qkHeads = hasLinearLayers ? (t.linear_num_key_heads ?? linCfg?.num_heads ?? 0) : 0
+        let vHeads = hasLinearLayers ? (t.linear_num_value_heads ?? linCfg?.num_heads ?? 0) : 0
+        let gHeadDim = hasLinearLayers ? (t.linear_key_head_dim ?? linCfg?.head_dim ?? 0) : 0
+        let gConv = hasLinearLayers ? (t.linear_conv_kernel_dim ?? linCfg?.short_conv_kernel_size ?? 0) : 0
+        if hasLinearLayers {
+            try inv(qkHeads > 0 && vHeads > 0 && gHeadDim > 0, "GDN heads/dim missing")
+            try inv((t.linear_value_head_dim ?? gHeadDim) == gHeadDim, "GDN v-head dim != qk head dim")
+        }
         let qkv = (2 * qkHeads + vHeads) * gHeadDim
         let z = vHeads * gHeadDim
 
         let linType = (linCfg?.Linear_type ?? linCfg?.linear_type ?? "").lowercased()
-        let isKDA = linType == "kda" || linCfg?.gate_lower_bound != nil
+        let isKDA = hasLinearLayers && (linType == "kda" || linCfg?.gate_lower_bound != nil)
         let gdnLowRank = linCfg?.low_rank_dim ?? (isKDA ? gHeadDim : nil)
 
         if let n = resolvedNumExperts, let k = t.num_experts_per_tok {
@@ -387,14 +386,15 @@ extension QWModelDescriptor {
         if resolvedNumExperts != nil { caps.insert(.moe) }
         if (t.ple_layer_ids?.isEmpty == false) { caps.insert(.ple) }
         if resolvedIdxHeads != nil { caps.insert(.qsaIndexer) }
-        let rawMHCVal = t.mhc ?? env.mhc
+        let rawMHCVal = t.mhc ?? env.mhc ?? (t.enable_hyper_connections == true ? .flag(true) : nil)
         let parsedMHC: MHCConfig?
         switch rawMHCVal {
         case .config(let rm):
             if let s = rm.start, let e = rm.end, s >= 0, e > s, e <= t.num_hidden_layers {
                 parsedMHC = MHCConfig(start: s, end: e, streams: max(2, rm.streams ?? 2),
                                       iterations: max(1, rm.iterations ?? 20),
-                                      fixedIdentity: rm.fixed_identity ?? false, preScale: rm.pre_scale ?? 1.0)
+                                      fixedIdentity: rm.fixed_identity ?? false, preScale: rm.pre_scale ?? 1.0,
+                                      hcEps: t.hc_eps, hasExitHead: t.enable_hyper_connections == true)
             } else {
                 parsedMHC = nil
             }
@@ -402,13 +402,83 @@ extension QWModelDescriptor {
             parsedMHC = MHCConfig(start: 0, end: t.num_hidden_layers,
                                   streams: max(2, t.hc_mult ?? 4),
                                   iterations: max(1, t.hc_sinkhorn_iters ?? 20),
-                                  fixedIdentity: false, preScale: 1.0)
+                                  fixedIdentity: false, preScale: 1.0,
+                                  hcEps: t.hc_eps, hasExitHead: t.enable_hyper_connections == true)
         case .flag(false), nil:
             parsedMHC = nil
         }
         if t.hc_count != nil || parsedMHC != nil { caps.insert(.hyperConnections) }
         let resolvedMtpLayers = max(0, t.mtp_num_hidden_layers ?? t.num_nextn_predict_layers ?? 0)
         if resolvedMtpLayers > 0 { caps.insert(.mtp) }
+
+        let parsedYarn: YarnRopeConfig? = {
+            guard let rs = t.rope_scaling else { return nil }
+            let kind = (rs.type ?? rs.rope_type ?? "").lowercased()
+            guard kind == "yarn", let factor = rs.factor, let orig = rs.original_max_position_embeddings else {
+                return nil
+            }
+            return YarnRopeConfig(factor: factor, originalMaxPositionEmbeddings: orig,
+                                  betaFast: rs.beta_fast ?? 32.0, betaSlow: rs.beta_slow ?? 1.0,
+                                  mscale: rs.mscale ?? 0.0, mscaleAllDim: rs.mscale_all_dim ?? 0.0)
+        }()
+
+        let parsedHCA: HCAConfig? = {
+            guard normalizedLayerTypes.contains("compressed_attention"),
+                  let ratios = t.compress_ratios else { return nil }
+            let defRatio = ratios.first(where: { $0 > 0 }) ?? 128
+            return HCAConfig(
+                compressRatios: ratios,
+                defaultCompressRatio: defRatio,
+                qHeads: t.num_attention_heads,
+                kvHeads: t.num_key_value_heads,
+                headDim: resolvedHeadDim,
+                qLoraRank: t.q_lora_rank ?? 1024,
+                kvLoraRank: t.kv_lora_rank ?? 512,
+                qkNopeHeadDim: t.qk_nope_head_dim ?? 448,
+                qkRopeHeadDim: t.qk_rope_head_dim ?? 64,
+                vHeadDim: t.v_head_dim ?? resolvedHeadDim,
+                oGroups: t.o_groups ?? 8,
+                oLoraRank: t.o_lora_rank ?? 1024,
+                slidingWindow: t.sliding_window ?? 128,
+                compressRopeTheta: t.compress_rope_theta ?? ropeTheta,
+                yarn: (t.hca_rope_type == nil || t.hca_rope_type?.lowercased() == "yarn") ? parsedYarn : nil,
+                useAttnMerger: t.use_attn_merger ?? true,
+                useVHA: t.use_vha_attention ?? false,
+                hasAttnSinkBias: t.add_full_attention_sink_bias ?? false,
+                gatedAttnUseQLora: t.gated_attn_use_q_lora ?? false
+            )
+        }()
+
+        let parsedHybridMLA: HybridMLAConfig? = {
+            guard hasHybridMLA else { return nil }
+            let nope = t.hybrid_mla_qk_nope_head_dim ?? t.qk_nope_head_dim ?? 192
+            let rope = t.hybrid_mla_qk_rope_head_dim ?? t.qk_rope_head_dim ?? 64
+            let mlaYarn: YarnRopeConfig? = (t.rope_type?.lowercased() == "yarn") ? parsedYarn : nil
+            return HybridMLAConfig(
+                qHeads: t.hybrid_mla_num_attention_heads ?? t.num_attention_heads,
+                qLoraRank: t.hybrid_mla_q_lora_rank ?? t.q_lora_rank ?? 1024,
+                kvLoraRank: t.hybrid_mla_kv_lora_rank ?? t.kv_lora_rank ?? 512,
+                qkNopeHeadDim: nope,
+                qkRopeHeadDim: rope,
+                vHeadDim: t.hybrid_mla_v_head_dim ?? t.v_head_dim ?? 256,
+                decoupledRope: !isNoPEMLA && rope > 0,
+                ropeInterleave: t.rope_interleave ?? t.indexer_rope_interleave ?? false,
+                slidingWindow: t.sliding_window ?? 0,
+                hasAttnSinkBias: t.add_full_attention_sink_bias ?? false,
+                useVHA: t.use_vha_attention ?? false,
+                indexerUseFastHadamard: t.use_fast_hadamard ?? false,
+                splitKvBProj: t.mqa_split_kv_b_proj ?? false,
+                yarn: mlaYarn
+            )
+        }()
+
+        let parsedAct: ActivationKind
+        if let act = t.hidden_act?.lowercased(), act == "situ" {
+            parsedAct = .situ(beta: t.activation_situ_beta ?? 4.0,
+                              linearBeta: t.activation_situ_linear_beta ?? 25.0)
+        } else {
+            parsedAct = .silu
+        }
 
         let rawLoop = t.loop_settings ?? env.loop_settings
         let parsedLoop: LoopSettings? = (rawLoop.flatMap { rl in
@@ -421,7 +491,7 @@ extension QWModelDescriptor {
         }
         let family = familySpec.family
         let gateDeclared: Bool = t.output_gate_type != nil
-        let attnGate: Bool = t.attn_output_gate ?? (gateDeclared || familySpec.defaultAttnOutputGate)
+        let attnGate: Bool = t.attn_output_gate ?? t.use_gated_attn ?? (gateDeclared || familySpec.defaultAttnOutputGate)
         let resolvedGateType = t.scoring_func ?? familySpec.defaultExpertGateType
         let vc = env.vision_config
         return QWModelDescriptor(
@@ -457,6 +527,7 @@ extension QWModelDescriptor {
             usesPlusOneRMSNorm: familySpec.usesPlusOneRMSNorm,
             quantization: t.quantization ?? t.quantization_config ?? env.quantization ?? env.quantization_config,
             hasMropeSection: hasMrope,
+            tieWordEmbeddings: t.tie_word_embeddings ?? false,
             normTopKProb: t.norm_topk_prob ?? (resolvedNumExperts != nil),
             eosTokenIds: eosList,
             envelopeModelType: env.model_type,
@@ -467,21 +538,30 @@ extension QWModelDescriptor {
             routedScalingFactor: t.routed_scaling_factor ?? 1.0,
             swigluLimit: (t.mlp_clamp == false) ? nil : (t.swiglu_limit ?? t.swiglu_limits),
             topkMethod: t.topk_method,
-            sharedExpertHasGate: (t.n_shared_experts == nil),
+            sharedExpertHasGate: t.moe_shared_expert_gate ?? (t.n_shared_experts == nil),
             mlaUseNoPE: isNoPEMLA,
-            kvLoraRank: t.kv_lora_rank,
-            qLoraRank: t.q_lora_rank,
-            qkNopeHeadDim: t.qk_nope_head_dim,
-            qkRopeHeadDim: t.qk_rope_head_dim,
-            vHeadDim: t.v_head_dim,
+            kvLoraRank: parsedHybridMLA?.kvLoraRank ?? t.kv_lora_rank,
+            qLoraRank: parsedHybridMLA?.qLoraRank ?? t.q_lora_rank,
+            qkNopeHeadDim: parsedHybridMLA?.qkNopeHeadDim ?? t.qk_nope_head_dim,
+            qkRopeHeadDim: parsedHybridMLA?.qkRopeHeadDim ?? t.qk_rope_head_dim,
+            vHeadDim: parsedHybridMLA?.vHeadDim ?? t.v_head_dim,
             indexKPoolCompress: t.index_kpool_compress ?? false,
             indexKPoolAlwaysSelectTail: t.index_kpool_always_select_tail ?? false,
             indexShareForMTP: t.index_share_for_mtp_iteration ?? false,
-            indexerRopeInterleave: t.indexer_rope_interleave ?? false,
+            indexerRopeInterleave: t.indexer_rope_interleave ?? t.rope_interleave ?? false,
             gdnVectorDecay: isKDA,
             gdnLowRankDim: gdnLowRank,
             gdnGateLowerBound: linCfg?.gate_lower_bound,
-            gdnSeparateConv: isKDA)
+            gdnSeparateConv: isKDA,
+            hcaConfig: parsedHCA,
+            hybridMLAConfig: parsedHybridMLA,
+            activationKind: parsedAct,
+            moeLatentSize: t.moe_latent_size,
+            latentMoeUseNorm: t.latent_moe_use_norm ?? false,
+            moeSplitFeatureRouting: t.moe_split_feature_routing ?? false,
+            routedScalingFactorLearnable: t.routed_scaling_factor_learnable ?? false,
+            multimaxHead: (t.multimax?.lowercased() == "lm_head"),
+            mtpSharedLastLayer: t.mtp_shared_last_layer ?? false)
     }
 
     /// Decodes a flat HF/MLX config into a descriptor.

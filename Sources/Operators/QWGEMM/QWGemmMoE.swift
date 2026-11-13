@@ -157,7 +157,8 @@ extension QWGemm {
                                                      coldBank: QWWeightView? = nil,
                                                      tileFilter: MoETileFilter = .all,
                                                      routeOutput: Bool = false,
-                                                     reuseExpertsAcrossTokens: Bool = true) throws {
+                                                     reuseExpertsAcrossTokens: Bool = true,
+                                                     skipShared: Bool = false) throws {
         if bank.isIncumbentContainer {
             enc.setComputePipelineState(try hal.pipeline("qwg_moe_down_shared_combine_q4g_f32"))
         } else {
@@ -180,7 +181,8 @@ extension QWGemm {
         enc.setUInt32s(rowsPerRoute, bank.k, ePacked, startIndex: 6)
         ids.bind(enc, index: 9)
         (out16 ?? out).bind(enc, index: 10)
-        enc.setUInt32s((out16 != nil ? 1 : 0) | (routeOutput ? 2 : 0), startIndex: 11)
+        let combineFlags = (out16 != nil ? 1 : 0) | (routeOutput ? 2 : 0) | (skipShared ? 4 : 0)
+        enc.setUInt32s(combineFlags, startIndex: 11)
         (coldBank ?? bank).blocks.bind(enc, index: 12)
         enc.dispatchThreadgroups(MTLSize(width: (rowsPerRoute + 15) / 16, height: dedupToks != 0 ? 1 : tokens, depth: 1),
                                  threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
@@ -289,14 +291,20 @@ extension QWGemm {
                                                      weights: QWTensorValue, shared: QWTensorValue,
                                                      gate: QWTensorValue, out: QWTensorValue,
                                                      hidden: Int, routes: Int, tokens: Int,
-                                                     out16: QWTensorValue? = nil) throws {
+                                                     out16: QWTensorValue? = nil,
+                                                     skipShared: Bool = false,
+                                                     unweightedSingle: Bool = false) throws {
         enc.setComputePipelineState(try hal.pipeline("qwg_moe_down_reduce_combine_f32"))
         dnAcc.bind(enc, index: 0)
         (invPerm ?? weights).bind(enc, index: 1)
         enc.bindTensors(weights, shared, gate, out, startIndex: 2)
         enc.setUInt32s(hidden, routes, tokens, startIndex: 6)
         (out16 ?? out).bind(enc, index: 9)
-        let flags = (out16 != nil ? 1 : 0) | (dnAcc.shape.dtype == .f16 ? 2 : 0) | (invPerm == nil ? 4 : 0)
+        let flags = (out16 != nil ? 1 : 0)
+            | (dnAcc.shape.dtype == .f16 ? 2 : 0)
+            | (invPerm == nil ? 4 : 0)
+            | (skipShared ? 8 : 0)
+            | (unweightedSingle ? 16 : 0)
         enc.setUInt32s(flags, startIndex: 10)
         let cols4 = (hidden + 3) / 4
         enc.dispatchThreadgroups(MTLSize(width: (cols4 + 255) / 256, height: tokens, depth: 1),

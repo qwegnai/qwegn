@@ -13,6 +13,11 @@ public final class QWTokenizer: @unchecked Sendable {
     // member is NSRegularExpression (internally immutable post-compile and
     // thread-safe for matching — @unchecked above is that fact, not a lie).
 
+    enum PreTokenStep {
+        case digits(individualDigits: Bool, regex: NSRegularExpression)
+        case splitIsolated(regex: NSRegularExpression)
+    }
+
     enum Mode {
         case byteLevel
         case metaspaceByteFallback(replacement: String, prependScheme: String, splitWords: Bool)
@@ -45,8 +50,8 @@ public final class QWTokenizer: @unchecked Sendable {
     /// added tokens (file order preserved; special flag from the file)
     let added: [(s: String, id: Int)]
     let specialIds: Set<Int>
-    /// pre-tokenizer Split regex (from the file, compiled at load)
-    let split: NSRegularExpression
+    /// chained pre-tokenizer stages (from the file, compiled at load)
+    let preSteps: [PreTokenStep]
     /// byte -> symbol interner id (direct O(1) table, zero allocations)
     let byteToSymId: [UInt32]
     /// pre-encoded added token patterns for fast scanning
@@ -82,24 +87,50 @@ public final class QWTokenizer: @unchecked Sendable {
         let normObj = root["normalizer"] as? [String: Any]
         let normType = normObj?["type"] as? String
         let detectedMode: Mode
-        let pat: String
+        var compiledSteps: [PreTokenStep] = []
         if preType == "Sequence",
-           let splitSub = subs.first(where: { ($0["type"] as? String) == "Split" }),
-           let rPat = (splitSub["pattern"] as? [String: Any])?["Regex"] as? String,
-           splitSub["behavior"] as? String == "Isolated",
            subs.contains(where: { ($0["type"] as? String) == "ByteLevel" && ($0["use_regex"] as? Bool) == false }) {
             guard normType == nil || normType == "NFC" else {
                 throw Error.badJSON("normalizer ≠ NFC")
             }
+            for sub in subs {
+                let stype = sub["type"] as? String
+                if stype == "ByteLevel" {
+                    guard (sub["use_regex"] as? Bool) == false else {
+                        throw Error.badJSON("ByteLevel use_regex=true unsupported")
+                    }
+                } else if stype == "Digits" {
+                    let indiv = (sub["individual_digits"] as? Bool) ?? false
+                    let dPat = indiv ? "\\p{Nd}" : "\\p{Nd}+"
+                    guard let re = try? NSRegularExpression(pattern: dPat) else {
+                        throw Error.regex("ICU refused Digits regex")
+                    }
+                    compiledSteps.append(.digits(individualDigits: indiv, regex: re))
+                } else if stype == "Split" {
+                    guard (sub["behavior"] as? String) == "Isolated",
+                          ((sub["invert"] as? Bool) ?? false) == false,
+                          let rPat = (sub["pattern"] as? [String: Any])?["Regex"] as? String else {
+                        throw Error.badJSON("unsupported Split pre_tokenizer configuration")
+                    }
+                    let icuPat = Self.normalizeOnigStackedExactRepeat(rPat)
+                    guard let re = try? NSRegularExpression(pattern: icuPat) else {
+                        throw Error.regex("ICU refused \(rPat.prefix(40))…")
+                    }
+                    compiledSteps.append(.splitIsolated(regex: re))
+                } else {
+                    throw Error.badJSON("unsupported Sequence pre_tokenizer stage '\(stype ?? "nil")'")
+                }
+            }
+            guard !compiledSteps.isEmpty else {
+                throw Error.badJSON("pre_tokenizer Sequence has no Split/Digits stages before ByteLevel")
+            }
             detectedMode = .byteLevel
-            pat = rPat
         } else if let metaSub = subs.first(where: { ($0["type"] as? String) == "Metaspace" }),
                   (model["byte_fallback"] as? Bool) == true {
             let rep = (metaSub["replacement"] as? String) ?? "\u{2581}"
             let scheme = (metaSub["prepend_scheme"] as? String) ?? "always"
             let sp = (metaSub["split"] as? Bool) ?? false
             detectedMode = .metaspaceByteFallback(replacement: rep, prependScheme: scheme, splitWords: sp)
-            pat = ".+"
         } else {
             throw Error.badJSON("pre_tokenizer Sequence[Split(Isolated),ByteLevel(no regex)] not found")
         }
@@ -109,10 +140,7 @@ public final class QWTokenizer: @unchecked Sendable {
         self.stripLeadingSpace = decSubs.contains(where: {
             ($0["type"] as? String) == "Strip" && ($0["content"] as? String) == " " && (($0["start"] as? Int) ?? 0) > 0
         })
-        guard let regs = try? NSRegularExpression(pattern: pat) else {
-            throw Error.regex("ICU refused \(pat.prefix(40))…")
-        }
-        self.split = regs
+        self.preSteps = compiledSteps
         self.vocab = vocabObj
 
         var addedList: [(String, Int)] = []
@@ -136,18 +164,24 @@ public final class QWTokenizer: @unchecked Sendable {
         case .byteLevel:
             var n = 0
             for b in 0..<256 {
-                let idc = Unicode.Scalar(UInt8(b))
-                if vocabObj[String(idc)] != nil {
-                    map[b] = idc
+                let isDirect = (b >= 0x21 && b <= 0x7E)
+                    || (b >= 0xA1 && b <= 0xAC)
+                    || (b >= 0xAE && b <= 0xFF)
+                let sc: Unicode.Scalar
+                if isDirect {
+                    sc = Unicode.Scalar(UInt8(b))
                 } else {
-                    guard let sc = Unicode.Scalar(0x100 + n) else {
+                    guard let shifted = Unicode.Scalar(0x100 + n) else {
                         throw Error.badJSON("byte fold overflow at \(b)")
                     }
-                    if vocabObj[String(sc)] == nil {
-                        throw Error.badJSON("no vocab token for byte \(b) (\(String(sc).debugDescription))")
-                    }
-                    map[b] = sc; n += 1
+                    sc = shifted
+                    n += 1
                 }
+                let isImpossibleUTF8 = (b == 0xC0 || b == 0xC1 || b >= 0xF5)
+                if vocabObj[String(sc)] == nil && !isImpossibleUTF8 {
+                    throw Error.badJSON("no vocab token for byte \(b) (\(String(sc).debugDescription))")
+                }
+                map[b] = sc
             }
             for (b, sc) in map.enumerated() { unmap[sc] = UInt8(b) }
         case .metaspaceByteFallback:
@@ -212,10 +246,13 @@ public final class QWTokenizer: @unchecked Sendable {
         case .byteLevel:
             for (b, sc) in map.enumerated() {
                 let key = String(String.UnicodeScalarView([sc]))
-                guard let sid = sId[key] else {
+                if let sid = sId[key] {
+                    b2s[b] = sid
+                } else if b == 0xC0 || b == 0xC1 || b >= 0xF5 {
+                    b2s[b] = UInt32.max
+                } else {
                     throw Error.badJSON("byte symbol \(key) not in symbol map")
                 }
-                b2s[b] = sid
             }
         case .metaspaceByteFallback:
             for b in 0..<256 {
@@ -239,5 +276,21 @@ public final class QWTokenizer: @unchecked Sendable {
         }
         self.addedPats = pats
         self.addedFirstByte = firstByteTable
+    }
+
+    /// Onig/fancy-regex (HF `tokenizers`) parses `<atom>{n}+` as `(?:<atom>{n})+`,
+    /// whereas ICU parses `{n}+` as a possessive exact-`n` quantifier.
+    private static func normalizeOnigStackedExactRepeat(_ pattern: String) -> String {
+        guard let meta = try? NSRegularExpression(
+            pattern: #"(\\[pP]\{[^}]+\}|\\.|\[[^\]]+\])\{(\d+)\}\+"#
+        ) else {
+            return pattern
+        }
+        let ns = pattern as NSString
+        return meta.stringByReplacingMatches(
+            in: pattern,
+            range: NSRange(location: 0, length: ns.length),
+            withTemplate: "(?:$1{$2})+"
+        )
     }
 }

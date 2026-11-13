@@ -506,3 +506,161 @@ kernel void qwg_mhc_merge_f16(device float*       mhcStream   [[buffer(0)]],
                                    nextNormOut, hidden, eps, flags, tg, sg, lane, partSS);
     }
 }
+
+// Learned C->1 stream contraction (hc_head) with optional fused RMSNorm + H_32 rotation.
+// Reads mhcStream read-only so NextN/ECHO layers can consume the uncontracted multi-stream residual.
+template <uint C>
+inline void qwg_mhc_exit_head_f16_impl(device const float* mhcStream,
+                                       device const float* headW,
+                                       device const float* headB,
+                                       device const half*  normGamma,
+                                       device half*        outNorm,
+                                       device float*       outRot32,
+                                       uint                hidden,
+                                       float               eps,
+                                       float               preScale,
+                                       uint                flags,
+                                       uint                tg,
+                                       uint                sg,
+                                       uint                lane,
+                                       threadgroup float*  partSS,
+                                       threadgroup float*  partDots,
+                                       threadgroup float*  sPre) {
+    const uint tid = sg * 32u + lane;
+    const uint width = C * hidden;
+    const uint width4 = width >> 2u;
+    device const float* sBase = mhcStream + (size_t)tg * width;
+
+    float ss = 0.0f;
+    float acc[C];
+    #pragma unroll
+    for (uint c = 0u; c < C; ++c) acc[c] = 0.0f;
+    device const float4* sr4 = (device const float4*)sBase;
+    for (uint k4 = tid; k4 < width4; k4 += 256u) {
+        const float4 v = sr4[k4];
+        ss += dot(v, v);
+        #pragma unroll
+        for (uint c = 0u; c < C; ++c) {
+            device const float4* wr4 = (device const float4*)(headW + (size_t)c * width);
+            acc[c] += dot(v, wr4[k4]);
+        }
+    }
+    ss = simd_sum(ss);
+    #pragma unroll
+    for (uint c = 0u; c < C; ++c) acc[c] = simd_sum(acc[c]);
+    if (lane == 0u) {
+        partSS[sg] = ss;
+        #pragma unroll
+        for (uint c = 0u; c < C; ++c) partDots[sg * C + c] = acc[c];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (tid == 0u) {
+        float totSS = 0.0f;
+        float tot[C];
+        #pragma unroll
+        for (uint c = 0u; c < C; ++c) tot[c] = 0.0f;
+        for (uint i = 0u; i < 8u; ++i) {
+            totSS += partSS[i];
+            #pragma unroll
+            for (uint c = 0u; c < C; ++c) tot[c] += partDots[i * C + c];
+        }
+        const float rstd = rsqrt(totSS / float(width) + eps);
+        const float hcEps = (C == 4u) ? QW_FC_MHC_HC_EPS : 0.0f;
+        #pragma unroll
+        for (uint c = 0u; c < C; ++c) {
+            const float lPre = tot[c] * rstd + headB[c];
+            sPre[c] = (1.0f / (1.0f + exp(-lPre))) * preScale + hcEps;
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    const bool applyNorm = (flags & 1u) != 0u;
+    const bool writeRot32 = (flags & 2u) != 0u;
+    float pre[C];
+    #pragma unroll
+    for (uint c = 0u; c < C; ++c) pre[c] = sPre[c];
+    device half* dst16 = outNorm + (size_t)tg * hidden;
+    device float* dst32 = outRot32 + (size_t)tg * hidden;
+    if (!applyNorm) {
+        for (uint h = tid; h < hidden; h += 256u) {
+            float bv = 0.0f;
+            #pragma unroll
+            for (uint c = 0u; c < C; ++c) bv = fma(pre[c], sBase[c * hidden + h], bv);
+            dst16[h] = half(bv);
+            if (writeRot32) dst32[h] = bv;
+        }
+        return;
+    }
+
+    float bss = 0.0f;
+    for (uint h = tid; h < hidden; h += 256u) {
+        float bv = 0.0f;
+        #pragma unroll
+        for (uint c = 0u; c < C; ++c) bv = fma(pre[c], sBase[c * hidden + h], bv);
+        bss = fma(bv, bv, bss);
+    }
+    bss = simd_sum(bss);
+    if (lane == 0u) partSS[sg] = bss;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float totBSS = 0.0f;
+    for (uint i = 0u; i < 8u; ++i) totBSS += partSS[i];
+    const float rstdOut = rsqrt(totBSS / float(hidden) + eps);
+    const uint lim = (hidden + 255u) & ~255u;
+    for (uint b0 = 0u; b0 < lim; b0 += 256u) {
+        const uint h = b0 + tid;
+        float bv = 0.0f;
+        if (h < hidden) {
+            #pragma unroll
+            for (uint c = 0u; c < C; ++c) bv = fma(pre[c], sBase[c * hidden + h], bv);
+        }
+        float v = bv * rstdOut * (1.0f + (h < hidden ? float(normGamma[h]) : 0.0f));
+        v = qwg_fwht32_lane_f32(v, lane);
+        if (h < hidden) {
+            dst16[h] = half(v);
+            if (writeRot32) dst32[h] = v;
+        }
+    }
+}
+
+kernel void qwg_mhc_exit_head_f16(device const float* mhcStream [[buffer(0)]],
+                                  device const float* headW     [[buffer(1)]],
+                                  device const float* headB     [[buffer(2)]],
+                                  device const half*  normGamma [[buffer(3)]],
+                                  device half*        outNorm   [[buffer(4)]],
+                                  device float*       outRot32  [[buffer(5)]],
+                                  constant uint&      hidden    [[buffer(6)]],
+                                  constant float&     eps       [[buffer(7)]],
+                                  constant float&     preScale  [[buffer(8)]],
+                                  constant uint&      flags     [[buffer(9)]],
+                                  uint tg   [[threadgroup_position_in_grid]],
+                                  uint sg   [[simdgroup_index_in_threadgroup]],
+                                  uint lane [[thread_index_in_simdgroup]]) {
+    threadgroup float partSS[8];
+    threadgroup float partDots[32];
+    threadgroup float sPre[4];
+    if (QW_MHC_STREAMS == 4u) {
+        qwg_mhc_exit_head_f16_impl<4u>(mhcStream, headW, headB, normGamma, outNorm, outRot32,
+                                       hidden, eps, preScale, flags, tg, sg, lane, partSS, partDots, sPre);
+    } else {
+        qwg_mhc_exit_head_f16_impl<2u>(mhcStream, headW, headB, normGamma, outNorm, outRot32,
+                                       hidden, eps, preScale, flags, tg, sg, lane, partSS, partDots, sPre);
+    }
+}
+
+kernel void qwg_echo_stream_init_f16(device const half* hProjOut   [[buffer(0)]],
+                                     device const half* eProjOut   [[buffer(1)]],
+                                     device float*      echoStream [[buffer(2)]],
+                                     constant uint&     hidden     [[buffer(3)]],
+                                     uint2 tg  [[threadgroup_position_in_grid]],
+                                     uint  tid [[thread_index_in_threadgroup]]) {
+    const uint h = tg.x * 256u + tid;
+    if (h >= hidden) return;
+    const uint r = tg.y;
+    const uint C = QW_MHC_STREAMS;
+    const float ev = float(eProjOut[(size_t)r * hidden + h]);
+    const size_t base = (size_t)r * C * hidden + h;
+    for (uint s = 0u; s < C; ++s) {
+        echoStream[base + (size_t)s * hidden] = float(hProjOut[base + (size_t)s * hidden]) + ev;
+    }
+}

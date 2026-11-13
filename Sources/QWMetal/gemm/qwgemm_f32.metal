@@ -463,6 +463,88 @@ kernel void qwg_h32_f32(device const float* x   [[buffer(0)]],
     out[t * H + g * 32u + lane] = v;
 }
 
+// Optional RMSNorm (1 + gamma) + H_32 rotation on f32 [rows, L], emitting f32 and/or f16.
+// flags: bit 0 = hasNorm, bit 1 = writeOut16, bit 2 = skipOut32. Requires L % 32 == 0.
+kernel void qwg_latent_norm_h32_f32(device const float* x     [[buffer(0)]],
+                                    device const half*  gamma [[buffer(1)]],
+                                    device float*       out32 [[buffer(2)]],
+                                    device half*        out16 [[buffer(3)]],
+                                    constant uint&      L     [[buffer(4)]],
+                                    constant float&     eps   [[buffer(5)]],
+                                    constant uint&      flags [[buffer(6)]],
+                                    uint2 tg   [[threadgroup_position_in_grid]],
+                                    uint  sg   [[simdgroup_index_in_threadgroup]],
+                                    uint  lane [[thread_index_in_simdgroup]]) {
+    const bool hasNorm = (flags & 1u) != 0u;
+    const bool write16 = (flags & 2u) != 0u;
+    const bool skip32 = (flags & 4u) != 0u;
+    if (!hasNorm) {
+        const uint col = tg.x * 32u + lane;
+        if (col >= L) return;
+        const size_t idx = (size_t)tg.y * L + col;
+        const float v = qwg_fwht32_lane_f32(x[idx], lane);
+        if (!skip32) out32[idx] = v;
+        if (write16) out16[idx] = half(v);
+        return;
+    }
+    threadgroup float partSS[8];
+    const uint tid = sg * 32u + lane;
+    device const float* xr = x + (size_t)tg.y * L;
+    if (L <= 2048u) {
+        float regX[8];
+        float ss = 0.0f;
+        #pragma unroll
+        for (uint i = 0u; i < 8u; ++i) {
+            const uint c = i * 256u + tid;
+            const float v = (c < L) ? xr[c] : 0.0f;
+            regX[i] = v;
+            ss = fma(v, v, ss);
+        }
+        ss = simd_sum(ss);
+        if (lane == 0u) partSS[sg] = ss;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        float totSS = 0.0f;
+        for (uint i = 0u; i < 8u; ++i) totSS += partSS[i];
+        const float rstd = rsqrt(totSS / float(L) + eps);
+        #pragma unroll
+        for (uint i = 0u; i < 8u; ++i) {
+            const uint b0 = i * 256u;
+            if (b0 >= L) break;
+            const uint c = b0 + tid;
+            float v = (c < L) ? (regX[i] * rstd * (1.0f + float(gamma[c]))) : 0.0f;
+            v = qwg_fwht32_lane_f32(v, lane);
+            if (c < L) {
+                const size_t idx = (size_t)tg.y * L + c;
+                if (!skip32) out32[idx] = v;
+                if (write16) out16[idx] = half(v);
+            }
+        }
+        return;
+    }
+    float ss = 0.0f;
+    for (uint c = tid; c < L; c += 256u) {
+        const float v = xr[c];
+        ss = fma(v, v, ss);
+    }
+    ss = simd_sum(ss);
+    if (lane == 0u) partSS[sg] = ss;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float totSS = 0.0f;
+    for (uint i = 0u; i < 8u; ++i) totSS += partSS[i];
+    const float rstd = rsqrt(totSS / float(L) + eps);
+    const uint lim = (L + 255u) & ~255u;
+    for (uint b0 = 0u; b0 < lim; b0 += 256u) {
+        const uint c = b0 + tid;
+        float v = (c < L) ? (xr[c] * rstd * (1.0f + float(gamma[c]))) : 0.0f;
+        v = qwg_fwht32_lane_f32(v, lane);
+        if (c < L) {
+            const size_t idx = (size_t)tg.y * L + c;
+            if (!skip32) out32[idx] = v;
+            if (write16) out16[idx] = half(v);
+        }
+    }
+}
+
 // 32-point normalized WHT in f32, same butterflies and scale as fwht32_f32_to_h8 (lane = simdgroup lane).
 // In the STANDARD basis the transform is skipped: the activation stays as it
 // is, matching the weights it is about to meet.

@@ -57,6 +57,7 @@ public enum QWCoarsePoolIndex {
             candCap: Int,
             qChannels: Int = 0,
             idxHeads: Int = 0,
+            poolShift: Int = 2,
             flags: UInt32 = 0
         ) {
             self.T = UInt32(T)
@@ -74,7 +75,8 @@ public enum QWCoarsePoolIndex {
             self.candCap = UInt32(candCap)
             self.qChannels = UInt32(qChannels)
             self.idxHeads = UInt32(idxHeads)
-            self.flags = flags
+            let sh = UInt32(max(0, min(15, poolShift)))
+            self.flags = (flags & ~0x1F) | 0x10 | sh
         }
     }
 
@@ -140,8 +142,13 @@ public enum QWCoarsePoolIndex {
         }
     }
 
-    public static func maxMacros(forMaxContext maxContext: Int) -> Int {
-        max(1, (max(4096, maxContext) + macroChunkTokens - 1) / macroChunkTokens)
+    public static func macroChunkTokens(poolShift: Int) -> Int {
+        macroChunkPools << max(0, poolShift)
+    }
+
+    public static func maxMacros(forMaxContext maxContext: Int, poolShift: Int = 2) -> Int {
+        let chunkTok = macroChunkTokens(poolShift: poolShift)
+        return max(1, (max(chunkTok, maxContext) + chunkTok - 1) / chunkTok)
     }
 
     public static func csrBytesPerMacro(indexDim: Int) -> (centroids: Int, members: Int, spans: Int, total: Int) {
@@ -188,13 +195,14 @@ public enum QWCoarsePoolIndex {
         windowBlocks: Int = 0,
         hasSink: Bool = false,
         writeCount: Bool = true,
-        probeClusters: Int
+        probeClusters: Int,
+        poolShift: Int = 2
     ) -> BatchGeometry {
         let effMaxRow = maxRow ?? units
         let lastRow = rowStep > 1
             ? min((units - 1) * rowStep + rowStep - 1, max(0, effMaxRow - 1))
             : max(0, units - 1)
-        let totalBlocks = (pos0 + lastRow + 1) >> 2
+        let totalBlocks = (pos0 + lastRow + 1) >> max(0, poolShift)
         let denseLim = (hasSink ? 1 : 0) + budgetBlocks + windowBlocks
         if totalBlocks <= denseLim {
             return BatchGeometry(totalBlocks: totalBlocks, middleEnd: 0, numMacros: 0,

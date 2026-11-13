@@ -123,6 +123,8 @@ extension QWEngineDriver {
             preparedStochasticWitness = nil
             pendingMTPProfile = nil
             pendingMTPAdaptiveEntropy = nil
+            lastRoundUsedPLD = false
+            lastEchoDraftedPairs = 0
             session.verificationPending = false
         }
         if let mtpCache, let mtpH = session.mtpKV {
@@ -145,7 +147,9 @@ extension QWEngineDriver {
         try requestGate.validate()
         session.lastCommitCB?.waitUntilCompleted()
         session.lastCommitCB = nil
-        return try QWEngineSessionState.snapshot(session, cache: kvCache, mtpCache: mtpCache)
+        return try QWEngineSessionState.snapshot(
+            session, cache: kvCache, mtpCache: mtpCache,
+            sparseStateData: captureMLAIndexerState(session))
     }
 
     /// Roll back session state to an exact snapshot (destructive rewind).
@@ -159,6 +163,11 @@ extension QWEngineDriver {
         try claimMLAIndexerState(session)
         try QWEngineSessionState.restore(session, to: snapshot, cache: kvCache,
                                         mtpCache: mtpCache, attnLayers: attnLayers)
+        if hcaOperator != nil || mlaOperator != nil || lsaOperator != nil {
+            restoreMLAIndexerState(snapshot.sparseStateData, position: snapshot.position, into: session)
+            mlaOperator?.truncatePosition(snapshot.position)
+            hcaOperator?.truncatePosition(snapshot.position)
+        }
     }
 
     func capturePrivatePrefix(_ session: QWEngineSession, maxBytes: Int) throws -> QWEnginePrivatePrefix {
@@ -199,15 +208,65 @@ extension QWEngineDriver {
         restoreMLAIndexerState(prefix.mlaIndexerData, position: prefix.position, into: session)
     }
 
+    private static let qhmsMagic: UInt32 = 0x534D_4851 // "QHMS"
+    private static let qhmsHeaderBytes = 16
+
+    private static func packCompositeSparseState(sub: Data, hca: Data) -> Data {
+        var out = Data(capacity: qhmsHeaderBytes + sub.count + hca.count)
+        let hdr: [UInt32] = [qhmsMagic, 1, UInt32(sub.count), UInt32(hca.count)]
+        hdr.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            out.append(contentsOf: raw)
+        }
+        out.append(sub)
+        out.append(hca)
+        return out
+    }
+
+    private static func unpackCompositeSparseState(_ data: Data) -> (sub: Data, hca: Data)? {
+        guard data.count >= qhmsHeaderBytes else { return nil }
+        var hdr = [UInt32](repeating: 0, count: 4)
+        _ = hdr.withUnsafeMutableBytes { dst in
+            data.copyBytes(to: dst, from: 0..<qhmsHeaderBytes)
+        }
+        guard hdr[0] == qhmsMagic, hdr[1] == 1 else { return nil }
+        let subLen = Int(hdr[2])
+        let hcaLen = Int(hdr[3])
+        guard qhmsHeaderBytes + subLen + hcaLen == data.count else { return nil }
+        let s0 = qhmsHeaderBytes
+        let s1 = s0 + subLen
+        return (Data(data[s0..<s1]), Data(data[s1..<(s1 + hcaLen)]))
+    }
+
+    private func captureLiveCompositeState(position: Int) -> Data {
+        let sub = mlaOperator?.captureIndexerState(position: position)
+            ?? lsaOperator?.captureIndexerState(position: position)
+            ?? Data()
+        let hcaData = hcaOperator?.captureState(position: position) ?? Data()
+        return Self.packCompositeSparseState(sub: sub, hca: hcaData)
+    }
+
     func activeSparseIndexerStateBytes(position: Int) -> Int {
+        if let hca = hcaOperator {
+            let sub = mlaOperator?.indexerStateBytes(position: position)
+                ?? lsaOperator?.indexerStateBytes(position: position)
+                ?? 0
+            return Self.qhmsHeaderBytes + sub + hca.stateBytes(position: position)
+        }
         if let mla = mlaOperator { return mla.indexerStateBytes(position: position) }
         if let lsa = lsaOperator { return lsa.indexerStateBytes(position: position) }
         return 0
     }
 
-    /// MLA/LSA indexer pools live in the operator, so prefix capture copies them
+    /// MLA/LSA/HCA pools live in the operator, so prefix capture copies them
     /// out and adoption writes them back; the session's GPU work must be done.
     func captureMLAIndexerState(_ session: QWEngineSession) -> Data? {
+        if let hca = hcaOperator {
+            if hca.stateOwner !== session,
+               let stash = session.mlaIndexerStash, stash.position == session.position {
+                return stash.data
+            }
+            return captureLiveCompositeState(position: session.position)
+        }
         if let mla = mlaOperator {
             if mla.stateOwner !== session, let stash = session.mlaIndexerStash, stash.position == session.position {
                 return stash.data
@@ -224,6 +283,22 @@ extension QWEngineDriver {
     }
 
     func validateMLAIndexerState(_ data: Data?, position: Int) throws {
+        if let hca = hcaOperator, position > 0 {
+            guard let data, let parts = Self.unpackCompositeSparseState(data),
+                  parts.hca.count == hca.stateBytes(position: position) else {
+                throw QWEngineDriverError.state("prefix lacks HCA compressed/ring state for its position")
+            }
+            if let mla = mlaOperator {
+                guard parts.sub.count == mla.indexerStateBytes(position: position) else {
+                    throw QWEngineDriverError.state("prefix lacks MLA indexer state inside composite frame")
+                }
+            } else if let lsa = lsaOperator {
+                guard lsa.isValidIndexerState(parts.sub, position: position) else {
+                    throw QWEngineDriverError.state("prefix lacks LSA indexer state inside composite frame")
+                }
+            }
+            return
+        }
         if let mla = mlaOperator, position > 0 {
             guard data?.count == mla.indexerStateBytes(position: position) else {
                 throw QWEngineDriverError.state("prefix lacks MLA indexer state for its position")
@@ -236,9 +311,23 @@ extension QWEngineDriver {
     }
 
     func restoreMLAIndexerState(_ data: Data?, position: Int, into session: QWEngineSession) {
+        if let hca = hcaOperator {
+            try? claimMLAIndexerState(session, restoring: false)
+            if position <= 0 {
+                mlaOperator?.truncatePosition(0)
+                hca.truncatePosition(0)
+                return
+            }
+            guard let data, let parts = Self.unpackCompositeSparseState(data) else { return }
+            if let mla = mlaOperator { _ = mla.restoreIndexerState(parts.sub, position: position) }
+            if let lsa = lsaOperator { _ = lsa.restoreIndexerState(parts.sub, position: position) }
+            _ = hca.restoreState(parts.hca, position: position)
+            return
+        }
         if let mla = mlaOperator {
             try? claimMLAIndexerState(session, restoring: false)
-            guard position > 0, let data else { return }
+            if position <= 0 { mla.truncatePosition(0); return }
+            guard let data else { return }
             _ = mla.restoreIndexerState(data, position: position)
         } else if let lsa = lsaOperator {
             try? claimMLAIndexerState(session, restoring: false)
@@ -247,10 +336,45 @@ extension QWEngineDriver {
         }
     }
 
-    /// The operator holds one session's indexer pools: switching sessions
+    /// The operator holds one session's indexer/HCA pools: switching sessions
     /// stashes the owner's pools and restores the claimant's. Call under the
-    /// flight lock, before encoding any of the session's MLA/LSA work.
+    /// flight lock, before encoding any of the session's MLA/LSA/HCA work.
     func claimMLAIndexerState(_ session: QWEngineSession, restoring: Bool = true) throws {
+        if let hca = hcaOperator {
+            let needsClaim = (hca.stateOwner !== session)
+                || (mlaOperator != nil && mlaOperator!.stateOwner !== session)
+                || (lsaOperator != nil && lsaOperator!.stateOwner !== session)
+            guard needsClaim else { return }
+            if let prev = (hca.stateOwner ?? mlaOperator?.stateOwner ?? lsaOperator?.stateOwner) as? QWEngineSession,
+               !prev.sessionFinished, prev.position > 0 {
+                prev.lastCommitCB?.waitUntilCompleted()
+                prev.mlaIndexerStash = (captureLiveCompositeState(position: prev.position), prev.position)
+            }
+            hca.stateOwner = session
+            mlaOperator?.stateOwner = session
+            lsaOperator?.stateOwner = session
+            defer { session.mlaIndexerStash = nil }
+            guard restoring, session.position > 0 else {
+                mlaOperator?.truncatePosition(session.position)
+                hca.truncatePosition(session.position)
+                return
+            }
+            guard let stash = session.mlaIndexerStash, stash.position == session.position,
+                  let parts = Self.unpackCompositeSparseState(stash.data),
+                  hca.restoreState(parts.hca, position: stash.position) else {
+                session.stateFailed = true
+                throw QWEngineDriverError.state("HCA state was not stashed at the session position")
+            }
+            if let mla = mlaOperator, !mla.restoreIndexerState(parts.sub, position: stash.position) {
+                session.stateFailed = true
+                throw QWEngineDriverError.state("MLA indexer state was not stashed inside composite frame")
+            }
+            if let lsa = lsaOperator, !lsa.restoreIndexerState(parts.sub, position: stash.position) {
+                session.stateFailed = true
+                throw QWEngineDriverError.state("LSA indexer state was not stashed inside composite frame")
+            }
+            return
+        }
         if let mla = mlaOperator {
             guard mla.stateOwner !== session else { return }
             if let prev = mla.stateOwner as? QWEngineSession, !prev.sessionFinished, prev.position > 0 {
@@ -259,7 +383,10 @@ extension QWEngineDriver {
             }
             mla.stateOwner = session
             defer { session.mlaIndexerStash = nil }
-            guard restoring, session.position > 0 else { return }
+            guard restoring, session.position > 0 else {
+                mla.truncatePosition(session.position)
+                return
+            }
             guard let stash = session.mlaIndexerStash, stash.position == session.position,
                   mla.restoreIndexerState(stash.data, position: stash.position) else {
                 session.stateFailed = true

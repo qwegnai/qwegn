@@ -50,7 +50,8 @@ static inline uint emeans_nonzero_score_u32(float x) {
 static inline EmeansSelGeom emeans_sel_geom(constant EmeansSelParams& p, uint unit) {
     EmeansSelGeom g;
     g.qRow = (p.rowStep > 1u) ? min(unit * p.rowStep + (p.rowStep - 1u), p.maxRow - 1u) : unit;
-    g.totalBlocks = (p.pos0 + g.qRow + 1u) >> 2u;
+    const uint poolShift = ((p.flags & 0x10u) != 0u) ? (p.flags & 0xFu) : 2u;
+    g.totalBlocks = (p.pos0 + g.qRow + 1u) >> poolShift;
     const uint denseLim = p.hasSink + p.budgetBlocks + p.windowBlocks;
     g.dense = (g.totalBlocks <= denseLim);
     g.middleEnd = 0u; g.minPool = p.hasSink; g.numMiddle = 0u; g.kEff = 0u;

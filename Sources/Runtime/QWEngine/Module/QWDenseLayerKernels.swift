@@ -118,11 +118,22 @@ class DenseLayerKernel: @unchecked Sendable {
             let nextIsMHC = nextP.map { $0 >= mhcCfg.start && $0 < mhcCfg.end } ?? false
             let deferPostFFN = !isLeave && nextIsMHC && (nextP != mhcCfg.start)
             if !deferPostFFN {
-                try driver.encodeMHCMerge(enc, stream: mhcStream, branchOut: sc.dn16,
-                                          controls: mhcControls, xOut: sc.x,
-                                          nextGamma: nextGamma, nextNormOut: sc.ln1,
-                                          rows: 1, isLeave: isLeave, sinkhornIters: mhcCfg.iterations,
-                                          hasNextNorm: isLeave)
+                if isLeave, mhcCfg.hasExitHead, let exitH = driver.mhcExitHead {
+                    try driver.encodeMHCMerge(enc, stream: mhcStream, branchOut: sc.dn16,
+                                              controls: mhcControls, xOut: sc.x,
+                                              nextGamma: nextGamma, nextNormOut: sc.ln1,
+                                              rows: 1, isLeave: false, sinkhornIters: mhcCfg.iterations,
+                                              hasNextNorm: false)
+                    try driver.encodeMHCExitHead(enc, stream: mhcStream, headW: exitH.headW, headB: exitH.headB,
+                                                 normGamma: driver.finalNorm, outNorm: sc.ln1,
+                                                 rows: 1, applyNorm: true)
+                } else {
+                    try driver.encodeMHCMerge(enc, stream: mhcStream, branchOut: sc.dn16,
+                                              controls: mhcControls, xOut: sc.x,
+                                              nextGamma: nextGamma, nextNormOut: sc.ln1,
+                                              rows: 1, isLeave: isLeave, sinkhornIters: mhcCfg.iterations,
+                                              hasNextNorm: isLeave)
+                }
             }
         } else {
             // ln1 for layer 0 ONLY: the plain norm. For l ≥ 1 the stream
@@ -199,11 +210,22 @@ class DenseLayerKernel: @unchecked Sendable {
             let nextIsMHC = nextP.map { $0 >= mhcCfg.start && $0 < mhcCfg.end } ?? false
             let deferPostFFN = !isLeave && nextIsMHC && (nextP != mhcCfg.start)
             if !deferPostFFN {
-                try driver.encodeMHCMerge(enc, stream: mhcStream, branchOut: activeDn16,
-                                          controls: mhcControls, xOut: activeX,
-                                          nextGamma: nextGamma, nextNormOut: activeLn1,
-                                          rows: T, isLeave: isLeave, sinkhornIters: mhcCfg.iterations,
-                                          hasNextNorm: isLeave)
+                if isLeave, mhcCfg.hasExitHead, let exitH = driver.mhcExitHead {
+                    try driver.encodeMHCMerge(enc, stream: mhcStream, branchOut: activeDn16,
+                                              controls: mhcControls, xOut: activeX,
+                                              nextGamma: nextGamma, nextNormOut: activeLn1,
+                                              rows: T, isLeave: false, sinkhornIters: mhcCfg.iterations,
+                                              hasNextNorm: false)
+                    try driver.encodeMHCExitHead(enc, stream: mhcStream, headW: exitH.headW, headB: exitH.headB,
+                                                 normGamma: driver.finalNorm, outNorm: activeLn1,
+                                                 rows: T, applyNorm: true)
+                } else {
+                    try driver.encodeMHCMerge(enc, stream: mhcStream, branchOut: activeDn16,
+                                              controls: mhcControls, xOut: activeX,
+                                              nextGamma: nextGamma, nextNormOut: activeLn1,
+                                              rows: T, isLeave: isLeave, sinkhornIters: mhcCfg.iterations,
+                                              hasNextNorm: isLeave)
+                }
             }
         } else {
             if l == 0 {
@@ -466,13 +488,14 @@ final class FullAttentionLayerKernel: DenseLayerKernel, QWLayerKernel, @unchecke
                                       positionStart: pos, count: 1)
         // C09 split-K decode: attends the new row from knew/vnew AND
         // materialises it into the page slot in the same launch.
+        let attnDecode = driver.attnDecode!
         if let lsa = driver.lsaOperator {
             lsa.encodeIndexAndCluster(enc, qgate: sc.qR, kIn: sc.kR,
                                       fullAttnLayer: fullAttnIdx, pos0: pos, rows: 1)
             if pos >= driver.lsaConfig.denseBypassThreshold {
                 lsa.encodeSelectBlocks(enc, fullAttnLayer: fullAttnIdx, pos0: pos, rows: 1)
                 let activeKeys = min(pos + 1, driver.lsaConfig.alignedBudget + 640)
-                try driver.attnDecode.encodeSparse(
+                try attnDecode.encodeSparse(
                     enc, qgate: sc.qR, kv: views,
                     knew: sc.kR, vnew: sc.v16,
                     partials: sc.partials, out: sc.attOut,
@@ -481,16 +504,16 @@ final class FullAttentionLayerKernel: DenseLayerKernel, QWLayerKernel, @unchecke
                     C: pos, splits: QWAttnDecode.splits(forKeys: activeKeys),
                     listStride: lsa.listStride)
             } else {
-                try driver.attnDecode.encode(enc, qgate: sc.qR, kv: views,
-                                             knew: sc.kR, vnew: sc.v16,
-                                             partials: sc.partials, out: sc.attOut,
-                                             C: pos, splits: QWAttnDecode.splits(forKeys: pos + 1))
+                try attnDecode.encode(enc, qgate: sc.qR, kv: views,
+                                      knew: sc.kR, vnew: sc.v16,
+                                      partials: sc.partials, out: sc.attOut,
+                                      C: pos, splits: QWAttnDecode.splits(forKeys: pos + 1))
             }
         } else {
-            try driver.attnDecode.encode(enc, qgate: sc.qR, kv: views,
-                                         knew: sc.kR, vnew: sc.v16,
-                                         partials: sc.partials, out: sc.attOut,
-                                         C: pos, splits: QWAttnDecode.splits(forKeys: pos + 1))
+            try attnDecode.encode(enc, qgate: sc.qR, kv: views,
+                                  knew: sc.kR, vnew: sc.v16,
+                                  partials: sc.partials, out: sc.attOut,
+                                  C: pos, splits: QWAttnDecode.splits(forKeys: pos + 1))
         }
         // o_proj (K = qHeads·headDim = 6144 — the C08 law, NOT 5120)
         try driver.gemvH16T4(enc, n: H, k: geometry.qHeads * geometry.headDim,
@@ -511,11 +534,12 @@ final class FullAttentionLayerKernel: DenseLayerKernel, QWLayerKernel, @unchecke
         let fullAttnIdx = driver.attnIndexMap[l]
         let views = context.session.attnKVViews[fullAttnIdx]
         if let mla = driver.mlaOperator, let mlaW = w.mla {
+            let vCols = w.o.k
             let activeLn1 = driver.prefixRows(psc.ln1, rows: T, cols: H, dt: .f16)
             let latRows = driver.prefixRows(mla.mlaLatentScratch, rows: T, cols: mla.latentStride, dt: .f16)
             let qResRows = driver.prefixRows(mla.qResidScratch, rows: T, cols: geometry.qLoraRank, dt: .f16)
             let qFullRows = driver.prefixRows(mla.mlaQFullScratch, rows: T, cols: mla.qFullStride, dt: .f16)
-            let attOutRows = driver.prefixRows(psc.attOut, rows: T, cols: qC, dt: .f16)
+            let attOutRows = driver.prefixRows(psc.attOut, rows: T, cols: vCols, dt: .f16)
             var enc = enc
             func mark(_ stage: String) -> (any MTLComputeCommandEncoder)? {
                 driver.profileStage(stage)
@@ -538,7 +562,7 @@ final class FullAttentionLayerKernel: DenseLayerKernel, QWLayerKernel, @unchecke
                 stage: QWEngineDriver.prefillProfileEnabled ? mark : nil)
             _ = mark("mla.o_proj")
             enc = driver.activeEnc ?? enc
-            driver.gemmBatchedH16(enc, m: T, n: H, k: qC,
+            driver.gemmBatchedH16(enc, m: T, n: H, k: vCols,
                            x: attOutRows,
                            wQ4: w.o,
                            y16: driver.prefixRows(psc.o16, rows: T, cols: H, dt: .f16))

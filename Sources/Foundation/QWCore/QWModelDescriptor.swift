@@ -41,15 +41,20 @@ public struct QWModelDescriptor: Sendable, Hashable {
         public let iterations: Int
         public let fixedIdentity: Bool
         public let preScale: Float
+        public let hcEps: Float?
+        public let hasExitHead: Bool
 
         public init(start: Int, end: Int, streams: Int = 2, iterations: Int = 20,
-                    fixedIdentity: Bool = false, preScale: Float = 1.0) {
+                    fixedIdentity: Bool = false, preScale: Float = 1.0,
+                    hcEps: Float? = nil, hasExitHead: Bool = false) {
             self.start = start
             self.end = end
             self.streams = streams
             self.iterations = iterations
             self.fixedIdentity = fixedIdentity
             self.preScale = preScale
+            self.hcEps = hcEps
+            self.hasExitHead = hasExitHead
         }
     }
 
@@ -59,6 +64,15 @@ public struct QWModelDescriptor: Sendable, Hashable {
     public let capabilities: Set<Capability>
     public let loopSettings: LoopSettings?
     public let mhcConfig: MHCConfig?
+    public let hcaConfig: HCAConfig?
+    public let hybridMLAConfig: HybridMLAConfig?
+    public let activationKind: ActivationKind
+    public let moeLatentSize: Int?
+    public let latentMoeUseNorm: Bool
+    public let moeSplitFeatureRouting: Bool
+    public let routedScalingFactorLearnable: Bool
+    public let multimaxHead: Bool
+    public let mtpSharedLastLayer: Bool
 
     // Text stack
     public let hidden: Int
@@ -180,7 +194,10 @@ public struct QWModelDescriptor: Sendable, Hashable {
 
     /// The Qwen3.8 pack's chat template carries im_start/im_end/think ids.
     public var usesChatTemplateIds: Bool {
-        (family == .qwen38Dense || family == .qwen38FlashNext) && !modelType.hasPrefix("glm5")
+        if let spec = QWModelFamilyRegistry.shared.spec(forModelType: modelType) {
+            return spec.usesQwenChatTemplateIds && vocab > 248046
+        }
+        return (family == .qwen38Dense || family == .qwen38FlashNext) && vocab > 248046
     }
 
     public init(family: Family, modelType: String, capabilities: Set<Capability>,
@@ -235,12 +252,30 @@ public struct QWModelDescriptor: Sendable, Hashable {
                 gdnVectorDecay: Bool = false,
                 gdnLowRankDim: Int? = nil,
                 gdnGateLowerBound: Float? = nil,
-                gdnSeparateConv: Bool = false) {
+                gdnSeparateConv: Bool = false,
+                hcaConfig: HCAConfig? = nil,
+                hybridMLAConfig: HybridMLAConfig? = nil,
+                activationKind: ActivationKind = .silu,
+                moeLatentSize: Int? = nil,
+                latentMoeUseNorm: Bool = false,
+                moeSplitFeatureRouting: Bool = false,
+                routedScalingFactorLearnable: Bool = false,
+                multimaxHead: Bool = false,
+                mtpSharedLastLayer: Bool = false) {
         self.family = family; self.modelType = modelType
         self.envelopeModelType = envelopeModelType
         self.capabilities = capabilities
         self.loopSettings = loopSettings
         self.mhcConfig = mhcConfig
+        self.hcaConfig = hcaConfig
+        self.hybridMLAConfig = hybridMLAConfig
+        self.activationKind = activationKind
+        self.moeLatentSize = moeLatentSize
+        self.latentMoeUseNorm = latentMoeUseNorm
+        self.moeSplitFeatureRouting = moeSplitFeatureRouting
+        self.routedScalingFactorLearnable = routedScalingFactorLearnable
+        self.multimaxHead = multimaxHead
+        self.mtpSharedLastLayer = mtpSharedLastLayer
         self.hidden = hidden; self.vocab = vocab; self.denseIntermediate = denseIntermediate
         self.numLayers = numLayers; self.layerTypes = layerTypes
         self.fullAttentionInterval = fullAttentionInterval; self.rmsEps = rmsEps
@@ -278,7 +313,9 @@ public struct QWModelDescriptor: Sendable, Hashable {
         self.imageTokenId = imageTokenId; self.videoTokenId = videoTokenId
         self.visionStartTokenId = visionStartTokenId; self.visionEndTokenId = visionEndTokenId
         self.hasQKNorm = hasQKNorm
-        self.usesPlusOneRMSNorm = usesPlusOneRMSNorm ?? (family == .qwen38Dense && !modelType.hasPrefix("glm5"))
+        let defaultPlusOne = QWModelFamilyRegistry.shared.spec(forModelType: modelType)?.usesPlusOneRMSNorm
+            ?? (family == .qwen38Dense)
+        self.usesPlusOneRMSNorm = usesPlusOneRMSNorm ?? defaultPlusOne
         self.quantization = quantization; self.hasMropeSection = hasMropeSection
         self.tieWordEmbeddings = tieWordEmbeddings; self.normTopKProb = normTopKProb
         self.eosTokenIds = eosTokenIds.isEmpty ? [eosTokenId] : eosTokenIds
@@ -356,7 +393,13 @@ public struct QWModelDescriptor: Sendable, Hashable {
             indexKPoolCompress: indexKPoolCompress, indexKPoolAlwaysSelectTail: indexKPoolAlwaysSelectTail,
             indexShareForMTP: indexShareForMTP, indexerRopeInterleave: indexerRopeInterleave,
             gdnVectorDecay: gdnVectorDecay, gdnLowRankDim: gdnLowRankDim,
-            gdnGateLowerBound: gdnGateLowerBound, gdnSeparateConv: gdnSeparateConv
+            gdnGateLowerBound: gdnGateLowerBound, gdnSeparateConv: gdnSeparateConv,
+            hcaConfig: hcaConfig, hybridMLAConfig: hybridMLAConfig,
+            activationKind: activationKind, moeLatentSize: moeLatentSize,
+            latentMoeUseNorm: latentMoeUseNorm,
+            moeSplitFeatureRouting: moeSplitFeatureRouting,
+            routedScalingFactorLearnable: routedScalingFactorLearnable,
+            multimaxHead: multimaxHead, mtpSharedLastLayer: mtpSharedLastLayer
         )
     }
 
@@ -371,18 +414,21 @@ public struct QWModelDescriptor: Sendable, Hashable {
 
     /// Starting channel offset within each attention head for LSA index projection.
     public var lsaHeadSliceStart: Int {
+        if hcaConfig != nil && hasMLAAttention { return 0 }
         let unrot = headDim - rotaryDims
         return unrot >= 64 ? rotaryDims : 0
     }
 
     /// Number of channels per KV head fed into the LSA index projection.
     public var lsaHeadSliceDim: Int {
-        headDim - lsaHeadSliceStart
+        if let hca = hcaConfig, hasMLAAttention { return hca.qkNopeHeadDim }
+        return headDim - lsaHeadSliceStart
     }
 
     /// Total input dimension `kvHeads * lsaHeadSliceDim` for per-layer LSA `wq_idx` / `wk_idx` projections.
     public var lsaInputDim: Int {
-        kvHeads * lsaHeadSliceDim
+        if let hca = hcaConfig, hasMLAAttention { return hca.qkNopeHeadDim }
+        return kvHeads * lsaHeadSliceDim
     }
 
     /// Human-readable architecture identifier derived from the model's `model_type`.
@@ -434,11 +480,16 @@ public struct QWModelDescriptor: Sendable, Hashable {
     }
 
     internal static func digestFields(_ d: QWModelDescriptor) -> [String] {
+        let kinds = d.layerTypes.map { kind -> String in
+            if kind == "full_attention" { return "F" }
+            if kind == "compressed_attention" { return "C" }
+            return "L"
+        }.joined()
         var f: [String] = [
             "model_type=\(d.modelType)",
             "hidden=\(d.hidden)", "vocab=\(d.vocab)",
             "layers=\(d.numLayers)",
-            "layer_kinds=\(d.layerTypes.map { $0 == "full_attention" ? "F" : "L" }.joined())",
+            "layer_kinds=\(kinds)",
             "fa_interval=\(d.fullAttentionInterval)",
             "q=\(d.qHeads)", "kv=\(d.kvHeads)", "hd=\(d.headDim)",
             "qgate=\(d.attnOutputGate ? 1 : 0)",
@@ -454,6 +505,12 @@ public struct QWModelDescriptor: Sendable, Hashable {
         f.append("moe=\(d.numExperts ?? 0),\(d.expertsPerTok ?? 0),\(d.moeIntermediate ?? 0),\(d.sharedExpertIntermediate ?? 0),\(d.expertGateType ?? "-")")
         f.append("hc=\(d.hcCount ?? 0),\(d.hcLowrank ?? 0)")
         f.append("ple=\((d.pleLayerIds ?? []).map(String.init).joined(separator: ",")),\(d.pleEmbedDim ?? 0),\(d.pleConvKernel ?? 0),\(d.ngramSize ?? 0),\(d.headsPerNgram ?? 0),\(d.ngramVocabSizeBase ?? 0),\(d.makeNgramVocabDivisibleBy ?? 0),\(d.splitNgramParts ?? 0)")
+        if let lat = d.moeLatentSize, lat > 0 {
+            f.append("lat=\(lat),\(d.mtpSharedLastLayer ? 1 : 0),\(d.multimaxHead ? 1 : 0)")
+        }
+        if let hca = d.hcaConfig {
+            f.append("hca=\(hca.defaultCompressRatio),\(hca.oGroups),\(hca.oLoraRank),\(hca.slidingWindow)")
+        }
         return f
     }
 

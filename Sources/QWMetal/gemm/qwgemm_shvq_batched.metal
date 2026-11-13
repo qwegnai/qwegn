@@ -115,7 +115,7 @@ static inline void qmm_t_nax_split_shvq_impl(
     });
 }
 
-template <int BITS, int GROUP>
+template <int BITS, int GROUP, bool HAS_TG = false>
 static inline void qwg_moe_nax_gemm_shvq_body(device const char* w,
                                               device const half* x,
                                               device half* y,
@@ -128,7 +128,8 @@ static inline void qwg_moe_nax_gemm_shvq_body(device const char* w,
                                               device const int32_t* sortedTok,
                                               uint hasGather,
                                               device const char* coldW,
-                                              uint3 tg, uint lid, uint simd_gid, uint simd_lid) {
+                                              uint3 tg, uint lid, uint simd_gid, uint simd_lid,
+                                              threadgroup const ushort4* tgLut = nullptr) {
     const uint t = tg.y + ((tileBlock >> 8) & 0x7FFFFFu);
     if (int(t) >= tileCount[0]) return;
     const uint e = uint(tileE[t]);
@@ -147,31 +148,31 @@ static inline void qwg_moe_nax_gemm_shvq_body(device const char* w,
     if (hasGather != 0u) {
         device const int32_t* st = sortedTok + rowBase;
         if (bm == 16) {
-            qmm_t_nax_tgp_dual_impl<half, half, true, 16, 64, 64, 1, 4, false, false, true, BITS, GROUP, true>(
-                we, x, ye, nullptr, nullptr, int(p.k), int(p.n), rowCount, tid, lid, simd_gid, simd_lid, nullptr, st);
+            qmm_t_nax_tgp_dual_impl<half, half, true, 16, 64, 64, 1, 4, false, false, true, BITS, GROUP, true, HAS_TG>(
+                we, x, ye, nullptr, nullptr, int(p.k), int(p.n), rowCount, tid, lid, simd_gid, simd_lid, nullptr, st, tgLut);
         } else if (bm == 32) {
-            qmm_t_nax_tgp_dual_impl<half, half, true, 32, 64, 64, 2, 2, false, false, true, BITS, GROUP, true>(
-                we, x, ye, nullptr, nullptr, int(p.k), int(p.n), rowCount, tid, lid, simd_gid, simd_lid, nullptr, st);
+            qmm_t_nax_tgp_dual_impl<half, half, true, 32, 64, 64, 2, 2, false, false, true, BITS, GROUP, true, HAS_TG>(
+                we, x, ye, nullptr, nullptr, int(p.k), int(p.n), rowCount, tid, lid, simd_gid, simd_lid, nullptr, st, tgLut);
         } else {
-            qmm_t_nax_tgp_dual_impl<half, half, true, 64, 64, 64, 2, 2, false, false, true, BITS, GROUP, true>(
-                we, x, ye, nullptr, nullptr, int(p.k), int(p.n), rowCount, tid, lid, simd_gid, simd_lid, nullptr, st);
+            qmm_t_nax_tgp_dual_impl<half, half, true, 64, 64, 64, 2, 2, false, false, true, BITS, GROUP, true, HAS_TG>(
+                we, x, ye, nullptr, nullptr, int(p.k), int(p.n), rowCount, tid, lid, simd_gid, simd_lid, nullptr, st, tgLut);
         }
     } else {
         device const half* xe = x + size_t(rowBase) * size_t(p.k);
         if (bm == 16) {
-            qmm_t_nax_tgp_dual_impl<half, half, true, 16, 64, 64, 1, 4, false, false, false, BITS, GROUP, true>(
-                we, xe, ye, nullptr, nullptr, int(p.k), int(p.n), rowCount, tid, lid, simd_gid, simd_lid, nullptr, nullptr);
+            qmm_t_nax_tgp_dual_impl<half, half, true, 16, 64, 64, 1, 4, false, false, false, BITS, GROUP, true, HAS_TG>(
+                we, xe, ye, nullptr, nullptr, int(p.k), int(p.n), rowCount, tid, lid, simd_gid, simd_lid, nullptr, nullptr, tgLut);
         } else if (bm == 32) {
-            qmm_t_nax_tgp_dual_impl<half, half, true, 32, 64, 64, 2, 2, false, false, false, BITS, GROUP, true>(
-                we, xe, ye, nullptr, nullptr, int(p.k), int(p.n), rowCount, tid, lid, simd_gid, simd_lid, nullptr, nullptr);
+            qmm_t_nax_tgp_dual_impl<half, half, true, 32, 64, 64, 2, 2, false, false, false, BITS, GROUP, true, HAS_TG>(
+                we, xe, ye, nullptr, nullptr, int(p.k), int(p.n), rowCount, tid, lid, simd_gid, simd_lid, nullptr, nullptr, tgLut);
         } else {
-            qmm_t_nax_tgp_dual_impl<half, half, true, 64, 64, 64, 2, 2, false, false, false, BITS, GROUP, true>(
-                we, xe, ye, nullptr, nullptr, int(p.k), int(p.n), rowCount, tid, lid, simd_gid, simd_lid, nullptr, nullptr);
+            qmm_t_nax_tgp_dual_impl<half, half, true, 64, 64, 64, 2, 2, false, false, false, BITS, GROUP, true, HAS_TG>(
+                we, xe, ye, nullptr, nullptr, int(p.k), int(p.n), rowCount, tid, lid, simd_gid, simd_lid, nullptr, nullptr, tgLut);
         }
     }
 }
 
-template <int BITS, int GROUP>
+template <int BITS, int GROUP, bool HAS_TG = false>
 static inline void qwg_moe_nax_split_shvq_f32_body(device const char* w,
                                                    device const half* xh,
                                                    device const half* xl,
@@ -183,7 +184,8 @@ static inline void qwg_moe_nax_split_shvq_f32_body(device const char* w,
                                                    constant QWGemmSHVQGroupedParams& p,
                                                    uint tileBlock,
                                                    device const char* coldW,
-                                                   uint3 tg, uint simd_gid) {
+                                                   uint3 tg, uint simd_gid,
+                                                   threadgroup const ushort4* tgLut = nullptr) {
     const uint t = tg.y + ((tileBlock >> 8) & 0x7FFFFFu);
     if (int(t) >= tileCount[0]) return;
     const uint e = uint(tileE[t]);
@@ -202,14 +204,14 @@ static inline void qwg_moe_nax_split_shvq_f32_body(device const char* w,
     const int bm = qw_moe_tile_block(rowCount, int(tileBlock & 0x3Fu));
     if ((tileBlock & 0x80000000u) != 0u) {
         device half* ye16 = ((device half*)y32) + size_t(rowBase) * size_t(p.n);
-        if (bm == 16) qmm_t_nax_split_shvq_impl<16, 1, 4, BITS, GROUP, false, half>(we, xhe, xle, ye16, int(p.k), int(p.n), rowCount, tid, simd_gid);
-        else if (bm == 32) qmm_t_nax_split_shvq_impl<32, 2, 2, BITS, GROUP, false, half>(we, xhe, xle, ye16, int(p.k), int(p.n), rowCount, tid, simd_gid);
-        else qmm_t_nax_split_shvq_impl<64, 2, 2, BITS, GROUP, false, half>(we, xhe, xle, ye16, int(p.k), int(p.n), rowCount, tid, simd_gid);
+        if (bm == 16) qmm_t_nax_split_shvq_impl<16, 1, 4, BITS, GROUP, false, half, HAS_TG>(we, xhe, xle, ye16, int(p.k), int(p.n), rowCount, tid, simd_gid, tgLut);
+        else if (bm == 32) qmm_t_nax_split_shvq_impl<32, 2, 2, BITS, GROUP, false, half, HAS_TG>(we, xhe, xle, ye16, int(p.k), int(p.n), rowCount, tid, simd_gid, tgLut);
+        else qmm_t_nax_split_shvq_impl<64, 2, 2, BITS, GROUP, false, half, HAS_TG>(we, xhe, xle, ye16, int(p.k), int(p.n), rowCount, tid, simd_gid, tgLut);
     } else {
         device float* ye = y32 + size_t(rowBase) * size_t(p.n);
-        if (bm == 16) qmm_t_nax_split_shvq_impl<16, 1, 4, BITS, GROUP, false, float>(we, xhe, xle, ye, int(p.k), int(p.n), rowCount, tid, simd_gid);
-        else if (bm == 32) qmm_t_nax_split_shvq_impl<32, 2, 2, BITS, GROUP, false, float>(we, xhe, xle, ye, int(p.k), int(p.n), rowCount, tid, simd_gid);
-        else qmm_t_nax_split_shvq_impl<64, 2, 2, BITS, GROUP, false, float>(we, xhe, xle, ye, int(p.k), int(p.n), rowCount, tid, simd_gid);
+        if (bm == 16) qmm_t_nax_split_shvq_impl<16, 1, 4, BITS, GROUP, false, float, HAS_TG>(we, xhe, xle, ye, int(p.k), int(p.n), rowCount, tid, simd_gid, tgLut);
+        else if (bm == 32) qmm_t_nax_split_shvq_impl<32, 2, 2, BITS, GROUP, false, float, HAS_TG>(we, xhe, xle, ye, int(p.k), int(p.n), rowCount, tid, simd_gid, tgLut);
+        else qmm_t_nax_split_shvq_impl<64, 2, 2, BITS, GROUP, false, float, HAS_TG>(we, xhe, xle, ye, int(p.k), int(p.n), rowCount, tid, simd_gid, tgLut);
     }
 }
 
@@ -227,10 +229,24 @@ static inline void qwg_moe_nax_split_shvq_f32_body(device const char* w,
         uint  simd_lid [[thread_index_in_simdgroup]]) {                                \
         DECL_TG                                                                        \
         PREP_TG                                                                        \
-        qmm_t_nax_tgp_dual_impl<half, half, false, 64, 64, 64, 2, 2, false, false,     \
-                                false, BITS, GROUP, true, HAS_TG>(                     \
-            blocks, x, y16, y32, nullptr, int(K), int(N), int(M), tg, lid,             \
-            simd_gid, simd_lid, nullptr, nullptr, LUT_PTR);                            \
+        const uint mode = (M >> 29u) & 3u;                                             \
+        const int realM = int(M & 0x1FFFFFFFu);                                        \
+        if (mode == 1u) {                                                              \
+            qmm_t_nax_tgp_dual_impl<half, half, false, 16, 64, 128, 1, 4, false, false, \
+                                    false, BITS, GROUP, true, HAS_TG>(                 \
+                blocks, x, y16, y32, nullptr, int(K), int(N), realM, tg, lid,          \
+                simd_gid, simd_lid, nullptr, nullptr, LUT_PTR);                        \
+        } else if (mode == 2u) {                                                       \
+            qmm_t_nax_tgp_dual_impl<half, half, false, 32, 64, 64, 2, 2, false, false, \
+                                    false, BITS, GROUP, true, HAS_TG>(                 \
+                blocks, x, y16, y32, nullptr, int(K), int(N), realM, tg, lid,          \
+                simd_gid, simd_lid, nullptr, nullptr, LUT_PTR);                        \
+        } else {                                                                       \
+            qmm_t_nax_tgp_dual_impl<half, half, false, 64, 64, 64, 2, 2, false, false, \
+                                    false, BITS, GROUP, true, HAS_TG>(                 \
+                blocks, x, y16, y32, nullptr, int(K), int(N), realM, tg, lid,          \
+                simd_gid, simd_lid, nullptr, nullptr, LUT_PTR);                        \
+        }                                                                              \
     }                                                                                  \
     kernel void qwg_gemm_shvq##BITS##_g##GROUP##_h16_bm128(                             \
         device const char* blocks [[buffer(0)]],                                       \
@@ -282,13 +298,30 @@ static inline void qwg_moe_nax_split_shvq_f32_body(device const char* w,
         (void)lid;                                                                     \
         DECL_TG                                                                        \
         PREP_TG                                                                        \
-        const int realM = int(M & 0x7FFFFFFFu);                                        \
+        const uint mode = (M >> 29u) & 3u;                                             \
+        const int realM = int(M & 0x1FFFFFFFu);                                        \
         if ((M & 0x80000000u) != 0u) {                                                 \
-            qmm_t_nax_split_shvq_impl<64, 2, 2, BITS, GROUP, false, half, HAS_TG>(     \
-                w, xh, xl, (device half*)y32, int(K), int(N), realM, tg, simd_gid, LUT_PTR); \
+            if (mode == 1u) {                                                          \
+                qmm_t_nax_split_shvq_impl<16, 1, 4, BITS, GROUP, false, half, HAS_TG>( \
+                    w, xh, xl, (device half*)y32, int(K), int(N), realM, tg, simd_gid, LUT_PTR); \
+            } else if (mode == 2u) {                                                   \
+                qmm_t_nax_split_shvq_impl<32, 2, 2, BITS, GROUP, false, half, HAS_TG>( \
+                    w, xh, xl, (device half*)y32, int(K), int(N), realM, tg, simd_gid, LUT_PTR); \
+            } else {                                                                   \
+                qmm_t_nax_split_shvq_impl<64, 2, 2, BITS, GROUP, false, half, HAS_TG>( \
+                    w, xh, xl, (device half*)y32, int(K), int(N), realM, tg, simd_gid, LUT_PTR); \
+            }                                                                          \
         } else {                                                                       \
-            qmm_t_nax_split_shvq_impl<64, 2, 2, BITS, GROUP, false, float, HAS_TG>(    \
-                w, xh, xl, y32, int(K), int(N), realM, tg, simd_gid, LUT_PTR);         \
+            if (mode == 1u) {                                                          \
+                qmm_t_nax_split_shvq_impl<16, 1, 4, BITS, GROUP, false, float, HAS_TG>( \
+                    w, xh, xl, y32, int(K), int(N), realM, tg, simd_gid, LUT_PTR);     \
+            } else if (mode == 2u) {                                                   \
+                qmm_t_nax_split_shvq_impl<32, 2, 2, BITS, GROUP, false, float, HAS_TG>( \
+                    w, xh, xl, y32, int(K), int(N), realM, tg, simd_gid, LUT_PTR);     \
+            } else {                                                                   \
+                qmm_t_nax_split_shvq_impl<64, 2, 2, BITS, GROUP, false, float, HAS_TG>( \
+                    w, xh, xl, y32, int(K), int(N), realM, tg, simd_gid, LUT_PTR);     \
+            }                                                                          \
         }                                                                              \
     }                                                                                  \
     kernel void qwg_moe_nax_gemm_shvq##BITS##_g##GROUP(                                 \
@@ -308,8 +341,10 @@ static inline void qwg_moe_nax_split_shvq_f32_body(device const char* w,
         uint  lid      [[thread_index_in_threadgroup]],                                \
         uint  simd_gid [[simdgroup_index_in_threadgroup]],                             \
         uint  simd_lid [[thread_index_in_simdgroup]]) {                                \
-        qwg_moe_nax_gemm_shvq_body<BITS, GROUP>(w, x, y, expertOff, tileE, tileR,      \
-            tileCount, p, tileBlock, sortedTok, hasGather, coldW, tg, lid, simd_gid, simd_lid); \
+        DECL_TG                                                                        \
+        PREP_TG                                                                        \
+        qwg_moe_nax_gemm_shvq_body<BITS, GROUP, HAS_TG>(w, x, y, expertOff, tileE, tileR, \
+            tileCount, p, tileBlock, sortedTok, hasGather, coldW, tg, lid, simd_gid, simd_lid, LUT_PTR); \
     }                                                                                  \
     kernel void qwg_moe_nax_split_shvq##BITS##_g##GROUP##_f32(                          \
         device const char*    w         [[buffer(0)]],                                 \
@@ -324,9 +359,13 @@ static inline void qwg_moe_nax_split_shvq_f32_body(device const char* w,
         constant uint&        tileBlock [[buffer(9)]],                                 \
         device const char*    coldW     [[buffer(10)]],                                \
         uint3 tg       [[threadgroup_position_in_grid]],                               \
+        uint  lid      [[thread_index_in_threadgroup]],                                \
         uint  simd_gid [[simdgroup_index_in_threadgroup]]) {                           \
-        qwg_moe_nax_split_shvq_f32_body<BITS, GROUP>(w, xh, xl, y32, expertOff, tileE, \
-            tileR, tileCount, p, tileBlock, coldW, tg, simd_gid);                      \
+        (void)lid;                                                                     \
+        DECL_TG                                                                        \
+        PREP_TG                                                                        \
+        qwg_moe_nax_split_shvq_f32_body<BITS, GROUP, HAS_TG>(w, xh, xl, y32, expertOff, tileE, \
+            tileR, tileCount, p, tileBlock, coldW, tg, simd_gid, LUT_PTR);             \
     }
 
 #define QW_SHVQ_BATCHED_KERNELS_TG(BITS, GROUP)                                        \

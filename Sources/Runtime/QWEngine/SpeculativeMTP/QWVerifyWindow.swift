@@ -127,9 +127,20 @@ struct QWVerifyWindow {
                              shape: QWTensorShape([geometry.hidden], .f16))
     }
 
+    func mhcStreamRow(_ row: Int) throws -> QWTensorValue {
+        let streams = geometry.mhcConfig?.streams ?? 2
+        let elems = streams * geometry.hidden
+        guard let mhcStream, (0..<rows).contains(row) else {
+            throw QWEngineDriverError.state("layer-major mHC stream row unavailable")
+        }
+        return QWTensorValue(region: mhcStream.region, offset: mhcStream.offset + row * elems * 4,
+                             shape: QWTensorShape([elems], .f32))
+    }
+
     func encodeHead(_ enc: any MTLComputeCommandEncoder, hal: QWHal, head: QWHead,
                     storage: QWHeadStorage, q4Head: QWMTPTDraftHead? = nil,
-                    activeRows: Int? = nil, unrotateForF16Head: Bool = false) throws {
+                    activeRows: Int? = nil, unrotateForF16Head: Bool = false,
+                    multimaxParams: QWTensorValue? = nil) throws {
         let count = activeRows ?? rows
         guard (2...rows).contains(count) else {
             throw QWEngineDriverError.state("verify head active row count is invalid")
@@ -198,6 +209,13 @@ struct QWVerifyWindow {
                 try QWHead.encodeBatched(enc, hal: hal, view: weight.view,
                                          x: input, gs: sums, y: output, m: count)
             }
+        }
+        if let mm = multimaxParams {
+            enc.memoryBarrier(scope: .buffers)
+            let allLogits = QWTensorValue(region: logits.region, offset: logits.offset,
+                                          shape: QWTensorShape([count * vocabulary], .f32))
+            try head.encodeMultiMax(enc, logits: allLogits, params: mm, count: count * vocabulary)
+            enc.memoryBarrier(scope: .buffers)
         }
         if let selector = targetSelector, let journal = targetTokens {
             for row in 0..<count {
@@ -411,11 +429,15 @@ struct QWVerifyWindow {
             throw QWEngineDriverError.state("verify retained prefix is invalid")
         }
         try checkpoint.validateResolution(rec: rec, ring: ring, activeRows: verifiedRows)
+        let carryFromStream = trunkHidden.shape.dtype == .f32
         if count > 0 {
-            try Self.validateCopy(source: hiddenRow(count - 1), destination: trunkHidden)
-            if hidden.region.buffer === trunkHidden.region.buffer {
-                let a = hidden.region.base + hidden.offset, b = trunkHidden.region.base + trunkHidden.offset
-                guard a + hidden.bytes <= b || b + trunkHidden.bytes <= a else {
+            let carrySource = carryFromStream ? try mhcStreamRow(count - 1) : try hiddenRow(count - 1)
+            let carryStorage = carryFromStream ? mhcStream! : hidden
+            try Self.validateCopy(source: carrySource, destination: trunkHidden)
+            if carryStorage.region.buffer === trunkHidden.region.buffer {
+                let a = carryStorage.region.base + carryStorage.offset
+                let b = trunkHidden.region.base + trunkHidden.offset
+                guard a + carryStorage.bytes <= b || b + trunkHidden.bytes <= a else {
                     throw QWEngineDriverError.state("retained hidden carry overlaps verification rows")
                 }
             }
@@ -479,9 +501,10 @@ struct QWVerifyWindow {
             }
         }
         if count > 0 {
+            let carrySource = carryFromStream ? try mhcStreamRow(count - 1) : try hiddenRow(count - 1)
             guard let enc = cb.makeComputeCommandEncoder() else { throw QWEngineDriverError.state("retained hidden encoder") }
             defer { enc.endEncoding() }
-            try Self.encodeCopy(enc, hal: hal, source: hiddenRow(count - 1), destination: trunkHidden)
+            try Self.encodeCopy(enc, hal: hal, source: carrySource, destination: trunkHidden)
         }
     }
 
@@ -493,6 +516,7 @@ struct QWVerifyWindow {
                 q4Head: QWMTPTDraftHead? = nil,
                 activeRows: Int? = nil,
                 unrotateForF16Head: Bool = false,
+                multimaxParams: QWTensorValue? = nil,
                 windowEncoder: (() throws -> Void)? = nil,
                 currentCommandBuffer: (() -> (any MTLCommandBuffer))? = nil,
                 stageProfiler: QWGPUStageProfiler<QWMTPVerificationStage>? = nil,
@@ -525,7 +549,8 @@ struct QWVerifyWindow {
         defer { enc.endEncoding() }
         try encodeHead(enc, hal: hal, head: head, storage: headStorage,
                        q4Head: q4Head, activeRows: count,
-                       unrotateForF16Head: unrotateForF16Head)
+                       unrotateForF16Head: unrotateForF16Head,
+                       multimaxParams: multimaxParams)
     }
 
     static func encodeCopy(_ enc: any MTLComputeCommandEncoder, hal: QWHal,

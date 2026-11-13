@@ -32,8 +32,18 @@ kernel void qwg_gemm_q4g_h16(device const Block_HQ4_G32* blocks [[buffer(0)]],
                              uint lid [[thread_index_in_threadgroup]],
                              uint simd_gid [[simdgroup_index_in_threadgroup]],
                              uint simd_lid [[thread_index_in_simdgroup]]) {
-    qmm_t_nax_tgp_dual_impl<half, half, false, 64, 64, 64, 2, 2, false>(
-        (const device char*)blocks, x, y16, y32, nullptr, int(K), int(N), int(M), tg, lid, simd_gid, simd_lid);
+    const uint mode = (M >> 29u) & 3u;
+    const int realM = int(M & 0x1FFFFFFFu);
+    if (mode == 1u) {
+        qmm_t_nax_tgp_dual_impl<half, half, false, 16, 64, 128, 1, 4, false>(
+            (const device char*)blocks, x, y16, y32, nullptr, int(K), int(N), realM, tg, lid, simd_gid, simd_lid);
+    } else if (mode == 2u) {
+        qmm_t_nax_tgp_dual_impl<half, half, false, 32, 64, 64, 2, 2, false>(
+            (const device char*)blocks, x, y16, y32, nullptr, int(K), int(N), realM, tg, lid, simd_gid, simd_lid);
+    } else {
+        qmm_t_nax_tgp_dual_impl<half, half, false, 64, 64, 64, 2, 2, false>(
+            (const device char*)blocks, x, y16, y32, nullptr, int(K), int(N), realM, tg, lid, simd_gid, simd_lid);
+    }
 }
 
 kernel void qwg_gemm_q4g_h16_bm128(device const Block_HQ4_G32* blocks [[buffer(0)]],
@@ -423,11 +433,24 @@ kernel void qwg_gemm_q4g_nax_f32(device const Block_HQ4_G32* blocks [[buffer(0)]
                                  constant uint& K [[buffer(6)]],
                                  uint3 tg [[threadgroup_position_in_grid]],
                                  uint simd_gid [[simdgroup_index_in_threadgroup]]) {
-    const int realM = int(M & 0x7FFFFFFFu);
+    const uint mode = (M >> 29u) & 3u;
+    const int realM = int(M & 0x1FFFFFFFu);
     if ((M & 0x80000000u) != 0u) {
-        qmm_t_nax_split_impl<64, 2, 2, false, half>(blocks, xh, xl, (device half*)y32, int(K), int(N), realM, tg, simd_gid);
+        if (mode == 1u) {
+            qmm_t_nax_split_impl<16, 1, 4, false, half>(blocks, xh, xl, (device half*)y32, int(K), int(N), realM, tg, simd_gid);
+        } else if (mode == 2u) {
+            qmm_t_nax_split_impl<32, 2, 2, false, half>(blocks, xh, xl, (device half*)y32, int(K), int(N), realM, tg, simd_gid);
+        } else {
+            qmm_t_nax_split_impl<64, 2, 2, false, half>(blocks, xh, xl, (device half*)y32, int(K), int(N), realM, tg, simd_gid);
+        }
     } else {
-        qmm_t_nax_split_impl<64, 2, 2, false, float>(blocks, xh, xl, y32, int(K), int(N), realM, tg, simd_gid);
+        if (mode == 1u) {
+            qmm_t_nax_split_impl<16, 1, 4, false, float>(blocks, xh, xl, y32, int(K), int(N), realM, tg, simd_gid);
+        } else if (mode == 2u) {
+            qmm_t_nax_split_impl<32, 2, 2, false, float>(blocks, xh, xl, y32, int(K), int(N), realM, tg, simd_gid);
+        } else {
+            qmm_t_nax_split_impl<64, 2, 2, false, float>(blocks, xh, xl, y32, int(K), int(N), realM, tg, simd_gid);
+        }
     }
 }
 

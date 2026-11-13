@@ -21,14 +21,20 @@ kernel void qwg_moe_down_reduce_combine_f32(device const float* dnAcc [[buffer(0
     const uint h = (tg.x * 256u + tid) * 4u;
     if (t >= tokens || h >= N) return;
     const uint basePair = t * TK;
-    const float g = gate[t];
     const bool dnIsF16 = (hasOut16 & 2u) != 0u;
     const bool writeOut16 = (hasOut16 & 1u) != 0u;
     const bool identityPerm = (hasOut16 & 4u) != 0u;
+    const bool skipShared = (hasOut16 & 8u) != 0u;
+    const bool unweightedSingle = (hasOut16 & 16u) != 0u;
+    const float g = skipShared ? 0.0f : gate[t];
     device const half* dnAcc16 = (device const half*)dnAcc;
     if (h + 4u <= N) {
+        const size_t idx = size_t(t) * N + h;
         float4 acc = float4(0.0f);
-        if (dnIsF16) {
+        if (unweightedSingle) {
+            acc = dnIsF16 ? float4(*(device const half4*)(dnAcc16 + idx))
+                          : (*(device const float4*)(dnAcc + idx));
+        } else if (dnIsF16) {
             for (uint k = 0; k < TK; ++k) {
                 const int p = identityPerm ? int(basePair + k) : invPerm[basePair + k];
                 const float wk = w[basePair + k];
@@ -41,21 +47,24 @@ kernel void qwg_moe_down_reduce_combine_f32(device const float* dnAcc [[buffer(0
                 if (wk != 0.0f) acc += wk * (*(device const float4*)(dnAcc + size_t(p) * N + h));
             }
         }
-        const size_t idx = size_t(t) * N + h;
-        const float4 y4 = acc + g * (*(device const float4*)(shared + idx));
+        const float4 y4 = skipShared ? acc : (acc + g * (*(device const float4*)(shared + idx)));
         *(device float4*)(out + idx) = y4;
         if (writeOut16) *(device half4*)(out16 + idx) = half4(y4);
     } else {
         for (uint i = 0u; h + i < N; ++i) {
-            float acc = 0.0f;
-            for (uint k = 0; k < TK; ++k) {
-                const int p = identityPerm ? int(basePair + k) : invPerm[basePair + k];
-                const float dv = dnIsF16 ? float(dnAcc16[size_t(p) * N + h + i]) : dnAcc[size_t(p) * N + h + i];
-                const float wk = w[basePair + k];
-                if (wk != 0.0f) acc += wk * dv;
-            }
             const size_t idx = size_t(t) * N + h + i;
-            const float y = acc + g * shared[idx];
+            float acc = 0.0f;
+            if (unweightedSingle) {
+                acc = dnIsF16 ? float(dnAcc16[idx]) : dnAcc[idx];
+            } else {
+                for (uint k = 0; k < TK; ++k) {
+                    const int p = identityPerm ? int(basePair + k) : invPerm[basePair + k];
+                    const float dv = dnIsF16 ? float(dnAcc16[size_t(p) * N + h + i]) : dnAcc[size_t(p) * N + h + i];
+                    const float wk = w[basePair + k];
+                    if (wk != 0.0f) acc += wk * dv;
+                }
+            }
+            const float y = skipShared ? acc : (acc + g * shared[idx]);
             out[idx] = y;
             if (writeOut16) out16[idx] = half(y);
         }

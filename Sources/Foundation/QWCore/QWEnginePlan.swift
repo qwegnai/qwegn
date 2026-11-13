@@ -15,6 +15,8 @@ public struct QWEnginePlan: Sendable, Equatable, Codable {
         case fullAttention
         /// Full attention driven by a QSA sparse indexer.
         case qsaSparse
+        /// Hybrid Compressed Attention (`128:1` compressed KV + SWA ring + Weight-SVD LSA).
+        case hcaCompressed
     }
 
     /// How a layer's feed-forward block is built.
@@ -193,7 +195,9 @@ public struct QWEnginePlan: Sendable, Equatable, Codable {
         built.reserveCapacity(geometry.numLayers)
         for index in 0..<geometry.numLayers {
             let attention: LayerAttentionKind
-            if geometry.isFullAttention(index) {
+            if geometry.isCompressedAttention(index) {
+                attention = .hcaCompressed
+            } else if geometry.isFullAttention(index) {
                 attention = isQSA ? .qsaSparse : .fullAttention
             } else {
                 attention = .gdn

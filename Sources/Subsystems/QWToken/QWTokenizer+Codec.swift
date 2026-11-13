@@ -18,17 +18,27 @@ extension QWTokenizer {
     }
 
     public func resolveSpecialTokens(fallback: QWModelSpecialTokens) -> QWModelSpecialTokens {
-        let imStart = tokenId(for: "<|im_start|>") ?? fallback.imStartTokenId
-        let imEnd = tokenId(for: "<|im_end|>") ?? fallback.imEndTokenId
-        let think = tokenId(for: "<think>") ?? fallback.thinkTokenId
-        let endThink = tokenId(for: "</think>") ?? fallback.endThinkTokenId
+        let imStart = tokenId(for: "<|im_start|>")
+            ?? tokenId(for: "<|ernie:im_start|>")
+            ?? fallback.imStartTokenId
+        let imEnd = tokenId(for: "<|im_end|>")
+            ?? tokenId(for: "<|ernie:im_end|>")
+            ?? fallback.imEndTokenId
+        let think = tokenId(for: "<think>")
+            ?? tokenId(for: "<ernie:think>")
+            ?? fallback.thinkTokenId
+        let endThink = tokenId(for: "</think>")
+            ?? tokenId(for: "</ernie:think>")
+            ?? fallback.endThinkTokenId
         var extra = fallback.extraStopTokenIds
-        for s in ["<|im_end|>", "<|endoftext|>", "<|eot_id|>", "</s>"] {
+        for s in ["<|im_end|>", "<|ernie:im_end|>", "<|ERNIE_endofprompt|>", "<|endoftext|>", "<|eot_id|>", "</s>"] {
             if let id = tokenId(for: s), !extra.contains(id) {
                 extra.append(id)
             }
         }
-        let hasChatIds = fallback.usesChatTemplateIds || tokenId(for: "<|im_end|>") != nil
+        let hasChatIds = fallback.usesChatTemplateIds
+            || tokenId(for: "<|im_end|>") != nil
+            || tokenId(for: "<|ernie:im_end|>") != nil
         return QWModelSpecialTokens(
             eosTokenId: fallback.eosTokenId,
             imStartTokenId: imStart,
@@ -146,40 +156,53 @@ extension QWTokenizer {
                 }
                 return
             }
-            let seg = String(decoding: bytes[cLo..<cHi], as: UTF8.self)
-            let ns = seg as NSString
-            let u2b = QWTokenizer.utf16ToByteTable(seg)
-            var ranges: [NSRange] = []
-            split.enumerateMatches(in: seg,
-                                   range: NSRange(location: 0, length: ns.length)) { mr, _, _ in
-                guard let r = mr?.range, r.length > 0 else { return }
-                ranges.append(r)
-            }
-            var cursor = 0
-            for r in ranges {
-                let b0 = u2b[r.location], b1 = u2b[r.location + r.length]
-                if b0 > cursor || cursor > b1 {
-                    throw Error.unresolvedByte(String(String(
-                        decoding: bytes[cLo + cursor ..< max(cLo + cursor, cLo + b0)],
-                        as: UTF8.self).prefix(16)))
+            var spans: [(Int, Int)] = [(cLo, cHi)]
+            for step in preSteps {
+                let re: NSRegularExpression
+                switch step {
+                case .digits(_, let r): re = r
+                case .splitIsolated(let r): re = r
                 }
-                let got = bpeWord(bytes[(cLo + b0)..<(cLo + b1)])
+                var nextSpans: [(Int, Int)] = []
+                nextSpans.reserveCapacity(spans.count * 2)
+                for (sLo, sHi) in spans where sHi > sLo {
+                    let seg = String(decoding: bytes[sLo..<sHi], as: UTF8.self)
+                    let ns = seg as NSString
+                    let u2b = QWTokenizer.utf16ToByteTable(seg)
+                    let segBytes = sHi - sLo
+                    var cursor = 0
+                    re.enumerateMatches(in: seg,
+                                        range: NSRange(location: 0, length: ns.length)) { mr, _, _ in
+                        guard let r = mr?.range, r.length > 0 else { return }
+                        let b0 = u2b[r.location]
+                        let b1 = u2b[r.location + r.length]
+                        if b0 > cursor {
+                            nextSpans.append((sLo + cursor, sLo + b0))
+                        }
+                        if b1 > b0 {
+                            nextSpans.append((sLo + b0, sLo + b1))
+                        }
+                        cursor = max(cursor, b1)
+                    }
+                    if cursor < segBytes {
+                        nextSpans.append((sLo + cursor, sHi))
+                    }
+                }
+                spans = nextSpans
+            }
+            for (pLo, pHi) in spans where pHi > pLo {
+                let got = bpeWord(bytes[pLo..<pHi])
                 if got.isEmpty {
                     throw Error.unresolvedByte(String(String(
-                        decoding: bytes[(cLo + b0)..<(cLo + b1)], as: UTF8.self).prefix(16)))
+                        decoding: bytes[pLo..<pHi], as: UTF8.self).prefix(16)))
                 }
                 for g in got {
                     if g < 0 {
                         throw Error.unresolvedByte(String(String(
-                            decoding: bytes[(cLo + b0)..<(cLo + b1)], as: UTF8.self).prefix(16)))
+                            decoding: bytes[pLo..<pHi], as: UTF8.self).prefix(16)))
                     }
                     ids.append(g)
                 }
-                cursor = max(cursor, b1)
-            }
-            if cursor < cHi - cLo {
-                throw Error.unresolvedByte(String(String(
-                    decoding: bytes[cLo + cursor ..< cHi], as: UTF8.self).prefix(16)))
             }
         }
 
@@ -200,6 +223,18 @@ extension QWTokenizer {
                     }
                     if scan > cur {
                         nextEnd = scan
+                    } else {
+                        var ws = nextEnd
+                        while ws > cur && bytes[ws - 1] != 0x20 && bytes[ws - 1] != 0x09 {
+                            ws -= 1
+                        }
+                        if ws > cur {
+                            nextEnd = ws
+                        } else {
+                            while nextEnd < hi && (bytes[nextEnd] & 0xC0) == 0x80 {
+                                nextEnd += 1
+                            }
+                        }
                     }
                 }
                 try encodeChunk(cur, nextEnd)

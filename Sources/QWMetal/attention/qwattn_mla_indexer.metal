@@ -246,7 +246,9 @@ kernel void qwg_mla_gate_weights_proj(
 ) {
     const uint t = tg.y;
     const uint r = tg.x * 8u + sg;
-    if (t >= p.T || r >= p.idxDim + p.idxHeads) return;
+    const bool weightsOnlyScaled = (p.kvMode & 0x100u) != 0u;
+    const uint outRows = weightsOnlyScaled ? p.idxHeads : (p.idxDim + p.idxHeads);
+    if (t >= p.T || r >= outRows) return;
     device const half* xRow = ln1 + (size_t)t * p.hidden;
     device const half* wRow = wGateWeights + (size_t)r * p.hidden;
     float acc = 0.0f;
@@ -257,7 +259,9 @@ kernel void qwg_mla_gate_weights_proj(
     }
     acc = simd_sum(acc);
     if (lane == 0u) {
-        if (r < p.idxDim) {
+        if (weightsOnlyScaled) {
+            idxWeightsOut[(size_t)t * p.idxHeads + r] = acc * rsqrt(float(p.idxHeads));
+        } else if (r < p.idxDim) {
             const uint ringSlot = (p.pos0 + t) & p.ringMask;
             gatePending[(size_t)ringSlot * p.idxDim + r] = half(acc);
         } else {
@@ -330,45 +334,48 @@ kernel void qwg_mla_indexer_score_select(
     uint                      lane         [[thread_index_in_simdgroup]]
 ) {
     if (t >= p.T) return;
+    const uint idxHeads = qw_mla_idx_heads(p);
+    const uint poolShift = qw_mla_idx_pool_shift(p);
+    const uint winBlocks = qw_mla_idx_window_blocks(p);
     const uint pq = p.pos0 + t;
-    const uint nPools = (pq + 1u) >> 2u;
+    const uint totalPools = (pq + 1u) >> poolShift;
+    const uint denseLim = p.topKPools + winBlocks;
     device int* dstList = blockList + (size_t)t * p.listStride;
 
-    if (nPools <= p.topKPools) {
-        for (uint i = tid; i < nPools; i += 256u) {
+    if (totalPools <= denseLim) {
+        for (uint i = tid; i < totalPools; i += 256u) {
             dstList[i] = int(i);
         }
         if (tid == 0u) {
-            blockCount[t] = int(nPools);
+            blockCount[t] = int(totalPools);
         }
         return;
     }
 
-    threadgroup half shQIdx[4096];
-    threadgroup float shW[32];
+    const uint midPools = totalPools - winBlocks;
+    threadgroup half shQIdx[8192];
+    threadgroup float shW[64];
     threadgroup atomic_uint hist[256];
     threadgroup uint tgState[4];
 
-    const uint qFullStride = p.qChannels + p.idxHeads * p.idxDim;
+    const uint qFullStride = p.qChannels + idxHeads * p.idxDim;
     device const half* qIdxRow = mlaQFull + (size_t)t * qFullStride + p.qChannels;
-    const uint totalQIdx = p.idxHeads * p.idxDim;
+    const uint totalQIdx = idxHeads * p.idxDim;
     for (uint i = tid; i < totalQIdx; i += 256u) {
         shQIdx[i] = qIdxRow[i];
     }
-    if (tid < p.idxHeads) {
-        shW[tid] = idxWeights[(size_t)t * p.idxHeads + tid];
+    if (tid < idxHeads) {
+        shW[tid] = idxWeights[(size_t)t * idxHeads + tid];
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     const float scale = rsqrt(float(p.idxDim));
     device float* rowScores = scoreScratch + (size_t)t * p.scoreStride;
 
-    // Score each candidate pool by loading pooledKeys[poolIdx] once per simdgroup
-    // and dotting against all 32 staged query heads in threadgroup SRAM.
-    for (uint poolIdx = sg; poolIdx < nPools; poolIdx += 8u) {
+    for (uint poolIdx = sg; poolIdx < midPools; poolIdx += 8u) {
         const float4 kp = float4(*(device const half4*)(pooledKeys + (size_t)poolIdx * 128u + lane * 4u));
         float totalScore = 0.0f;
-        for (uint h = 0u; h < p.idxHeads; ++h) {
+        for (uint h = 0u; h < idxHeads; ++h) {
             const float4 qh = float4(*(threadgroup const half4*)(shQIdx + h * 128u + lane * 4u));
             const float dotVal = simd_sum(dot(qh, kp));
             totalScore = fma(shW[h], max(0.0f, dotVal * scale), totalScore);
@@ -379,5 +386,10 @@ kernel void qwg_mla_indexer_score_select(
     }
     threadgroup_barrier(mem_flags::mem_device);
 
-    qwg_mla_select_pools(rowScores, nPools, p.topKPools, dstList, blockCount + t, tid, hist, tgState);
+    qwg_mla_select_pools(rowScores, midPools, p.topKPools, dstList, blockCount + t, tid, hist, tgState);
+    if (winBlocks > 0u) {
+        threadgroup_barrier(mem_flags::mem_device);
+        for (uint w = tid; w < winBlocks; w += 256u) dstList[p.topKPools + w] = int(midPools + w);
+        if (tid == 0u) blockCount[t] = int(p.topKPools + winBlocks);
+    }
 }

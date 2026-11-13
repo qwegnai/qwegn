@@ -13,21 +13,28 @@ extension QWGemm {
                                         guSh: QWTensorValue? = nil, actSh: QWTensorValue? = nil,
                                         sharedIntermediate: Int = 0,
                                         bias: QWTensorValue? = nil,
-                                        expertBudget: Int = 0) throws {
+                                        expertBudget: Int = 0,
+                                        splitFeature: Bool = false,
+                                        routedScaleParam: QWTensorValue? = nil) throws {
         precondition(experts % 32 == 0 && experts <= 512 && topK <= 16, "route needs E % 32 == 0, E <= 512, K <= 16")
         let hasShared = guSh != nil && actSh != nil && sharedIntermediate > 0
-        let normFlags = (normTopK ? 1 : 0) | (bias != nil ? 2 : 0)
+        let normFlags = (normTopK ? 1 : 0)
+            | (bias != nil ? 2 : 0)
+            | (splitFeature ? 8 : 0)
+            | (routedScaleParam != nil ? 16 : 0)
         if rows == 1 || hasShared {
             enc.setComputePipelineState(try hal.pipeline("qwg_moe_route_decode"))
             enc.bindTensors(logits, idx, wts, startIndex: 0)
             enc.setUInt32s(experts, topK, normFlags, startIndex: 3)
-            if let b = bias { b.bind(enc, index: 9) }
+            (bias ?? logits).bind(enc, index: 9)
+            (routedScaleParam ?? logits).bind(enc, index: 10)
             if let gu = guSh, let act = actSh, sharedIntermediate > 0 {
                 enc.bindTensors(gu, act, startIndex: 6)
                 enc.setUInt32s(sharedIntermediate, startIndex: 8)
                 enc.dispatchThreadgroups(MTLSize(width: 2, height: rows, depth: 1),
                                          threadsPerThreadgroup: MTLSize(width: 512, height: 1, depth: 1))
             } else {
+                enc.bindTensors(logits, logits, startIndex: 6)
                 enc.setUInt32s(0, startIndex: 8)
                 enc.dispatchThreadgroups(MTLSize(width: 1, height: rows, depth: 1),
                                          threadsPerThreadgroup: MTLSize(width: 512, height: 1, depth: 1))
@@ -36,7 +43,8 @@ extension QWGemm {
             enc.setComputePipelineState(try hal.pipeline("qwg_moe_route"))
             enc.bindTensors(logits, idx, wts, startIndex: 0)
             enc.setUInt32s(experts, topK, normFlags, startIndex: 3)
-            if let b = bias { b.bind(enc, index: 6) }
+            (bias ?? logits).bind(enc, index: 6)
+            (routedScaleParam ?? logits).bind(enc, index: 7)
             enc.dispatchThreadgroups(MTLSize(width: rows, height: 1, depth: 1),
                                      threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1))
         }
@@ -45,7 +53,10 @@ extension QWGemm {
             enc.setComputePipelineState(try hal.pipeline("qwg_moe_route_decode"))
             enc.bindTensors(logits, idx, wts, startIndex: 0)
             enc.setUInt32s(rows, topK, normFlags | 4, startIndex: 3)
+            enc.bindTensors(logits, logits, startIndex: 6)
             enc.setUInt32s(max(topK, expertBudget), startIndex: 8)
+            (bias ?? logits).bind(enc, index: 9)
+            (routedScaleParam ?? logits).bind(enc, index: 10)
             enc.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
                                      threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1))
         }

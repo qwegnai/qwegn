@@ -23,12 +23,27 @@ def f32hex(x) -> str:
 
 def geo_v2(tc: dict) -> str:
     num_layers = tc["num_hidden_layers"]
-    raw_layer_types = tc.get("layer_types") or (["full_attention"] * num_layers)
-    layer_kinds = "".join("F" if t in ("full_attention", "deepseek_sparse_attention") else "L" for t in raw_layer_types)
+    raw_ratios = tc.get("compress_ratios")
+    if tc.get("layer_types") is not None:
+        raw_layer_types = tc["layer_types"]
+    elif raw_ratios and len(raw_ratios) >= num_layers:
+        raw_layer_types = [
+            "compressed_attention" if r > 0 else "full_attention"
+            for r in raw_ratios[:num_layers]
+        ]
+    else:
+        raw_layer_types = ["full_attention"] * num_layers
+    layer_kinds = "".join(
+        "F" if t in ("full_attention", "deepseek_sparse_attention")
+        else ("C" if t == "compressed_attention" else "L")
+        for t in raw_layer_types
+    )
     if tc.get("full_attention_interval") is not None:
         fa_interval = tc["full_attention_interval"]
     elif "F" in layer_kinds:
-        fa_interval = layer_kinds.index("F") + 1
+        cand = layer_kinds.index("F") + 1
+        fa_indices = [i for i, ch in enumerate(layer_kinds) if ch == "F"]
+        fa_interval = cand if all((i + 1) % cand == 0 for i in fa_indices) else 0
     else:
         fa_interval = 1
     hd = tc.get("head_dim") or tc.get("qk_head_dim") or (
@@ -37,11 +52,17 @@ def geo_v2(tc: dict) -> str:
     rope_params = tc.get("rope_parameters") or {}
     rot_f = tc.get("partial_rotary_factor")
     if rot_f is None:
+        rot_f = tc.get("rotary_percent")
+    if rot_f is None:
         rot_f = rope_params.get("partial_rotary_factor", 1.0)
     theta = tc.get("rope_theta") or rope_params.get("rope_theta") or 10000.0
-    gate_on = (bool(tc.get("attn_output_gate"))
-               or tc.get("output_gate_type") == "sigmoid"
-               or tc.get("model_type") in ("qwen3_5", "qwen3_5_text", "qwen4_exp", "qwen4_exp_text"))
+    if "attn_output_gate" in tc and tc["attn_output_gate"] is not None:
+        gate_on = bool(tc["attn_output_gate"])
+    elif "use_gated_attn" in tc and tc["use_gated_attn"] is not None:
+        gate_on = bool(tc["use_gated_attn"])
+    else:
+        gate_on = (tc.get("output_gate_type") is not None
+                   or tc.get("model_type") in ("qwen3_5", "qwen3_5_text", "qwen4_exp", "qwen4_exp_text"))
     qgate = 1 if gate_on else 0
     lin_cfg = tc.get("linear_attn_config") or {}
     gdn_qk = tc.get("linear_num_key_heads") or lin_cfg.get("num_heads") or 0
@@ -80,7 +101,10 @@ def geo_v2(tc: dict) -> str:
         idx_comp = 4 if tc.get("index_kpool_compress") else (1 if idx_heads else 0)
     fields.append("idx={},{},{},{},{}".format(idx_heads, idx_kv, idx_hd, idx_budget, idx_comp))
     eg = tc.get("scoring_func") or (
-        "sigmoid" if tc.get("model_type") in ("qwen4_exp", "qwen4_exp_text", "glm5_next", "glm5_next_text") else "-"
+        "sigmoid" if tc.get("model_type") in (
+            "qwen4_exp", "qwen4_exp_text", "glm5_next", "glm5_next_text",
+            "ernie5_5_moe", "ernie5_5_moe_text",
+        ) else "-"
     )
     num_exp = tc.get("num_experts") if tc.get("num_experts") is not None else (tc.get("n_routed_experts") or 0)
     moe_int = z("moe_intermediate_size")
@@ -96,6 +120,18 @@ def geo_v2(tc: dict) -> str:
         ",".join(str(i) for i in ple_ids), z("ple_embed_dim"), z("ple_conv_kernel_size"),
         z("ngram_size"), z("heads_per_ngram"), z("ngram_vocab_size_base"),
         z("make_ngram_vocab_size_divisible_by"), z("split_ngram_parts")))
+    moe_lat = tc.get("moe_latent_size") or 0
+    if moe_lat > 0:
+        mtp_shared = 1 if tc.get("mtp_shared_last_layer") else 0
+        multimax = 1 if tc.get("multimax") == "lm_head" else 0
+        fields.append(f"lat={moe_lat},{mtp_shared},{multimax}")
+    if "C" in layer_kinds and raw_ratios:
+        pos_ratios = [r for r in raw_ratios if r > 0]
+        def_ratio = pos_ratios[0] if pos_ratios else 128
+        o_groups = tc.get("o_groups") or 8
+        o_lora = tc.get("o_lora_rank") or 1024
+        sw = tc.get("sliding_window") or 128
+        fields.append(f"hca={def_ratio},{o_groups},{o_lora},{sw}")
     return "qwg-geo-v2:" + "|".join(fields)
 
 MODEL_ID = {
@@ -109,6 +145,8 @@ MODEL_ID = {
     "qwen3_5_moe_text": "qwen3-moe",
     "glm5_next": "glm5_next",
     "glm5_next_text": "glm5_next",
+    "ernie5_5_moe": "ernie5_5_moe",
+    "ernie5_5_moe_text": "ernie5_5_moe",
     "qwen2": "qwen2-dense",
     "llama": "llama-dense",
     "mistral": "mistral-dense",

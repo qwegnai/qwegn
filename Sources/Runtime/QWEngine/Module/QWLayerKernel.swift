@@ -37,6 +37,10 @@ public enum QWLayerKernelRegistry {
         case QWEnginePlan.LayerKernelKey(attention: .fullAttention, mlp: .moe, ple: false),
              QWEnginePlan.LayerKernelKey(attention: .qsaSparse, mlp: .moe, ple: false):
             return MoELayerKernel.self
+        case QWEnginePlan.LayerKernelKey(attention: .hcaCompressed, mlp: .dense, ple: false):
+            return HCALayerKernel.self
+        case QWEnginePlan.LayerKernelKey(attention: .hcaCompressed, mlp: .moe, ple: false):
+            return HCAMoELayerKernel.self
         default:
             return nil
         }
@@ -77,6 +81,8 @@ public enum QWLayerKernelRegistry {
             case .gdnMoe: ("gdn", "moe")
             case .fullAttention: (fullAttnKey, "dense")
             case .moe: (fullAttnKey, "moe")
+            case .hca: ("hcaCompressed", "dense")
+            case .hcaMoe: ("hcaCompressed", "moe")
             }
             guard runtime.attention == key.attention.rawValue,
                   runtime.mlp == key.mlp.rawValue else {

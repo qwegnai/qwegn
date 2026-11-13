@@ -34,6 +34,7 @@ extension QWEngineDriver {
         let format: QWWeightFormat
         var weightRequest = 0
         var sharedColdBanks: (gu: QWWeightView, down: QWWeightView)?
+        var hcaLsaByLayer: [Int: (wq: QWTensorValue, wk: QWTensorValue)] = [:]
         // Shared mover (QWLoad): F_NOCACHE pread straight into the destination,
         // single-memcpy mmap fallback; loading does not duplicate the pack in RAM.
         let io: PlaneIO?
@@ -397,101 +398,47 @@ extension QWEngineDriver {
         mutating func packedMoE(_ blk: String, experts: Int, topK: Int) throws -> MoEW {
             let I = geometry.moeIntermediate
             let H = geometry.hidden
+            let outDim = geometry.moeRoutedDim
             let resE = geometry.effectiveResidentExperts
             let coldE = max(0, experts - resE)
-            let canPermute = coldE > 0
-                && geometry.hasBiasCorrectedRouter
-                && hasTensor(blk + "mlp.experts.\(experts - 1).gate_proj.weight")
-            let expertPerm: [Int]?
-            let router: QWTensorValue
-            let routerBias: QWTensorValue?
-            if canPermute {
-                let rawR = try rawFloats(blk + "mlp.gate.weight", experts * H)
-                let rawB = try rawFloats(blk + "mlp.gate.e_score_correction_bias", experts)
-                let rawLn2 = (try? rawFloats(blk + "post_attention_layernorm.weight", H))
-                    ?? [Float](repeating: 1.0, count: H)
-                var wNorm = [Float](repeating: 0, count: experts)
-                for e in 0..<experts {
-                    let base = e * H
-                    var sumSq: Float = 0
-                    for c in 0..<H {
-                        let v = rawR[base + c] * rawLn2[c]
-                        sumSq += v * v
-                    }
-                    wNorm[e] = sqrt(sumSq)
-                }
-                let perm = (0..<experts).sorted { a, b in
-                    if rawB[a] != rawB[b] { return rawB[a] > rawB[b] }
-                    if wNorm[a] != wNorm[b] { return wNorm[a] > wNorm[b] }
-                    return a < b
-                }
-                var permR = [Float](repeating: 0, count: experts * H)
-                var permB = [Float](repeating: 0, count: experts)
-                for dstIdx in 0..<experts {
-                    let srcIdx = perm[dstIdx]
-                    permB[dstIdx] = rawB[srcIdx]
-                    let srcBase = srcIdx * H
-                    let dstBase = dstIdx * H
-                    for c in 0..<H {
-                        permR[dstBase + c] = rawR[srcBase + c]
-                    }
-                }
-                let rT = try allocateWeight(QWTensorShape([experts * H], .f32))
-                permR.withUnsafeBytes {
-                    rT.region.buffer.contents()
-                        .advanced(by: rT.region.base + rT.offset)
-                        .copyMemory(from: $0.baseAddress!, byteCount: experts * H * 4)
-                }
-                let bT = try allocateWeight(QWTensorShape([experts], .f32))
-                permB.withUnsafeBytes {
-                    bT.region.buffer.contents()
-                        .advanced(by: bT.region.base + bT.offset)
-                        .copyMemory(from: $0.baseAddress!, byteCount: experts * 4)
-                }
-                router = rT
-                routerBias = bT
-                expertPerm = perm
-            } else {
-                // The router: [E, H] f32, from the raw plane.
-                router = try f32w(blk + "mlp.gate.weight", experts * H)
-                routerBias = geometry.hasBiasCorrectedRouter
-                    ? try f32w(blk + "mlp.gate.e_score_correction_bias", experts)
-                    : nil
-                expertPerm = nil
-            }
+            let routed = try loadMoERouterAndScale(blk, experts: experts, coldE: coldE)
+            let router = routed.router
+            let routerBias = routed.bias
+            let routedScaleParam = routed.scaleParam
+            let expertPerm = routed.perm
             let gu: QWWeightView
             let down: QWWeightView
             if st != nil, hasTensor(blk + "mlp.switch_mlp.gate_proj.weight") {
                 let guBlocks: QWTensorValue
                 if format.isNativeAffine {
-                    let guElems = (resE * 2 * I * format.rowBytes(k: H)) / 2
+                    let guElems = (resE * 2 * I * format.rowBytes(k: outDim)) / 2
                     guBlocks = try allocateWeight(QWTensorShape([guElems], .f16))
                     try repackSafetensorsSwitchGateUpToAQ(
                         gateName: blk + "mlp.switch_mlp.gate_proj.weight",
                         upName: blk + "mlp.switch_mlp.up_proj.weight",
-                        experts: resE, i: I, h: H,
+                        experts: resE, i: I, h: outDim,
                         into: guBlocks.region.buffer,
                         dstByteOffset: guBlocks.region.base + guBlocks.offset
                     )
                 } else {
-                    let guElems = resE * 2 * I * (H / 32) * 10
+                    let guElems = resE * 2 * I * (outDim / 32) * 10
                     guBlocks = try allocateWeight(QWTensorShape([guElems], .f16))
                     try quantizeSafetensorsSwitchGateUp(
                         gateName: blk + "mlp.switch_mlp.gate_proj.weight",
                         upName: blk + "mlp.switch_mlp.up_proj.weight",
-                        experts: resE, i: I, h: H,
+                        experts: resE, i: I, h: outDim,
                         into: guBlocks.region.buffer,
                         dstByteOffset: guBlocks.region.base + guBlocks.offset
                     )
                 }
                 let downBlocks = try planeView(
                     blk + "mlp.switch_mlp.down_proj.weight",
-                    n: resE * H, k: I, key: \QWQTensorEntry.hq4Off
+                    n: resE * outDim, k: I, key: \QWQTensorEntry.hq4Off
                 )
-                guard let guView = QWWeightView(blocks: guBlocks, n: resE * 2 * I, k: H,
+                guard let guView = QWWeightView(blocks: guBlocks, n: resE * 2 * I, k: outDim,
                                              bits: format.bits, groupSize: format.groupSize,
                                              isRotated: hl.weightBasis.rotatesActivations),
-                      let downView = QWWeightView(blocks: downBlocks, n: resE * H, k: I,
+                      let downView = QWWeightView(blocks: downBlocks, n: resE * outDim, k: I,
                                                  bits: format.bits, groupSize: format.groupSize,
                                                  isRotated: hl.weightBasis.rotatesActivations) else {
                     throw QWEngineDriverError.weightMissing(blk + "mlp.switch_mlp", "moe bank view invalid")
@@ -501,18 +448,18 @@ extension QWEngineDriver {
             } else if pk != nil, hasTensor(blk + "mlp.experts.gate_up_proj") {
                 let guBlocks = try planeView(
                     blk + "mlp.experts.gate_up_proj",
-                    n: resE * 2 * I, k: H, key: \QWQTensorEntry.hq4Off
+                    n: resE * 2 * I, k: outDim, key: \QWQTensorEntry.hq4Off
                 )
                 let downBlocks = try planeView(
                     blk + "mlp.experts.down_proj",
-                    n: resE * H, k: I, key: \QWQTensorEntry.hq4Off
+                    n: resE * outDim, k: I, key: \QWQTensorEntry.hq4Off
                 )
-                guard let guView = QWWeightView(blocks: guBlocks, n: resE * 2 * I, k: H,
+                guard let guView = QWWeightView(blocks: guBlocks, n: resE * 2 * I, k: outDim,
                                              bits: format.expertBits, groupSize: format.expertGroupSize,
                                              isRotated: hl.weightBasis.rotatesActivations,
                                              isIncumbentContainer: format.expertIsIncumbentContainer,
                                              isSHVQ: format.expertIsSHVQ),
-                      let downView = QWWeightView(blocks: downBlocks, n: resE * H, k: I,
+                      let downView = QWWeightView(blocks: downBlocks, n: resE * outDim, k: I,
                                                  bits: format.expertDownBits, groupSize: format.expertDownGroupSize,
                                                  isRotated: hl.weightBasis.rotatesActivations,
                                                  isIncumbentContainer: format.expertDownIsIncumbentContainer,
@@ -522,27 +469,30 @@ extension QWEngineDriver {
                 gu = guView
                 down = downView
             } else {
-                // The gate/up bank: every resident expert's gate rows, then its up rows.
+                let useBlockSparse = !hasTensor(blk + "mlp.experts.0.gate_proj.weight")
+                    && hasTensor(blk + "block_sparse_moe.experts.0.w1.weight")
                 var guSpecs: [(name: String, n: Int)] = []
-                for idx in 0..<resE {
-                    let e = expertPerm?[idx] ?? idx
-                    guSpecs.append((blk + "mlp.experts.\(e).gate_proj.weight", I))
-                    guSpecs.append((blk + "mlp.experts.\(e).up_proj.weight", I))
-                }
-                let (guBank, _) = try concatQ4(guSpecs, k: H)
-                // The down bank: every resident expert's [H, I] slab.
                 var downSpecs: [(name: String, n: Int)] = []
                 for idx in 0..<resE {
                     let e = expertPerm?[idx] ?? idx
-                    downSpecs.append((blk + "mlp.experts.\(e).down_proj.weight", H))
+                    if useBlockSparse {
+                        guSpecs.append((blk + "block_sparse_moe.experts.\(e).w1.weight", I))
+                        guSpecs.append((blk + "block_sparse_moe.experts.\(e).w3.weight", I))
+                        downSpecs.append((blk + "block_sparse_moe.experts.\(e).w2.weight", outDim))
+                    } else {
+                        guSpecs.append((blk + "mlp.experts.\(e).gate_proj.weight", I))
+                        guSpecs.append((blk + "mlp.experts.\(e).up_proj.weight", I))
+                        downSpecs.append((blk + "mlp.experts.\(e).down_proj.weight", outDim))
+                    }
                 }
+                let (guBank, _) = try concatQ4(guSpecs, k: outDim)
                 let (downBank, _) = try concatQ4(downSpecs, k: I)
-                guard let guView = QWWeightView(blocks: guBank.blocks, n: resE * 2 * I, k: H,
+                guard let guView = QWWeightView(blocks: guBank.blocks, n: resE * 2 * I, k: outDim,
                                              bits: format.expertBits, groupSize: format.expertGroupSize,
                                              isRotated: hl.weightBasis.rotatesActivations,
                                              isIncumbentContainer: format.expertIsIncumbentContainer,
                                              isSHVQ: format.expertIsSHVQ),
-                      let downView = QWWeightView(blocks: downBank.blocks, n: resE * H, k: I,
+                      let downView = QWWeightView(blocks: downBank.blocks, n: resE * outDim, k: I,
                                                  bits: format.expertDownBits, groupSize: format.expertDownGroupSize,
                                                  isRotated: hl.weightBasis.rotatesActivations,
                                                  isIncumbentContainer: format.expertDownIsIncumbentContainer,
@@ -552,7 +502,7 @@ extension QWEngineDriver {
                 gu = guView
                 down = downView
             }
-            let coldBanks = coldE > 0 ? try ensureSharedColdBanks(coldE: coldE, i: I, h: H) : nil
+            let coldBanks = coldE > 0 ? try ensureSharedColdBanks(coldE: coldE, i: I, h: outDim) : nil
             let coldStreamer: ColdExpertStreamer?
             if let cb = coldBanks, let io = self.io {
                 let guPtr = cb.gu.blocks.region.buffer.contents().advanced(by: cb.gu.blocks.region.base + cb.gu.blocks.offset)
@@ -569,7 +519,7 @@ extension QWEngineDriver {
                     totalExperts: experts,
                     stagingSlots: coldE,
                     intermediate: I,
-                    hidden: H,
+                    hidden: outDim,
                     guRowBytes: gu.rowBytes,
                     downRowBytes: down.rowBytes,
                     guBasePtr: guPtr,
@@ -579,20 +529,33 @@ extension QWEngineDriver {
             } else {
                 coldStreamer = nil
             }
+            let latent = try loadLatentBottleneckIfNeeded(blk)
             let ISh = geometry.sharedExpertIntermediate
             let sharedGateUp: QWWeightView?
             let sharedDown: QWWeightView?
             let sharedGateScalar: QWTensorValue?
             if ISh > 0 {
-                let shPrefix = hasTensor(blk + "mlp.shared_experts.gate_proj.weight")
-                    ? (blk + "mlp.shared_experts.")
-                    : (blk + "mlp.shared_expert.")
-                let (shGU, _) = try concatQ4([
-                    (shPrefix + "gate_proj.weight", ISh),
-                    (shPrefix + "up_proj.weight", ISh)
-                ], k: H)
-                sharedGateUp = shGU
-                sharedDown = try q4(shPrefix + "down_proj.weight", n: H, k: ISh)
+                if !hasTensor(blk + "mlp.shared_experts.gate_proj.weight")
+                    && !hasTensor(blk + "mlp.shared_expert.gate_proj.weight")
+                    && hasTensor(blk + "block_sparse_moe.shared_experts.w1.weight") {
+                    let shPrefix = blk + "block_sparse_moe.shared_experts."
+                    let (shGU, _) = try concatQ4([
+                        (shPrefix + "w1.weight", ISh),
+                        (shPrefix + "w3.weight", ISh)
+                    ], k: H)
+                    sharedGateUp = shGU
+                    sharedDown = try q4(shPrefix + "w2.weight", n: H, k: ISh)
+                } else {
+                    let shPrefix = hasTensor(blk + "mlp.shared_experts.gate_proj.weight")
+                        ? (blk + "mlp.shared_experts.")
+                        : (blk + "mlp.shared_expert.")
+                    let (shGU, _) = try concatQ4([
+                        (shPrefix + "gate_proj.weight", ISh),
+                        (shPrefix + "up_proj.weight", ISh)
+                    ], k: H)
+                    sharedGateUp = shGU
+                    sharedDown = try q4(shPrefix + "down_proj.weight", n: H, k: ISh)
+                }
                 sharedGateScalar = geometry.sharedExpertHasGate
                     ? try f32w(blk + "mlp.shared_expert_gate.weight", H)
                     : nil
@@ -606,6 +569,9 @@ extension QWEngineDriver {
                         sharedGateUp: sharedGateUp, sharedDown: sharedDown,
                         sharedGateScalar: sharedGateScalar,
                         routerBias: routerBias,
+                        routedScaleParam: routedScaleParam,
+                        splitFeatureRouting: geometry.moeSplitFeatureRouting,
+                        latent: latent,
                         coldGateUp: coldBanks?.gu, coldDown: coldBanks?.down,
                         coldStreamer: coldStreamer)
         }
@@ -627,9 +593,10 @@ extension QWEngineDriver {
                 let gu: QWMLPWeight
                 let down: QWWeightView
                 if let moe {
+                    let outDim = geometry.moeRoutedDim
                     guard let v = QWMLPWeight(blocks: moe.gateUp.blocks,
                                              n: 2 * geometry.moeIntermediate,
-                                             k: geometry.hidden,
+                                             k: outDim,
                                              bits: moe.gateUp.bits,
                                              groupSize: moe.gateUp.groupSize,
                                              isRotated: moe.gateUp.isRotated,
@@ -638,14 +605,26 @@ extension QWEngineDriver {
                         throw QWEngineDriverError.weightMissing(blk + "mlp.experts", "moe gu view invalid")
                     }
                     gu = v
-                    down = try firstExpert(moe.down, rows: geometry.hidden)
+                    down = try firstExpert(moe.down, rows: outDim)
                 } else {
                     gu = try packedGU(blk)
                     down = try q4(blk + "mlp.down_proj.weight", n: geometry.hidden, k: geometry.intermediate)
                 }
+                if geometry.isCompressedAttention(l) {
+                    ws.append(try loadHCAAttnLayer(
+                        blk: blk, layer: l, ln1: ln1, ln2: ln2,
+                        gu: gu, down: down, moe: moe, geometry: geometry))
+                    continue
+                }
                 if geometry.isFullAttention(l) {
                     if geometry.usesNoPEMLA {
                         ws.append(try loadMLAAttnLayer(
+                            blk: blk, layer: l, ln1: ln1, ln2: ln2,
+                            gu: gu, down: down, moe: moe, geometry: geometry))
+                        continue
+                    }
+                    if geometry.usesDecoupledRopeMLA {
+                        ws.append(try loadDecoupledMLAAttnLayer(
                             blk: blk, layer: l, ln1: ln1, ln2: ln2,
                             gu: gu, down: down, moe: moe, geometry: geometry))
                         continue

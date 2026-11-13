@@ -27,29 +27,38 @@ inline void qwg_route_fwht32_f32(thread float (&f)[8], uint lane_id) {
 }
 
 // Batched router top-k for prefill (T threadgroups x 32 threads; 1 simdgroup per token row, zero barrier).
-kernel void qwg_moe_route(device const float* logits   [[buffer(0)]],
-                          device int*        idx      [[buffer(1)]],
-                          device float*      wts      [[buffer(2)]],
-                          constant uint&     E        [[buffer(3)]],
-                          constant uint&     K        [[buffer(4)]],
-                          constant uint&     normTopK [[buffer(5)]],
-                          device const float* bias     [[buffer(6)]],
+kernel void qwg_moe_route(device const float* logits     [[buffer(0)]],
+                          device int*         idx        [[buffer(1)]],
+                          device float*       wts        [[buffer(2)]],
+                          constant uint&      E          [[buffer(3)]],
+                          constant uint&      K          [[buffer(4)]],
+                          constant uint&      normTopK   [[buffer(5)]],
+                          device const float* bias       [[buffer(6)]],
+                          device const float* scaleParam [[buffer(7)]],
                           uint t    [[threadgroup_position_in_grid]],
                           uint lane [[thread_position_in_threadgroup]]) {
     const bool doNorm = (normTopK & 1u) != 0u;
     const bool hasBias = (normTopK & 2u) != 0u;
+    const bool splitFeature = (normTopK & 8u) != 0u;
+    const bool hasScaleParam = (normTopK & 16u) != 0u;
+    const uint logitStride = splitFeature ? (2u * E) : E;
     const uint JN = E / 32u;
     float lv[16], ex[16], p[16];
     float mx = -INFINITY;
     for (uint j = 0u; j < 16u; j++) {
-        if (j < JN) { lv[j] = logits[t * E + lane + 32u * j]; mx = max(mx, lv[j]); }
+        if (j < JN) { lv[j] = logits[t * logitStride + lane + 32u * j]; mx = max(mx, lv[j]); }
     }
-    if (hasBias) {
+    if (hasBias || splitFeature) {
         for (uint j = 0u; j < 16u; j++) {
             if (j < JN) {
                 const uint id = lane + 32u * j;
-                ex[j] = 1.0f / (1.0f + exp(-lv[j]));
-                p[j] = ex[j] + bias[id];
+                float s = 1.0f / (1.0f + exp(-lv[j]));
+                if (splitFeature) {
+                    const float lv1 = logits[t * logitStride + E + id];
+                    s += 1.0f / (1.0f + exp(-lv1));
+                }
+                ex[j] = s;
+                p[j] = hasBias ? (s + bias[id]) : s;
             }
         }
     } else {
@@ -80,7 +89,7 @@ kernel void qwg_moe_route(device const float* logits   [[buffer(0)]],
         }
         const uint wj = w >> 5u;
         float own = 0.0f;
-        for (uint j = 0u; j < 16u; j++) if (wj == j) own = hasBias ? ex[j] : p[j];
+        for (uint j = 0u; j < 16u; j++) if (wj == j) own = (hasBias || splitFeature) ? ex[j] : p[j];
         const float pw = simd_broadcast(own, ushort(w & 31u));
         if (lane == 0u) {
             idx[t * K + r] = int(w);
@@ -92,24 +101,29 @@ kernel void qwg_moe_route(device const float* logits   [[buffer(0)]],
         float acc = 0.0f;
         if (doNorm) {
             for (uint r = 0u; r < K; r++) acc += wsel[r];
-            if (hasBias) acc += 1e-20f;
+            if (hasBias || splitFeature) acc += 1e-20f;
         }
-        for (uint r = 0u; r < K; r++) wts[t * K + r] = (doNorm ? (wsel[r] / acc) : wsel[r]) * rScale;
+        for (uint r = 0u; r < K; r++) {
+            const uint eid = uint(idx[t * K + r]);
+            const float scale = hasScaleParam ? scaleParam[eid] : rScale;
+            wts[t * K + r] = (doNorm ? (wsel[r] / acc) : wsel[r]) * scale;
+        }
     }
 }
 
 // Single-token decode router top-k (tg 0, 512 threads = 16 simdgroups, 1 expert/thread) + optional fused
 // shared-expert silu_mul + H_32 (tg 1 when IS > 0).
-kernel void qwg_moe_route_decode(device const float* logits0  [[buffer(0)]],
-                                 device int*         idx0     [[buffer(1)]],
-                                 device float*       wts0     [[buffer(2)]],
-                                 constant uint&      E        [[buffer(3)]],
-                                 constant uint&      K        [[buffer(4)]],
-                                 constant uint&      normTopK [[buffer(5)]],
-                                 device const float* guSh0    [[buffer(6)]],
-                                 device float*       actSh0   [[buffer(7)]],
-                                 constant uint&      IS       [[buffer(8)]],
-                                 device const float* bias     [[buffer(9)]],
+kernel void qwg_moe_route_decode(device const float* logits0    [[buffer(0)]],
+                                 device int*         idx0       [[buffer(1)]],
+                                 device float*       wts0       [[buffer(2)]],
+                                 constant uint&      E          [[buffer(3)]],
+                                 constant uint&      K          [[buffer(4)]],
+                                 constant uint&      normTopK   [[buffer(5)]],
+                                 device const float* guSh0      [[buffer(6)]],
+                                 device float*       actSh0     [[buffer(7)]],
+                                 constant uint&      IS         [[buffer(8)]],
+                                 device const float* bias       [[buffer(9)]],
+                                 device const float* scaleParam [[buffer(10)]],
                                  uint2 tgp  [[threadgroup_position_in_grid]],
                                  uint2 tpt  [[thread_position_in_threadgroup]],
                                  uint sgi  [[simdgroup_index_in_threadgroup]],
@@ -124,10 +138,19 @@ kernel void qwg_moe_route_decode(device const float* logits0  [[buffer(0)]],
         const uint B = IS;
         const uint totalPairs = M * K;
         const bool doNorm = (normTopK & 1u) != 0u;
+        float origRowSums[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        if (doNorm && lane == 0u) {
+            for (uint r = 0u; r < M && r < 4u; ++r) {
+                float s = 0.0f;
+                for (uint k = 0u; k < K; ++k) s += wts0[r * K + k];
+                origRowSums[r] = s;
+            }
+        }
         int id0 = (lane < totalPairs) ? idx0[lane] : -1;
         int id1 = (lane + 32u < totalPairs) ? idx0[lane + 32u] : -1;
         float w0 = (lane < totalPairs) ? wts0[lane] : -1.0f;
         float w1 = (lane + 32u < totalPairs) ? wts0[lane + 32u] : -1.0f;
+        simdgroup_barrier(mem_flags::mem_device);
         bool keep0 = (lane < K);
         bool keep1 = (lane + 32u < K);
         uint uniqueCount = 0u;
@@ -167,19 +190,15 @@ kernel void qwg_moe_route_decode(device const float* logits0  [[buffer(0)]],
             idx0[lane + 32u] = -1;
             wts0[lane + 32u] = 0.0f;
         }
+        simdgroup_barrier(mem_flags::mem_device);
         if (doNorm && lane == 0u) {
-            for (uint r = 1u; r < M; ++r) {
-                float origSum = 0.0f;
+            for (uint r = 1u; r < M && r < 4u; ++r) {
                 float newSum = 0.0f;
                 for (uint k = 0u; k < K; ++k) {
-                    const uint p = r * K + k;
-                    const float w = wts0[p];
+                    const float w = wts0[r * K + k];
                     if (w > 0.0f) newSum += w;
                 }
-                // If any slot was pruned and normTopK is enabled, renormalize to the root row's scale.
-                float targetSum = 0.0f;
-                for (uint k = 0u; k < K; ++k) targetSum += wts0[k];
-                origSum = targetSum;
+                const float origSum = origRowSums[r];
                 if (newSum > 0.0f && newSum < origSum * 0.9999f) {
                     const float scale = origSum / newSum;
                     for (uint k = 0u; k < K; ++k) {
@@ -190,7 +209,10 @@ kernel void qwg_moe_route_decode(device const float* logits0  [[buffer(0)]],
         }
         return;
     }
-    device const float* logits = logits0 + row * E;
+    const bool splitFeature = (normTopK & 8u) != 0u;
+    const bool hasScaleParam = (normTopK & 16u) != 0u;
+    const uint logitStride = splitFeature ? (2u * E) : E;
+    device const float* logits = logits0 + row * logitStride;
     device int*         idx    = idx0 + row * K;
     device float*       wts    = wts0 + row * K;
     device const float* guSh   = guSh0 + row * 2u * IS;
@@ -224,9 +246,13 @@ kernel void qwg_moe_route_decode(device const float* logits0  [[buffer(0)]],
     const bool valid = (tid < E);
     const float lv = valid ? logits[tid] : -INFINITY;
     float p = -INFINITY;
-    if (hasBias) {
-        const float sig = valid ? (1.0f / (1.0f + exp(-lv))) : 0.0f;
-        p = valid ? (sig + bias[tid]) : -INFINITY;
+    if (hasBias || splitFeature) {
+        float sig = valid ? (1.0f / (1.0f + exp(-lv))) : 0.0f;
+        if (splitFeature && valid) {
+            const float lv1 = logits[E + tid];
+            sig += 1.0f / (1.0f + exp(-lv1));
+        }
+        p = valid ? (hasBias ? (sig + bias[tid]) : sig) : -INFINITY;
     } else {
         const float sgMax = simd_max(lv);
         if (lane == 0u) sMaxArr[sgi] = sgMax;
@@ -263,7 +289,13 @@ kernel void qwg_moe_route_decode(device const float* logits0  [[buffer(0)]],
         const uint w = simd_min((bv == vMax) ? bi : 0xFFFFFFFFu);
         if (tid == 0u) {
             idx[r] = int(w);
-            wsel[r] = hasBias ? (1.0f / (1.0f + exp(-logits[w]))) : vMax;
+            if (hasBias || splitFeature) {
+                float s = 1.0f / (1.0f + exp(-logits[w]));
+                if (splitFeature) s += 1.0f / (1.0f + exp(-logits[E + w]));
+                wsel[r] = s;
+            } else {
+                wsel[r] = vMax;
+            }
         }
         if (r + 1u == K) break;
         const uint winSG = w >> 5u;
@@ -287,9 +319,12 @@ kernel void qwg_moe_route_decode(device const float* logits0  [[buffer(0)]],
         float acc = 0.0f;
         if (doNorm) {
             for (uint r = 0u; r < K; r++) acc += wsel[r];
-            if (hasBias) acc += 1e-20f;
+            if (hasBias || splitFeature) acc += 1e-20f;
         }
-        for (uint r = 0u; r < K; r++) wts[r] = (doNorm ? (wsel[r] / acc) : wsel[r]) * rScale;
+        for (uint r = 0u; r < K; r++) {
+            const float scale = hasScaleParam ? scaleParam[uint(idx[r])] : rScale;
+            wts[r] = (doNorm ? (wsel[r] / acc) : wsel[r]) * scale;
+        }
     }
 }
 

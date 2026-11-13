@@ -226,4 +226,157 @@ final class QWModelDescriptorTests: XCTestCase {
         XCTAssertEqual(d.withResidentExperts(96).effectiveResidentExperts, 96)
     }
 
+    func testErnie55FlashDescriptorDecodeGeometryLSAAndPythonDigestParity() throws {
+        let ernieConfig = """
+        {
+          "architectures": ["Ernie5_5_MoeForCausalLM"],
+          "model_type": "ernie5_5_moe",
+          "hidden_size": 4096,
+          "intermediate_size": 14336,
+          "vocab_size": 201216,
+          "num_hidden_layers": 43,
+          "num_nextn_predict_layers": 1,
+          "mtp_shared_last_layer": true,
+          "compress_ratios": [
+            128, 128, 128, 128, 128, 128, 128, -2,
+            128, 128, 128, 128, 128, 128, -2,
+            128, 128, 128, 128, 128, 128, -2,
+            128, 128, 128, 128, 128, 128, -2,
+            128, 128, 128, 128, 128, 128, -2,
+            128, 128, 128, 128, 128, 128, -2,
+            -2
+          ],
+          "rms_norm_eps": 1e-6,
+          "max_position_embeddings": 1048576,
+          "num_attention_heads": 64,
+          "num_key_value_heads": 1,
+          "head_dim": 512,
+          "qk_nope_head_dim": 448,
+          "qk_rope_head_dim": 64,
+          "v_head_dim": 512,
+          "q_lora_rank": 1024,
+          "kv_lora_rank": 512,
+          "o_groups": 8,
+          "o_lora_rank": 1024,
+          "sliding_window": 128,
+          "compress_rope_theta": 160000.0,
+          "hca_rope_type": "yarn",
+          "rope_scaling": {
+            "type": "yarn",
+            "factor": 16,
+            "original_max_position_embeddings": 65536,
+            "beta_fast": 32,
+            "beta_slow": 1
+          },
+          "rope_theta": 8000000,
+          "rotary_percent": 1.0,
+          "rope_interleave": true,
+          "hybrid_mla_attention": "mqa_dsa",
+          "hybrid_mla_num_attention_heads": 64,
+          "hybrid_mla_num_key_value_heads": 64,
+          "hybrid_mla_q_lora_rank": 1024,
+          "hybrid_mla_kv_lora_rank": 512,
+          "hybrid_mla_qk_nope_head_dim": 192,
+          "hybrid_mla_qk_rope_head_dim": 64,
+          "hybrid_mla_v_head_dim": 256,
+          "mqa_split_kv_b_proj": true,
+          "index_n_heads": 64,
+          "index_head_dim": 128,
+          "index_topk": 2048,
+          "use_fast_hadamard": true,
+          "use_vha_attention": true,
+          "add_full_attention_sink_bias": true,
+          "use_attn_merger": true,
+          "use_gated_attn": true,
+          "gated_attn_use_q_lora": true,
+          "enable_hyper_connections": true,
+          "hc_mult": 4,
+          "hc_sinkhorn_iters": 20,
+          "hc_eps": 1e-6,
+          "hidden_act": "situ",
+          "activation_situ_beta": 4.0,
+          "activation_situ_linear_beta": 25.0,
+          "first_k_dense_replace": 1,
+          "n_routed_experts": 512,
+          "num_experts_per_tok": 10,
+          "moe_intermediate_size": 2048,
+          "moe_latent_size": 2048,
+          "latent_moe_use_norm": true,
+          "moe_split_feature_routing": true,
+          "routed_scaling_factor": 3.0,
+          "routed_scaling_factor_learnable": true,
+          "n_shared_experts": 1,
+          "scoring_func": "sigmoid",
+          "topk_method": "noaux_tc",
+          "multimax": "lm_head",
+          "eos_token_id": 2
+        }
+        """.data(using: .utf8)!
+
+        let d = try QWModelDescriptor.decode(configJSON: ernieConfig)
+        XCTAssertEqual(d.verifyInternalConsistency(), [])
+        XCTAssertEqual(d.family, .qwen38Dense)
+        XCTAssertEqual(d.modelType, "ernie5_5_moe")
+        XCTAssertFalse(d.usesPlusOneRMSNorm)
+        XCTAssertTrue(d.attnOutputGate)
+        XCTAssertFalse(d.usesChatTemplateIds)
+        XCTAssertEqual(d.compressedAttentionLayers.count, 37)
+        XCTAssertEqual(d.fullAttentionLayers, [7, 14, 21, 28, 35, 42])
+        XCTAssertEqual(d.linearAttentionLayers, [])
+        XCTAssertEqual(d.fullAttentionInterval, 0)
+        XCTAssertTrue(d.isNextNLayerDSA(0))
+        XCTAssertEqual(d.activationKind, .situ(beta: 4.0, linearBeta: 25.0))
+        XCTAssertEqual(d.moeLatentSize, 2048)
+        XCTAssertTrue(d.latentMoeUseNorm)
+        XCTAssertTrue(d.moeSplitFeatureRouting)
+        XCTAssertTrue(d.routedScalingFactorLearnable)
+        XCTAssertTrue(d.multimaxHead)
+        XCTAssertTrue(d.mtpSharedLastLayer)
+        XCTAssertEqual(d.mhcConfig, QWModelDescriptor.MHCConfig(start: 0, end: 43, streams: 4, iterations: 20, hcEps: 1e-6, hasExitHead: true))
+
+        let geo = QWModelGeometry(descriptor: d)
+        XCTAssertEqual(geo.moeRoutedDim, 2048)
+        XCTAssertEqual(geo.hcaLayerCount, 37)
+        XCTAssertEqual(geo.mlaLayerCount, 6)
+        XCTAssertEqual(geo.gdnLayerCount, 0)
+        XCTAssertEqual(geo.indexerPoolShift, 0)
+        XCTAssertEqual(geo.hcaPoolShift, 7)
+        XCTAssertTrue(geo.usesDecoupledRopeMLA)
+        XCTAssertTrue(geo.usesLatentOrCompressedAttention)
+        XCTAssertTrue(geo.supportsGroupedNAXMoEPrefill)
+        XCTAssertEqual(d.lsaKeyProjectionSpec(layer: 0)?.kind, .hcaCompressWKV)
+        XCTAssertEqual(d.lsaKeyProjectionSpec(layer: 0)?.sliceDim, 448)
+        XCTAssertEqual(d.lsaInputDim, 448)
+        XCTAssertEqual(d.lsaHeadSliceStart, 0)
+        XCTAssertEqual(d.lsaHeadSliceDim, 448)
+        XCTAssertNil(d.lsaKeyProjectionSpec(layer: 7))
+
+        // Pin Python emit_pack_identity.py == Swift geometryDigestV2Hex byte-for-byte.
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let py = repoRoot.appendingPathComponent(".venv-oracle/bin/python")
+        let script = repoRoot.appendingPathComponent("Scripts/oracle/emit_pack_identity.py")
+        if FileManager.default.isExecutableFile(atPath: py.path) {
+            let tmpCfg = FileManager.default.temporaryDirectory.appendingPathComponent("ernie55_cfg_\(UUID().uuidString).json")
+            let tmpOut = FileManager.default.temporaryDirectory.appendingPathComponent("ernie55_id_\(UUID().uuidString).json")
+            defer {
+                try? FileManager.default.removeItem(at: tmpCfg)
+                try? FileManager.default.removeItem(at: tmpOut)
+            }
+            try ernieConfig.write(to: tmpCfg)
+            let proc = Process()
+            proc.executableURL = py
+            proc.arguments = [script.path, tmpCfg.path, tmpOut.path]
+            proc.standardOutput = Pipe()
+            proc.standardError = Pipe()
+            try proc.run()
+            proc.waitUntilExit()
+            XCTAssertEqual(proc.terminationStatus, 0)
+            let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: tmpOut)) as? [String: Any])
+            XCTAssertEqual(obj["_canonical_string"] as? String, d.geometryDigestV2)
+            XCTAssertEqual(obj["geometry_digest"] as? String, d.geometryDigestV2Hex)
+            XCTAssertEqual(obj["model_id"] as? String, "ernie5_5_moe")
+        }
+    }
+
 }

@@ -41,12 +41,20 @@ METAL_FUNC float qwg_fwht32_lane_f32(float v, uint lane_id) {
 #define QW_FC_SWIGLU_LIMIT_DEFINED
 constant float QW_FC_SWIGLU_LIMIT [[function_constant(224)]];
 constant float QW_FC_ROUTED_SCALE [[function_constant(225)]];
+constant float QW_FC_SITU_BETA    [[function_constant(228)]];
+constant float QW_FC_SITU_LIN_BETA [[function_constant(229)]];
 #endif
 
-/// Generalized SwiGLU activation: when `QW_FC_SWIGLU_LIMIT > 0`, clamps
-/// `gate = min(gate, limit)` and `up = clamp(up, -limit, limit)` before `silu(gate) * up`.
-/// Specializes away at PSO creation time when `QW_FC_SWIGLU_LIMIT == 0`.
+/// Generalized gated FFN activation: specializes at PSO creation time to bounded `SituAndMul`
+/// (`QW_FC_SITU_BETA > 0`), clamped `SwiGLU` (`QW_FC_SWIGLU_LIMIT > 0`), or standard `SwiGLU`.
 METAL_FUNC float qwg_swiglu_mul(float gate, float up) {
+    if (QW_FC_SITU_BETA > 0.0f) {
+        const float g = QW_FC_SITU_BETA * precise::tanh(gate / QW_FC_SITU_BETA) * (1.0f / (1.0f + exp(-gate)));
+        const float u = (QW_FC_SITU_LIN_BETA > 0.0f)
+            ? (QW_FC_SITU_LIN_BETA * precise::tanh(up / QW_FC_SITU_LIN_BETA))
+            : up;
+        return g * u;
+    }
     if (QW_FC_SWIGLU_LIMIT > 0.0f) {
         gate = min(gate, QW_FC_SWIGLU_LIMIT);
         up = clamp(up, -QW_FC_SWIGLU_LIMIT, QW_FC_SWIGLU_LIMIT);

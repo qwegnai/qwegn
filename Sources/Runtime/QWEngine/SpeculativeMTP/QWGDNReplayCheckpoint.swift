@@ -24,7 +24,8 @@ final class QWGDNReplayCheckpoint {
     private let fusedCapture: Bool
 
     static func allocationBytes(geometry: QWModelGeometry, layers: Int, rows: Int) -> Int {
-        precondition((1...128).contains(layers) && (1...16).contains(rows))
+        precondition((0...128).contains(layers) && (1...16).contains(rows))
+        if layers == 0 { return 7 * 256 }
         func aligned(_ bytes: Int) -> Int { (bytes + 255) / 256 * 256 }
         let qkvC = geometry.gdnQKVChannels, gdnVH = geometry.gdnVHeads, zC = geometry.gdnZChannels
         let glogC = geometry.gdnGlogChannels
@@ -38,8 +39,8 @@ final class QWGDNReplayCheckpoint {
 
     init(geometry: QWModelGeometry, allocator: QWSubAllocator, layers: Int = 48, rows: Int, fusedCapture: Bool = false) throws {
         self.geometry = geometry
-        guard layers > 0, layers <= 128, (1...16).contains(rows) else {
-            throw QWEngineDriverError.state("GPU checkpoint requires 1...128 layers and 1...16 rows")
+        guard layers >= 0, layers <= 128, (1...16).contains(rows) else {
+            throw QWEngineDriverError.state("GPU checkpoint requires 0...128 layers and 1...16 rows")
         }
         self.layers = layers
         self.rows = rows
@@ -47,13 +48,19 @@ final class QWGDNReplayCheckpoint {
         captured = [UInt32](repeating: 0, count: layers)
         let qkvC = geometry.gdnQKVChannels, gdnVH = geometry.gdnVHeads, zC = geometry.gdnZChannels
         let glogC = geometry.gdnGlogChannels
-        recurrent = try allocator.allocate(QWTensorShape([layers * QWSlotGeometry.recElems(geometry: geometry)], .f32))
-        rings = try allocator.allocate(QWTensorShape([layers * QWSlotGeometry.ringElems(geometry: geometry)], .f16))
-        raw = try allocator.allocate(QWTensorShape([layers * rows * qkvC], .f16))
-        normalized = try allocator.allocate(QWTensorShape([layers * rows * qkvC], .f16))
-        betas = try allocator.allocate(QWTensorShape([layers * rows * gdnVH], .f32))
-        glog = try allocator.allocate(QWTensorShape([layers * rows * glogC], .f32))
-        innovations = try allocator.allocate(QWTensorShape([layers * rows * zC], .f32))
+        let recElems = max(1, layers * QWSlotGeometry.recElems(geometry: geometry))
+        let ringElems = max(1, layers * QWSlotGeometry.ringElems(geometry: geometry))
+        let rowQKV = max(1, layers * rows * qkvC)
+        let rowVH = max(1, layers * rows * gdnVH)
+        let rowGlog = max(1, layers * rows * glogC)
+        let rowZ = max(1, layers * rows * zC)
+        recurrent = try allocator.allocate(QWTensorShape([recElems], .f32))
+        rings = try allocator.allocate(QWTensorShape([ringElems], .f16))
+        raw = try allocator.allocate(QWTensorShape([rowQKV], .f16))
+        normalized = try allocator.allocate(QWTensorShape([rowQKV], .f16))
+        betas = try allocator.allocate(QWTensorShape([rowVH], .f32))
+        glog = try allocator.allocate(QWTensorShape([rowGlog], .f32))
+        innovations = try allocator.allocate(QWTensorShape([rowZ], .f32))
     }
 
     private func view(_ tensor: QWTensorValue, index: Int, count: Int) -> QWTensorValue {
@@ -110,6 +117,10 @@ final class QWGDNReplayCheckpoint {
 
     func validateResolution(rec: QWTensorValue, ring: QWTensorValue,
                             activeRows: Int? = nil) throws {
+        if layers == 0 {
+            try validateCompleteCapture(activeRows: activeRows)
+            return
+        }
         try validate(rec, like: recurrent)
         try validate(ring, like: rings)
         try validateCompleteCapture(activeRows: activeRows)
@@ -127,6 +138,11 @@ final class QWGDNReplayCheckpoint {
 
     func encodeBackup(_ enc: any MTLBlitCommandEncoder,
                       rec: QWTensorValue, ring: QWTensorValue) throws {
+        if layers == 0 {
+            sourceRec = rec
+            sourceRing = ring
+            return
+        }
         try validate(rec, like: recurrent)
         try validate(ring, like: rings)
         if rec.region.buffer === ring.region.buffer {
@@ -144,6 +160,12 @@ final class QWGDNReplayCheckpoint {
 
     func encodeRestore(_ enc: any MTLBlitCommandEncoder,
                        rec: QWTensorValue, ring: QWTensorValue) throws {
+        if layers == 0 {
+            guard sourceRec != nil, sourceRing != nil else {
+                throw QWEngineDriverError.state("GPU restore requires the checkpoint's original state buffers")
+            }
+            return
+        }
         try validate(rec, like: recurrent)
         try validate(ring, like: rings)
         guard sameStorage(rec, sourceRec), sameStorage(ring, sourceRing) else {
@@ -311,6 +333,10 @@ final class QWGDNReplayCheckpoint {
 
     func encodeReplay(_ enc: any MTLComputeCommandEncoder, decoder: QWGDNDecode,
                       rec: QWTensorValue, retaining count: Int) throws {
+        if layers == 0 {
+            try validateRetained(count)
+            return
+        }
         try validate(rec, like: recurrent)
         try validateRetained(count)
         guard sameStorage(rec, sourceRec) else {
@@ -336,7 +362,7 @@ final class QWGDNReplayCheckpoint {
             throw QWEngineDriverError.state("GPU rollback active row count is invalid")
         }
         try validateRetained(count)
-        guard count < verifiedRows else { return true }
+        guard layers > 0, count < verifiedRows else { return true }
         let decayValues = glog.region.pointer.advanced(by: glog.offset).assumingMemoryBound(to: Float.self)
         let innovationValues = innovations.region.pointer.advanced(by: innovations.offset)
             .assumingMemoryBound(to: Float.self)
@@ -379,6 +405,13 @@ final class QWGDNReplayCheckpoint {
                             rec: QWTensorValue, activeRows: Int? = nil,
                             retaining count: Int) throws {
         let verifiedRows = activeRows ?? rows
+        if layers == 0 {
+            guard (2...rows).contains(verifiedRows), (0...verifiedRows).contains(count) else {
+                throw QWEngineDriverError.state("GPU rollback active row count is invalid")
+            }
+            try validateRetained(count)
+            return
+        }
         guard (2...rows).contains(verifiedRows), (0...verifiedRows).contains(count) else {
             throw QWEngineDriverError.state("GPU rollback active row count is invalid")
         }
@@ -411,6 +444,10 @@ final class QWGDNReplayCheckpoint {
     /// A 3-row raw-input ring needs no convolution to reconstruct its history.
     func encodeReplayRings(_ enc: any MTLBlitCommandEncoder,
                            ring: QWTensorValue, retaining count: Int) throws {
+        if layers == 0 {
+            try validateRetained(count)
+            return
+        }
         try validate(ring, like: rings)
         try validateRetained(count)
         guard sameStorage(ring, sourceRing) else {

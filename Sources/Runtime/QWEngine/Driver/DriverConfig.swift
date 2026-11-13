@@ -75,8 +75,19 @@ extension QWEngineDriver {
         partialsCarveBytes(geometry: geometry, maxTokens: maxTokens) * (mtpDrafts > 0 ? 2 : 1)
     }
 
+    /// Partials buffer floor for latent/compressed attention models that run
+    /// fused MTP draft-head argmax instead of GQA split-K attention decode.
+    static func draftHeadArgmaxPartialsBytes(vocab: Int) -> Int {
+        let clampedVocab = max(1, vocab)
+        let slots = max((clampedVocab + 31) / 32, QWHead.gemvArgmaxSlots(clampedVocab))
+        return max(4096, ((2 * slots * 4) + 4095) & ~4095)
+    }
+
     /// The ONE carve's size — the same number the budget counts.
     static func partialsCarveBytes(geometry: QWModelGeometry, maxTokens: Int = 262_144) -> Int {
+        if geometry.usesLatentOrCompressedAttention {
+            return draftHeadArgmaxPartialsBytes(vocab: geometry.vocab)
+        }
         let splits = maxTokens > 262_144 ? QWAttnDecode.maxLongContextSplits : QWAttnDecode.maxSplits
         return QWAttnDecode.decodePartialsBytes(geometry: geometry, maxSplits: splits)
     }
@@ -100,9 +111,11 @@ extension QWEngineDriver {
     /// The o_proj's group-sum width — the larger of the attention's and
     /// the GDN's. The 27B's `gdnVHeads` equalled it by coincidence.
     static func oProjGroupSumFloats(geometry: QWModelGeometry) -> Int {
-        max((geometry.hidden + 127) / 128,
-            max((geometry.gdnZChannels + 127) / 128,
-                (geometry.qHeads * geometry.vHeadDim + 127) / 128))
+        let hcaOutCols = geometry.hcaConfig.map { max(1, $0.oGroups) * $0.oLoraRank } ?? 0
+        return max((geometry.hidden + 127) / 128,
+                   max((geometry.gdnZChannels + 127) / 128,
+                       max((geometry.qHeads * geometry.vHeadDim + 127) / 128,
+                           (hcaOutCols + 127) / 128)))
     }
 
     /// The sparse-MoE chain's per-token scratch — the tensors the routed
@@ -110,10 +123,13 @@ extension QWEngineDriver {
     static func moeBytesPerToken(geometry: QWModelGeometry) -> Int {
         guard geometry.numExperts > 0 else { return 0 }
         let H = geometry.hidden, I = geometry.moeIntermediate
+        let outDim = geometry.moeRoutedDim
         let E = geometry.numExperts, K = geometry.expertsPerTok
+        let routerCols = geometry.moeSplitFeatureRouting ? (2 * E) : E
+        let latentDim = geometry.moeLatentSize ?? 0
         let ISh = geometry.sharedExpertIntermediate
         let shF32 = ISh > 0 ? 3 * ISh : 0
-        let baseF32 = 3 * H + E + K + 3 * K * I + K * H + shF32 + 1
+        let baseF32 = 3 * H + routerCols + K + 3 * K * I + K * outDim + shF32 + 2 * latentDim + 1
         let baseI32 = K
         return baseF32 * 4 + baseI32 * 4
     }
@@ -126,9 +142,11 @@ extension QWEngineDriver {
     ) -> Int {
         guard geometry.supportsGroupedNAXMoEPrefill && useGroupedNAX else { return 0 }
         let H = geometry.hidden, I = geometry.moeIntermediate
+        let outDim = geometry.moeRoutedDim
+        let latentDim = geometry.moeLatentSize ?? 0
         let K = geometry.expertsPerTok, ISh = geometry.sharedExpertIntermediate
-        let addedBytes = 5 * K * 4 + (H + ISh) * 2
-        let savedBytes = (3 * K * I + K * H) * 2
+        let addedBytes = 5 * K * 4 + (H + ISh + latentDim) * 2
+        let savedBytes = (3 * K * I + K * outDim) * 2
         return addedBytes - savedBytes
     }
 
@@ -141,13 +159,16 @@ extension QWEngineDriver {
         guard geometry.numExperts > 0 else { return 0 }
         func aligned(_ bytes: Int) -> Int { (bytes + 255) / 256 * 256 }
         let H = geometry.hidden, I = geometry.moeIntermediate
+        let outDim = geometry.moeRoutedDim
         let E = geometry.numExperts, K = geometry.expertsPerTok
+        let routerCols = geometry.moeSplitFeatureRouting ? (2 * E) : E
+        let latentDim = geometry.moeLatentSize ?? 0
         let ISh = geometry.sharedExpertIntermediate
         let isPrefill = rows > 8 && geometry.supportsGroupedNAXMoEPrefill && useGroupedNAX
         let r1Rows = isPrefill ? min(rows, 8) : rows
-        let dnAccElems = isPrefill ? max(r1Rows * K * H, (rows * K * H + 1) / 2) : (rows * K * H)
+        let dnAccElems = isPrefill ? max(r1Rows * K * outDim, (rows * K * outDim + 1) / 2) : (rows * K * outDim)
         var total = 2 * aligned(max(1, rows * H) * 4)
-            + aligned(max(1, rows * E) * 4)
+            + aligned(max(1, rows * routerCols) * 4)
             + aligned(max(1, rows * K) * 4)
             + aligned(max(1, rows * K) * 4)
             + aligned(max(1, r1Rows * K * 2 * I) * 4)
@@ -156,9 +177,13 @@ extension QWEngineDriver {
             + aligned(max(1, rows * H) * 4)
             + aligned(max(1, rows) * 4)
             + aligned(max(1, dnAccElems) * 4)
+        if latentDim > 0 {
+            total += 2 * aligned(max(1, rows * latentDim) * 4)
+            if isPrefill { total += aligned(max(1, rows * latentDim) * 2) }
+        }
         if isPrefill {
             let tcInts = QWGemm.MoETilePlan(
-                experts: E, pairs: rows * K, gateUpRows: 2 * I, downRows: H).scratchInts
+                experts: E, pairs: rows * K, gateUpRows: 2 * I, downRows: outDim).scratchInts
             total += aligned((E + 1) * 4)
                 + 5 * aligned(max(1, rows * K) * 4)
                 + aligned(max(1, tcInts) * 4)
@@ -175,17 +200,25 @@ extension QWEngineDriver {
                                rows: Int, geometry: QWModelGeometry,
                                useGroupedNAX: Bool = true) throws -> MoEScratch {
         let H = geometry.hidden, I = geometry.moeIntermediate
+        let outDim = geometry.moeRoutedDim
         let E = geometry.numExperts, K = geometry.expertsPerTok
+        let routerCols = geometry.moeSplitFeatureRouting ? (2 * E) : E
+        let latentDim = geometry.moeLatentSize ?? 0
         let ISh = geometry.sharedExpertIntermediate
         let isPrefill = rows > 8 && geometry.supportsGroupedNAXMoEPrefill && useGroupedNAX
         let r1Rows = isPrefill ? min(rows, 8) : rows
-        let dnAccElems = isPrefill ? max(r1Rows * K * H, (rows * K * H + 1) / 2) : (rows * K * H)
+        let dnAccElems = isPrefill ? max(r1Rows * K * outDim, (rows * K * outDim + 1) / 2) : (rows * K * outDim)
         let tcInts = isPrefill ? QWGemm.MoETilePlan(
-            experts: E, pairs: rows * K, gateUpRows: 2 * I, downRows: H).scratchInts : 0
+            experts: E, pairs: rows * K, gateUpRows: 2 * I, downRows: outDim).scratchInts : 0
+        let latentSc: QWMoEOperator.LatentScratch? = latentDim > 0 ? QWMoEOperator.LatentScratch(
+            bufA32: try alloc(rows * latentDim, .f32),
+            bufB32: try alloc(rows * latentDim, .f32),
+            bufB16: isPrefill ? try alloc(rows * latentDim, .f16) : nil
+        ) : nil
         let s = MoEScratch(
             xRot32: try alloc(rows * H, .f32),
             xPlain32: try alloc(rows * H, .f32),
-            logits: try alloc(rows * E, .f32),
+            logits: try alloc(rows * routerCols, .f32),
             idx: try alloc(rows * K, .i32),
             wts: try alloc(rows * K, .f32),
             gu32: try alloc(r1Rows * K * 2 * I, .f32),
@@ -204,7 +237,8 @@ extension QWEngineDriver {
             gu16: isPrefill ? try alloc(rows * K * 2 * I, .f16) : nil,
             dnHi: isPrefill ? try alloc(rows * K * I, .f16) : nil,
             dnAcc: try alloc(dnAccElems, .f32),
-            naxX16: isPrefill ? try alloc(rows * (H + ISh), .f16) : nil
+            naxX16: isPrefill ? try alloc(rows * (H + ISh), .f16) : nil,
+            latent: latentSc
         )
         // A standard sparse model has no shared expert (C122), so the shared
         // term is zero — not "whatever was in the buffer". When a model has an
@@ -225,9 +259,10 @@ extension QWEngineDriver {
         let qC = geometry.qChannels, qOut = geometry.qProjOut, kvE = geometry.kvChannels
         let qkvC = geometry.gdnQKVChannels, zC = geometry.gdnZChannels
         let vh = geometry.gdnVHeads
-        let attnScratchF16 = geometry.usesNoPEMLA ? 0 : (geometry.attnTotalN + 2 * kvE + qOut)
+        let attnScratchF16 = geometry.usesLatentOrCompressedAttention ? 0 : (geometry.attnTotalN + 2 * kvE + qOut)
+        let attOutCols = max(qC, geometry.qHeads * geometry.vHeadDim)
         let fgbC = geometry.gdnVectorDecay ? (2 * geometry.gdnLowRankDim + vh) : 0
-        let f16 = 5 * H + attnScratchF16 + 2 * qkvC + 2 * zC + qC + max(2 * I, 2 * H) + I + fgbC
+        let f16 = 5 * H + attnScratchF16 + 2 * qkvC + 2 * zC + attOutCols + max(2 * I, 2 * H) + I + fgbC
         let gdnYF32 = geometry.gdnVectorDecay ? 0 : geometry.gdnTotalN
         let mhcC = geometry.mhcConfig?.streams ?? 0
         let glogC = geometry.gdnGlogChannels
@@ -257,8 +292,10 @@ extension QWEngineDriver {
             q4Head: true, useGroupedNAX: useGroupedNAX)
         let promptEmbedBytes = prefillChunkRows * geometry.hidden * 2
         let maxDecodeSplits = maxTokens > 262_144 ? QWAttnDecode.maxLongContextSplits : QWAttnDecode.maxSplits
-        let sharedAttnBytes = QWAttnDecode.decodePartialsBytesBatched(
-            T: min(8, verifyRows), geometry: geometry, maxSplits: maxDecodeSplits)
+        let sharedAttnBytes = geometry.usesLatentOrCompressedAttention
+            ? draftHeadArgmaxPartialsBytes(vocab: geometry.vocab)
+            : QWAttnDecode.decodePartialsBytesBatched(
+                T: min(8, verifyRows), geometry: geometry, maxSplits: maxDecodeSplits)
         let mtpLongExtra = maxTokens > 262_144
             ? verifyRows * partialsCarveBytes(geometry: geometry, maxTokens: maxTokens) : 0
         let mtpMiscBytes = (16 << 20)
@@ -292,6 +329,22 @@ extension QWEngineDriver {
     /// compressed KV modes are the 27B's layout (C103, C108), and a head's
     /// width must be a multiple of 32, up to 256 halves (C112).
     static func validateGeometry(_ geometry: QWModelGeometry, kvMode: QWKVMode) throws {
+        if geometry.usesLatentOrCompressedAttention {
+            try validateKVMode(mode: kvMode)
+            if geometry.mlaLayerCount > 0 {
+                guard geometry.kvLoraRank > 0, geometry.kvLoraRank % 32 == 0 else {
+                    throw QWEngineDriverError.unsupportedModel(
+                        "kv_lora_rank \(geometry.kvLoraRank) must be a positive multiple of 32")
+                }
+            }
+            if let hca = geometry.hcaConfig {
+                guard hca.headDim > 0, hca.headDim % 32 == 0 else {
+                    throw QWEngineDriverError.unsupportedModel(
+                        "HCA head_dim \(hca.headDim) must be a positive multiple of 32")
+                }
+            }
+            return
+        }
         try validateServing(headDim: geometry.headDim, kvHeads: geometry.kvHeads,
                             qHeads: geometry.qHeads, kvMode: String(describing: kvMode))
     }
@@ -360,7 +413,7 @@ extension QWEngineDriver {
                     let spec = (bits: entry.hqBits, group: entry.hqGroup,
                                 incumbent: entry.isIncumbentHQ4, shvq: entry.isSHVQ)
                     if entry.shape.count == 3 || (name.contains(".experts.") && !name.contains("shared_expert")) {
-                        if name.contains("down_proj") {
+                        if name.contains("down_proj") || name.contains(".w2.") {
                             if expDownSpec == nil { expDownSpec = spec }
                         } else {
                             if expSpec == nil { expSpec = spec }
@@ -464,20 +517,45 @@ extension QWEngineDriver {
         prefillChunkRows: Int,
         activeAttnLayers: Int
     ) -> Int {
-        guard geometry.usesNoPEMLA, activeAttnLayers > 0 else { return 0 }
+        guard geometry.usesAnyMLA, activeAttnLayers > 0 else { return 0 }
         let maxT = max(32, prefillChunkRows)
         var ringCap = 4096
         while ringCap < maxT * 2 { ringCap <<= 1 }
         let idxDim = max(32, geometry.indexerHeadDim)
         let idxHeads = max(1, geometry.indexerHeads)
         let nopeDim = geometry.qkNopeHeadDim > 0 ? geometry.qkNopeHeadDim : geometry.headDim
+        let extraQ = geometry.usesNoPEMLA ? 0 : (geometry.qHeads * geometry.qkRopeHeadDim
+            + (geometry.attnOutputGate ? geometry.qHeads * geometry.vHeadDim : 0))
         let latentStride = geometry.qLoraRank + geometry.kvLoraRank + idxDim
-        let qFullStride = geometry.qHeads * nopeDim + idxHeads * idxDim
+        let qFullStride = geometry.qHeads * nopeDim + extraQ + idxHeads * idxDim
         let perLayerRings = activeAttnLayers * 2 * ringCap * idxDim * 2
         let perTokChunk = (latentStride + geometry.qLoraRank + qFullStride
             + 2 * geometry.qHeads * geometry.kvLoraRank) * 2
             + idxHeads * 4 + 1024 * 4 + 4
         let splitPartials = min(maxT, 64) * 16 * geometry.qHeads * (geometry.kvLoraRank * 2 + 8)
         return perLayerRings + maxT * perTokChunk + splitPartials + (72 << 20)
+    }
+
+    static func hcaFixedScratchBytes(
+        geometry: QWModelGeometry,
+        prefillChunkRows: Int
+    ) -> Int {
+        guard let hca = geometry.hcaConfig, geometry.hcaLayerCount > 0 else { return 0 }
+        let maxT = max(16, prefillChunkRows)
+        let minRing = max(hca.slidingWindow, hca.defaultCompressRatio) + max(32, maxT)
+        var ringCap = 256
+        while ringCap < minRing { ringCap <<= 1 }
+        let perLayerRingBytes = ringCap * hca.headDim * (2 + 4 + 4)
+        let inStride = hca.qLoraRank + 3 * hca.headDim
+        let zOutStride = max(1, hca.oGroups) * hca.oLoraRank
+        let qUpStride = hca.qHeads * hca.headDim + zOutStride
+        let chunkScratch = maxT * (inStride + hca.qLoraRank + qUpStride + 2 * hca.qHeads * hca.headDim + zOutStride) * 2
+        return geometry.hcaLayerCount * perLayerRingBytes + chunkScratch + (24 << 20)
+    }
+
+    static func hcaPerTokenBytes(geometry: QWModelGeometry) -> Int {
+        guard let hca = geometry.hcaConfig, geometry.hcaLayerCount > 0 else { return 0 }
+        let ratio = max(1, hca.defaultCompressRatio)
+        return (geometry.hcaLayerCount * (hca.headDim + 64) * 2 + ratio - 1) / ratio
     }
 }

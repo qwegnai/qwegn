@@ -23,9 +23,10 @@ enum QWMTPAdaptiveDepth {
         var moeLayerCount = 0
         for layer in geometry.executionPlan {
             if geometry.isFullAttention(layer) {
-                if geometry.usesNoPEMLA {
+                if geometry.usesAnyMLA {
                     let qkvCols = Double(geometry.qLoraRank + geometry.kvLoraRank + geometry.indexerHeadDim)
-                    let qBCols = Double(geometry.qHeads * (geometry.qkNopeHeadDim + geometry.qkRopeHeadDim))
+                    let gateCols = geometry.attnOutputGate ? Double(geometry.qHeads * geometry.vHeadDim) : 0.0
+                    let qBCols = Double(geometry.qHeads * (geometry.qkNopeHeadDim + geometry.qkRopeHeadDim)) + gateCols
                     let kvBCols = Double(geometry.qHeads * (geometry.qkNopeHeadDim + geometry.vHeadDim))
                     let oCols = Double(geometry.qHeads * geometry.vHeadDim)
                     trunkParams += qkvCols * h
@@ -36,14 +37,23 @@ enum QWMTPAdaptiveDepth {
                     trunkParams += Double(geometry.attnTotalN) * h
                     trunkParams += h * Double(geometry.qChannels)
                 }
+            } else if geometry.isCompressedAttention(layer), let hca = geometry.hcaConfig {
+                let inCols = Double(hca.qLoraRank + 3 * hca.headDim)
+                let zCols = Double(max(1, hca.oGroups) * hca.oLoraRank)
+                let qUpCols = Double(hca.qHeads * hca.headDim) + zCols
+                let woAParams = Double(hca.qHeads * hca.headDim * hca.oLoraRank)
+                trunkParams += inCols * h + qUpCols * Double(hca.qLoraRank) + woAParams + h * zCols
             } else {
                 trunkParams += Double(geometry.gdnTotalN) * h
                 trunkParams += h * Double(geometry.gdnZChannels)
             }
             if geometry.isMoELayer(layer) {
                 moeLayerCount += 1
-                // Router (BF16 = 2B/param) + shared expert (if present)
-                trunkParams += Double(geometry.numExperts) * h * (2.0 / tBytesPerElem)
+                let routerRows = Double(geometry.moeSplitFeatureRouting ? 2 * geometry.numExperts : geometry.numExperts)
+                trunkParams += routerRows * h * (2.0 / tBytesPerElem)
+                if let latent = geometry.moeLatentSize, latent > 0 {
+                    trunkParams += 2.0 * h * Double(latent)
+                }
                 if geometry.sharedExpertIntermediate > 0 {
                     trunkParams += 3.0 * h * Double(geometry.sharedExpertIntermediate)
                 }
@@ -56,7 +66,8 @@ enum QWMTPAdaptiveDepth {
 
         let bRoutedSingle: Double
         if moeLayerCount > 0 && geometry.numExperts > 0 && geometry.expertsPerTok > 0 {
-            let routedParamsPerTok = Double(moeLayerCount * geometry.expertsPerTok) * 3.0 * h * Double(geometry.moeIntermediate)
+            let routedDim = Double(geometry.moeRoutedDim)
+            let routedParamsPerTok = Double(moeLayerCount * geometry.expertsPerTok) * 3.0 * routedDim * Double(geometry.moeIntermediate)
             let coldCount = max(0, geometry.numExperts - geometry.effectiveResidentExperts)
             let coldFrac = Double(coldCount) / Double(geometry.numExperts)
             // Effective bandwidth cost multiplier when a fraction of experts stream from SSD (~13 GB/s vs ~450 GB/s RAM).

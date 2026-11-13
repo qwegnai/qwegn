@@ -14,8 +14,12 @@ inline void qwg_mhc_controls(thread const float* tot, float totSS, uint width, f
                              float preScale, uint realIterations,
                              device const float* routerB, device float* ctrl,
                              threadgroup float* sPre) {
-    const float rstd = rsqrt(totSS / float(width) + ((C == 4u) ? eps : 1.0e-6f));
-    const float hcEps = (C == 4u) ? 1.0e-6f : 0.0f;
+    const float meanSq = totSS / float(width);
+    const float effEps = (C == 4u) ? eps : 1.0e-6f;
+    const float rstd = (C == 4u && QW_FC_MHC_ADDITIVE_EPS)
+        ? (1.0f / (sqrt(meanSq) + effEps))
+        : rsqrt(meanSq + effEps);
+    const float hcEps = (C == 4u) ? QW_FC_MHC_HC_EPS : 0.0f;
 
     #pragma unroll
     for (uint c = 0u; c < C; ++c) {
@@ -82,7 +86,8 @@ inline void qwg_mhc_controls(thread const float* tot, float totSS, uint width, f
         for (uint i = 0u; i < C; ++i) {
             #pragma unroll
             for (uint j = 0u; j < C; ++j) {
-                ctrl[C + i * C + j] = float(half(m[j * C + i]));
+                const float v = m[j * C + i];
+                ctrl[C + i * C + j] = QW_FC_MHC_ADDITIVE_EPS ? v : float(half(v));
             }
         }
     } else {
@@ -125,8 +130,9 @@ inline void qwg_mhc_controls4_simd(threadgroup const float* tots, uint width, fl
                                    float preScale, uint realIterations,
                                    device const float* routerB, device float* ctrl,
                                    threadgroup float* sPre, uint lane, bool writeCtrl = true) {
-    const float rstd = rsqrt(tots[0] / float(width) + eps);
-    const float hcEps = 1.0e-6f;
+    const float meanSq = tots[0] / float(width);
+    const float rstd = QW_FC_MHC_ADDITIVE_EPS ? (1.0f / (sqrt(meanSq) + eps)) : rsqrt(meanSq + eps);
+    const float hcEps = QW_FC_MHC_HC_EPS;
     if (lane < 4u) {
         const float lPre = tots[1u + lane] * rstd + routerB[lane];
         sPre[lane] = (1.0f / (1.0f + exp(-lPre))) * preScale + hcEps;
@@ -146,7 +152,7 @@ inline void qwg_mhc_controls4_simd(threadgroup const float* tots, uint width, fl
         cs += simd_shuffle_xor(cs, 8u);
         m *= 1.0f / (cs + hcEps);
     }
-    if (writeCtrl && lane < 16u) ctrl[4u + (e & 3u) * 4u + (e >> 2u)] = float(half(m));
+    if (writeCtrl && lane < 16u) ctrl[4u + (e & 3u) * 4u + (e >> 2u)] = QW_FC_MHC_ADDITIVE_EPS ? m : float(half(m));
 }
 
 // Branch input: pre-weighted stream sum, RMS-normed with (1 + gamma), FWHT-rotated.

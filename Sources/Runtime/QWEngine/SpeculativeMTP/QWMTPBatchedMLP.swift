@@ -30,7 +30,12 @@ struct QWMTPBatchedMLP {
     }
 
     static func sumStride(geometry: QWModelGeometry) -> Int {
-        max(1, max(geometry.intermediate, max(geometry.gdnZChannels, geometry.qHeads * geometry.headDim)) / 128)
+        let hcaOut = geometry.hcaConfig.map { max(1, $0.oGroups) * $0.oLoraRank } ?? 0
+        let maxOut = max(geometry.intermediate,
+                         max(geometry.gdnZChannels,
+                             max(geometry.qHeads * geometry.headDim,
+                                 max(geometry.qHeads * geometry.vHeadDim, hcaOut))))
+        return max(1, maxOut / 128)
     }
 
     static func allocationBytes(geometry: QWModelGeometry, rows: Int) -> Int {
@@ -66,7 +71,10 @@ struct QWMTPBatchedMLP {
         down = downPipelines
         sums = try allocator.allocate(QWTensorShape([rows * Self.sumStride(geometry: geometry)], .f32))
         let sumStorage = sums
-        let outChannels = max(geometry.gdnZChannels, geometry.qHeads * geometry.headDim)
+        let hcaOutCols = geometry.hcaConfig.map { max(1, $0.oGroups) * $0.oLoraRank } ?? 0
+        let outChannels = max(geometry.gdnZChannels,
+                              max(geometry.qHeads * geometry.headDim,
+                                  max(geometry.qHeads * geometry.vHeadDim, hcaOutCols)))
         sumViews = (0..<rows).map { row in
             QWTensorValue(region: sumStorage.region, offset: sumStorage.offset + row * Self.sumStride(geometry: geometry) * 4,
                           shape: QWTensorShape([max(1, outChannels / 128)], .f32))
@@ -94,15 +102,33 @@ struct QWMTPBatchedMLP {
                           preparedSums: Bool = false) throws {
         let count = activeRows ?? rows
         let attnOutCols = geometry.qHeads * geometry.headDim
+        let vOutCols = geometry.qHeads * geometry.vHeadDim
+        let hcaOutCols = geometry.hcaConfig.map { max(1, $0.oGroups) * $0.oLoraRank } ?? 0
+        let hcaInCols = geometry.hcaConfig.map { $0.qLoraRank + 3 * $0.headDim } ?? 0
+        let hcaQUpCols = geometry.hcaConfig.map { $0.qHeads * $0.headDim + max(1, $0.oGroups) * $0.oLoraRank } ?? 0
         let mlaLatentCols = geometry.qLoraRank + geometry.kvLoraRank + geometry.indexerHeadDim
         let mlaQBCols = attnOutCols + geometry.indexerHeads * geometry.indexerHeadDim
+        let dMlaLatCols = geometry.hybridMLAConfig.map {
+            $0.qLoraRank + $0.kvLoraRank + $0.qkRopeHeadDim + max(32, geometry.indexerHeadDim)
+        } ?? 0
+        let dMlaQBCols = geometry.hybridMLAConfig.map {
+            $0.qHeads * ($0.qkNopeHeadDim + $0.qkRopeHeadDim + (geometry.attnOutputGate ? $0.vHeadDim : 0))
+                + max(1, geometry.indexerHeads) * max(32, geometry.indexerHeadDim)
+        } ?? 0
+        let dMlaQRank = geometry.hybridMLAConfig?.qLoraRank ?? geometry.qLoraRank
         let kdaFgbCols = 2 * geometry.gdnLowRankDim + geometry.gdnVHeads
-        let validProj = (weight.n == geometry.hidden && (weight.k == geometry.gdnZChannels || weight.k == attnOutCols))
+        let validProj = (weight.n == geometry.hidden
+                && (weight.k == geometry.gdnZChannels || weight.k == attnOutCols
+                    || weight.k == vOutCols || weight.k == hcaOutCols))
             || (weight.n == geometry.attnTotalN && weight.k == geometry.hidden)
             || (weight.n == geometry.gdnQKVChannels && weight.k == geometry.hidden)
             || (weight.n == kdaFgbCols && weight.k == geometry.hidden)
             || (weight.n == mlaLatentCols && weight.k == geometry.hidden)
             || (weight.n == mlaQBCols && weight.k == geometry.qLoraRank)
+            || (weight.n == dMlaLatCols && weight.k == geometry.hidden)
+            || (weight.n == dMlaQBCols && weight.k == dMlaQRank)
+            || (weight.n == hcaInCols && weight.k == geometry.hidden)
+            || (weight.n == hcaQUpCols && weight.k == (geometry.hcaConfig?.qLoraRank ?? -1))
         guard validProj else {
             throw QWEngineDriverError.state("unsupported batched trunk projection")
         }

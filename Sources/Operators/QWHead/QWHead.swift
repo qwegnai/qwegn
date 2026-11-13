@@ -58,6 +58,7 @@ public final class QWHead {
     private let psoCombine: any MTLComputePipelineState
     private let psoArgmax: any MTLComputePipelineState
     private let psoArgmaxFin: any MTLComputePipelineState
+    private let psoMultiMax: any MTLComputePipelineState
     private let f2plan: QWGemmPlan
 
     public init(hal: QWHal, geometry: QWModelGeometry) throws {
@@ -68,6 +69,7 @@ public final class QWHead {
         self.psoCombine = try hal.pipeline("qwg_head_combine")
         self.psoArgmax = try hal.pipeline("qwg_head_argmax")
         self.psoArgmaxFin = try hal.pipeline("qwg_head_argmax_fin")
+        self.psoMultiMax = try hal.pipeline("qwg_multimax_f32")
         self.f2plan = QWGemm.plan(QWGemmShape(m: 1, n: geometry.vocab, k: geometry.hidden),
                                   dtype: .q4g, epi: .none)
     }
@@ -372,5 +374,38 @@ public final class QWHead {
         enc.setBytes(&nTG32, length: 4, index: 3)
         enc.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
                                  threadsPerThreadgroup: MTLSize(width: 1024, height: 1, depth: 1))
+    }
+
+    /// Applies in-place piecewise linear-quadratic `MultiMax` logit calibration over `count` `f32` logits.
+    public static func encodeMultiMax(_ enc: any MTLComputeCommandEncoder,
+                                      psoMultiMax: any MTLComputePipelineState,
+                                      logits: QWTensorValue, params: QWTensorValue,
+                                      count: Int) throws {
+        guard count > 0,
+              logits.shape.dtype == .f32, logits.shape.elementCount >= count,
+              params.shape.dtype == .f32, params.shape.elementCount >= 8 else {
+            throw QWHeadError.badShape("encodeMultiMax requires logits[count] f32 and params[8] f32")
+        }
+        var countU = UInt32(count)
+        enc.setComputePipelineState(psoMultiMax)
+        logits.bind(enc, index: 0)
+        params.bind(enc, index: 1)
+        enc.setBytes(&countU, length: 4, index: 2)
+        enc.dispatchThreadgroups(MTLSize(width: (count + 255) / 256, height: 1, depth: 1),
+                                 threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
+    }
+
+    public static func encodeMultiMax(_ enc: any MTLComputeCommandEncoder, hal: QWHal,
+                                      logits: QWTensorValue, params: QWTensorValue,
+                                      count: Int) throws {
+        try encodeMultiMax(enc, psoMultiMax: try hal.pipeline("qwg_multimax_f32"),
+                           logits: logits, params: params, count: count)
+    }
+
+    public func encodeMultiMax(_ enc: any MTLComputeCommandEncoder,
+                               logits: QWTensorValue, params: QWTensorValue,
+                               count: Int) throws {
+        try Self.encodeMultiMax(enc, psoMultiMax: psoMultiMax,
+                                logits: logits, params: params, count: count)
     }
 }

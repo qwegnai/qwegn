@@ -420,6 +420,75 @@ func admissionPlanReportPricesQ4Q8F16() throws {
     }
 }
 
+@Test("admissionPlanReport admits ERNIE-5.5 hybrid HCA+MLA+LatentMoE on 128 GiB with 0 GDN state")
+func admissionPlanReportErnie55() throws {
+    let fm = FileManager.default
+    let tmp = fm.temporaryDirectory.appendingPathComponent("qwg_ernie_plan_\(UUID().uuidString)", isDirectory: true)
+    try fm.createDirectory(at: tmp, withIntermediateDirectories: true)
+    defer { try? fm.removeItem(at: tmp) }
+    let cfgURL = tmp.appendingPathComponent("config.json")
+    let cfg = """
+    {
+      "model_type": "ernie5_5_moe",
+      "hidden_size": 4096,
+      "intermediate_size": 14336,
+      "vocab_size": 201216,
+      "num_hidden_layers": 43,
+      "num_nextn_predict_layers": 1,
+      "mtp_shared_last_layer": true,
+      "compress_ratios": [128,128,128,128,128,128,128,-2,128,128,128,128,128,128,-2,128,128,128,128,128,128,-2,128,128,128,128,128,128,-2,128,128,128,128,128,128,-2,128,128,128,128,128,128,-2,-2],
+      "rms_norm_eps": 1e-6,
+      "max_position_embeddings": 1048576,
+      "num_attention_heads": 64,
+      "num_key_value_heads": 1,
+      "head_dim": 512,
+      "qk_nope_head_dim": 448,
+      "qk_rope_head_dim": 64,
+      "v_head_dim": 512,
+      "q_lora_rank": 1024,
+      "kv_lora_rank": 512,
+      "o_groups": 8,
+      "o_lora_rank": 1024,
+      "sliding_window": 128,
+      "compress_rope_theta": 160000.0,
+      "rope_theta": 8000000,
+      "hybrid_mla_attention": "mqa_dsa",
+      "hybrid_mla_num_attention_heads": 64,
+      "hybrid_mla_q_lora_rank": 1024,
+      "hybrid_mla_kv_lora_rank": 512,
+      "hybrid_mla_qk_nope_head_dim": 192,
+      "hybrid_mla_qk_rope_head_dim": 64,
+      "hybrid_mla_v_head_dim": 256,
+      "index_n_heads": 64,
+      "index_head_dim": 128,
+      "index_topk": 2048,
+      "enable_hyper_connections": true,
+      "hc_mult": 4,
+      "hc_sinkhorn_iters": 20,
+      "hc_eps": 1e-6,
+      "hidden_act": "situ",
+      "first_k_dense_replace": 1,
+      "n_routed_experts": 512,
+      "num_experts_per_tok": 10,
+      "moe_intermediate_size": 2048,
+      "moe_latent_size": 2048,
+      "moe_split_feature_routing": true,
+      "routed_scaling_factor_learnable": true,
+      "n_shared_experts": 1,
+      "scoring_func": "sigmoid",
+      "multimax": "lm_head",
+      "eos_token_id": 2
+    }
+    """
+    try Data(cfg.utf8).write(to: cfgURL)
+    let reportJSON = try QWCli.admissionPlanReport(configURL: cfgURL, contextTokens: 131_072, kvMode: "q4", scratchMB: 512, capGB: 128)
+    let obj = try #require(JSONSerialization.jsonObject(with: Data(reportJSON.utf8)) as? [String: Any])
+    #expect(obj["admit"] as? Bool == true)
+    let comps = try #require(obj["components"] as? [String: Any])
+    #expect(comps["gdn_state_bytes"] as? Int == 0)
+    #expect((comps["kv_bytes"] as? Int ?? 0) < (600 << 20))
+}
+
 
 
 

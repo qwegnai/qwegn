@@ -21,7 +21,7 @@ import QWState
 
 extension QWEngineDriver {
     static func loadMTPWeights(_ L: inout WeightLoader, drafts: Int, geometry: QWModelGeometry) throws -> MTPWeights? {
-        guard drafts > 0 else { return nil }
+        guard drafts > 0, !geometry.mtpSharedLastLayer else { return nil }
         if !L.hasTensor("mtp.pre_fc_norm_embedding.weight"),
            let nextN = try L.loadNextNMTPLayer(geometry: geometry),
            let attn = nextN.layer.attn {
@@ -210,10 +210,14 @@ extension QWEngineDriver {
         let k16 = QWTensorValue(region: attnY16.region, offset: attnY16.offset + geometry.attnKRow0 * 2, shape: QWTensorShape([kvE], .f16))
         let v16 = QWTensorValue(region: attnY16.region, offset: attnY16.offset + geometry.attnVRow0 * 2, shape: QWTensorShape([kvE], .f16))
 
+        let maxGsCols = max(H, max(geometry.qLoraRank, geometry.hcaConfig?.qLoraRank ?? 0))
+        let maxGsICols = max(I, max(geometry.qHeads * geometry.vHeadDim,
+                                    geometry.hcaConfig.map { max(1, $0.oGroups) * $0.oLoraRank } ?? 0))
+        let attOutCols = max(qC, geometry.qHeads * geometry.vHeadDim)
         let sc = Scratch(
             x: try tv(H, .f16),
             ln1: try tv(H, .f16), ln2: try tv(H, .f16),
-            gs: try tv(H / 128, .f32), gs48: try tv(Self.oProjGroupSumFloats(geometry: geometry), .f32), gsI: try tv(I / 128, .f32),
+            gs: try tv(max(1, maxGsCols / 128), .f32), gs48: try tv(Self.oProjGroupSumFloats(geometry: geometry), .f32), gsI: try tv(max(1, maxGsICols / 128), .f32),
             gdnY: gdnY, gdnY16: gdnY16,
             qkv32: qkv32, qkv16: qkv16,
             z32: z32, z16: z16,
@@ -225,7 +229,7 @@ extension QWEngineDriver {
             q32: q32, k32: k32, v32: v32,
             q16: q16, k16: k16, v16: v16,
             qR: try tv(qOut, .f16), kR: try tv(kvE, .f16),
-            attOut: try tv(qC, .f16),
+            attOut: try tv(attOutCols, .f16),
             o32: try tv(H, .f32), o16: try tv(H, .f16),
             gu32: try tv(I, .f32), gu16: try tv(I, .f16),
             dn32: try tv(H, .f32), dn16: try tv(H, .f16),
@@ -243,7 +247,7 @@ extension QWEngineDriver {
 
         let maxT = maxPrefillChunk
         let pscStartOff = asub.usedBytes
-        let usesMLA = geometry.usesNoPEMLA
+        let usesMLA = geometry.usesLatentOrCompressedAttention
         let psc = PrefillScratch(
             maxChunk: maxT,
             x: try tv(maxT * H, .f16),
@@ -255,7 +259,7 @@ extension QWEngineDriver {
             z16: try tv(maxT * zC, .f16),
             betas: try tv(maxT * gdnVH, .f32), glog: try tv(maxT * glogC, .f32),
             convY: try tv(maxT * qkvC, .f16), oScr: try tv(maxT * zC, .f32),
-            oOut: try tv(maxT * zC, .f16), attOut: try tv(maxT * qC, .f16),
+            oOut: try tv(maxT * zC, .f16), attOut: try tv(maxT * attOutCols, .f16),
             attV16: try tv(usesMLA ? 0 : (maxT + QWAttnPrefill.padRows) * kvE, .f16),
             attQR16: try tv(usesMLA ? 0 : (maxT + QWAttnPrefill.padRows) * qOut, .f16),
             attKR16: try tv(usesMLA ? 0 : (maxT + QWAttnPrefill.padRows) * kvE, .f16),

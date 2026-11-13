@@ -6,12 +6,19 @@ public struct QWQuantizationSpec: Sendable, Hashable, Codable {
     public let bits: Int?
     public let groupSize: Int?
     public let mode: String?
+    public let trunk: String?
+    public let expertGateUp: String?
+    public let expertDown: String?
 
-    public init(method: String? = nil, bits: Int? = nil, groupSize: Int? = nil, mode: String? = nil) {
+    public init(method: String? = nil, bits: Int? = nil, groupSize: Int? = nil, mode: String? = nil,
+                trunk: String? = nil, expertGateUp: String? = nil, expertDown: String? = nil) {
         self.method = method
         self.bits = bits
         self.groupSize = groupSize
         self.mode = mode
+        self.trunk = trunk
+        self.expertGateUp = expertGateUp
+        self.expertDown = expertDown
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -19,6 +26,9 @@ public struct QWQuantizationSpec: Sendable, Hashable, Codable {
         case bits
         case groupSize = "group_size"
         case mode
+        case trunk
+        case expertGateUp = "expert_gate_up"
+        case expertDown = "expert_down"
     }
 
     public init(from decoder: Decoder) throws {
@@ -26,7 +36,10 @@ public struct QWQuantizationSpec: Sendable, Hashable, Codable {
         self.init(method: try c.decodeIfPresent(String.self, forKey: .method),
                   bits: try c.decodeIfPresent(Int.self, forKey: .bits),
                   groupSize: try c.decodeIfPresent(Int.self, forKey: .groupSize),
-                  mode: try c.decodeIfPresent(String.self, forKey: .mode))
+                  mode: try c.decodeIfPresent(String.self, forKey: .mode),
+                  trunk: try c.decodeIfPresent(String.self, forKey: .trunk),
+                  expertGateUp: try c.decodeIfPresent(String.self, forKey: .expertGateUp),
+                  expertDown: try c.decodeIfPresent(String.self, forKey: .expertDown))
     }
 }
 
@@ -131,7 +144,8 @@ public enum QWStandardConfigDecoder {
         "text_config", "layer_types", "full_attention_interval",
         "linear_key_head_dim", "linear_num_key_heads", "linear_num_value_heads",
         "linear_value_head_dim", "linear_conv_kernel_dim",
-        "mrope_section", "indexer_n_heads",
+        "mrope_section", "indexer_n_heads", "index_n_heads",
+        "compress_ratios", "enable_hyper_connections", "mhc",
         "hc_count", "ple_layer_ids", "ngram_size",
     ]
 

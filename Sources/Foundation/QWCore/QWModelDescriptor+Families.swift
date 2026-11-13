@@ -48,6 +48,7 @@ public struct QWModelFamilySpec: Sendable, Hashable, Equatable {
     public let defaultAttnOutputGate: Bool
     public let defaultExpertGateType: String?
     public let usesPlusOneRMSNorm: Bool
+    public let usesQwenChatTemplateIds: Bool
     public let isOfficialSupported: Bool
 
     public init(
@@ -56,6 +57,7 @@ public struct QWModelFamilySpec: Sendable, Hashable, Equatable {
         defaultAttnOutputGate: Bool,
         defaultExpertGateType: String? = nil,
         usesPlusOneRMSNorm: Bool? = nil,
+        usesQwenChatTemplateIds: Bool? = nil,
         isOfficialSupported: Bool = true
     ) {
         self.modelType = modelType
@@ -63,6 +65,8 @@ public struct QWModelFamilySpec: Sendable, Hashable, Equatable {
         self.defaultAttnOutputGate = defaultAttnOutputGate
         self.defaultExpertGateType = defaultExpertGateType
         self.usesPlusOneRMSNorm = usesPlusOneRMSNorm ?? (family == .qwen38Dense)
+        self.usesQwenChatTemplateIds = usesQwenChatTemplateIds
+            ?? (family == .qwen38Dense || family == .qwen38FlashNext)
         self.isOfficialSupported = isOfficialSupported
     }
 }
@@ -94,14 +98,32 @@ public final class QWModelFamilyRegistry: @unchecked Sendable {
             family: .qwen38Dense,
             defaultAttnOutputGate: false,
             defaultExpertGateType: "sigmoid",
-            usesPlusOneRMSNorm: false
+            usesPlusOneRMSNorm: false,
+            usesQwenChatTemplateIds: false
         ),
         QWModelFamilySpec(
             modelType: "glm5_next_text",
             family: .qwen38Dense,
             defaultAttnOutputGate: false,
             defaultExpertGateType: "sigmoid",
-            usesPlusOneRMSNorm: false
+            usesPlusOneRMSNorm: false,
+            usesQwenChatTemplateIds: false
+        ),
+        QWModelFamilySpec(
+            modelType: "ernie5_5_moe",
+            family: .qwen38Dense,
+            defaultAttnOutputGate: false,
+            defaultExpertGateType: "sigmoid",
+            usesPlusOneRMSNorm: false,
+            usesQwenChatTemplateIds: false
+        ),
+        QWModelFamilySpec(
+            modelType: "ernie5_5_moe_text",
+            family: .qwen38Dense,
+            defaultAttnOutputGate: false,
+            defaultExpertGateType: "sigmoid",
+            usesPlusOneRMSNorm: false,
+            usesQwenChatTemplateIds: false
         ),
         QWModelFamilySpec(
             modelType: "qwen4_exp",

@@ -319,17 +319,25 @@ public final class QWLSASidecar: @unchecked Sendable {
             let wqName = "layers.\(layer).wq_idx"
             let wkName = "layers.\(layer).wk_idx"
 
-            for (name, data, shape) in [(wqName, pair.wq, wqShape), (wkName, pair.wk, wkShape)] {
+            for (name, data, fallbackShape) in [(wqName, pair.wq, wqShape), (wkName, pair.wk, wkShape)] {
                 let pad = (64 - (payload.count % 64)) % 64
                 if pad > 0 {
                     payload.append(contentsOf: [UInt8](repeating: 0, count: pad))
                 }
                 let rawOff = payload.count
                 let nBytes = data.count * 2
-                data.withUnsafeBytes { rawBuf in
+                data.withUnsafeBytes { (rawBuf: UnsafeRawBufferPointer) in
                     payload.append(rawBuf.bindMemory(to: UInt8.self))
                 }
-                entries[name] = TensorEntry(shape: shape, dtype: "f16", rawOff: rawOff, nBytes: nBytes)
+                let resolvedShape: [Int]
+                if fallbackShape.reduce(1, *) == data.count {
+                    resolvedShape = fallbackShape
+                } else if provenance.indexDim > 0 && data.count % provenance.indexDim == 0 {
+                    resolvedShape = [provenance.indexDim, data.count / provenance.indexDim]
+                } else {
+                    resolvedShape = fallbackShape
+                }
+                entries[name] = TensorEntry(shape: resolvedShape, dtype: "f16", rawOff: rawOff, nBytes: nBytes)
             }
         }
 
@@ -516,22 +524,19 @@ public final class QWLSASidecar: @unchecked Sendable {
         return outF16
     }
 
-    /// Synthesizes Weight-SVD LSA projection matrices (`wq_idx`, `wk_idx`) for all physical
-    /// full-attention layers in parallel using a caller-supplied per-layer weight reader.
+    /// Synthesizes Weight-SVD LSA projection matrices (`wq_idx`, `wk_idx`) for all LSA-eligible
+    /// decoder layers in parallel using a caller-supplied per-layer weight reader.
     private static func synthesizeLayers(
         descriptor: QWModelDescriptor,
         indexDim: Int,
         normPlusOne: Bool,
-        loadLayerWeights: @Sendable (Int) throws -> (kProj: [Float], kNorm: [Float]?)
+        loadLayerWeights: @Sendable (Int, QWModelDescriptor.LSAKeyProjectionSpec) throws -> (kProj: [Float], kNorm: [Float]?)
     ) throws -> [Int: (wq: [UInt16], wk: [UInt16])] {
-        let layers = descriptor.fullAttentionLayers
-        guard !layers.isEmpty else { return [:] }
-        let sliceStart = descriptor.lsaHeadSliceStart
-        let sliceDim = descriptor.lsaHeadSliceDim
-        let inDim = descriptor.lsaInputDim
-        let hidden = descriptor.hidden
-        let kvHeads = descriptor.kvHeads
-        let headDim = descriptor.headDim
+        let layerSpecs: [(layer: Int, spec: QWModelDescriptor.LSAKeyProjectionSpec)] =
+            (0..<descriptor.numLayers).compactMap { l in
+                descriptor.lsaKeyProjectionSpec(layer: l).map { (l, $0) }
+            }
+        guard !layerSpecs.isEmpty else { return [:] }
 
         final class LayerBox: @unchecked Sendable {
             let lock = NSLock()
@@ -539,18 +544,26 @@ public final class QWLSASidecar: @unchecked Sendable {
             var firstError: (any Error)?
         }
         let box = LayerBox()
-        DispatchQueue.concurrentPerform(iterations: layers.count) { idx in
+        DispatchQueue.concurrentPerform(iterations: layerSpecs.count) { idx in
             box.lock.lock()
             let failed = box.firstError != nil
             box.lock.unlock()
             if failed { return }
-            let layer = layers[idx]
+            let (layer, spec) = layerSpecs[idx]
+            let kvHeads = spec.headCount
+            let headDim = spec.headDim
+            let sliceStart = spec.sliceStart
+            let sliceDim = spec.sliceDim
+            let inDim = kvHeads * sliceDim
+            let cols = spec.inputDim
             do {
-                let (kProjFull, kNorm) = try loadLayerWeights(layer)
-                guard kProjFull.count >= inDim * hidden else {
-                    throw QWLSASidecarError.svdFailed("layer \(layer) k_proj count \(kProjFull.count) < \(inDim * hidden)")
+                let (kProjFull, kNorm) = try loadLayerWeights(layer, spec)
+                guard kProjFull.count >= kvHeads * headDim * cols else {
+                    throw QWLSASidecarError.svdFailed(
+                        "layer \(layer) key proj count \(kProjFull.count) < \(kvHeads * headDim * cols)"
+                    )
                 }
-                var unrotMatrix = [Float](repeating: 0, count: inDim * hidden)
+                var unrotMatrix = [Float](repeating: 0, count: inDim * cols)
                 for h in 0..<kvHeads {
                     for c in 0..<sliceDim {
                         let headChan = sliceStart + c
@@ -564,9 +577,9 @@ public final class QWLSASidecar: @unchecked Sendable {
                         } else {
                             gamma = 1.0
                         }
-                        let srcBase = srcRow * hidden
-                        let dstBase = dstRow * hidden
-                        for k in 0..<hidden {
+                        let srcBase = srcRow * cols
+                        let dstBase = dstRow * cols
+                        for k in 0..<cols {
                             unrotMatrix[dstBase + k] = kProjFull[srcBase + k] * gamma
                         }
                     }
@@ -574,7 +587,7 @@ public final class QWLSASidecar: @unchecked Sendable {
                 let basis = try computeTopLeftSingularVectorsF16(
                     matrix: unrotMatrix,
                     rows: inDim,
-                    cols: hidden,
+                    cols: cols,
                     rank: indexDim
                 )
                 box.lock.lock()
@@ -590,8 +603,41 @@ public final class QWLSASidecar: @unchecked Sendable {
         return box.outputs
     }
 
-    /// Synthesizes Weight-SVD LSA projection matrices (`wq_idx`, `wk_idx`) for all physical
-    /// full-attention layers directly from a `QWQuant.Pack`.
+    private static func candidateNames(for layer: Int, spec: QWModelDescriptor.LSAKeyProjectionSpec) -> (proj: [String], norm: [String]) {
+        switch spec.kind {
+        case .gqaKeyProj:
+            return (
+                proj: [
+                    "model.language_model.layers.\(layer).self_attn.k_proj.weight",
+                    "model.layers.\(layer).self_attn.k_proj.weight",
+                ],
+                norm: [
+                    "model.language_model.layers.\(layer).self_attn.k_norm.weight",
+                    "model.layers.\(layer).self_attn.k_norm.weight",
+                ]
+            )
+        case .hcaCompressWKV:
+            return (
+                proj: [
+                    "model.language_model.layers.\(layer).self_attn.core_attention.compressor.linear_wkv.weight",
+                    "model.layers.\(layer).self_attn.core_attention.compressor.linear_wkv.weight",
+                    "model.language_model.layers.\(layer).self_attn.compress_kv.wkv.weight",
+                    "model.layers.\(layer).self_attn.compress_kv.wkv.weight",
+                ],
+                norm: [
+                    "model.language_model.layers.\(layer).self_attn.comp_norm.weight",
+                    "model.layers.\(layer).self_attn.comp_norm.weight",
+                    "model.language_model.layers.\(layer).self_attn.core_attention.compressor.norm.weight",
+                    "model.layers.\(layer).self_attn.core_attention.compressor.norm.weight",
+                    "model.language_model.layers.\(layer).self_attn.compress_kv.norm.weight",
+                    "model.layers.\(layer).self_attn.compress_kv.norm.weight",
+                ]
+            )
+        }
+    }
+
+    /// Synthesizes Weight-SVD LSA projection matrices (`wq_idx`, `wk_idx`) for all LSA-eligible
+    /// decoder layers directly from a `QWQuant.Pack`.
     public static func synthesizeFromPack(
         pack: QWQuant.Pack,
         descriptor: QWModelDescriptor,
@@ -601,35 +647,42 @@ public final class QWLSASidecar: @unchecked Sendable {
         return try synthesizeLayers(
             descriptor: descriptor,
             indexDim: indexDim,
-            normPlusOne: descriptor.family == .qwen38Dense
-        ) { layer in
-            let kProjCandidates = [
-                "model.language_model.layers.\(layer).self_attn.k_proj.weight",
-                "model.layers.\(layer).self_attn.k_proj.weight",
-            ]
-            guard let kProjName = kProjCandidates.first(where: { (try? pack.entry($0)) != nil }) else {
-                throw QWLSASidecarError.tensorMissing("layers.\(layer).self_attn.k_proj.weight")
-            }
-            let entry = try pack.entry(kProjName)
+            normPlusOne: descriptor.usesPlusOneRMSNorm
+        ) { layer, spec in
+            let names = candidateNames(for: layer, spec: spec)
             let kProjFull: [Float]
-            if entry.rawOff != nil {
-                kProjFull = try pack.rawBf16(kProjName)
-            } else if entry.hq4Off != nil {
-                kProjFull = try pack.dequantQ4g(kProjName)
+            if let kProjName = names.proj.first(where: { (try? pack.entry($0)) != nil }) {
+                let entry = try pack.entry(kProjName)
+                if entry.rawOff != nil {
+                    kProjFull = try pack.rawBf16(kProjName)
+                } else if entry.hq4Off != nil {
+                    kProjFull = try pack.dequantQ4g(kProjName)
+                } else {
+                    kProjFull = try pack.dequantHQ8(kProjName)
+                }
+            } else if spec.kind == .hcaCompressWKV,
+                      let hca = descriptor.hcaConfig,
+                      let fusedName = [
+                          "model.language_model.layers.\(layer).self_attn.fused_in_proj.weight",
+                          "model.layers.\(layer).self_attn.fused_in_proj.weight"
+                      ].first(where: { (try? pack.entry($0)) != nil }) {
+                let full = try pack.dequantQ4g(fusedName)
+                let start = (hca.qLoraRank + hca.headDim) * spec.inputDim
+                let count = hca.headDim * spec.inputDim
+                guard start + count <= full.count else {
+                    throw QWLSASidecarError.tensorMissing(spec.tensorName)
+                }
+                kProjFull = Array(full[start..<(start + count)])
             } else {
-                kProjFull = try pack.dequantHQ8(kProjName)
+                throw QWLSASidecarError.tensorMissing(spec.tensorName)
             }
-            let kNormCandidates = [
-                "model.language_model.layers.\(layer).self_attn.k_norm.weight",
-                "model.layers.\(layer).self_attn.k_norm.weight",
-            ]
-            let kNorm = kNormCandidates.compactMap { try? pack.rawBf16($0) }.first
+            let kNorm = names.norm.compactMap { try? pack.rawBf16($0) }.first
             return (kProjFull, kNorm)
         }
     }
 
-    /// Synthesizes Weight-SVD LSA projection matrices (`wq_idx`, `wk_idx`) for all physical
-    /// full-attention layers directly from a `.safetensors` container (including MLX affine `u32`).
+    /// Synthesizes Weight-SVD LSA projection matrices (`wq_idx`, `wk_idx`) for all LSA-eligible
+    /// decoder layers directly from a `.safetensors` container (including MLX affine `u32`).
     public static func synthesizeFromSafeTensors(
         container: QWSafeTensorsContainer,
         descriptor: QWModelDescriptor,
@@ -638,21 +691,14 @@ public final class QWLSASidecar: @unchecked Sendable {
         try synthesizeLayers(
             descriptor: descriptor,
             indexDim: indexDim,
-            normPlusOne: descriptor.family == .qwen38Dense && !container.isMLXCheckpoint
-        ) { layer in
-            let kProjCandidates = [
-                "model.language_model.layers.\(layer).self_attn.k_proj.weight",
-                "model.layers.\(layer).self_attn.k_proj.weight",
-            ]
-            guard let kProjName = kProjCandidates.first(where: { container.tensor($0) != nil }) else {
-                throw QWLSASidecarError.tensorMissing("layers.\(layer).self_attn.k_proj.weight")
+            normPlusOne: descriptor.usesPlusOneRMSNorm && !container.isMLXCheckpoint
+        ) { layer, spec in
+            let names = candidateNames(for: layer, spec: spec)
+            guard let kProjName = names.proj.first(where: { container.tensor($0) != nil }) else {
+                throw QWLSASidecarError.tensorMissing(spec.tensorName)
             }
             let kProjFull = try container.readFloats(kProjName)
-            let kNormCandidates = [
-                "model.language_model.layers.\(layer).self_attn.k_norm.weight",
-                "model.layers.\(layer).self_attn.k_norm.weight",
-            ]
-            let kNorm = kNormCandidates.compactMap { try? container.readFloats($0) }.first
+            let kNorm = names.norm.compactMap { try? container.readFloats($0) }.first
             return (kProjFull, kNorm)
         }
     }

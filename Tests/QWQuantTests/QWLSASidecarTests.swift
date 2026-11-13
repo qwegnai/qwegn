@@ -166,4 +166,99 @@ final class QWLSASidecarTests: XCTestCase {
         XCTAssertEqual(run1[1]?.wq, run2[1]?.wq)
         XCTAssertEqual(run1[0]?.wq.count, 8 * desc.lsaInputDim)
     }
+
+    func testSynthesizeHCACompressWKVSlicesNoPESubspaceWithoutPlusOneNorm() throws {
+        let configJSON = """
+        {
+          "model_type": "ernie5_5_moe",
+          "hidden_size": 128,
+          "intermediate_size": 256,
+          "vocab_size": 256,
+          "num_hidden_layers": 2,
+          "compress_ratios": [128, -2],
+          "num_attention_heads": 4,
+          "num_key_value_heads": 1,
+          "head_dim": 64,
+          "qk_nope_head_dim": 48,
+          "qk_rope_head_dim": 16,
+          "q_lora_rank": 64,
+          "kv_lora_rank": 64,
+          "o_groups": 2,
+          "o_lora_rank": 64,
+          "sliding_window": 128,
+          "compress_rope_theta": 160000.0,
+          "hybrid_mla_num_attention_heads": 4,
+          "hybrid_mla_num_key_value_heads": 4,
+          "hybrid_mla_q_lora_rank": 64,
+          "hybrid_mla_kv_lora_rank": 64,
+          "hybrid_mla_qk_nope_head_dim": 48,
+          "hybrid_mla_qk_rope_head_dim": 16,
+          "hybrid_mla_v_head_dim": 64,
+          "index_n_heads": 4,
+          "index_head_dim": 32,
+          "index_topk": 64,
+          "first_k_dense_replace": 2,
+          "rms_norm_eps": 1e-6,
+          "max_position_embeddings": 4096,
+          "eos_token_id": 2
+        }
+        """.data(using: .utf8)!
+        let desc = try QWModelDescriptor.decode(configJSON: configJSON)
+        XCTAssertEqual(desc.lsaInputDim, 48)
+        XCTAssertEqual(desc.lsaKeyProjectionSpec(layer: 0)?.kind, .hcaCompressWKV)
+        XCTAssertNil(desc.lsaKeyProjectionSpec(layer: 1))
+
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qlsa-hca-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+        try configJSON.write(to: tmpDir.appendingPathComponent("config.json"))
+
+        var header: [String: Any] = [:]
+        var payload = Data()
+        var wkv = [Float](repeating: 0, count: 64 * 128)
+        for r in 0..<64 {
+            for c in 0..<128 {
+                wkv[r * 128 + c] = (r < 48) ? sin(Float(r * 7 + c * 3) * 0.05) : 999.0
+            }
+        }
+        let wkvBytes = wkv.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in Array(raw) }
+        let wkvName = "model.layers.0.self_attn.core_attention.compressor.linear_wkv.weight"
+        header[wkvName] = [
+            "dtype": "F32", "shape": [64, 128], "data_offsets": [0, wkvBytes.count]
+        ]
+        payload.append(contentsOf: wkvBytes)
+        let ln = [Float](repeating: 1.0, count: 128)
+        let lnBytes = ln.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in Array(raw) }
+        header["model.layers.0.input_layernorm.weight"] = [
+            "dtype": "F32", "shape": [128], "data_offsets": [payload.count, payload.count + lnBytes.count]
+        ]
+        payload.append(contentsOf: lnBytes)
+
+        let headerData = try JSONSerialization.data(withJSONObject: header)
+        var fileData = Data()
+        fileData.append(contentsOf: withUnsafeBytes(of: UInt64(headerData.count).littleEndian) { Array($0) })
+        fileData.append(headerData)
+        fileData.append(payload)
+        try fileData.write(to: tmpDir.appendingPathComponent("model.safetensors"))
+
+        let synthesized = try QWLSASidecar.synthesizeFromModel(packPath: tmpDir.path, descriptor: desc, indexDim: 8)
+        XCTAssertEqual(synthesized.count, 1)
+        XCTAssertNotNil(synthesized[0])
+        XCTAssertNil(synthesized[1])
+        XCTAssertEqual(synthesized[0]?.wk.count, 8 * 48)
+
+        let sidecarURL = tmpDir.appendingPathComponent("model.qlsa")
+        let prov = QWLSASidecar.Header.Provenance(
+            modelId: "ernie5_5_moe", geometryDigest: desc.geometryDigestV2Hex,
+            method: "svd", indexDim: 8, recommendedBudget: 2048
+        )
+        try QWLSASidecar.write(
+            to: sidecarURL, provenance: prov, layerTensors: synthesized,
+            wqShape: [8, 128], wkShape: [8, 48]
+        )
+        let loaded = try QWLSASidecar(url: sidecarURL, descriptor: desc)
+        let readWK = try loaded.readF16Tensor("layers.0.wk_idx", expectedShape: [8, 48])
+        XCTAssertEqual(readWK, synthesized[0]?.wk)
+    }
 }

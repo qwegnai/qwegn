@@ -26,10 +26,31 @@
                      uint lid [[thread_index_in_threadgroup]],                    \
                      uint simd_gid [[simdgroup_index_in_threadgroup]],           \
                      uint simd_lid [[thread_index_in_simdgroup]]) {              \
-        qmm_t_nax_tgp_dual_impl<half, half, false, BM, 64, 64, 2, 2, false,       \
-                                false, false, BITS, GROUP>(                       \
-            blocks, x, y16, y32, nullptr, int(K), int(N), int(M), tg, lid,         \
-            simd_gid, simd_lid);                                                  \
+        if constexpr (BM == 64) {                                                 \
+            const uint mode = (M >> 29u) & 3u;                                    \
+            const int realM = int(M & 0x1FFFFFFFu);                               \
+            if (mode == 1u) {                                                     \
+                qmm_t_nax_tgp_dual_impl<half, half, false, 16, 64, 128, 1, 4, false, \
+                                        false, false, BITS, GROUP>(               \
+                    blocks, x, y16, y32, nullptr, int(K), int(N), realM, tg, lid, \
+                    simd_gid, simd_lid);                                          \
+            } else if (mode == 2u) {                                              \
+                qmm_t_nax_tgp_dual_impl<half, half, false, 32, 64, 64, 2, 2, false, \
+                                        false, false, BITS, GROUP>(               \
+                    blocks, x, y16, y32, nullptr, int(K), int(N), realM, tg, lid, \
+                    simd_gid, simd_lid);                                          \
+            } else {                                                              \
+                qmm_t_nax_tgp_dual_impl<half, half, false, 64, 64, 64, 2, 2, false, \
+                                        false, false, BITS, GROUP>(               \
+                    blocks, x, y16, y32, nullptr, int(K), int(N), realM, tg, lid, \
+                    simd_gid, simd_lid);                                          \
+            }                                                                     \
+        } else {                                                                  \
+            qmm_t_nax_tgp_dual_impl<half, half, false, BM, 64, 64, 2, 2, false,   \
+                                    false, false, BITS, GROUP>(                   \
+                blocks, x, y16, y32, nullptr, int(K), int(N), int(M & 0x1FFFFFFFu), \
+                tg, lid, simd_gid, simd_lid);                                     \
+        }                                                                         \
     }
 
 QW_AQ_GEMM_KERNEL(2, 32, qwg_gemm_aq2_g32_h16, 64)
@@ -336,11 +357,24 @@ kernel void qwg_gemm_aq##BITS##_g##GROUP##_nax_f32(device const char* w   [[buff
                                                    constant uint&     K   [[buffer(6)]], \
                                                    uint3 tg [[threadgroup_position_in_grid]], \
                                                    uint simd_gid [[simdgroup_index_in_threadgroup]]) { \
-    const int realM = int(M & 0x7FFFFFFFu); \
+    const uint mode = (M >> 29u) & 3u; \
+    const int realM = int(M & 0x1FFFFFFFu); \
     if ((M & 0x80000000u) != 0u) { \
-        qmm_t_nax_split_aq_impl<64, 2, 2, BITS, GROUP, false, half>(w, xh, xl, (device half*)y32, int(K), int(N), realM, tg, simd_gid); \
+        if (mode == 1u) { \
+            qmm_t_nax_split_aq_impl<16, 1, 4, BITS, GROUP, false, half>(w, xh, xl, (device half*)y32, int(K), int(N), realM, tg, simd_gid); \
+        } else if (mode == 2u) { \
+            qmm_t_nax_split_aq_impl<32, 2, 2, BITS, GROUP, false, half>(w, xh, xl, (device half*)y32, int(K), int(N), realM, tg, simd_gid); \
+        } else { \
+            qmm_t_nax_split_aq_impl<64, 2, 2, BITS, GROUP, false, half>(w, xh, xl, (device half*)y32, int(K), int(N), realM, tg, simd_gid); \
+        } \
     } else { \
-        qmm_t_nax_split_aq_impl<64, 2, 2, BITS, GROUP, false, float>(w, xh, xl, y32, int(K), int(N), realM, tg, simd_gid); \
+        if (mode == 1u) { \
+            qmm_t_nax_split_aq_impl<16, 1, 4, BITS, GROUP, false, float>(w, xh, xl, y32, int(K), int(N), realM, tg, simd_gid); \
+        } else if (mode == 2u) { \
+            qmm_t_nax_split_aq_impl<32, 2, 2, BITS, GROUP, false, float>(w, xh, xl, y32, int(K), int(N), realM, tg, simd_gid); \
+        } else { \
+            qmm_t_nax_split_aq_impl<64, 2, 2, BITS, GROUP, false, float>(w, xh, xl, y32, int(K), int(N), realM, tg, simd_gid); \
+        } \
     } \
 } \
 kernel void qwg_moe_nax_gemm_aq##BITS##_g##GROUP(device const char* w                  [[buffer(0)]], \

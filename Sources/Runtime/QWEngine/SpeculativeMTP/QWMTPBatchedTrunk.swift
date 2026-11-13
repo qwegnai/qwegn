@@ -27,8 +27,11 @@ struct QWMTPBatchedTrunk {
     static func allocationBytes(geometry: QWModelGeometry, rows: Int) -> Int {
         precondition((2...16).contains(rows))
         func aligned(_ bytes: Int) -> Int { (bytes + 255) / 256 * 256 }
-        let projCols = max(geometry.gdnTotalN, geometry.attnTotalN)
-        let outCols = max(geometry.gdnZChannels, geometry.qHeads * geometry.headDim)
+        let projCols = max(1, max(geometry.gdnTotalN, geometry.attnTotalN))
+        let hcaOutCols = geometry.hcaConfig.map { max(1, $0.oGroups) * $0.oLoraRank } ?? 0
+        let outCols = max(1, max(geometry.gdnZChannels,
+                                 max(geometry.qHeads * geometry.headDim,
+                                     max(geometry.qHeads * geometry.vHeadDim, hcaOutCols))))
         let ctrlCols = max(1, 2 * geometry.gdnVHeads)
         return aligned(rows * projCols * 2) +
             aligned(rows * outCols * 2) + aligned(rows * ctrlCols * 4)
@@ -55,14 +58,17 @@ struct QWMTPBatchedTrunk {
         gdnRowPairedPipelines = rowPaired
         let gdnVH = max(1, geometry.gdnVHeads)
         let ctrlStride = 2 * gdnVH
-        let projCols = max(geometry.gdnTotalN, geometry.attnTotalN)
-        let outCols = max(geometry.gdnZChannels, geometry.qHeads * geometry.headDim)
+        let projCols = max(1, max(geometry.gdnTotalN, geometry.attnTotalN))
+        let hcaOutCols = geometry.hcaConfig.map { max(1, $0.oGroups) * $0.oLoraRank } ?? 0
+        let outCols = max(1, max(geometry.gdnZChannels,
+                                 max(geometry.qHeads * geometry.headDim,
+                                     max(geometry.qHeads * geometry.vHeadDim, hcaOutCols))))
         let projection = try allocator.allocate(QWTensorShape([rows * projCols], .f16))
         let inputs = try allocator.allocate(QWTensorShape([rows * outCols], .f16))
         let parameters = try allocator.allocate(QWTensorShape([rows * ctrlStride], .f32))
         gdnProjection = projection
         attentionProjection = QWTensorValue(region: projection.region, offset: projection.offset,
-            shape: QWTensorShape([rows * geometry.attnTotalN], .f16))
+            shape: QWTensorShape([max(1, rows * geometry.attnTotalN)], .f16))
         outputInputs = inputs
         controls = parameters
         func views(_ storage: QWTensorValue, stride: Int, start: Int, count: Int, dtype: QWDType) -> [QWTensorValue] {
@@ -150,8 +156,7 @@ extension QWEngineDriver {
         case .fullAttention, .moe:
             let wAttn = weights.attn!.qkvProj
             if let mla = mlaOperator, weights.attn?.mla != nil {
-                let latentN = geometry.qLoraRank + geometry.kvLoraRank + geometry.indexerHeadDim
-                let latentOut = prefixRows(mla.mlaLatentScratch, rows: activeRows, cols: latentN, dt: .f16)
+                let latentOut = prefixRows(mla.mlaLatentScratch, rows: activeRows, cols: wAttn.n, dt: .f16)
                 try mtpBatchedMLP.encodeProjection(enc, input: activeNormalized, weight: wAttn,
                                                    output: latentOut, activeRows: activeRows)
             } else {
@@ -159,6 +164,13 @@ extension QWEngineDriver {
                                                    output: mtpBatchedTrunk.attentionProjection,
                                                    activeRows: activeRows)
             }
+        case .hca, .hcaMoe:
+            guard let hca = hcaOperator, let wFusedIn = weights.hca?.wFusedIn else {
+                throw QWEngineDriverError.state("HCA verification layer missing operator or wFusedIn")
+            }
+            let fusedInOut = prefixRows(hca.fusedInScratch, rows: activeRows, cols: hca.inStride, dt: .f16)
+            try mtpBatchedMLP.encodeProjection(enc, input: activeNormalized, weight: wFusedIn,
+                                               output: fusedInOut, activeRows: activeRows)
         }
     }
 
@@ -171,7 +183,7 @@ extension QWEngineDriver {
         checkpoint: QWGDNReplayCheckpoint,
         mtpBatchedTrunk: QWMTPBatchedTrunk,
         mtpBatchedMLP: QWMTPBatchedMLP,
-        partials: QWMRegion,
+        partials: QWMRegion?,
         activeRows: Int
     ) throws {
         func rowSlice(_ base: QWTensorValue, row: Int, cols: Int, dt: QWDType) -> QWTensorValue {
@@ -208,17 +220,17 @@ extension QWEngineDriver {
         case .fullAttention, .moe:
             let fullAttnIdx = attnIndexMap[layer]
             let views = session.attnKVViews[fullAttnIdx]
+            let attnOutCols = weights.attn!.o.k
             let attnOut = prefixRows(mtpBatchedTrunk.outputInputs, rows: activeRows,
-                                     cols: geometry.qHeads * geometry.headDim, dt: .f16)
+                                     cols: attnOutCols, dt: .f16)
             if let mla = mlaOperator, let mlaW = weights.attn?.mla {
-                let qBN = geometry.qHeads * geometry.headDim + geometry.indexerHeads * geometry.indexerHeadDim
                 mla.encodeLatentPrepAndPool(
                     enc, ln1: activeNormalized, mlaW: mlaW,
                     kv: views, fullAttnLayer: fullAttnIdx,
                     pos0: session.position, rows: activeRows)
                 enc.memoryBarrier(scope: .buffers)
-                let qNormView = prefixRows(mla.qResidScratch, rows: activeRows, cols: geometry.qLoraRank, dt: .f16)
-                let qFullView = prefixRows(mla.mlaQFullScratch, rows: activeRows, cols: qBN, dt: .f16)
+                let qNormView = prefixRows(mla.qResidScratch, rows: activeRows, cols: mlaW.qBProj.k, dt: .f16)
+                let qFullView = prefixRows(mla.mlaQFullScratch, rows: activeRows, cols: mlaW.qBProj.n, dt: .f16)
                 try mtpBatchedMLP.encodeProjection(enc, input: qNormView, weight: mlaW.qBProj,
                                                    output: qFullView, activeRows: activeRows)
                 mla.encodeScoreSelectAbsorbAttendAndProjUV(
@@ -226,6 +238,9 @@ extension QWEngineDriver {
                     fullAttnLayer: fullAttnIdx, pos0: session.position, rows: activeRows)
                 enc.memoryBarrier(scope: .buffers)
             } else {
+                guard let partials, let attnDecode else {
+                    throw QWEngineDriverError.state("GQA verification requires shared attention partials and attnDecode")
+                }
                 let keys = prefixRows(psc.attKR16, rows: activeRows, cols: geometry.kvChannels, dt: .f16)
                 let values = prefixRows(psc.attV16, rows: activeRows, cols: geometry.kvChannels, dt: .f16)
                 let qgate = prefixRows(psc.attQR16, rows: activeRows, cols: geometry.qProjOut, dt: .f16)
@@ -301,6 +316,22 @@ extension QWEngineDriver {
                     enc.memoryBarrier(scope: .buffers)
                 }
             }
+        case .hca, .hcaMoe:
+            guard let hca = hcaOperator, let hcaW = weights.hca, let wQUpGate = hcaW.wQUpGate else {
+                throw QWEngineDriverError.state("HCA verification layer missing operator or wQUpGate")
+            }
+            let hcaIdx = hcaIndexMap[layer]
+            hca.encodeInPrepAndCompress(enc, hcaW: hcaW, hcaLayer: hcaIdx, pos0: session.position, rows: activeRows)
+            enc.memoryBarrier(scope: .buffers)
+            let qrView = prefixRows(hca.qrScratch, rows: activeRows, cols: hca.qLoraRank, dt: .f16)
+            let qUpView = prefixRows(hca.qUpGateScratch, rows: activeRows, cols: hca.qUpStride, dt: .f16)
+            try mtpBatchedMLP.encodeProjection(enc, input: qrView, weight: wQUpGate,
+                                               output: qUpView, activeRows: activeRows)
+            let zOut = prefixRows(mtpBatchedTrunk.outputInputs, rows: activeRows,
+                                  cols: hca.zOutStride, dt: .f16)
+            hca.encodeQPrepAttendVHAAndWoA(enc, hcaW: hcaW, zGatedOut: zOut,
+                                           hcaLayer: hcaIdx, pos0: session.position, rows: activeRows)
+            enc.memoryBarrier(scope: .buffers)
         }
     }
 }

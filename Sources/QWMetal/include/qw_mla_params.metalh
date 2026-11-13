@@ -1,5 +1,5 @@
-// qw_mla_params.metalh — Parameter blocks shared by the NoPE MLA scalar and MMA kernels.
-// Layouts mirror AbsorbParams / SparseAttnParams in QWMLAAttnOperator.swift.
+// qw_mla_params.metalh — Parameter blocks shared by NoPE and Decoupled-RoPE MLA kernels.
+// Layouts mirror AbsorbParams / SparseAttnParams / DSASparseAttnParams in QWMLAAttnOperator.
 
 #pragma once
 #include <metal_stdlib>
@@ -26,4 +26,20 @@ struct MLASparseAttnParams {
     uint topKPools;
     uint listStride;
     uint kvMode;
+};
+
+struct MLADSASparseAttnParams {
+    uint T;
+    uint pos0;
+    uint qHeads;
+    uint headDim;
+    uint kvLoraRank;
+    uint topK;
+    uint windowTokens;
+    uint listStride;
+    uint kvMode;
+    uint ropeDim;
+    uint qRopeOffset;
+    uint qFullStride;
+    uint hasSink;
 };

@@ -34,6 +34,8 @@ enum QWMoEChain {
             let weights = QWMoEOperator.Weights(
                 router: moe.router,
                 routerBias: moe.routerBias,
+                routedScaleParam: moe.routedScaleParam,
+                splitFeatureRouting: moe.splitFeatureRouting,
                 gateUp: moe.gateUp,
                 down: moe.down,
                 coldGateUp: moe.coldGateUp,
@@ -41,6 +43,7 @@ enum QWMoEChain {
                 sharedGateUp: moe.sharedGateUp,
                 sharedDown: moe.sharedDown,
                 sharedGateScalar: moe.sharedGateScalar,
+                latent: moe.latent,
                 hidden: geometry.hidden,
                 experts: geometry.numExperts,
                 topK: geometry.expertsPerTok,
@@ -60,7 +63,8 @@ enum QWMoEChain {
                 sortedTok: s.sortedTok, invPerm: s.invPerm,
                 tileE: s.tileE, tileR: s.tileR, tileCount: s.tileCount,
                 gu16: s.gu16, dnHi: s.dnHi, dnAcc: s.dnAcc,
-                naxX16: s.naxX16, maxTileWidth: max(geometry.hidden, geometry.sharedExpertIntermediate)
+                naxX16: s.naxX16, latent: s.latent,
+                maxTileWidth: max(geometry.hidden, geometry.sharedExpertIntermediate)
             )
             let rotateFn: ((inout any MTLComputeCommandEncoder) throws -> Void)?
             if let driver {
@@ -82,6 +86,10 @@ enum QWMoEChain {
                 }
             )
             return
+        }
+        if moe.latent != nil || moe.splitFeatureRouting || moe.routedScaleParam != nil {
+            throw QWEngineDriverError.unsupportedModel(
+                "SSD cold expert streaming does not support Latent-MoE or split-feature routers; keep experts resident")
         }
         let H = geometry.hidden
         let I = geometry.moeIntermediate

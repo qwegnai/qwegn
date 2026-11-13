@@ -56,9 +56,12 @@ def planes(entry):
     if not shape or any(type(d) is not int or d <= 0 for d in shape):
         raise ValueError(f"invalid tensor shape: {shape}")
     if "raw_off" in entry:
-        if entry.get("kind") != "bf16":
-            raise ValueError("raw tensor must be BF16")
-        return [("raw_off", math.prod(shape) * 2, "raw")]
+        rkind = entry.get("kind")
+        if rkind == "bf16":
+            return [("raw_off", math.prod(shape) * 2, "raw")]
+        if rkind == "f32":
+            return [("raw_off", math.prod(shape) * 4, "raw")]
+        raise ValueError("raw tensor must be BF16 or F32")
     if "experts" in entry:
         grp, bbytes, _ = _resolve_hq_layout(entry)
         if len(shape) != 3 or shape[1] % 2 or shape[2] % grp:
@@ -111,7 +114,7 @@ def audit_pack(path, expected_shapes=None):
     for name, entry in tensors.items():
         if "raw_off" in entry:
             allowed = {"shape", "kind", "raw_off"}
-            kind = "bf16"
+            kind = entry.get("kind", "bf16")
         elif "experts" in entry:
             allowed = {"shape", "experts", "e_hq4", "hq4_off"} | ({"hq"} if "hq" in entry else set())
             _, _, kind = _resolve_hq_layout(entry)

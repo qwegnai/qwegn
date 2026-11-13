@@ -33,7 +33,7 @@ static inline void qwm_mlp_gate_up(device const Block_HQ4_G32* blocks, device co
         for (uint m = 0; m < M; ++m) {
             float gate = paired[(pair_id * M + m) * 2u];
             float up   = paired[(pair_id * M + m) * 2u + 1u];
-            output[(size_t)m * I + row] = half(gate / (1.0f + exp(-gate)) * up);
+            output[(size_t)m * I + row] = half(qwg_swiglu_mul(gate, up));
         }
     }
 }
@@ -60,8 +60,8 @@ static inline void qwm_mlp_gate_up_fwht32(device const Block_HQ4_G32* blocks, de
         if (lane == 0u) {
             #pragma unroll
             for (uint m = 0; m < M; ++m) {
-                s_h16[m * 32u + p0]      = half((g0[m] / (1.0f + exp(-g0[m]))) * u0[m]);
-                s_h16[m * 32u + p0 + 1u] = half((g1[m] / (1.0f + exp(-g1[m]))) * u1[m]);
+                s_h16[m * 32u + p0]      = half(qwg_swiglu_mul(g0[m], u0[m]));
+                s_h16[m * 32u + p0 + 1u] = half(qwg_swiglu_mul(g1[m], u1[m]));
             }
         }
     }
@@ -158,7 +158,7 @@ static inline void qwm_mlp_gate_up_rp(device const Block_HQ4_G32* blocks, device
     if (lane == 0u) {
         #pragma unroll
         for (uint m = 0; m < M; ++m) {
-            output[(size_t)m * I + row] = half(v[0][m] / (1.0f + exp(-v[0][m])) * v[1][m]);
+            output[(size_t)m * I + row] = half(qwg_swiglu_mul(v[0][m], v[1][m]));
         }
     }
 }

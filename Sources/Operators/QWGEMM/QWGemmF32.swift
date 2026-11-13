@@ -56,6 +56,32 @@ extension QWGemm {
                                  threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1))
     }
 
+    /// Optional RMSNorm (1 + gamma) + H_32 rotation on f32 [rows, latent], emitting f32 and/or f16.
+    public static func encodeLatentNormH32F32(
+        _ enc: any MTLComputeCommandEncoder, hal: QWHal, x: QWTensorValue,
+        gamma: QWTensorValue?, out32: QWTensorValue, out16: QWTensorValue? = nil,
+        rows: Int, latent: Int, eps: Float = 1e-6, skipOut32: Bool = false
+    ) throws {
+        precondition(latent > 0 && latent % 32 == 0, "latent norm H32 needs latent % 32 == 0")
+        let hasNorm = gamma != nil
+        let flags = (hasNorm ? 1 : 0) | (out16 != nil ? 2 : 0) | (skipOut32 ? 4 : 0)
+        enc.setComputePipelineState(try hal.pipeline("qwg_latent_norm_h32_f32"))
+        x.bind(enc, index: 0)
+        (gamma ?? x).bind(enc, index: 1)
+        out32.bind(enc, index: 2)
+        (out16 ?? out32).bind(enc, index: 3)
+        enc.setUInt32s(latent, startIndex: 4)
+        enc.setPod(eps, index: 5)
+        enc.setUInt32s(flags, startIndex: 6)
+        if hasNorm {
+            enc.dispatchThreadgroups(MTLSize(width: 1, height: rows, depth: 1),
+                                     threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
+        } else {
+            enc.dispatchThreadgroups(MTLSize(width: latent / 32, height: rows, depth: 1),
+                                     threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1))
+        }
+    }
+
     /// silu(gate) * up followed by the 32-point WHT, f32. Requires intermediate % 32 == 0.
     public static func encodeSiluMulF32(_ enc: any MTLComputeCommandEncoder, hal: QWHal, gu: QWTensorValue,
                                         act: QWTensorValue, rows: Int, intermediate: Int,
@@ -346,17 +372,20 @@ extension QWGemm {
         enc.bindTensors(weight.blocks, x16, y16, y32, startIndex: 0)
         let outBytes = y32.shape.dtype == .f16 ? 2 : 4
         let flag = y32.shape.dtype == .f16 ? Int(bitPattern: 0x8000_0000) : 0
+        let useSmallTile = hal.caps.isMetal4TensorCapable
         enc.setUInt32s(weight.n, weight.k, startIndex: 5)
         let chunk = naxRowChunk(rows: rows, k: weight.k)
         var r0 = 0
         while r0 < rows {
             let r = min(chunk, rows - r0)
+            let bm = useSmallTile ? (r <= 16 ? 16 : (r <= 32 ? 32 : 64)) : 64
+            let modeBits = useSmallTile ? (r <= 16 ? 0x2000_0000 : (r <= 32 ? 0x4000_0000 : 0)) : 0
             if r0 > 0 {
                 x16.slice(byteOffset: r0 * weight.k * 2, count: r * weight.k).bind(enc, index: 1)
                 y32.slice(byteOffset: r0 * weight.n * outBytes, count: r * weight.n).bind(enc, index: 3)
             }
-            enc.setUInt32s(r | flag, startIndex: 4)
-            enc.dispatchThreadgroups(MTLSize(width: weight.n / 64, height: (r + 63) / 64, depth: 1),
+            enc.setUInt32s(r | flag | modeBits, startIndex: 4)
+            enc.dispatchThreadgroups(MTLSize(width: weight.n / 64, height: (r + bm - 1) / bm, depth: 1),
                                      threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
             r0 += r
         }
@@ -371,14 +400,16 @@ extension QWGemm {
         return max(512, (budget / (k * 2)) / 64 * 64)
     }
 
-    /// Unified dense HQ4 projection over `rows` f32 activations, automatically selecting Single-Pass NAX (`rows >= 64`),
+    /// Unified dense HQ4 projection over `rows` f32 activations, automatically selecting Single-Pass NAX (`rows >= minNaxRows`),
     /// batched weight-stationary f32 GEMM (`rows >= 32`), or 4-row f32 GEMV.
     public static func encodeDenseProjF32(_ enc: any MTLComputeCommandEncoder, hal: QWHal, weight: QWWeightView,
                                           x: QWTensorValue, y: QWTensorValue,
                                           naxX16: QWTensorValue, naxY16: QWTensorValue, maxTileWidth: Int,
                                           rows: Int, epi: UInt32 = 0, scale: Float = 1,
-                                          x16Precast: QWTensorValue? = nil) throws {
-        if rows >= 64 && epi == 0 && scale == 1 &&
+                                          x16Precast: QWTensorValue? = nil,
+                                          minNaxRows: Int = 64) throws {
+        let effectiveMinNax = hal.caps.isMetal4TensorCapable ? minNaxRows : max(64, minNaxRows)
+        if rows >= effectiveMinNax && epi == 0 && scale == 1 &&
            weight.n % 64 == 0 && weight.k % 64 == 0 && weight.k <= maxTileWidth {
             let count = rows * weight.k
             if let precast = x16Precast {

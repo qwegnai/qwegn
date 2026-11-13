@@ -133,6 +133,7 @@ public struct QWQTensorEntry: Decodable, Sendable {
     public var kCols: Int? { shape.count == 2 ? shape[1] : nil }
     public var groups: Int? { shape.count == 2 ? shape[1] / hqGroup : nil }
     public var isRawBf16: Bool { rawOff != nil }
+    public var rawElemBytes: Int { kind == "f32" ? 4 : 2 }
     public var quantized: Bool { rawOff == nil && hq4Off != nil }
     public var hq8Quantized: Bool { rawOff == nil && hq8Off != nil && hq4Off == nil }
 
@@ -499,11 +500,21 @@ public enum QWQuant {
             return out
         }
 
-        /// Widens a verbatim BF16 plane into `[Float]`.
+        /// Widens a verbatim BF16 or F32 raw plane into `[Float]`.
         public func rawBf16(_ name: String) throws -> [Float] {
             let e = try entry(name)
             guard let off = e.rawOff else { throw QWQuantError.notRawPlane(name) }
             let count = e.shape.reduce(1, *)
+            if e.kind == "f32" {
+                guard off + count * 4 <= rawCount else { throw QWQuantError.truncated }
+                var out = [Float](repeating: 0, count: count)
+                out.withUnsafeMutableBytes { (dst: UnsafeMutableRawBufferPointer) in
+                    if let base = dst.baseAddress, count > 0 {
+                        base.copyMemory(from: UnsafeRawPointer(rawBase).advanced(by: off), byteCount: count * 4)
+                    }
+                }
+                return out
+            }
             guard off + count * 2 <= rawCount else { throw QWQuantError.truncated }
             var out = [Float](repeating: 0, count: count)
             let u = UnsafeRawPointer(rawBase).advanced(by: off).assumingMemoryBound(to: UInt16.self)
@@ -525,9 +536,10 @@ public enum QWQuant {
                                  at elemOffset: Int, count elems: Int) throws {
             let e = try entry(name)
             guard let off = e.rawOff else { throw QWQuantError.notRawPlane(name) }
-            let base = off + elemOffset * 2
-            guard base + elems * 2 <= rawCount else { throw QWQuantError.truncated }
-            dst.copyMemory(from: UnsafeRawPointer(rawBase).advanced(by: base), byteCount: elems * 2)
+            let eb = e.rawElemBytes
+            let base = off + elemOffset * eb
+            guard base + elems * eb <= rawCount else { throw QWQuantError.truncated }
+            dst.copyMemory(from: UnsafeRawPointer(rawBase).advanced(by: base), byteCount: elems * eb)
         }
 
         @inline(__always)

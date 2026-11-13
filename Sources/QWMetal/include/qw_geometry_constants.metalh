@@ -40,9 +40,13 @@ constant float QW_FC_GDN_GATE_MIN [[function_constant(223)]];
 #define QW_FC_SWIGLU_LIMIT_DEFINED
 constant float QW_FC_SWIGLU_LIMIT [[function_constant(224)]];
 constant float QW_FC_ROUTED_SCALE [[function_constant(225)]];
+constant float QW_FC_SITU_BETA    [[function_constant(228)]];
+constant float QW_FC_SITU_LIN_BETA [[function_constant(229)]];
 #endif
 constant uint  QW_FC_KV_LORA_RANK [[function_constant(226)]];
 constant bool  QW_FC_INDEX_KPOOL  [[function_constant(227)]];
+constant bool  QW_FC_MHC_ADDITIVE_EPS [[function_constant(230)]];
+constant float QW_FC_MHC_HC_EPS   [[function_constant(231)]];
 
 constant uint  QW_HIDDEN       = QW_FC_HIDDEN;
 constant uint  QW_VOCAB        = QW_FC_VOCAB;

@@ -10,6 +10,27 @@ The single source of the version is `QWVersion.current` in
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-11-13
+
+### Added
+- **Native `ernie5_5_moe` architecture support (`ERNIE-5.5-Flash-Base`, `280B` total / `14B` active + `0.36B` ECHO, `81.61 GiB` `HQ8_G32 + SHVQ15_G64 + SHVQ3_G64`, `2.52 bpw`) across all runtime layers (`QWCore` → `QWEngine` + `ernie55_adapter.py`):**
+  - `QWHCAAttnOperator` & `qwattn_hca.metal` (`<= 32 KiB` constants): `37` Heavily Compressed Attention layers (`128:1` `compress_kv`, `128`-tok SWA ring, YaRN `theta=160,000`, `o_groups=8`, `o_lora_rank=1024`, VHA, `>262K` Weight-SVD `QWLSASidecar` `e-means`, and `.qwcache` repo memory).
+  - Decoupled-RoPE `QWMLAAttnOperator+DecoupledRoPE` & `qwattn_mla_dsa.metal`: `6` backbone `MLA-DSA` layers (`64H`, `index_topk=2048` Walsh-Hadamard `H_128`, `128`-tok SWA tail, `attn_sink`, VHA, `>= 41K` `64H` `QWCoarsePoolIndex` `e-means`).
+  - `LatentBottleneck` `QWMoEOperator` (`512` routed experts, `moe_split_feature_routing` dual-split sigmoid `top-10` + `1` shared expert, `SituAndMul` `beta=4.0, linear_beta=25.0`), additive-eps 4-stream `mHC` with `hc_head`, `MultiMax` `lm_head` (`qwg_multimax_f32`), and shared-Layer-43 `QWEchoDraftEncoder` (`ECHO`).
+
+### Changed
+- **Phase 2 M5 NAX & SHVQ Prefill Accelerations (`QWMetal`, `QWGEMM`, `QWAttn`):**
+  - Added Apple10 `32`-head `qwg_hca_attn_nax`, staged `ShvqTgLut` SRAM codebooks inside Grouped-NAX `qwg_moe_nax_gemm_shvq*` and `qwg_moe_nax_split_shvq*_f32`, gated `QWMoEOperator` grouped-NAX on density (`groupedNaxMinRows = 26` at `E=512, K=10`, `minNax = 16`), and added `BM=16/32` NAX tiles to `gemmBatchedH16`.
+  - Lifts paired `ERNIE-5.5-Flash-Base` Phase 2 prefill across every regime (`t11_zh` `84.8 → 89.2` `1.052×`, `t29_code` `178.1 → 211.4` `1.185×`, `t512` `756.0 → 825.3` `1.092×`, `t19k` `788.6 → 855.9` `1.130×`, `873.3–898.9` @18.8K).
+
+### Fixed
+- **Latent-attention MTP draft-head argmax scratch sizing (`QWEngine`):** Sized `partialsCarveBytes` via `QWEngineDriver.draftHeadArgmaxPartialsBytes(vocab:)` (`55297ddd`) so fused draft-head argmax on latent/compressed-attention models (`GLM-5.3-Flash` `--mtp-drafts 1`) has full partials capacity.
+- **Basis-gate compile-time scale purity (`QWMetal`):** Folded `0.5f * 0.17677669529663689f` into `0.08838834764831844f` (`1/sqrt(128)`) in `qw_mla_fwht128_ortho` (`fe5cb42d`) so `Scripts/check_basis.py` passes cleanly (`505/755` shuffles dropped, `0` leftover `1/sqrt(32)` constants).
+
+### Verified
+- **`ERNIE-5.5-Flash-Base` (`81.61 GiB`):** `mean_kl = 0.1757` nats/tok (`79.69%` top-1 vs `BF16`); `ECHO` `d=1` decode `31.39 → 40.22 tok/s` (`+28.1%`, peak `42.57`); `.qwcache` `78.59×` (`22.79 → 0.29 s`); `3/3` needles at `18.8K`, `149.5K` (`603.6 / 37.93`), and `300K` (`302.6 / 16.28`); `1M` `87.59 GiB` planned / `91.31 GiB` RSS UMA residency; `4/4` vision×ngram toggles `SHA-256` exact (`0` allocs).
+- **Cross-Flagship `--strict` Gate (`v0.17.1` → `v0.18.0`):** `0.984×–1.001×`, `5/5 SHA-256` exact, `9/10` `llmprobe` `code-10`, and `0` steady allocs across `GLM-5.3-Flash` (serial & MTP-1), `Qwen3.6-35B-A3B`, `Qwen3.8-Flash-Next` (`-27.07 GiB` `--stream-ngrams`), and `Qwen3.8-27B` (+ `DSpine-b16` `1.0014×`).
+
 ## [0.17.1] - 2026-11-12
 
 ### Fixed

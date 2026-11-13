@@ -20,6 +20,7 @@ public struct QWEngineSessionSnapshot: Sendable {
     let dflashKData: Data?
     let dflashVData: Data?
     let dflashCacheOffset: Int
+    let sparseStateData: Data?
     let stochastic: QWStochasticState?
 
     init(source: QWEngineSession, kvGeneration: UInt64, mtpKVGeneration: UInt64?,
@@ -27,6 +28,7 @@ public struct QWEngineSessionSnapshot: Sendable {
          kvWritten: Int, mtpKVWritten: Int?, recData: Data, ringData: Data,
          trunkHiddenData: Data?, trunkHiddenValid: Bool,
          dflashKData: Data? = nil, dflashVData: Data? = nil, dflashCacheOffset: Int = 0,
+         sparseStateData: Data? = nil,
          stochastic: QWStochasticState? = nil) {
         self.source = source
         self.kvGeneration = kvGeneration
@@ -43,6 +45,7 @@ public struct QWEngineSessionSnapshot: Sendable {
         self.dflashKData = dflashKData
         self.dflashVData = dflashVData
         self.dflashCacheOffset = dflashCacheOffset
+        self.sparseStateData = sparseStateData
         self.stochastic = stochastic
     }
 }
@@ -50,7 +53,7 @@ public struct QWEngineSessionSnapshot: Sendable {
 /// The caller holds the driver's flight lock and has completed all GPU writes.
 enum QWEngineSessionState {
     static func snapshot(_ session: QWEngineSession, cache: QWKVCache,
-                         mtpCache: QWKVCache?) throws -> QWEngineSessionSnapshot {
+                         mtpCache: QWKVCache?, sparseStateData: Data? = nil) throws -> QWEngineSessionSnapshot {
         try validate(session, cache: cache, mtpCache: mtpCache)
         return QWEngineSessionSnapshot(
             source: session, kvGeneration: try cache.rollbackGeneration(session.kv),
@@ -72,6 +75,7 @@ enum QWEngineSessionState {
                 Data(bytes: $0.vSlab.region.pointer.advanced(by: $0.vSlab.offset), count: $0.vSlab.bytes)
             },
             dflashCacheOffset: session.dflashCacheOffset,
+            sparseStateData: sparseStateData,
             stochastic: try session.stochastic?.frozenState())
     }
 

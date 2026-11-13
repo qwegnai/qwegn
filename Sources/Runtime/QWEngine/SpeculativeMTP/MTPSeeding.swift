@@ -48,6 +48,13 @@ extension QWEngineDriver {
             try dflashDrafter.encodeContextUpdate(cb, slot: dSlot, startPosition: session.position, totalCount: count)
             return
         }
+        if let echoDrafter, let previous = session.trunkHidden, let views = session.mtpKVViews.first {
+            try encodeEchoSeeding(cb, echoDrafter: echoDrafter, embeddings: embeddings,
+                                  hidden: hidden, previous: previous,
+                                  position: session.position, count: count,
+                                  cacheRows: cacheRows, views: views)
+            return
+        }
         guard let mtpDraftEncoder, let mtpWeights, let previous = session.trunkHidden,
               let views = session.mtpKVViews.first else {
             throw QWEngineDriverError.state("MTP prompt seeding infrastructure is absent")
@@ -118,13 +125,92 @@ extension QWEngineDriver {
                                           position: session.position, count: count, cacheRows: cacheRows, kv: views)
     }
 
+    private func encodeEchoSeeding(_ cb: any MTLCommandBuffer,
+                                   echoDrafter: QWEchoDraftEncoder,
+                                   embeddings: QWTensorValue,
+                                   hidden: QWTensorValue,
+                                   previous: QWTensorValue,
+                                   position: Int,
+                                   count: Int,
+                                   cacheRows: Int,
+                                   views: (k: QWKVLayerView, v: QWKVLayerView)) throws {
+        let h = geometry.hidden
+        let streamElems = echoDrafter.streams * h
+        let streamBytes = streamElems * 4
+        let pairs = QWMTPPromptSeeder.pairCount(position: position, count: count)
+        if pairs > 0 {
+            let maxSeed = echoDrafter.maxSeedRows
+            if position > 0 && count > 1 {
+                let chunk0 = min(pairs, maxSeed)
+                guard let prepBlit = cb.makeBlitCommandEncoder() else {
+                    throw QWEngineDriverError.state("ECHO seed stage blit encoder")
+                }
+                prepBlit.copy(from: previous.region.buffer,
+                              sourceOffset: previous.region.base + previous.offset,
+                              to: echoDrafter.prevStreamBuf.region.buffer,
+                              destinationOffset: echoDrafter.prevStreamBuf.region.base + echoDrafter.prevStreamBuf.offset,
+                              size: streamBytes)
+                prepBlit.copy(from: hidden.region.buffer,
+                              sourceOffset: hidden.region.base + hidden.offset,
+                              to: echoDrafter.prevStreamBuf.region.buffer,
+                              destinationOffset: echoDrafter.prevStreamBuf.region.base + echoDrafter.prevStreamBuf.offset + streamBytes,
+                              size: (chunk0 - 1) * streamBytes)
+                prepBlit.endEncoding()
+            }
+            guard let enc = cb.makeComputeCommandEncoder() else {
+                throw QWEngineDriverError.state("ECHO seed compute encoder")
+            }
+            do {
+                bindResidentResources(enc)
+                enc.useResource(echoDrafter.region.buffer, usage: [.read, .write])
+                var r0 = 0
+                while r0 < pairs {
+                    let chunk = min(maxSeed, pairs - r0)
+                    let prevSlice: QWTensorValue
+                    let embSlice: QWTensorValue
+                    if position == 0 {
+                        prevSlice = hidden.slice(byteOffset: r0 * streamBytes, count: chunk * streamElems, dtype: .f32)
+                        embSlice = embeddings.slice(byteOffset: (r0 + 1) * h * 2, count: chunk * h, dtype: .f16)
+                    } else if count == 1 {
+                        prevSlice = previous
+                        embSlice = embeddings.slice(byteOffset: 0, count: h, dtype: .f16)
+                    } else if r0 == 0 {
+                        prevSlice = echoDrafter.prevStreamBuf.slice(byteOffset: 0, count: chunk * streamElems, dtype: .f32)
+                        embSlice = embeddings.slice(byteOffset: 0, count: chunk * h, dtype: .f16)
+                    } else {
+                        prevSlice = hidden.slice(byteOffset: (r0 - 1) * streamBytes, count: chunk * streamElems, dtype: .f32)
+                        embSlice = embeddings.slice(byteOffset: r0 * h * 2, count: chunk * h, dtype: .f16)
+                    }
+                    try echoDrafter.encodeSeedChunk(enc, driver: self, prevStream: prevSlice,
+                                                    embeddings: embSlice, kv: views,
+                                                    cacheRows: cacheRows + r0, rows: chunk)
+                    enc.memoryBarrier(scope: .buffers)
+                    r0 += chunk
+                }
+            } catch {
+                enc.endEncoding()
+                throw error
+            }
+            enc.endEncoding()
+        }
+        guard let blit = cb.makeBlitCommandEncoder() else {
+            throw QWEngineDriverError.state("ECHO stream retention blit encoder")
+        }
+        blit.copy(from: hidden.region.buffer,
+                  sourceOffset: hidden.region.base + hidden.offset + (count - 1) * streamBytes,
+                  to: previous.region.buffer,
+                  destinationOffset: previous.region.base + previous.offset,
+                  size: streamBytes)
+        blit.endEncoding()
+    }
+
     func commitMTPSeeding(_ session: QWEngineSession, position: Int, count: Int, cacheRows: Int) {
+        session.roundRecord.consumedCount = position + count
+        session.roundRecord.absolutePosition = position + count
         guard let mtpCache, let handle = session.mtpKV else { return }
         let rows = cacheRows + QWMTPPromptSeeder.pairCount(position: position, count: count)
         mtpCache.markWritten(handle, upTo: rows)
         session.roundRecord.mtpPhysicalRows = rows
-        session.roundRecord.consumedCount = position + count
-        session.roundRecord.absolutePosition = position + count
         session.trunkHiddenValid = true
         if dflashDrafter != nil {
             session.dflashCacheOffset = position + count

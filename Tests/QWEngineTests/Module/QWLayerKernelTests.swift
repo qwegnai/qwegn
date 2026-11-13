@@ -18,6 +18,8 @@ final class QWLayerKernelTests: XCTestCase {
         .init(attention: .fullAttention, mlp: .moe, ple: false),
         .init(attention: .qsaSparse, mlp: .dense, ple: false),
         .init(attention: .qsaSparse, mlp: .moe, ple: false),
+        .init(attention: .hcaCompressed, mlp: .dense, ple: false),
+        .init(attention: .hcaCompressed, mlp: .moe, ple: false),
     ]
 
     func testEveryKindIsEitherServedOrAbsent() {

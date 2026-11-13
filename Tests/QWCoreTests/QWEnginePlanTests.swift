@@ -222,4 +222,94 @@ final class QWEnginePlanTests: XCTestCase {
             XCTAssertEqual(error as? QWEnginePlanError, .incompleteMoEGeometry)
         }
     }
+
+    func testHybridHCAMLALatentMoEPlanAndAdmission() throws {
+        let ernieJSON = """
+        {
+          "model_type": "ernie5_5_moe",
+          "hidden_size": 4096,
+          "intermediate_size": 14336,
+          "vocab_size": 201216,
+          "num_hidden_layers": 43,
+          "num_nextn_predict_layers": 1,
+          "mtp_shared_last_layer": true,
+          "compress_ratios": [
+            128, 128, 128, 128, 128, 128, 128, -2,
+            128, 128, 128, 128, 128, 128, -2,
+            128, 128, 128, 128, 128, 128, -2,
+            128, 128, 128, 128, 128, 128, -2,
+            128, 128, 128, 128, 128, 128, -2,
+            128, 128, 128, 128, 128, 128, -2,
+            -2
+          ],
+          "rms_norm_eps": 1e-6,
+          "max_position_embeddings": 1048576,
+          "num_attention_heads": 64,
+          "num_key_value_heads": 1,
+          "head_dim": 512,
+          "qk_nope_head_dim": 448,
+          "qk_rope_head_dim": 64,
+          "v_head_dim": 512,
+          "q_lora_rank": 1024,
+          "kv_lora_rank": 512,
+          "o_groups": 8,
+          "o_lora_rank": 1024,
+          "sliding_window": 128,
+          "compress_rope_theta": 160000.0,
+          "rope_theta": 8000000,
+          "hybrid_mla_attention": "mqa_dsa",
+          "hybrid_mla_num_attention_heads": 64,
+          "hybrid_mla_q_lora_rank": 1024,
+          "hybrid_mla_kv_lora_rank": 512,
+          "hybrid_mla_qk_nope_head_dim": 192,
+          "hybrid_mla_qk_rope_head_dim": 64,
+          "hybrid_mla_v_head_dim": 256,
+          "index_n_heads": 64,
+          "index_head_dim": 128,
+          "index_topk": 2048,
+          "enable_hyper_connections": true,
+          "hc_mult": 4,
+          "hc_sinkhorn_iters": 20,
+          "hc_eps": 1e-6,
+          "hidden_act": "situ",
+          "first_k_dense_replace": 1,
+          "n_routed_experts": 512,
+          "num_experts_per_tok": 10,
+          "moe_intermediate_size": 2048,
+          "moe_latent_size": 2048,
+          "moe_split_feature_routing": true,
+          "routed_scaling_factor_learnable": true,
+          "n_shared_experts": 1,
+          "scoring_func": "sigmoid",
+          "multimax": "lm_head",
+          "eos_token_id": 2
+        }
+        """.data(using: .utf8)!
+        let desc = try QWModelDescriptor.decode(configJSON: ernieJSON)
+        let geo = QWModelGeometry(descriptor: desc)
+        let plan = try QWEnginePlan(geometry: geo, modelId: "ernie55-flash",
+                                    geometryDigest: desc.geometryDigestV2Hex,
+                                    prefillChunkRows: 512, kvStorageMode: "q4")
+        XCTAssertEqual(plan.layers.count, 43)
+        XCTAssertEqual(plan.layers.filter { $0.attention == .hcaCompressed }.count, 37)
+        XCTAssertEqual(plan.layers.filter { $0.attention == .qsaSparse }.count, 6)
+        XCTAssertEqual(plan.layers.filter { $0.attention == .fullAttention }.count, 0)
+        XCTAssertEqual(plan.layers.filter { $0.attention == .gdn }.count, 0)
+        XCTAssertEqual(plan.layers[0].mlp, .dense)
+        XCTAssertTrue(plan.layers.dropFirst().allSatisfy { $0.mlp == .moe })
+
+        let cap128GiB = 128 << 30
+        let admission = try QWAdmissionPlan(descriptor: desc, contextTokens: 131_072,
+                                            kvDtype: .q4, scratchPerSeq: 512 << 20,
+                                            workingSetCapBytes: cap128GiB)
+        XCTAssertEqual(admission.components.gdnStateBytes, 0)
+        XCTAssertGreaterThan(admission.components.modelResidentBytes, 79 << 30)
+        XCTAssertLessThan(admission.components.modelResidentBytes, 85 << 30)
+        XCTAssertLessThan(admission.components.kvBytes, 600 << 20)
+        if case .admitted(let headroom) = admission.admit() {
+            XCTAssertGreaterThan(headroom, 40 << 30)
+        } else {
+            XCTFail("expected ERNIE-5.5 SHVQ15+SHVQ3 admission to succeed on 128 GiB UMA")
+        }
+    }
 }

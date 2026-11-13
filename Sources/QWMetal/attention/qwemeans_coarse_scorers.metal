@@ -62,8 +62,10 @@ static inline void emeans_run_flat_fallback(device int*                  blockLi
         }
 
         const uint needTies = kTarget - s.greaterAccum;
+        const uint totalAtOrAbove = s.sgTotal;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
         uint minTiePool = 0u;
-        if (s.sgTotal > kTarget && needTies > 0u) {
+        if (totalAtOrAbove > kTarget && needTies > 0u) {
             if (tid == 0u) s.greaterAccum = 0u;
             threadgroup_barrier(mem_flags::mem_threadgroup);
             uint tieMask = 0u;
@@ -320,7 +322,7 @@ kernel void qwg_emeans_qsa_flat_fallback(device const float*       idxQ       [[
     });
 }
 
-// 3a. Coarse centroid scoring for NoPE MLA (32-head weighted ReLU via simdgroup 8x8 MMA).
+// 3a. Coarse centroid scoring for MLA (32/64-head weighted ReLU via simdgroup 8x8 MMA).
 kernel void qwg_emeans_mla_score_coarse(device const half*        mlaQFull     [[buffer(0)]],
                                         device const float*       idxWeights   [[buffer(1)]],
                                         device const half*        centroids    [[buffer(2)]],
@@ -343,52 +345,66 @@ kernel void qwg_emeans_mla_score_coarse(device const half*        mlaQFull     [
     threadgroup float shS[8u * HEADS * 8u];
     threadgroup atomic_uint hist[256];
 
-    device const half* qRow = mlaQFull + uint64_t(g.qRow) * (p.qChannels + p.idxHeads * p.indexDim) + p.qChannels;
-    for (uint i = tid; i < HEADS * DIM / 4u; i += 256u) {
-        const uint h = i / (DIM / 4u), c = (i % (DIM / 4u)) * 4u;
-        *(threadgroup half4*)(shQ + h * QS + c) = *(device const half4*)(qRow + h * DIM + c);
-    }
-    if (tid < HEADS) shW[tid] = idxWeights[uint64_t(g.qRow) * p.idxHeads + tid];
     atomic_store_explicit(&hist[tid], 0u, memory_order_relaxed);
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
+    device const half* qRow = mlaQFull + uint64_t(g.qRow) * (p.qChannels + p.idxHeads * p.indexDim) + p.qChannels;
+    const uint nHeads = min(p.idxHeads, 64u);
     const uint cBase = c0 + sg * 8u;
-    if (cBase < g.numClusters) {
-        simdgroup_float8x8 acc[4];
-        for (uint a = 0u; a < 4u; ++a) acc[a] = simdgroup_float8x8(0.0f);
-        device const half* kBase = centroids + uint64_t(cBase) * DIM;
-        for (uint d = 0u; d < DIM / 8u; ++d) {
-            simdgroup_half8x8 kf;
-            simdgroup_load(kf, kBase + d * 8u, DIM, ulong2(0, 0), true);
-            for (uint a = 0u; a < 4u; ++a) {
-                simdgroup_half8x8 qf;
-                simdgroup_load(qf, shQ + a * 8u * QS + d * 8u, QS);
-                simdgroup_multiply_accumulate(acc[a], qf, kf, acc[a]);
-            }
-        }
-        threadgroup float* s = shS + sg * (HEADS * 8u);
-        for (uint a = 0u; a < 4u; ++a) simdgroup_store(acc[a], s + a * 64u, 8u);
-        simdgroup_barrier(mem_flags::mem_threadgroup);
+    const float scale = rsqrt(float(DIM));
+    const uint pc = lane & 7u, h0 = (lane >> 3u) * 8u;
+    float vTotal = 0.0f;
 
-        const float scale = rsqrt(float(DIM));
-        const uint pc = lane & 7u, h0 = (lane >> 3u) * 8u;
-        float v = 0.0f;
-        for (uint h = 0u; h < 8u; ++h) v = fma(shW[h0 + h], max(0.0f, s[(h0 + h) * 8u + pc] * scale), v);
-        v += simd_shuffle_xor(v, 8u);
-        v += simd_shuffle_xor(v, 16u);
-        if (lane < 8u && cBase + lane < g.numClusters) {
-            const uint b = cBase + lane;
-            const uint u = (clusterSpans[b].y > 0u) ? emeans_nonzero_score_u32(v) : 0u;
-            cScore[uint64_t(unit) * p.clusterStride + b] = u;
-            atomic_fetch_add_explicit(&hist[(u >> 24u) & 0xFFu], 1u, memory_order_relaxed);
+    for (uint hChunk = 0u; hChunk < nHeads; hChunk += HEADS) {
+        const uint chunkHeads = min(HEADS, nHeads - hChunk);
+        for (uint i = tid; i < HEADS * DIM / 4u; i += 256u) {
+            const uint h = i / (DIM / 4u), c = (i % (DIM / 4u)) * 4u;
+            const half4 qv = (h < chunkHeads)
+                ? *(device const half4*)(qRow + (hChunk + h) * DIM + c)
+                : half4(0.0h);
+            *(threadgroup half4*)(shQ + h * QS + c) = qv;
         }
+        if (tid < HEADS) {
+            shW[tid] = (tid < chunkHeads) ? idxWeights[uint64_t(g.qRow) * p.idxHeads + hChunk + tid] : 0.0f;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if (cBase < g.numClusters) {
+            simdgroup_float8x8 acc[4];
+            for (uint a = 0u; a < 4u; ++a) acc[a] = simdgroup_float8x8(0.0f);
+            device const half* kBase = centroids + uint64_t(cBase) * DIM;
+            for (uint d = 0u; d < DIM / 8u; ++d) {
+                simdgroup_half8x8 kf;
+                simdgroup_load(kf, kBase + d * 8u, DIM, ulong2(0, 0), true);
+                for (uint a = 0u; a < 4u; ++a) {
+                    simdgroup_half8x8 qf;
+                    simdgroup_load(qf, shQ + a * 8u * QS + d * 8u, QS);
+                    simdgroup_multiply_accumulate(acc[a], qf, kf, acc[a]);
+                }
+            }
+            threadgroup float* s = shS + sg * (HEADS * 8u);
+            for (uint a = 0u; a < 4u; ++a) simdgroup_store(acc[a], s + a * 64u, 8u);
+            simdgroup_barrier(mem_flags::mem_threadgroup);
+
+            float v = 0.0f;
+            for (uint h = 0u; h < 8u; ++h) v = fma(shW[h0 + h], max(0.0f, s[(h0 + h) * 8u + pc] * scale), v);
+            v += simd_shuffle_xor(v, 8u);
+            v += simd_shuffle_xor(v, 16u);
+            vTotal += v;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    if (cBase < g.numClusters && lane < 8u && cBase + lane < g.numClusters) {
+        const uint b = cBase + lane;
+        const uint u = (clusterSpans[b].y > 0u) ? emeans_nonzero_score_u32(vTotal) : 0u;
+        cScore[uint64_t(unit) * p.clusterStride + b] = u;
+        atomic_fetch_add_explicit(&hist[(u >> 24u) & 0xFFu], 1u, memory_order_relaxed);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     const uint cnt = atomic_load_explicit(&hist[tid], memory_order_relaxed);
     if (cnt != 0u) atomic_fetch_add_explicit(&uHist[unit * 512u + tid], cnt, memory_order_relaxed);
 }
 
-// 3b. Dense coalesced candidate scoring for NoPE MLA (32-head weighted ReLU via 8x8 MMA).
+// 3b. Dense coalesced candidate scoring for MLA (32/64-head weighted ReLU via 8x8 MMA).
 kernel void qwg_emeans_mla_score_cands(device const half*        mlaQFull   [[buffer(0)]],
                                        device const float*       idxWeights [[buffer(1)]],
                                        device const half*        pooled     [[buffer(2)]],
@@ -410,16 +426,11 @@ kernel void qwg_emeans_mla_score_cands(device const half*        mlaQFull   [[bu
     const uint i0 = tg.x * 64u;
     if (i0 >= nCand) return;
     constexpr uint HEADS = 32u, DIM = 128u, QS = DIM + 8u;
-    threadgroup half  shQ[HEADS * QS];
+    alignas(16) threadgroup half shQ[HEADS * QS];
     threadgroup float shW[HEADS];
     threadgroup half  shK[64u * DIM];
 
     device const half* qRow = mlaQFull + uint64_t(g.qRow) * (p.qChannels + p.idxHeads * p.indexDim) + p.qChannels;
-    for (uint i = tid; i < HEADS * DIM / 4u; i += 256u) {
-        const uint h = i / (DIM / 4u), c = (i % (DIM / 4u)) * 4u;
-        *(threadgroup half4*)(shQ + h * QS + c) = *(device const half4*)(qRow + h * DIM + c);
-    }
-    if (tid < HEADS) shW[tid] = idxWeights[uint64_t(g.qRow) * p.idxHeads + tid];
     const uint tileCnt = min(64u, nCand - i0);
     for (uint v = tid; v < 64u * (DIM / 4u); v += 256u) {
         const uint kSlot = v / (DIM / 4u), d4 = (v % (DIM / 4u)) * 4u;
@@ -430,40 +441,63 @@ kernel void qwg_emeans_mla_score_cands(device const half*        mlaQFull   [[bu
         }
         *(threadgroup half4*)(shK + kSlot * DIM + d4) = val;
     }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
 
+    const uint nHeads = min(p.idxHeads, 64u);
     const uint kBase = sg * 8u;
-    if (kBase < tileCnt) {
+    const float scale = rsqrt(float(DIM));
+    const uint pc = lane & 7u, h0 = (lane >> 3u) * 8u;
+    float vTotal = 0.0f;
+
+    for (uint hChunk = 0u; hChunk < nHeads; hChunk += HEADS) {
+        const uint chunkHeads = min(HEADS, nHeads - hChunk);
+        for (uint i = tid; i < HEADS * DIM / 4u; i += 256u) {
+            const uint h = i / (DIM / 4u), c = (i % (DIM / 4u)) * 4u;
+            const half4 qv = (h < chunkHeads)
+                ? *(device const half4*)(qRow + (hChunk + h) * DIM + c)
+                : half4(0.0h);
+            *(threadgroup half4*)(shQ + h * QS + c) = qv;
+        }
+        if (tid < HEADS) {
+            shW[tid] = (tid < chunkHeads) ? idxWeights[uint64_t(g.qRow) * p.idxHeads + hChunk + tid] : 0.0f;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
         simdgroup_float8x8 acc[4];
-        for (uint a = 0u; a < 4u; ++a) acc[a] = simdgroup_float8x8(0.0f);
-        threadgroup const half* kp = shK + kBase * DIM;
-        for (uint d = 0u; d < DIM / 8u; ++d) {
-            simdgroup_half8x8 kf;
-            simdgroup_load(kf, kp + d * 8u, DIM, ulong2(0, 0), true);
-            for (uint a = 0u; a < 4u; ++a) {
-                simdgroup_half8x8 qf;
-                simdgroup_load(qf, shQ + a * 8u * QS + d * 8u, QS);
-                simdgroup_multiply_accumulate(acc[a], qf, kf, acc[a]);
+        if (kBase < tileCnt) {
+            for (uint a = 0u; a < 4u; ++a) acc[a] = simdgroup_float8x8(0.0f);
+            threadgroup const half* kp = shK + kBase * DIM;
+            for (uint d = 0u; d < DIM / 8u; ++d) {
+                simdgroup_half8x8 kf;
+                simdgroup_load(kf, kp + d * 8u, DIM, ulong2(0, 0), true);
+                for (uint a = 0u; a < 4u; ++a) {
+                    simdgroup_half8x8 qf;
+                    simdgroup_load(qf, shQ + a * 8u * QS + d * 8u, QS);
+                    simdgroup_multiply_accumulate(acc[a], qf, kf, acc[a]);
+                }
             }
         }
-        simdgroup_barrier(mem_flags::mem_threadgroup);
-        threadgroup float* s = (threadgroup float*)(shK + kBase * DIM);
-        for (uint a = 0u; a < 4u; ++a) simdgroup_store(acc[a], s + a * 64u, 8u);
-        simdgroup_barrier(mem_flags::mem_threadgroup);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        const float scale = rsqrt(float(DIM));
-        const uint pc = lane & 7u, h0 = (lane >> 3u) * 8u;
-        float v = 0.0f;
-        for (uint h = 0u; h < 8u; ++h) v = fma(shW[h0 + h], max(0.0f, s[(h0 + h) * 8u + pc] * scale), v);
-        v += simd_shuffle_xor(v, 8u);
-        v += simd_shuffle_xor(v, 16u);
-        if (lane < 8u && i0 + kBase + lane < nCand) {
-            candU[uint64_t(unit) * p.candCap + i0 + kBase + lane] = emeans_float_to_u32(v);
+        if (kBase < tileCnt) {
+            threadgroup float* s = ((threadgroup float*)shQ) + sg * (HEADS * 8u);
+            for (uint a = 0u; a < 4u; ++a) simdgroup_store(acc[a], s + a * 64u, 8u);
+            simdgroup_barrier(mem_flags::mem_threadgroup);
+
+            float v = 0.0f;
+            for (uint h = 0u; h < 8u; ++h) v = fma(shW[h0 + h], max(0.0f, s[(h0 + h) * 8u + pc] * scale), v);
+            v += simd_shuffle_xor(v, 8u);
+            v += simd_shuffle_xor(v, 16u);
+            vTotal += v;
         }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    if (kBase < tileCnt && lane < 8u && i0 + kBase + lane < nCand) {
+        candU[uint64_t(unit) * p.candCap + i0 + kBase + lane] = emeans_float_to_u32(vTotal);
     }
 }
 
-// 3c. Exact flat overflow fallback for NoPE MLA.
+// 3c. Exact flat overflow fallback for MLA (32/64 heads).
 kernel void qwg_emeans_mla_flat_fallback(device const half*        mlaQFull   [[buffer(0)]],
                                          device const float*       idxWeights [[buffer(1)]],
                                          device const half*        pooled     [[buffer(2)]],
@@ -478,22 +512,23 @@ kernel void qwg_emeans_mla_flat_fallback(device const half*        mlaQFull   [[
     if (g.dense) return;
     const bool forceFlat = (p.probeClusters == 0u && g.numMiddle > p.candCap);
     if (!forceFlat && candState[unit * 2u + 1u] == 0u) return;
-    constexpr uint HEADS = 32u, DIM = 128u;
-    threadgroup half  shQ[HEADS * DIM];
-    threadgroup float shW[HEADS];
+    constexpr uint MAX_HEADS = 64u, DIM = 128u;
+    threadgroup half  shQ[MAX_HEADS * DIM];
+    threadgroup float shW[MAX_HEADS];
     threadgroup EmeansFallbackTG fb;
+    const uint nHeads = min(p.idxHeads, MAX_HEADS);
     device const half* qRow = mlaQFull + uint64_t(g.qRow) * (p.qChannels + p.idxHeads * p.indexDim) + p.qChannels;
-    for (uint i = tid; i < HEADS * DIM / 4u; i += 256u) {
+    for (uint i = tid; i < nHeads * DIM / 4u; i += 256u) {
         *(threadgroup half4*)(shQ + i * 4u) = *(device const half4*)(qRow + i * 4u);
     }
-    if (tid < HEADS) shW[tid] = idxWeights[uint64_t(g.qRow) * p.idxHeads + tid];
+    if (tid < nHeads) shW[tid] = idxWeights[uint64_t(g.qRow) * p.idxHeads + tid];
     threadgroup_barrier(mem_flags::mem_threadgroup);
     const float scale = rsqrt(float(DIM));
 
     emeans_run_flat_fallback(blockList, blockCount, candState, p, g, fb, unit, tid, [&](uint m) -> uint {
         device const half4* pb = (device const half4*)(pooled + uint64_t(m) * DIM);
         float sumVal = 0.0f;
-        for (uint h = 0u; h < HEADS; h++) {
+        for (uint h = 0u; h < nHeads; h++) {
             threadgroup const half4* qh = (threadgroup const half4*)(shQ + h * DIM);
             float dot = 0.0f;
             for (uint d4 = 0u; d4 < DIM / 4u; d4++) {

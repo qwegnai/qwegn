@@ -52,7 +52,7 @@ extension QWEngineDriver {
             self.wq = wq; self.wkTiled = wkTiled; self.mla = mla
         }
     }
-    enum QWLayerPass: Equatable, Sendable { case fullAttention, gdn, moe, gdnMoe }
+    enum QWLayerPass: Equatable, Sendable { case fullAttention, gdn, hca, moe, gdnMoe, hcaMoe }
     /// On-demand F_NOCACHE SSD streamer for cold routed experts (e >= residentExperts).
     /// Streams cold expert weights into staging slots inside `gateUp`/`down` and zeroes them after use.
     final class ColdExpertStreamer: @unchecked Sendable {
@@ -524,6 +524,9 @@ extension QWEngineDriver {
     struct MoEW {
         let router: QWTensorValue
         let routerBias: QWTensorValue?
+        let routedScaleParam: QWTensorValue?
+        let splitFeatureRouting: Bool
+        let latent: QWMoEOperator.LatentBottleneck?
         let gateUp: QWWeightView
         let down: QWWeightView
         let coldGateUp: QWWeightView?
@@ -540,10 +543,16 @@ extension QWEngineDriver {
              sharedGateUp: QWWeightView? = nil, sharedDown: QWWeightView? = nil,
              sharedGateScalar: QWTensorValue? = nil,
              routerBias: QWTensorValue? = nil,
+             routedScaleParam: QWTensorValue? = nil,
+             splitFeatureRouting: Bool = false,
+             latent: QWMoEOperator.LatentBottleneck? = nil,
              coldGateUp: QWWeightView? = nil, coldDown: QWWeightView? = nil,
              coldStreamer: ColdExpertStreamer? = nil) {
             self.router = router
             self.routerBias = routerBias
+            self.routedScaleParam = routedScaleParam
+            self.splitFeatureRouting = splitFeatureRouting
+            self.latent = latent
             self.gateUp = gateUp
             self.down = down
             self.coldGateUp = coldGateUp
@@ -566,7 +575,7 @@ extension QWEngineDriver {
         let ln1: QWTensorValue, ln2: QWTensorValue
         let gu: QWMLPWeight, down: QWWeightView
         let kind: QWLayerPass
-        let gdn: GdnW?, attn: AttnW?
+        let gdn: GdnW?, attn: AttnW?, hca: QWHCAAttnOperator.LayerWeights?
         /// The sparse MoE weights — nil for a dense layer. A MoE layer's
         /// `gu`/`down` hold the FIRST expert's views, so they stay valid
         /// views; the banks live here.
@@ -574,7 +583,8 @@ extension QWEngineDriver {
         let mhc: MHCLayerWeights?
 
         init(ln1: QWTensorValue, ln2: QWTensorValue, gu: QWMLPWeight, down: QWWeightView,
-             kind: QWLayerPass, gdn: GdnW?, attn: AttnW?, moe: MoEW?, mhc: MHCLayerWeights? = nil) {
+             kind: QWLayerPass, gdn: GdnW?, attn: AttnW?, moe: MoEW?,
+             mhc: MHCLayerWeights? = nil, hca: QWHCAAttnOperator.LayerWeights? = nil) {
             self.ln1 = ln1
             self.ln2 = ln2
             self.gu = gu
@@ -582,6 +592,7 @@ extension QWEngineDriver {
             self.kind = kind
             self.gdn = gdn
             self.attn = attn
+            self.hca = hca
             self.moe = moe
             self.mhc = mhc
         }
@@ -609,8 +620,9 @@ extension QWEngineDriver {
         let tileCount: QWTensorValue?  // [1] i32 — active tile count
         let gu16: QWTensorValue?       // [rows · K · 2I] f16 — NAX gate/up out
         let dnHi: QWTensorValue?       // [rows · K · I] f16 — intermediate SwiGLU
-        let dnAcc: QWTensorValue       // [rows · K · H] f32 — route-ordered down contributions
+        let dnAcc: QWTensorValue       // [rows · K · outDim] f32 — route-ordered down contributions
         let naxX16: QWTensorValue?     // [rows · H] f16 — rotated hidden for NAX
+        let latent: QWMoEOperator.LatentScratch?
     }
     struct Scratch {
         let x: QWTensorValue                             // residual stream [H] f16 (in-place)

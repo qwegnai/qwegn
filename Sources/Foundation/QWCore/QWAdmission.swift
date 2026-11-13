@@ -111,14 +111,18 @@ public struct QWAdmissionPlan: Sendable, Equatable {
 
     // MARK: - Component Formulas
 
-    /// Resident weights of the model as stored in an HQ4_G32_M5 pack: 20 bytes per
-    /// 32-weight group (0.625 B/param). Covers embeddings, attention/GDN projections, and dense or MoE MLPs.
+    /// Resident weights of the model: HQ4_G32_M5 for standard dense/MoE models, and
+    /// config-derived mixed-precision (`HQ8_G32` trunk + `SHVQ` routed experts) for hybrid HCA / Latent-MoE models.
     public static func modelResidentBytes(descriptor d: QWModelDescriptor) throws -> Int {
+        let hcaLayers = d.compressedAttentionLayers.count
+        if hcaLayers > 0 || d.moeLatentSize != nil || d.hybridMLAConfig != nil {
+            return try hybridModelResidentBytes(descriptor: d)
+        }
         let hq4 = { (elems: Int) in elems / QWHQ4Layout.group * QWHQ4Layout.blockBytes }
         var t = 0
         t += hq4(d.vocab * d.hidden) * 2
         let attnLayers = (0..<d.numLayers).filter { d.isFullAttention($0) }
-        let gdnLayers = d.numLayers - attnLayers.count
+        let gdnLayers = d.linearAttentionLayers.count
         t += hq4(attnLayers.count * (d.qProjOut * d.hidden
                                      + 2 * d.kvHeads * d.headDim * d.hidden
                                      + d.qProjOut * d.hidden))
@@ -140,11 +144,97 @@ public struct QWAdmissionPlan: Sendable, Equatable {
         } else {
             throw QWAdmissionError.bad("admission: descriptor has neither dense nor MoE MLP intermediate size")
         }
-        // MTP draft head: each MTP layer is one full-attention block + MLP, plus its fc (2h → h).
         let mtpBlock = d.qProjOut * d.hidden + 2 * d.kvHeads * d.headDim * d.hidden
             + d.qProjOut * d.hidden + mlpPerLayerElems + 2 * d.hidden * d.hidden
         t += hq4(d.mtpLayers * mtpBlock)
         return t
+    }
+
+    private static func hybridModelResidentBytes(descriptor d: QWModelDescriptor) throws -> Int {
+        let hq8 = { (elems: Int) in (elems / 32) * 34 }
+        let shvqBlockBytes = { (tag: String?, fallback: Int) -> Int in
+            switch tag?.lowercased() {
+            case "shvq1_g64", "shvq1g64": return 10
+            case "shvq15_g64", "shvq15g64": return 14
+            case "shvq2_g64", "shvq2g64": return 18
+            case "shvq3_g64", "shvq3g64": return 26
+            case "shvq4_g64", "shvq4g64": return 34
+            default: return fallback
+            }
+        }
+        let guBlock = shvqBlockBytes(d.quantization?.expertGateUp, 14)
+        let dnBlock = shvqBlockBytes(d.quantization?.expertDown, 26)
+
+        var bytes = d.vocab * d.hidden * 2 + hq8(d.vocab * d.hidden)
+        var trunkElems = 0
+        var rawBytes = 0
+
+        if let hca = d.hcaConfig {
+            let hcaCount = d.compressedAttentionLayers.count
+            let perHCA = d.hidden * hca.qLoraRank
+                + hca.qLoraRank * hca.qHeads * hca.headDim
+                + (hca.gatedAttnUseQLora ? hca.qLoraRank : d.hidden) * (hca.oGroups * hca.oLoraRank)
+                + d.hidden * (hca.kvHeads * hca.headDim)
+                + 2 * d.hidden * hca.headDim
+                + hca.oGroups * hca.oLoraRank * ((hca.qHeads / max(1, hca.oGroups)) * hca.vHeadDim)
+                + d.hidden * (hca.oGroups * hca.oLoraRank)
+            trunkElems += hcaCount * perHCA
+            rawBytes += hcaCount * (hca.slidingWindow * hca.headDim * 4 + hca.qHeads * hca.qHeads * 4)
+        }
+
+        let mlaCount = d.fullAttentionLayers.count
+        if let mla = d.hybridMLAConfig, mlaCount > 0 {
+            let idxH = d.indexerHeads ?? 0
+            let idxD = d.indexerHeadDim ?? 0
+            let perMLA = d.hidden * mla.qLoraRank
+                + mla.qLoraRank * mla.qHeads * (mla.qkNopeHeadDim + mla.qkRopeHeadDim)
+                + mla.qLoraRank * mla.qHeads * mla.vHeadDim
+                + d.hidden * (mla.kvLoraRank + mla.qkRopeHeadDim)
+                + mla.kvLoraRank * mla.qHeads * (mla.qkNopeHeadDim + mla.vHeadDim)
+                + d.hidden * (mla.qHeads * mla.vHeadDim)
+                + mla.qLoraRank * idxH * idxD + d.hidden * idxD + d.hidden * idxH
+            trunkElems += mlaCount * perMLA
+            rawBytes += mlaCount * (mla.qHeads * mla.qHeads * 4)
+        }
+
+        let gdnCount = d.linearAttentionLayers.count
+        if gdnCount > 0 {
+            trunkElems += gdnCount * (d.gdnQKVChannels * d.hidden
+                + d.gdnConvKernel * d.gdnQKVChannels
+                + d.hidden * d.gdnVHeads * d.gdnHeadDim)
+        }
+
+        if let numE = d.numExperts, let moeI = d.moeIntermediate {
+            let denseCount = min(d.numLayers, max(0, d.firstKDenseReplace))
+            let moeCount = d.numLayers - denseCount
+            let denseI = d.denseIntermediate ?? moeI
+            let sharedI = d.sharedExpertIntermediate ?? 0
+            let routedDim = d.moeLatentSize ?? d.hidden
+            trunkElems += denseCount * 3 * denseI * d.hidden
+            if routedDim != d.hidden {
+                trunkElems += moeCount * 2 * d.hidden * routedDim
+            }
+            trunkElems += moeCount * 3 * sharedI * d.hidden
+            let gateUpElems = moeCount * numE * 2 * moeI * routedDim
+            let downElems = moeCount * numE * moeI * routedDim
+            bytes += (gateUpElems / 64) * guBlock + (downElems / 64) * dnBlock
+            let routerSplits = d.moeSplitFeatureRouting ? 2 : 1
+            rawBytes += moeCount * routerSplits * numE * d.hidden * 4
+        } else if let mlpI = d.denseIntermediate {
+            trunkElems += d.numLayers * 3 * mlpI * d.hidden
+        } else {
+            throw QWAdmissionError.bad("admission: descriptor has neither dense nor MoE MLP intermediate size")
+        }
+
+        if let mhc = d.mhcConfig {
+            let mixRows = (2 + mhc.streams) * mhc.streams
+            rawBytes += (mhc.end - mhc.start) * 2 * mixRows * (mhc.streams * d.hidden) * 4
+        }
+        if d.mtpLayers > 0 {
+            trunkElems += d.mtpLayers * 2 * d.hidden * d.hidden
+        }
+        bytes += hq8(trunkElems) + rawBytes
+        return bytes
     }
 
     /// Per-sequence state bytes: KV cache, GDN recurrent + conv state, and scratch.
@@ -154,13 +244,34 @@ public struct QWAdmissionPlan: Sendable, Equatable {
                                              scratchPerSeq: Int)
         -> (kv: Int, gdn: Int, scratch: Int) {
         let attnLayers = (0..<d.numLayers).filter { d.isFullAttention($0) }.count
-        let kvElems = d.mlaUseNoPE
-            ? attnLayers * contextTokens * ((d.kvLoraRank ?? 512) + (d.qkRopeHeadDim ?? 64))
-            : 2 * attnLayers * contextTokens * d.kvHeads * d.headDim
-        let kv = kvDtype.kvBytes(elements: kvElems)
-        let gdnLayers = d.numLayers - attnLayers
+        let hcaLayers = d.compressedAttentionLayers.count
+        let kv: Int
+        if hcaLayers > 0 || d.hybridMLAConfig != nil {
+            var totalKV = 0
+            if let hca = d.hcaConfig, hcaLayers > 0 {
+                let ratio = max(1, hca.defaultCompressRatio)
+                let compTokens = (contextTokens + ratio - 1) / ratio
+                let ringTokens = min(contextTokens, hca.slidingWindow)
+                totalKV += hcaLayers * (compTokens + ringTokens) * hca.kvHeads * hca.headDim * 2
+            }
+            if let mla = d.hybridMLAConfig, attnLayers > 0 {
+                let ckvBytes = kvDtype.kvBytes(elements: attnLayers * contextTokens * mla.kvLoraRank)
+                let ropeBytes = attnLayers * contextTokens * mla.qkRopeHeadDim * 2
+                let idxComp = max(1, d.indexerCompressRatio ?? 1)
+                let idxDim = d.indexerHeadDim ?? 0
+                let idxBytes = idxDim > 0 ? attnLayers * ((contextTokens + idxComp - 1) / idxComp) * idxDim * 2 : 0
+                totalKV += ckvBytes + ropeBytes + idxBytes
+            }
+            kv = totalKV
+        } else {
+            let kvElems = d.mlaUseNoPE
+                ? attnLayers * contextTokens * ((d.kvLoraRank ?? 512) + (d.qkRopeHeadDim ?? 64))
+                : 2 * attnLayers * contextTokens * d.kvHeads * d.headDim
+            kv = kvDtype.kvBytes(elements: kvElems)
+        }
+        let gdnLayers = d.linearAttentionLayers.count
         let rec = d.gdnVHeads * d.gdnHeadDim * d.gdnHeadDim
-        let ring = (d.gdnConvKernel - 1) * d.gdnQKVChannels
+        let ring = max(0, d.gdnConvKernel - 1) * d.gdnQKVChannels
         let gdn = gdnLayers * (rec + ring) * 4
         return (kv, gdn, scratchPerSeq)
     }

@@ -241,7 +241,9 @@ static inline void qwg_moe_down_shared_combine_aq_f32_body(device const char*  w
     const uint residentE = (E >> 16u) & 0x3FFFu;
     const uint numToks = (E >> 8u) & 0x7u;
     const uint realE = E & 0xFFu;
+    const bool writeOut16 = (hasOut16 & 1u) != 0u;
     const bool routeOutput = (hasOut16 & 2u) != 0u;
+    const bool skipShared = (hasOut16 & 4u) != 0u;
     const uint nSlices = K >> 5u;
     if (numToks >= 2u) {
         constexpr uint groupBytes = 4u + ((GROUP * BITS) >> 3);
@@ -409,24 +411,24 @@ static inline void qwg_moe_down_shared_combine_aq_f32_body(device const char*  w
         if (lane == 0u) {
             for (uint tm = 0u; tm < numToks; ++tm) {
                 const size_t base = (size_t)tm * N + r0;
-                const float g = gate[tm];
-                const float y0 = accM[tm].x + ((filterMode == 2u) ? out[base] : (g * shared[base]));
+                const float g = skipShared ? 0.0f : gate[tm];
+                const float y0 = accM[tm].x + ((filterMode == 2u) ? out[base] : (skipShared ? 0.0f : (g * shared[base])));
                 out[base] = y0;
-                if (hasOut16 != 0u) out16[base] = half(y0);
+                if (writeOut16) out16[base] = half(y0);
                 if (rowsLeft > 1u) {
-                    const float y1 = accM[tm].y + ((filterMode == 2u) ? out[base + 1u] : (g * shared[base + 1u]));
+                    const float y1 = accM[tm].y + ((filterMode == 2u) ? out[base + 1u] : (skipShared ? 0.0f : (g * shared[base + 1u])));
                     out[base + 1u] = y1;
-                    if (hasOut16 != 0u) out16[base + 1u] = half(y1);
+                    if (writeOut16) out16[base + 1u] = half(y1);
                 }
                 if (rowsLeft > 2u) {
-                    const float y2 = accM[tm].z + ((filterMode == 2u) ? out[base + 2u] : (g * shared[base + 2u]));
+                    const float y2 = accM[tm].z + ((filterMode == 2u) ? out[base + 2u] : (skipShared ? 0.0f : (g * shared[base + 2u])));
                     out[base + 2u] = y2;
-                    if (hasOut16 != 0u) out16[base + 2u] = half(y2);
+                    if (writeOut16) out16[base + 2u] = half(y2);
                 }
                 if (rowsLeft > 3u) {
-                    const float y3 = accM[tm].w + ((filterMode == 2u) ? out[base + 3u] : (g * shared[base + 3u]));
+                    const float y3 = accM[tm].w + ((filterMode == 2u) ? out[base + 3u] : (skipShared ? 0.0f : (g * shared[base + 3u])));
                     out[base + 3u] = y3;
-                    if (hasOut16 != 0u) out16[base + 3u] = half(y3);
+                    if (writeOut16) out16[base + 3u] = half(y3);
                 }
             }
         }
@@ -554,24 +556,24 @@ static inline void qwg_moe_down_shared_combine_aq_f32_body(device const char*  w
     if (routeOutput) return;
     if (lane == 0u) {
         const size_t base = (size_t)t * N + r0;
-        const float g = gate[t];
-        const float y0 = acc.x + ((filterMode == 2u) ? out[base] : (g * shared[base]));
+        const float g = skipShared ? 0.0f : gate[t];
+        const float y0 = acc.x + ((filterMode == 2u) ? out[base] : (skipShared ? 0.0f : (g * shared[base])));
         out[base] = y0;
-        if ((hasOut16 & 1u) != 0u) out16[base] = half(y0);
+        if (writeOut16) out16[base] = half(y0);
         if (rowsLeft > 1u) {
-            const float y1 = acc.y + ((filterMode == 2u) ? out[base + 1u] : (g * shared[base + 1u]));
+            const float y1 = acc.y + ((filterMode == 2u) ? out[base + 1u] : (skipShared ? 0.0f : (g * shared[base + 1u])));
             out[base + 1u] = y1;
-            if ((hasOut16 & 1u) != 0u) out16[base + 1u] = half(y1);
+            if (writeOut16) out16[base + 1u] = half(y1);
         }
         if (rowsLeft > 2u) {
-            const float y2 = acc.z + ((filterMode == 2u) ? out[base + 2u] : (g * shared[base + 2u]));
+            const float y2 = acc.z + ((filterMode == 2u) ? out[base + 2u] : (skipShared ? 0.0f : (g * shared[base + 2u])));
             out[base + 2u] = y2;
-            if ((hasOut16 & 1u) != 0u) out16[base + 2u] = half(y2);
+            if (writeOut16) out16[base + 2u] = half(y2);
         }
         if (rowsLeft > 3u) {
-            const float y3 = acc.w + ((filterMode == 2u) ? out[base + 3u] : (g * shared[base + 3u]));
+            const float y3 = acc.w + ((filterMode == 2u) ? out[base + 3u] : (skipShared ? 0.0f : (g * shared[base + 3u])));
             out[base + 3u] = y3;
-            if ((hasOut16 & 1u) != 0u) out16[base + 3u] = half(y3);
+            if (writeOut16) out16[base + 3u] = half(y3);
         }
     }
 }

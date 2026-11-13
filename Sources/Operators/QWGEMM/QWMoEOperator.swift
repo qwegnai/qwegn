@@ -22,10 +22,43 @@ public enum QWMoEOperator {
         QWTensorValue, QWTensorValue, Int, Int, Int
     ) throws -> Void
 
+    /// Optional latent-space expert bottleneck (`fc1_latent_proj -> experts -> latent_norm -> fc2_latent_proj`).
+    public struct LatentBottleneck {
+        public let fc1: QWWeightView
+        public let normGamma: QWTensorValue?
+        public let normEps: Float
+        public let fc2: QWWeightView
+        public let latentDim: Int
+
+        public init(fc1: QWWeightView, normGamma: QWTensorValue?, normEps: Float = 1e-6,
+                    fc2: QWWeightView, latentDim: Int) {
+            self.fc1 = fc1
+            self.normGamma = normGamma
+            self.normEps = normEps
+            self.fc2 = fc2
+            self.latentDim = latentDim
+        }
+    }
+
+    /// Ping-pong latent activation scratch (`[rows, latentDim]` f32 + optional f16 precast for NAX prefill).
+    public struct LatentScratch {
+        public let bufA32: QWTensorValue
+        public let bufB32: QWTensorValue
+        public let bufB16: QWTensorValue?
+
+        public init(bufA32: QWTensorValue, bufB32: QWTensorValue, bufB16: QWTensorValue? = nil) {
+            self.bufA32 = bufA32
+            self.bufB32 = bufB32
+            self.bufB16 = bufB16
+        }
+    }
+
     /// Unified Sparse-MoE layer weights view.
     public struct Weights {
         public let router: QWTensorValue
         public let routerBias: QWTensorValue?
+        public let routedScaleParam: QWTensorValue?
+        public let splitFeatureRouting: Bool
         public let decodeRouterOverride: DecodeRouterEncoder?
         public let gateUp: QWWeightView
         public let down: QWWeightView
@@ -34,6 +67,7 @@ public enum QWMoEOperator {
         public let sharedGateUp: QWWeightView?
         public let sharedDown: QWWeightView?
         public let sharedGateScalar: QWTensorValue?
+        public let latent: LatentBottleneck?
         public let hidden: Int
         public let experts: Int
         public let topK: Int
@@ -44,17 +78,22 @@ public enum QWMoEOperator {
         public let moeSpecExpertBudget: Int
 
         public init(router: QWTensorValue, routerBias: QWTensorValue? = nil,
+                    routedScaleParam: QWTensorValue? = nil,
+                    splitFeatureRouting: Bool = false,
                     decodeRouterOverride: DecodeRouterEncoder? = nil,
                     gateUp: QWWeightView, down: QWWeightView,
                     coldGateUp: QWWeightView? = nil, coldDown: QWWeightView? = nil,
                     sharedGateUp: QWWeightView? = nil, sharedDown: QWWeightView? = nil,
                     sharedGateScalar: QWTensorValue? = nil,
+                    latent: LatentBottleneck? = nil,
                     hidden: Int, experts: Int, topK: Int,
                     intermediate: Int, sharedIntermediate: Int,
                     normTopK: Bool = true, reuseExpertsAcrossTokens: Bool = true,
                     moeSpecExpertBudget: Int = 0) {
             self.router = router
             self.routerBias = routerBias
+            self.routedScaleParam = routedScaleParam
+            self.splitFeatureRouting = splitFeatureRouting
             self.decodeRouterOverride = decodeRouterOverride
             self.gateUp = gateUp
             self.down = down
@@ -63,6 +102,7 @@ public enum QWMoEOperator {
             self.sharedGateUp = sharedGateUp
             self.sharedDown = sharedDown
             self.sharedGateScalar = sharedGateScalar
+            self.latent = latent
             self.hidden = hidden
             self.experts = experts
             self.topK = topK
@@ -99,6 +139,7 @@ public enum QWMoEOperator {
         public let dnAcc: QWTensorValue
         public let naxX16: QWTensorValue?
         public let naxY16: QWTensorValue?
+        public let latent: LatentScratch?
         public let maxTileWidth: Int
 
         public init(xRot32: QWTensorValue, xPlain32: QWTensorValue,
@@ -110,7 +151,8 @@ public enum QWMoEOperator {
                     sortedTok: QWTensorValue?, invPerm: QWTensorValue?,
                     tileE: QWTensorValue?, tileR: QWTensorValue?, tileCount: QWTensorValue?,
                     gu16: QWTensorValue?, dnHi: QWTensorValue?, dnAcc: QWTensorValue,
-                    naxX16: QWTensorValue?, naxY16: QWTensorValue? = nil, maxTileWidth: Int) {
+                    naxX16: QWTensorValue?, naxY16: QWTensorValue? = nil,
+                    latent: LatentScratch? = nil, maxTileWidth: Int) {
             self.xRot32 = xRot32; self.xPlain32 = xPlain32
             self.logits = logits; self.idx = idx; self.wts = wts
             self.gu32 = gu32; self.act32 = act32
@@ -121,6 +163,7 @@ public enum QWMoEOperator {
             self.tileE = tileE; self.tileR = tileR; self.tileCount = tileCount
             self.gu16 = gu16; self.dnHi = dnHi; self.dnAcc = dnAcc
             self.naxX16 = naxX16; self.naxY16 = naxY16
+            self.latent = latent
             self.maxTileWidth = maxTileWidth
         }
     }
@@ -140,10 +183,21 @@ public enum QWMoEOperator {
         rotateEncoder: ((inout any MTLComputeCommandEncoder) throws -> Void)? = nil,
         profileStage: ((String) -> (any MTLComputeCommandEncoder)?)? = nil
     ) throws {
+        if let latent = w.latent {
+            try encodeResidentLatent(
+                &enc, hal: hal, weights: w, latent: latent, scratch: s, input: input,
+                out32: out32, out16: out16, rows: T,
+                supportsGroupedNaxPrefill: supportsGroupedNaxPrefill,
+                concurrentBarriers: concurrentBarriers,
+                rotateEncoder: rotateEncoder, profileStage: profileStage
+            )
+            return
+        }
         @inline(__always) func barrier() {
             if concurrentBarriers { enc.memoryBarrier(scope: .buffers) }
         }
         let H = w.hidden, E = w.experts, K = w.topK, I = w.intermediate, ISh = w.sharedIntermediate
+        let routerCols = w.splitFeatureRouting ? (2 * E) : E
         let isGroupedNax = T > 8 && supportsGroupedNaxPrefill && hal.caps.isMetal4TensorCapable
             && s.expOff != nil && s.sortedPair != nil && s.sortedTok != nil
             && s.invPerm != nil && s.tileE != nil && s.tileR != nil
@@ -181,7 +235,7 @@ public enum QWMoEOperator {
                 : nil
             let dnAcc16 = s.dnAcc.slice(byteOffset: 0, count: T * K * H, dtype: .f16)
             try QWGemm.encodeFnRouterGemm(enc, hal: hal, weight: w.router, x: xPlain, y: s.logits,
-                                          rows: T, n: E, k: H,
+                                          rows: T, n: routerCols, k: H,
                                           shGateWeight: ISh > 0 ? w.sharedGateScalar : nil,
                                           shGateOut: ISh > 0 ? s.gate : nil)
             if concurrentBarriers, let shGU = w.sharedGateUp, let guSh = s.guSh32, ISh > 0 {
@@ -192,7 +246,9 @@ public enum QWMoEOperator {
             }
             barrier()
             try QWGemm.encodeFnMoeRoute(enc, hal: hal, logits: s.logits, idx: s.idx, wts: s.wts,
-                                        rows: T, experts: E, topK: K, normTopK: w.normTopK, bias: w.routerBias)
+                                        rows: T, experts: E, topK: K, normTopK: w.normTopK,
+                                        bias: w.routerBias, splitFeature: w.splitFeatureRouting,
+                                        routedScaleParam: w.routedScaleParam)
             if !concurrentBarriers, let shGU = w.sharedGateUp, let shDown = w.sharedDown,
                let guSh = s.guSh32, let actSh = s.actSh32, ISh > 0 {
                 let shScratch0 = naxX16.slice(byteOffset: 0, count: T * H, dtype: .f16)
@@ -249,10 +305,10 @@ public enum QWMoEOperator {
 
         // Rank-1 GEMV decode / verify path (T <= 8 or non-NAX shapes)
         if T <= 8, let decodeRouter = w.decodeRouterOverride {
-            try decodeRouter(enc, hal, w.router, xPlain, s.logits, s.gate, T, E, H)
+            try decodeRouter(enc, hal, w.router, xPlain, s.logits, s.gate, T, routerCols, H)
         } else {
             try QWGemm.encodeFnRouterGemm(enc, hal: hal, weight: w.router, x: xPlain, y: s.logits,
-                                          rows: T, n: E, k: H,
+                                          rows: T, n: routerCols, k: H,
                                           shGateWeight: ISh > 0 ? w.sharedGateScalar : nil,
                                           shGateOut: ISh > 0 ? s.gate : nil)
         }
@@ -267,7 +323,9 @@ public enum QWMoEOperator {
                                     actSh: fuseSh ? s.actSh32 : nil,
                                     sharedIntermediate: fuseSh ? ISh : 0,
                                     bias: w.routerBias,
-                                    expertBudget: w.moeSpecExpertBudget)
+                                    expertBudget: w.moeSpecExpertBudget,
+                                    splitFeature: w.splitFeatureRouting,
+                                    routedScaleParam: w.routedScaleParam)
         barrier()
         let fuseRoutedGU = I > 0 && (I % 32 == 0)
         if concurrentBarriers {

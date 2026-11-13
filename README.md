@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/Swift-6.2-orange.svg" alt="Swift 6.2">
   <img src="https://img.shields.io/badge/platform-macOS%2026%20(Apple%20Silicon)-lightgrey.svg" alt="macOS 26, Apple Silicon">
   <a href="https://github.com/qwegnai/qwegn/actions/workflows/ci.yml"><img src="https://github.com/qwegnai/qwegn/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/Release-v0.17.1-green.svg" alt="Release v0.17.1"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/Release-v0.18.0-green.svg" alt="Release v0.18.0"></a>
 </p>
 
 **Qwegn** (`qwg`) is a from-scratch LLM/VLM inference engine for Apple Silicon,
@@ -66,6 +66,7 @@ the toolchain.
 | Qwen3.8-Flash-Next (`HQ8+HQ4` + `VQ2` PLE) | 2,696 tok/s | **145.4 tok/s** (`95.1` novel) | **1,888 / 63.7 tok/s** @1M (`e-means` · `1,350 / 41.1` QSA) | **0.24 s** `.qwcache` (`74.3×` vs 17.84 s) |
 | Qwen3.8-27B (+ `DSpine-b16`) | 914 tok/s | **134.5 tok/s** (`4.19×`) | **831 / 36.5 tok/s** @1M (`e-means` / `Ward`) | 6 ms warm cache (`307×`) |
 | GLM-5.3-Flash (`321B`, `SHVQ4/2/3` 100.6 GiB) | **1,006 tok/s** (`825–869` serve) | **50.7–53.6 tok/s** (`46.0` novel · `81/100` code) | **743 / 45.0 tok/s** @242.5K (`e-means`) · 1M UMA | **10–18 ms** warm cache (`96–193×`) |
+| ERNIE-5.5-Flash-Base (`280B`, `HQ8+SHVQ15/3` 81.6 GiB) | **856–899 tok/s** (`604` @149.5K) | **40.2–42.6 tok/s** (ECHO `d=1`, `+28.1%`) | **303 / 16.3 tok/s** @300K (`e-means`) · 1M `87.6 GiB` UMA | **0.29 s** `.qwcache` (`78.6×` vs 22.79 s) |
 
 <p align="center">
   <img src="assets/qwegn_lsa_emeans_overview.svg" alt="Qwegn 64K to 1M Long-Context Scaling Overview" width="100%">
@@ -81,6 +82,8 @@ Full tables, paired A/B repository memory benchmarks, and thermal protocol: [doc
 </p>
 
 **GLM-5.3-Flash** · 45L MoE (`321B` total / `18B` active, 288 experts, 8 + 1 active), 11 NoPE MLA (512D latent KV + Key-Pool(4)) + 34 KDA, 4-stream Sinkhorn mHC, NextN MTP, vision (`SHVQ4_G32 + SHVQ2_G64 + SHVQ3_G64`, `100.6 GiB` 100% resident on 128 GB Mac — `1,006 tok/s` prefill, `46.0–53.6 tok/s` decode, `81/100` HumanEval+MBPP)
+
+**ERNIE-5.5-Flash-Base** · 43L MoE (`280B` total / `14B` active, 512 experts, dual-split sigmoid `top-10` + 1 shared, `moe_latent_size=2048`, `SituAndMul`), 37 Heavily Compressed Attention (`HCA` `128:1` + `128`-tok SWA + VHA) + 6 decoupled-RoPE `MLA-DSA` (`64H` Walsh-Hadamard `H_128`), 4-stream Sinkhorn-20 mHC (`hc_head`), `MultiMax` `lm_head`, shared-Layer-43 `ECHO` (`HQ8_G32 + SHVQ15_G64 + SHVQ3_G64`, `81.61 GiB` 100% UMA-resident through `1M` — `856–899 tok/s` prefill, `40.2–42.6 tok/s` ECHO decode, `78.6×` `.qwcache`, `3/3` needles @ `18.8K`/`149.5K`/`300K`)
 
 <p align="center">
   <img src="assets/qwegn_model_qwen36_35b_a3b.svg" alt="Qwen3.6-35B-A3B" width="100%">

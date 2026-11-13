@@ -401,17 +401,21 @@ public final class QWCacheDiskManager: @unchecked Sendable {
         var offset = header.nextOffset
 
         var recData = Data(count: meta.recBytes)
-        try recData.withUnsafeMutableBytes {
-            if let base = $0.baseAddress {
-                try Self.readExactly(io, offset: offset, into: base, length: meta.recBytes)
+        if meta.recBytes > 0 {
+            try recData.withUnsafeMutableBytes { (raw: UnsafeMutableRawBufferPointer) in
+                if let base = raw.baseAddress {
+                    try Self.readExactly(io, offset: offset, into: base, length: meta.recBytes)
+                }
             }
         }
         offset += Int64(meta.recBytes)
 
         var ringData = Data(count: meta.ringBytes)
-        try ringData.withUnsafeMutableBytes {
-            if let base = $0.baseAddress {
-                try Self.readExactly(io, offset: offset, into: base, length: meta.ringBytes)
+        if meta.ringBytes > 0 {
+            try ringData.withUnsafeMutableBytes { (raw: UnsafeMutableRawBufferPointer) in
+                if let base = raw.baseAddress {
+                    try Self.readExactly(io, offset: offset, into: base, length: meta.ringBytes)
+                }
             }
         }
         offset += Int64(meta.ringBytes)
@@ -617,15 +621,23 @@ public final class QWCacheDiskManager: @unchecked Sendable {
 
         // Read recData
         var recData = Data(count: meta.recBytes)
-        try recData.withUnsafeMutableBytes {
-            _ = try io.readSync(offset: offset, into: $0.baseAddress!, length: meta.recBytes)
+        if meta.recBytes > 0 {
+            try recData.withUnsafeMutableBytes { (raw: UnsafeMutableRawBufferPointer) in
+                if let base = raw.baseAddress {
+                    _ = try io.readSync(offset: offset, into: base, length: meta.recBytes)
+                }
+            }
         }
         offset += Int64(meta.recBytes)
 
         // Read ringData
         var ringData = Data(count: meta.ringBytes)
-        try ringData.withUnsafeMutableBytes {
-            _ = try io.readSync(offset: offset, into: $0.baseAddress!, length: meta.ringBytes)
+        if meta.ringBytes > 0 {
+            try ringData.withUnsafeMutableBytes { (raw: UnsafeMutableRawBufferPointer) in
+                if let base = raw.baseAddress {
+                    _ = try io.readSync(offset: offset, into: base, length: meta.ringBytes)
+                }
+            }
         }
         offset += Int64(meta.ringBytes)
 
