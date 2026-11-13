@@ -125,6 +125,25 @@ kernel void qwg_gemm_aq8_g32_f32_bm32(device const char* w [[buffer(0)]],
     qwg_gemm_aq_f32_bm_body<8, 32, 32, 128>(w, x, y, M, N, K, epi, scale, tg, tid, As, Bs);
 }
 
+#define QW_AQ_F32_BM32_KERNEL(BITS, GROUP) \
+kernel void qwg_gemm_aq##BITS##_g##GROUP##_f32_bm32(device const char* w [[buffer(0)]], \
+                                                    device const float* x [[buffer(1)]], \
+                                                    device float* y [[buffer(2)]], \
+                                                    constant uint& M [[buffer(3)]], \
+                                                    constant uint& N [[buffer(4)]], \
+                                                    constant uint& K [[buffer(5)]], \
+                                                    constant uint& epi [[buffer(6)]], \
+                                                    constant float& scale [[buffer(7)]], \
+                                                    uint2 tg [[threadgroup_position_in_grid]], \
+                                                    uint tid [[thread_index_in_threadgroup]]) { \
+    threadgroup float As[32 * QWG_AQ_F32_BM_LD]; \
+    threadgroup float Bs[QWG_AQ_F32_BM_ROWS * QWG_AQ_F32_BM_LD]; \
+    qwg_gemm_aq_f32_bm_body<BITS, GROUP, 32, 128>(w, x, y, M, N, K, epi, scale, tg, tid, As, Bs); \
+}
+
+QW_AQ_F32_BM32_KERNEL(4, 32)
+QW_AQ_F32_BM32_KERNEL(4, 64)
+
 template <int BITS, int GROUP>
 static inline void qwg_gemv_aq_f32_v4_body(device const char*  w,
                                            device const float* x,
@@ -142,28 +161,40 @@ static inline void qwg_gemv_aq_f32_v4_body(device const char*  w,
     if (ep == 3u) {
         const uint rowBase = tg.x * 32u;
         if (rowBase >= N) return;
+        const bool multi = M > 1u && M <= 4u;
+        const uint mN = multi ? M : 1u;
         for (uint pass = 0u; pass < 2u; ++pass) {
             const uint row0 = rowBase + pass * 16u + sg * 4u;
-            float4 acc = float4(0.0f);
+            float4 acc[4] = {float4(0.0f), float4(0.0f), float4(0.0f), float4(0.0f)};
             if (row0 < N) {
-                acc = qwg_gemv_aq_rows4_f32<BITS, GROUP>(w, x + (size_t)tg.y * K, row0, N, K, lane);
+                if (multi) {
+                    if (M == 2u) {
+                        qwg_gemv_aq_rows4_m2_f32<BITS, GROUP>(w, x, x + K, row0, N, K, lane, acc[0], acc[1]);
+                    } else {
+                        qwg_gemv_aq_rows4_m4_f32<BITS, GROUP>(w, x, M, row0, N, K, lane, acc);
+                    }
+                } else {
+                    acc[0] = qwg_gemv_aq_rows4_f32<BITS, GROUP>(w, x + (size_t)tg.y * K, row0, N, K, lane);
+                }
             }
             if (lane == 0u) {
-                float o[4] = {acc.x, acc.y, acc.z, acc.w};
-                for (uint r = 0u; r < 4u; ++r) {
-                    const uint col = pass * 16u + sg * 4u + r;
-                    float v = (rowBase + col < N) ? o[r] : 0.0f;
-                    const float z = v / scale;
-                    v = z / (1.0f + exp(-z));
-                    tgC[col] = v;
+                for (uint m = 0u; m < mN; ++m) {
+                    const float o[4] = {acc[m].x, acc[m].y, acc[m].z, acc[m].w};
+                    for (uint r = 0u; r < 4u; ++r) {
+                        const uint col = pass * 16u + sg * 4u + r;
+                        float v = (rowBase + col < N) ? o[r] : 0.0f;
+                        const float z = v / scale;
+                        tgC[m * 32u + col] = z / (1.0f + exp(-z));
+                    }
                 }
             }
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
-        if (sg == 0u) {
-            float v = qwg_fwht32_lane_f32(tgC[lane], lane);
+        if (sg < mN) {
+            const float v = qwg_fwht32_lane_f32(tgC[sg * 32u + lane], lane);
             const uint row = rowBase + lane;
-            if (row < N) y[(size_t)tg.y * N + row] = v;
+            const size_t outRow = multi ? size_t(sg) : size_t(tg.y);
+            if (row < N) y[outRow * N + row] = v;
         }
         return;
     }
@@ -415,7 +446,7 @@ kernel void qwg_gemv_aq##BITS##_g##GROUP##_f32_v4(device const char*  w     [[bu
                                                   uint3 tg   [[threadgroup_position_in_grid]], \
                                                   uint  sg   [[simdgroup_index_in_threadgroup]], \
                                                   uint  lane [[thread_index_in_simdgroup]]) { \
-    threadgroup float tgC[32]; \
+    threadgroup float tgC[4 * 32]; \
     qwg_gemv_aq_f32_v4_body<BITS, GROUP>(w, x, y, N, K, epi, scale, tg, sg, lane, tgC); \
 } \
 kernel void qwg_gemv_aq##BITS##_g##GROUP##_f32_v4_am(device const char*  w      [[buffer(0)]], \

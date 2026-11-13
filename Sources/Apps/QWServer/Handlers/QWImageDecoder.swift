@@ -270,22 +270,28 @@ public enum QWImageDecoder {
                 images.append(cached)
                 continue
             }
-            if !visionBackend.isLoaded {
-                try visionBackend.prepareForPrompt(hasImages: true)
-                loadedNow = !wasLoaded && visionBackend.isLoaded
+            do {
+                if !visionBackend.isLoaded {
+                    try visionBackend.prepareForPrompt(hasImages: true)
+                    loadedNow = !wasLoaded && visionBackend.isLoaded
+                }
+                let (decoded, grid) = try decodeSmartResized(urlOrDataUri: urlStr, maxPixels: maxPixels)
+                let t0 = clock.now
+                let visualTokens = try await qwEncodeVision(
+                    imageRGB: decoded.rgb, height: decoded.height, width: decoded.width,
+                    grid: grid, backend: visionBackend
+                )
+                let d = t0.duration(to: clock.now)
+                let ms = Double(d.components.attoseconds) / 1e15 + Double(d.components.seconds) * 1e3
+                storeEncodedImage(urlOrDataUri: urlStr, hiddenDim: hiddenDim, maxPixels: maxPixels,
+                                  grid: grid, features: visualTokens)
+                onImageEncoded?(idx + 1, imageUrls.count, grid.h, grid.w, ms)
+                images.append((grid: grid, features: visualTokens))
+            } catch let mmError as QWMultimodalError {
+                throw mmError
+            } catch {
+                throw QWMultimodalError.badArgument("\(error)")
             }
-            let (decoded, grid) = try decodeSmartResized(urlOrDataUri: urlStr, maxPixels: maxPixels)
-            let t0 = clock.now
-            let visualTokens = try await qwEncodeVision(
-                imageRGB: decoded.rgb, height: decoded.height, width: decoded.width,
-                grid: grid, backend: visionBackend
-            )
-            let d = t0.duration(to: clock.now)
-            let ms = Double(d.components.attoseconds) / 1e15 + Double(d.components.seconds) * 1e3
-            storeEncodedImage(urlOrDataUri: urlStr, hiddenDim: hiddenDim, maxPixels: maxPixels,
-                              grid: grid, features: visualTokens)
-            onImageEncoded?(idx + 1, imageUrls.count, grid.h, grid.w, ms)
-            images.append((grid: grid, features: visualTokens))
         }
         let mmPrompt = try QWMultimodalPrompt(
             promptTokens: promptTokens, images: images, hiddenDim: hiddenDim

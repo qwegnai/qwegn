@@ -32,7 +32,7 @@ final class FNGPUSessionState: QWModuleSessionState, @unchecked Sendable {
                                 useSpec: useSpec)
         data.draftMode = draftMode
         data.maxDrafts = max(1, min(FNGPUSessionData.defaultMTPDrafts, speculative.effectiveDrafts))
-        data.relaxedMargin = speculative.effectiveRelaxedMargin
+        data.relaxedMargin = sampling.hasExplicitSeed ? 0 : speculative.effectiveRelaxedMargin
         data.relaxedMinProb = speculative.effectiveRelaxedMinProb
         data.quadraticSeeding = speculative.mtpQuadraticSeeding
         maxNew = 0
@@ -43,7 +43,8 @@ final class FNGPUSessionState: QWModuleSessionState, @unchecked Sendable {
     /// the engine, independent of `temperature`, `topK`, or `topP`.
     static func useSpec(sampling: QWSamplerConfig, speculative: QWSpeculativeParameters,
                         engine: FNGPUEngine) -> Bool {
-        speculative.effectiveDrafts > 0 && engine.supportsSpeculativeDecode
+        guard !(sampling.hasExplicitSeed && !sampling.isGreedy) else { return false }
+        return speculative.effectiveDrafts > 0 && engine.supportsSpeculativeDecode
     }
 
     /// Which drafter the session runs: the context-copy drafter in hybrid

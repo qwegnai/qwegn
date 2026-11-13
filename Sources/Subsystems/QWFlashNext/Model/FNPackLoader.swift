@@ -4,13 +4,17 @@ import QWQuant
 
 // Pack-backed expert source: each expert is dequantized on demand from the HQ4 expert stacks. The pack is
 // mmap-backed and read-only, so concurrent reads are safe; a dequant failure here is a loader bug, not input.
-public final class FNPackExperts: FNExpertSource, @unchecked Sendable {
+public final class FNPackExperts: FNLatentExpertSource, @unchecked Sendable {
     let pack: QWQuant.Pack
     let gateUpName: String
     let downName: String
+    let latentDName: String?
+    let latentUName: String?
 
-    public init(pack: QWQuant.Pack, gateUpName: String, downName: String) {
+    public init(pack: QWQuant.Pack, gateUpName: String, downName: String,
+                latentDName: String? = nil, latentUName: String? = nil) {
         self.pack = pack; self.gateUpName = gateUpName; self.downName = downName
+        self.latentDName = latentDName; self.latentUName = latentUName
     }
 
     public func gateUp(_ e: Int) -> [Float] {
@@ -20,6 +24,14 @@ public final class FNPackExperts: FNExpertSource, @unchecked Sendable {
 
     public func down(_ e: Int) -> [Float] {
         try! pack.dequantExpertQ4g(downName, expert: e)
+    }
+
+    public func latentD(_ g: Int) -> [Float] {
+        try! pack.dequantExpertQ4g(latentDName!, expert: g)
+    }
+
+    public func latentU(_ g: Int) -> [Float] {
+        try! pack.dequantExpertQ4g(latentUName!, expert: g)
     }
 }
 
@@ -107,16 +119,31 @@ public struct FNPackLoader {
     public func moe(layer: Int, normTopK: Bool, prefix: String? = nil) throws -> FNSparseMoE {
         let m = (prefix ?? layerPrefix(layer)) + "mlp."
         let d = descriptor
+        var latentGroups = 0, latentDim = 0, latentLabels: [Int] = []
+        var latentDName: String? = nil, latentUName: String? = nil
+        if let pack,
+           let dEntry = try? pack.entry(m + "experts.latent_d"),
+           dEntry.shape.count == 3 {
+            latentGroups = dEntry.shape[0]
+            latentDim = dEntry.shape[1]
+            latentLabels = try tensor(m + "latent_labels").map { Int($0.rounded()) }
+            latentDName = m + "experts.latent_d"
+            latentUName = m + "experts.latent_u"
+        }
+        let src = FNPackExperts(pack: pack!, gateUpName: m + "experts.gate_up_proj",
+                                downName: m + "experts.down_proj",
+                                latentDName: latentDName, latentUName: latentUName)
         return FNSparseMoE(
             hidden: d.hidden, experts: d.numExperts!, topK: d.expertsPerTok!,
             intermediate: d.moeIntermediate!, sharedIntermediate: d.sharedExpertIntermediate!, normTopK: normTopK,
             gate: try tensor(m + "gate.weight"),
-            source: FNPackExperts(pack: pack!, gateUpName: m + "experts.gate_up_proj",
-                                  downName: m + "experts.down_proj"),
+            source: src,
             sharedGate: try tensor(m + "shared_expert.gate_proj.weight"),
             sharedUp: try tensor(m + "shared_expert.up_proj.weight"),
             sharedDown: try tensor(m + "shared_expert.down_proj.weight"),
-            sharedGateScalar: try tensor(m + "shared_expert_gate.weight"))
+            sharedGateScalar: try tensor(m + "shared_expert_gate.weight"),
+            latentGroups: latentGroups, latentDim: latentDim, latentLabels: latentLabels,
+            latentSource: latentDName != nil ? src : nil)
     }
 
     /// PLE layer attached to decoder layer `layer` (dims from the descriptor; dilation = ngram size, as in HF).

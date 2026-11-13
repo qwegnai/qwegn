@@ -142,7 +142,9 @@ extension QWEngineDriver: QWSessionInferenceEngine {
         let reqBackend = request.speculative.mtpBackend?.lowercased()
         // The request's floor holds for this generation only (we are under the generate lock).
         let configuredMinProb = mtpRelaxedMinProb
-        if reqBackend == "variational" || reqBackend == "relaxed" || reqBackend == "plm" {
+        if request.sampling.hasExplicitSeed {
+            activeRelaxedMarginOverride = 0.0
+        } else if reqBackend == "variational" || reqBackend == "relaxed" || reqBackend == "plm" {
             activeRelaxedMarginOverride = Float(max(0.0, request.speculative.mtpRelaxedMargin))
             mtpRelaxedMinProb = request.speculative.mtpRelaxedMinProb
         } else if reqBackend == "standard" || reqBackend == "dflash2" || reqBackend == "dspine" {
@@ -172,6 +174,7 @@ extension QWEngineDriver: QWSessionInferenceEngine {
         // served without one, never refused.
         let useSpeculative = request.speculative.enabled && mtpDrafts > 0
             && !request.collectLogprobs && (request.constraint?.allowsSpeculation ?? true)
+            && !(request.sampling.hasExplicitSeed && !request.sampling.isGreedy)
         var collectedLogprobs: [QWTokenLogprob] = []
         let lpSampler = request.collectLogprobs ? QWSampler(config: request.sampling) : nil
         let topKCount = max(0, min(20, request.topLogprobsCount))

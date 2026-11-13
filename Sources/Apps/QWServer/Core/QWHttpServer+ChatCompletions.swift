@@ -43,6 +43,7 @@ extension QWHttpServer {
 
         do {
             _ = try QWStructuredOutput.grammar(for: req)
+            try self.actor.validateRequestCapabilities(req)
         } catch {
             let err = ServerErrorPayload(message: "\(error)", type: "invalid_request_error", code: 400)
             self.sendJsonResponse(connection, status: 400, object: err)

@@ -38,6 +38,11 @@ public struct QWSamplingParameters: Codable, Sendable, Equatable {
         temperature <= 0.0 || topK == 1
     }
 
+    /// True when the caller supplied an explicit non-negative RNG seed.
+    public var hasExplicitSeed: Bool {
+        seed >= 0
+    }
+
     /// True when greedy decoding is requested alongside a non-identity repetition penalty.
     public var isGreedyWithRepetitionPenalty: Bool {
         isGreedy && repetitionPenalty != 1.0

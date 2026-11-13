@@ -279,7 +279,8 @@ public final class FNGPUBatchScheduler: @unchecked Sendable {
         }
         self.batchArena = bArena
         self.batchStack = try FNGPUDecodeStack(arena: bArena, ctx: engine.ctx, slots: bSlots,
-                                               hidden: engine.hidden, hc: engine.hc, rows: Self.maxSlots)
+                                               hidden: engine.hidden, hc: engine.hc, rows: Self.maxSlots,
+                                               gpuPLETable: engine.gpuPLETable)
     }
 
     private func syncSlotFromEngine(_ slotIdx: Int) {

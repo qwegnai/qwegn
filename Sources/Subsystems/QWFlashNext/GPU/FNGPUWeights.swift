@@ -83,13 +83,30 @@ public final class FNGPUPLE: @unchecked Sendable {
     }
 }
 
-/// Sparse MoE on the device: BF16 router + shared gate, HQ4 routed banks (stacked per expert), HQ4 shared expert.
+/// Sparse MoE on the device: BF16 router + shared gate, HQ4/AQ routed banks, HQ4 shared expert, optional group-latent banks.
 public struct FNGPUMoE: Sendable {
     public let gateAndSharedBF16: QWTensorValue
     public let gateUp: QWWeightView, down: QWWeightView
     public let sharedGateUp: QWWeightView, sharedDown: QWWeightView
     public let sharedGateScalar: QWTensorValue
+    public let latentD: QWWeightView?, latentU: QWWeightView?, latentLabels: QWTensorValue?
     public let experts: Int, topK: Int, intermediate: Int, sharedIntermediate: Int
+    public let numLatentGroups: Int, latentDim: Int
+
+    public init(gateAndSharedBF16: QWTensorValue, gateUp: QWWeightView, down: QWWeightView,
+                sharedGateUp: QWWeightView, sharedDown: QWWeightView, sharedGateScalar: QWTensorValue,
+                latentD: QWWeightView? = nil, latentU: QWWeightView? = nil, latentLabels: QWTensorValue? = nil,
+                experts: Int, topK: Int, intermediate: Int, sharedIntermediate: Int,
+                numLatentGroups: Int = 0, latentDim: Int = 0) {
+        self.gateAndSharedBF16 = gateAndSharedBF16
+        self.gateUp = gateUp; self.down = down
+        self.sharedGateUp = sharedGateUp; self.sharedDown = sharedDown
+        self.sharedGateScalar = sharedGateScalar
+        self.latentD = latentD; self.latentU = latentU; self.latentLabels = latentLabels
+        self.experts = experts; self.topK = topK
+        self.intermediate = intermediate; self.sharedIntermediate = sharedIntermediate
+        self.numLatentGroups = numLatentGroups; self.latentDim = latentDim
+    }
 }
 
 public struct FNGPULayerWeights: Sendable {
@@ -315,11 +332,32 @@ public enum FNGPULoader {
         let sharedGU = try concatHQ4Bank(arena, loader, [mp + "shared_expert.gate_proj.weight", mp + "shared_expert.up_proj.weight"], k: d.hidden, staging: staging).view
         let sharedDown = try hq4Bank(arena, loader, mp + "shared_expert.down_proj.weight", n: d.hidden, k: sharedInter, staging: staging)
         let gateArr = try loader.tensor(mp + "gate.weight"), sharedGateScalarArr = try loader.tensor(mp + "shared_expert_gate.weight")
+        var latentD: QWWeightView? = nil
+        var latentU: QWWeightView? = nil
+        var latentLabels: QWTensorValue? = nil
+        var numLatentGroups = 0, latentDim = 0
+        if let pack = loader.pack,
+           let dEntry = try? pack.entry(mp + "experts.latent_d"),
+           let uEntry = try? pack.entry(mp + "experts.latent_u"),
+           dEntry.shape.count == 3, uEntry.shape.count == 3 {
+            let dSpan = try QWCheckpointTensorLoader.stackedSpan(pack, mp + "experts.latent_d")
+            let uSpan = try QWCheckpointTensorLoader.stackedSpan(pack, mp + "experts.latent_u")
+            latentD = try bankFrom(arena, pack, dSpan.span, n: dSpan.n, k: dSpan.k)
+            latentU = try bankFrom(arena, pack, uSpan.span, n: uSpan.n, k: uSpan.k)
+            numLatentGroups = dEntry.shape[0]
+            latentDim = dEntry.shape[1]
+            let labels = try loader.tensor(mp + "latent_labels").map { Int32($0.rounded()) }
+            let lt = try arena.weightsRegion().allocate(QWTensorShape([labels.count], .i32))
+            arena.write(lt, from: labels)
+            latentLabels = lt
+        }
         let moe = FNGPUMoE(
             gateAndSharedBF16: try bf16FromF32(arena, gateArr + sharedGateScalarArr),
             gateUp: guView, down: dnView, sharedGateUp: sharedGU, sharedDown: sharedDown,
             sharedGateScalar: try f32(arena, sharedGateScalarArr),
-            experts: experts, topK: d.expertsPerTok!, intermediate: inter, sharedIntermediate: sharedInter)
+            latentD: latentD, latentU: latentU, latentLabels: latentLabels,
+            experts: experts, topK: d.expertsPerTok!, intermediate: inter, sharedIntermediate: sharedInter,
+            numLatentGroups: numLatentGroups, latentDim: latentDim)
         var ple: FNGPUPLE? = nil
         if prefix == nil && d.pleModuleIndices.contains(index) {
             let pp = p + "ple.", eDim = d.pleEmbedDim!, wDim = d.hcCount! * d.hidden, hDim = d.hidden

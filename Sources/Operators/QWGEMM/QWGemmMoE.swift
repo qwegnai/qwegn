@@ -68,7 +68,8 @@ extension QWGemm {
                                               routes: Int, invPerm: QWTensorValue? = nil,
                                               tileE: QWTensorValue? = nil, tileR: QWTensorValue? = nil,
                                               tileCount: QWTensorValue? = nil,
-                                              tilePlan: MoETilePlan? = nil) throws {
+                                              tilePlan: MoETilePlan? = nil,
+                                              directSlotTok: Bool = false) throws {
         precondition(experts <= 512, "the expert-sorted pair order holds 512 experts")
         let hasTiles = tileE != nil && tileR != nil && tileCount != nil
         var writeWord = 0
@@ -82,7 +83,8 @@ extension QWGemm {
         enc.bindTensors(ids, expertOff, sortedPairIdx, sortedTok, startIndex: 0)
         enc.setUInt32s(experts, totalPairs, routes, startIndex: 4)
         (invPerm ?? sortedPairIdx).bind(enc, index: 7)
-        enc.setUInt32s(invPerm != nil ? 1 : 0, startIndex: 8)
+        let writeWordInv = (invPerm != nil ? 1 : 0) | (directSlotTok ? 2 : 0)
+        enc.setUInt32s(writeWordInv, startIndex: 8)
         (tileE ?? sortedPairIdx).bind(enc, index: 9)
         (tileR ?? sortedPairIdx).bind(enc, index: 10)
         (tileCount ?? sortedPairIdx).bind(enc, index: 11)
@@ -158,7 +160,9 @@ extension QWGemm {
                                                      tileFilter: MoETileFilter = .all,
                                                      routeOutput: Bool = false,
                                                      reuseExpertsAcrossTokens: Bool = true,
-                                                     skipShared: Bool = false) throws {
+                                                     skipShared: Bool = false,
+                                                     numGroups: Int = 0,
+                                                     tokenIndexedX: Bool = false) throws {
         if bank.isIncumbentContainer {
             enc.setComputePipelineState(try hal.pipeline("qwg_moe_down_shared_combine_q4g_f32"))
         } else {
@@ -175,16 +179,17 @@ extension QWGemm {
         case .residentOnly: filterMode = 1
         case .coldOnly:     filterMode = 2
         }
-        let dedupToks = (reuseExpertsAcrossTokens && (2...4).contains(tokens)) ? ((tokens & 0x7) << 8) : 0
-        let ePacked = (routes & 0xFF) | dedupToks | ((residentE & 0x3FFF) << 16) | (filterMode << 30)
+        let dedupToks = (numGroups == 0 && reuseExpertsAcrossTokens && (2...4).contains(tokens)) ? ((tokens & 0x7) << 8) : 0
+        let ePacked = (routes & 0xFF) | dedupToks | ((numGroups & 0x1F) << 11) | ((residentE & 0x3FFF) << 16) | (filterMode << 30)
         enc.bindTensors(bank.blocks, x, weights, shared, gate, out, startIndex: 0)
         enc.setUInt32s(rowsPerRoute, bank.k, ePacked, startIndex: 6)
         ids.bind(enc, index: 9)
         (out16 ?? out).bind(enc, index: 10)
-        let combineFlags = (out16 != nil ? 1 : 0) | (routeOutput ? 2 : 0) | (skipShared ? 4 : 0)
+        let combineFlags = (out16 != nil ? 1 : 0) | (routeOutput ? 2 : 0) | (skipShared ? 4 : 0) | (tokenIndexedX ? 8 : 0)
         enc.setUInt32s(combineFlags, startIndex: 11)
         (coldBank ?? bank).blocks.bind(enc, index: 12)
-        enc.dispatchThreadgroups(MTLSize(width: (rowsPerRoute + 15) / 16, height: dedupToks != 0 ? 1 : tokens, depth: 1),
+        let tgRows = numGroups > 0 ? (tokens * numGroups) : (dedupToks != 0 ? 1 : tokens)
+        enc.dispatchThreadgroups(MTLSize(width: (rowsPerRoute + 15) / 16, height: tgRows, depth: 1),
                                  threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
     }
 
@@ -293,7 +298,11 @@ extension QWGemm {
                                                      hidden: Int, routes: Int, tokens: Int,
                                                      out16: QWTensorValue? = nil,
                                                      skipShared: Bool = false,
-                                                     unweightedSingle: Bool = false) throws {
+                                                     unweightedSingle: Bool = false,
+                                                     ids: QWTensorValue? = nil,
+                                                     numGroups: Int = 0,
+                                                     scatterPerRoute: Bool = false,
+                                                     skipOut32: Bool = false) throws {
         enc.setComputePipelineState(try hal.pipeline("qwg_moe_down_reduce_combine_f32"))
         dnAcc.bind(enc, index: 0)
         (invPerm ?? weights).bind(enc, index: 1)
@@ -305,9 +314,15 @@ extension QWGemm {
             | (invPerm == nil ? 4 : 0)
             | (skipShared ? 8 : 0)
             | (unweightedSingle ? 16 : 0)
+            | (ids != nil ? 32 : 0)
+            | (scatterPerRoute ? 64 : 0)
+            | (skipOut32 ? 128 : 0)
+            | ((numGroups & 0xFF) << 8)
         enc.setUInt32s(flags, startIndex: 10)
+        (ids ?? weights).bind(enc, index: 11)
         let cols4 = (hidden + 3) / 4
-        enc.dispatchThreadgroups(MTLSize(width: (cols4 + 255) / 256, height: tokens, depth: 1),
+        let tgRows = scatterPerRoute ? (tokens * routes) : (numGroups > 0 ? (tokens * numGroups) : tokens)
+        enc.dispatchThreadgroups(MTLSize(width: (cols4 + 255) / 256, height: tgRows, depth: 1),
                                  threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
     }
 

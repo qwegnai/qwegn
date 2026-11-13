@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/Swift-6.2-orange.svg" alt="Swift 6.2">
   <img src="https://img.shields.io/badge/platform-macOS%2026%20(Apple%20Silicon)-lightgrey.svg" alt="macOS 26, Apple Silicon">
   <a href="https://github.com/qwegnai/qwegn/actions/workflows/ci.yml"><img src="https://github.com/qwegnai/qwegn/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/Release-v0.18.0-green.svg" alt="Release v0.18.0"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/Release-v0.19.1-green.svg" alt="Release v0.19.1"></a>
 </p>
 
 **Qwegn** (`qwg`) is a from-scratch LLM/VLM inference engine for Apple Silicon,
@@ -64,6 +64,7 @@ the toolchain.
 | :--- | :---: | :---: | :---: | :---: |
 | Qwen3.6-35B-A3B (`HQ4_G32`) | 6,389 tok/s | 233.4 tok/s | **2,317 / 105.6 tok/s** @1M (`136.8` @64K `e-means`) | **0.12 s** `.qwcache` (`54.4×` vs 6.53 s) |
 | Qwen3.8-Flash-Next (`HQ8+HQ4` + `VQ2` PLE) | 2,696 tok/s | **145.4 tok/s** (`95.1` novel) | **1,888 / 63.7 tok/s** @1M (`e-means` · `1,350 / 41.1` QSA) | **0.24 s** `.qwcache` (`74.3×` vs 17.84 s) |
+| Edge0-145B (`145B`, `HQ8+HQ4` + `VQ2` PLE 83.1 GiB) | **1,977–1,996 tok/s** | **116.4 tok/s** (`80.9` novel · `102.6` 4-stream) | **1,976 tok/s** @16K (`3/3` needles · `63.9 GiB` `--stream-ngrams`) | **8 ms** warm cache (`119.8×`) |
 | Qwen3.8-27B (+ `DSpine-b16`) | 914 tok/s | **134.5 tok/s** (`4.19×`) | **831 / 36.5 tok/s** @1M (`e-means` / `Ward`) | 6 ms warm cache (`307×`) |
 | GLM-5.3-Flash (`321B`, `SHVQ4/2/3` 100.6 GiB) | **1,006 tok/s** (`825–869` serve) | **50.7–53.6 tok/s** (`46.0` novel · `81/100` code) | **743 / 45.0 tok/s** @242.5K (`e-means`) · 1M UMA | **10–18 ms** warm cache (`96–193×`) |
 | ERNIE-5.5-Flash-Base (`280B`, `HQ8+SHVQ15/3` 81.6 GiB) | **856–899 tok/s** (`604` @149.5K) | **40.2–42.6 tok/s** (ECHO `d=1`, `+28.1%`) | **303 / 16.3 tok/s** @300K (`e-means`) · 1M `87.6 GiB` UMA | **0.29 s** `.qwcache` (`78.6×` vs 22.79 s) |
@@ -96,6 +97,8 @@ Full tables, paired A/B repository memory benchmarks, and thermal protocol: [doc
 </p>
 
 **Qwen3.8-Flash-Next** · 48L MoE (512 experts, 10 + 1 active), 12 QSA + 36 GDN, 4-branch HC, `VQ2_G32` PLE (`27.1 GiB`), MTP, vision (`HQ8_G32 + HQ4_G64`, `71.3 GiB`)
+
+**Edge0-145B** · 48L Hybrid GDN+QSA MoE (`145B` total, 512 experts `10 + 1` active), 4-branch HC, `VQ2_G32` PLE (`27.13 GiB`), MTP-3 (`HQ8_G32 + HQ4_G64`, `56.00 GiB` core / `83.13 GiB` total weights / `90.94 GiB` resident / `63.87 GiB` `--stream-ngrams` — `1,977–1,996 tok/s` prefill, `80.9–116.4 tok/s` decode, `9/10` `Code-10` & `Core-10`)
 
 <p align="center">
   <img src="assets/qwegn_model_qwen38_27b.svg" alt="Qwen3.8-27B" width="100%">

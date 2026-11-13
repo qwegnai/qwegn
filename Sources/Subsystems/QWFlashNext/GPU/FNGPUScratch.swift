@@ -41,6 +41,8 @@ public final class FNGPUScratch {
     public let expOff: QWTensorValue, sortedPair: QWTensorValue, sortedTok: QWTensorValue, invPerm: QWTensorValue, downPair: QWTensorValue
     public let guSh: QWTensorValue, actSh: QWTensorValue, sh: QWTensorValue, sg: QWTensorValue
     public let guSh32: QWTensorValue, actSh32: QWTensorValue
+    public let groupIds: QWTensorValue?, onesRoute: QWTensorValue?
+    public let xLatent32: QWTensorValue?, xLatent16: QWTensorValue?, zLatent32: QWTensorValue?
 
     /// Allocate for T tokens. `gdn`/`attn` dims come from the first layers of each kind (nil when the model has none).
     public init(arena: QWArena, T: Int, hidden H: Int, hc C: Int, lowrank R: Int, moe: FNGPUMoE, ple: FNGPUPLE?,
@@ -95,14 +97,21 @@ public final class FNGPUScratch {
         list = try i32(isPrefill ? T * topK : 1); qsaScores = try i32(scoreElems); attnOut = try f16(1)
         cosT = try f32(1); sinT = try f32(1); bcos = try f32(1); bsin = try f32(1)
 
+        let NG = moe.numLatentGroups, L = moe.latentDim
+        let maxRoutes = max(TK, NG)
         logits = try f32(T * NE); idx = try i32(T * TK); wRoute = try f32(T * TK)
-        let pairP = isPrefill ? T * TK : 1
+        let pairP = isPrefill ? T * maxRoutes : 1
         expOff = try i32(isPrefill ? NE + 1 : 1); sortedPair = try i32(pairP); sortedTok = try i32(pairP); invPerm = try i32(pairP)
         gu = try f16(isPrefill ? T * TK * 2 * I : 1)
-        let tcInts = isPrefill ? QWGemm.MoETilePlan(
-            experts: NE, pairs: pairP, gateUpRows: 2 * I, downRows: H).scratchInts : 1
+        let plan23 = isPrefill ? QWGemm.MoETilePlan(
+            experts: NE, pairs: T * TK, gateUpRows: 2 * I, downRows: L > 0 ? L : H).scratchInts : 1
+        let plan1 = (isPrefill && NG > 0 && L > 0) ? QWGemm.MoETilePlan(
+            experts: NG, pairs: T * NG, gateUpRows: L, downRows: 64).scratchInts : 1
+        let plan4 = (isPrefill && NG > 0) ? QWGemm.MoETilePlan(
+            experts: NG, pairs: T * NG, gateUpRows: H, downRows: 64).scratchInts : 1
+        let tcInts = max(plan23, max(plan1, plan4))
         xe16 = try f16(1); tileE = try i32(pairP); tileR = try i32(pairP); tileCount = try i32(tcInts)
-        dnHi = try f16(isPrefill ? T * TK * I : 1); dnLo = dnHi; dnAcc = try f16(isPrefill ? T * TK * H : 1)
+        dnHi = try f16(isPrefill ? T * TK * I : 1); dnLo = dnHi; dnAcc = try f16(isPrefill ? T * maxRoutes * H : 1)
         downPair = dnAcc
         naxX16 = try f16(isPrefill ? T * W : 1); naxY16 = naxX16
         let r1Rows = min(T, 8) * TK
@@ -113,6 +122,18 @@ public final class FNGPUScratch {
         routed = try f32(1)
         guSh = try f16(1); actSh = try f16(1); sh = try f32(T * H); sg = try f32(T)
         guSh32 = try f32(T * 2 * IS); actSh32 = try f32(T * IS)
+        if NG > 0 && L > 0 {
+            groupIds = try i32(T * NG)
+            let onesRCount = max(T, 8) * NG
+            let onesR = try f32(onesRCount)
+            arena.write(onesR, from: [Float](repeating: 1, count: onesRCount))
+            onesRoute = onesR
+            xLatent32 = try f32(T * NG * L)
+            xLatent16 = try f16(isPrefill ? T * NG * L : 1)
+            zLatent32 = try f32((isPrefill ? T * TK : max(T, 8) * NG) * L)
+        } else {
+            groupIds = nil; onesRoute = nil; xLatent32 = nil; xLatent16 = nil; zLatent32 = nil
+        }
     }
 }
 

@@ -148,7 +148,7 @@ extension QWGemm {
                                       rows: Int, rowsPerTG: Int, epi: UInt32, scale: Float,
                                       v4: Bool = false) throws {
         enc.setComputePipelineState(try hal.pipeline(kernel))
-        if rows > 4 && epi != 3 && v4 {
+        if rows > 4 && v4 {
             let xBytes = x.shape.dtype == .f16 ? 2 : 4
             let yBytes = y.shape.dtype == .f16 ? 2 : 4
             weight.blocks.bind(enc, index: 0)
@@ -169,7 +169,7 @@ extension QWGemm {
             return
         }
         enc.bindTensors(weight.blocks, x, y, startIndex: 0)
-        let fuseMultiRow = (rows >= 2 && rows <= 4 && epi != 3 && v4)
+        let fuseMultiRow = (rows >= 2 && rows <= 4 && v4)
         let packedEpi = (fuseMultiRow ? (Int(epi) | (rows << 8)) : Int(epi))
         enc.setUInt32s(weight.n, weight.k, packedEpi, startIndex: 3)
         enc.setPod(scale, index: 6)
@@ -306,19 +306,26 @@ extension QWGemm {
                                  threadsPerThreadgroup: MTLSize(width: 1024, height: 1, depth: 1))
     }
 
-    /// HQ4/SHVQ4 f32 GEMM: Apple10 HQ8-G32 and SHVQ4-G32/G64 use 32-token tiles at 32 rows, or 33--63 rows when K >= 2N, for epi 0--3.
+    /// HQ4/AQ4/AQ8/SHVQ4 f32 GEMM: Apple10 uses 32-token tiles at 32 rows, or 33--63 rows when K >= 2N, for epi 0--3.
     /// epi: 0 none, 1 silu(y / scale), 2 sigmoid, 3 silu(y / scale) + H_32.
     public static func encodeHQ4F32BM(_ enc: any MTLComputeCommandEncoder, hal: QWHal, weight: QWWeightView,
                                       x: QWTensorValue, y: QWTensorValue, rows: Int,
                                       epi: UInt32 = 0, scale: Float = 1) throws {
         let smallRows = rows == 32 || (rows > 32 && rows < 64 && weight.k / 2 >= weight.n)
+        let smallQ4G = smallRows && epi <= 3 && weight.isIncumbentContainer && hal.caps.familyApple10
+        let smallAQ4 = smallRows && epi <= 3 && !weight.isIncumbentContainer &&
+            !weight.isSHVQ && weight.bits == 4 && (weight.groupSize == 32 || weight.groupSize == 64) && hal.caps.familyApple10
         let smallAQ8 = smallRows && epi <= 3 && !weight.isIncumbentContainer &&
             !weight.isSHVQ && weight.bits == 8 && weight.groupSize == 32 && hal.caps.familyApple10
         let smallSHVQ4 = smallRows && epi <= 3 && !weight.isIncumbentContainer &&
             weight.isSHVQ && weight.bits == 4 && (weight.groupSize == 32 || weight.groupSize == 64) && hal.caps.familyApple10
-        let smallTile = smallAQ8 || smallSHVQ4
+        let smallTile = smallQ4G || smallAQ4 || smallAQ8 || smallSHVQ4
         let name: String
-        if smallAQ8 {
+        if smallQ4G {
+            name = "qwg_gemm_q4g_f32_bm32"
+        } else if smallAQ4 {
+            name = "qwg_gemm_aq4_g\(weight.groupSize)_f32_bm32"
+        } else if smallAQ8 {
             name = "qwg_gemm_aq8_g32_f32_bm32"
         } else if smallSHVQ4 {
             name = "qwg_gemm_shvq4_g\(weight.groupSize)_f32_bm32"

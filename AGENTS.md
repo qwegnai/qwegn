@@ -65,13 +65,18 @@ the owner's private `docs/agent-retrospective-*.md`.
 14. **Test economy.** No unit test loads a real model pack; keep unit runs
     under ~4 minutes; perf gates live in `make perf`, not the test suite;
     full `make ci` at milestones, targeted suites in between.
-15. **Config-sourced truth.** Geometry, context caps, and quant metadata come
-    from the model's own config/assets under `~/.qwg/models` — never
-    hardcoded, never capped below native capacity. On spec/code conflict, the
-    code is the fact; fix the spec. Every new weight or table container
-    (`HQ*`, `AQ*`, `SHVQ*`, `VQ*`, `QNGRAM`) must honor runtime residency
-    toggles (`--load-vision` / `--no-load-vision`, `--stream-ngrams` /
-    `--no-stream-ngrams`) and `--no-profile` hermetic benchmarks.
+15. **Config-sourced truth & capability-wide generalization.** Geometry,
+    context caps, and quant metadata come from the model's own config/assets
+    under `~/.qwg/models` — never hardcoded, never capped below native
+    capacity. On spec/code conflict, the code is the fact; fix the spec. Every
+    new weight or table container (`HQ*`, `AQ*`, `SHVQ*`, `VQ*`, `QNGRAM`) must
+    honor runtime residency toggles (`--load-vision` / `--no-load-vision`,
+    `--stream-ngrams` / `--no-stream-ngrams`) and `--no-profile` hermetic
+    benchmarks. Generalize every perf or correctness fix by architectural
+    capability, container family, attention complexity, or UMA ratio across
+    both `DenseModule` and `HybridMoEModule`, CLI and `QWServer`, and all KV
+    modes (`f16`/`q8`/`q4`) — never gate fast paths on a single incumbent
+    format or model name.
 
 ## Code law
 

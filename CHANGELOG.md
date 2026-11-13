@@ -10,6 +10,37 @@ The single source of the version is `QWVersion.current` in
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-11-13
+
+### Added
+- **Apple10 `32`-token small-prefill tiles for `HQ4_G32` and `AQ4_G32`/`AQ4_G64` (`QWGemm.encodeHQ4F32BM`, `qwgemm_f32.metal`, `qwgemm_aq_f32.metal`, `Scripts/kernel_inventory.json`):**
+  - Added `qwg_gemm_q4g_f32_bm32`, `qwg_gemm_aq4_g32_f32_bm32`, and `qwg_gemm_aq4_g64_f32_bm32` (`32`-token, `128`-thread tiles, dispatching at `rows == 32` or `33..63` when `K >= 2N`, `epi <= 3`) for symmetry with `AQ8_G32` and `SHVQ4`, reachable across `QWMoELayerKernel`, `QWMoEOperator+Latent.encodeDenseFallback`, and `QWMoEOperator+GroupLatent.encodeResidentGroupLatent`.
+- **Cross-model Apple10 roofline attribution & runbook (`apple10-roofline-findings.md`):**
+  - Codified empirical Apple10 kernel limits and refuted hypotheses (`W4A8` INT8 NAX `2.65×–2.85×` slower than FP16 NAX; single-pass `B=9..16` DSpine verify `0.6726×–0.9724×`; `wideTG` `32`-row MoE combine `0.9874×`) in `.agents/skills/qwegine-quant-and-kernels/references/apple10-roofline-findings.md`.
+
+### Verified
+- **`QWSmallPrefillTests`, `paired_perf.py --strict`, and 6-Flagship Parity (`v0.19.0` → `v0.19.1`):**
+  - `QWSmallPrefillTests`: `0`-ULP IEEE-754 bit-exact parity (`3/3`) across `(N, K, M, epi)` combinations; isolated `6`-pair GPU probe achieves **`1.22×–1.52×`** (`(N=2560, K=6144, rows=32)` up to **`1.5167×`**, `MAD <= 0.0021`).
+  - `paired_perf.py --strict` across all 6 flagship packs: `Qwen3.6-35B-A3B` (`32`-tok) prefill **`1.0128×`** (`759.7 → 772.7 tok/s`, `MAD 0.0037`, `5/5` pairs `> 1.0×`), `Edge0-145B` (`32`-tok) prefill `1.0054×` (`298.1 → 300.0 tok/s`, `MAD 0.0034`), `ERNIE-5.5-Flash-Base` (`1.000×` inside noise), `Qwen3.8-27B` (+ `DSpine-b16`), `Qwen3.8-Flash-Next`, and `GLM-5.3-Flash` (`SHA-256` bit-exact, `0` steady decode allocations, `3/3` needle passkey recall, `9/10` `llmprobe` `code-10` on instruct flagships).
+
+## [0.19.0] - 2026-11-13
+
+### Added
+- **Native `Edge0-145B` (`145B` Hybrid GDN+QSA MoE + `VQ2_G32` PLE, `56.00 GiB` core + `27.13 GiB` PLE = `83.13 GiB` weights / `90.94 GiB` resident / `63.87 GiB` `--stream-ngrams`) support (`pack.py`, `FNGPUBatchScheduler`):**
+  - Added NVFP4 (`f8_e4m3` block scales + `f32` tensor-wide scales) two-level dequantization in `Scripts/quantize/pack.py` so NVFP4 MoE checkpoints pack losslessly into `HQ8_G32 + HQ4_G64` within `< 90 GB` disk.
+  - Added `FNBatchAdmissionTracker` in `FNGPUBatchScheduler` for clean 4-stream batch admission coordination.
+
+### Changed
+- **Wave A Cross-Architecture Kernel & Runtime Accelerations (`QWMetal`, `QWFlashNext`):**
+  - `qwg_fn_moe_router_topk_f32`: fused `E=256/512` 1-threadgroup SIMD bitonic router eliminating 2 dispatches and 2 barriers per MoE layer.
+  - `qwg_fn_ple_norm_add_f32`: `N_PER_TG=4` coalesced fusion reducing PLE dispatch overhead.
+  - `FNGPUStack`: 6-cut pipelined prefill submission for `>= 40` layers plus `FNGPUEngine` prefill scratch release.
+
+### Verified
+- **6-Flagship `paired_perf.py --strict` & `llmprobe` Qualification (`v0.18.0` → `v0.19.0`):**
+  - `Edge0-145B`: prefill `+4.24%–4.85%` (`1,976.6–1,995.6 tok/s`), MTP-3 decode `+11.75%` (`53.86 → 60.22 tok/s`), 16K prefill `+16.1%` (`1,975.7 tok/s`), `3/3` 16K needles (`SHA-256` bit-exact); `Qwen3.8-Flash-Next`: MTP-3 `--stream-ngrams` decode `+4.67%` (`73.70 → 76.23 tok/s`); `0` regressions & `100%` `SHA-256` parity across `ERNIE-5.5-Flash-Base`, `GLM-5.3-Flash`, `Qwen3.6-35B-A3B`, and `Qwen3.8-27B` (+ `DSpine-b16`).
+  - `Edge0-145B` `llmprobe`: `99.3%` (`140/141`) conformance, `100%` capability, `36/36` fidelity, `9/10` `Code-10` & `Core-10`, `80.9 tok/s` novel / `116.4 tok/s` (`1.76×`) speculative / `102.6 tok/s` 4-stream batching / `119.8×` (`8 ms`) warm prefix cache.
+
 ## [0.18.0] - 2026-11-13
 
 ### Added

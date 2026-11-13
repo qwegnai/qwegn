@@ -95,7 +95,11 @@ kernel void qwg_moe_gateup_q4g_f32_r1(device const Block_HQ4_G32* blocks [[buffe
     const uint k = tg.y, t = tg.z;
     const int rawExpSigned = ids[t * realE + k];
     if (rawExpSigned < 0) return;
-    const uint rawExpert = uint(rawExpSigned);
+    const uint rawExpUnsigned = uint(rawExpSigned);
+    const uint rawExpert = rawExpUnsigned & 0xFFFFu;
+    const uint gIdx = (rawExpUnsigned >> 16u) & 0x7Fu;
+    const uint gStride = (rawExpUnsigned >> 23u) & 0x7Fu;
+    const size_t xRow0 = (gStride > 0u) ? ((size_t)t * gStride + gIdx) : (size_t)t;
     const bool isCold = (residentE > 0u) && (rawExpert >= residentE);
     if ((skipCold && isCold) || (onlyCold && !isCold)) return;
     if (fuseSiluFwht) {
@@ -135,7 +139,7 @@ kernel void qwg_moe_gateup_q4g_f32_r1(device const Block_HQ4_G32* blocks [[buffe
         const uint st2 = rows > 2u ? 2u * nBlocks : 0u;
         const uint st3 = rows > 3u ? 3u * nBlocks : 0u;
         if (mCount == 1u) {
-            device const float* xt = x + (size_t)t * K;
+            device const float* xt = x + xRow0 * K;
             float4 acc = float4(0.0f);
             for (uint g = hl; rows != 0u && g < nBlocks; g += 16u) {
                 device const float* xg = xt + (g << 5u);
@@ -177,8 +181,10 @@ kernel void qwg_moe_gateup_q4g_f32_r1(device const Block_HQ4_G32* blocks [[buffe
             device const Block_HQ4_G32* p = a0 + g;
             const Block_HQ4_G32 b0 = p[0], b1 = p[st1], b2 = p[st2], b3 = p[st3];
             float4 lo0[4], hi0[4], lo1[4], hi1[4];
-            device const float* xg0 = x + (size_t)tokIds[0] * K + col;
-            device const float* xg1 = x + (size_t)tokIds[1] * K + col;
+            const size_t xr0 = (gStride > 0u) ? ((size_t)tokIds[0] * gStride + gIdx) : (size_t)tokIds[0];
+            const size_t xr1 = (gStride > 0u) ? ((size_t)tokIds[1] * gStride + gIdx) : (size_t)tokIds[1];
+            device const float* xg0 = x + xr0 * K + col;
+            device const float* xg1 = x + xr1 * K + col;
             #pragma unroll
             for (uint w0 = 0; w0 < 4; ++w0) {
                 device const float4* p0 = (device const float4*)(xg0 + w0 * 8u);
@@ -193,7 +199,8 @@ kernel void qwg_moe_gateup_q4g_f32_r1(device const Block_HQ4_G32* blocks [[buffe
             accM[0] += float4(d0.x, d1.x, d2.x, d3.x);
             accM[1] += float4(d0.y, d1.y, d2.y, d3.y);
             if (mCount == 3u) {
-                device const float* xg2 = x + (size_t)tokIds[2] * K + col;
+                const size_t xr2 = (gStride > 0u) ? ((size_t)tokIds[2] * gStride + gIdx) : (size_t)tokIds[2];
+                device const float* xg2 = x + xr2 * K + col;
                 #pragma unroll
                 for (uint w0 = 0; w0 < 4; ++w0) {
                     device const float4* p2 = (device const float4*)(xg2 + w0 * 8u);
@@ -204,8 +211,10 @@ kernel void qwg_moe_gateup_q4g_f32_r1(device const Block_HQ4_G32* blocks [[buffe
                 accM[2].z += qwg_dot_hq4_block_f32_reg(b2, lo0, hi0);
                 accM[2].w += qwg_dot_hq4_block_f32_reg(b3, lo0, hi0);
             } else if (mCount == 4u) {
-                device const float* xg2 = x + (size_t)tokIds[2] * K + col;
-                device const float* xg3 = x + (size_t)tokIds[3] * K + col;
+                const size_t xr2 = (gStride > 0u) ? ((size_t)tokIds[2] * gStride + gIdx) : (size_t)tokIds[2];
+                const size_t xr3 = (gStride > 0u) ? ((size_t)tokIds[3] * gStride + gIdx) : (size_t)tokIds[3];
+                device const float* xg2 = x + xr2 * K + col;
+                device const float* xg3 = x + xr3 * K + col;
                 #pragma unroll
                 for (uint w0 = 0; w0 < 4; ++w0) {
                     device const float4* p2 = (device const float4*)(xg2 + w0 * 8u);
@@ -246,7 +255,7 @@ kernel void qwg_moe_gateup_q4g_f32_r1(device const Block_HQ4_G32* blocks [[buffe
     if (r >= N) return;
     const uint expert = isCold ? (rawExpert - residentE) : rawExpert;
     device const Block_HQ4_G32* wSrc = isCold ? coldBlocks : blocks;
-    const float v = qwg_gemv_hq4_row_f32(wSrc, x + (size_t)t * K, expert * N + r, K, lane);
+    const float v = qwg_gemv_hq4_row_f32(wSrc, x + xRow0 * K, expert * N + r, K, lane);
     if (lane == 0u) out[(t * realE + k) * N + r] = v;
 }
 
@@ -276,16 +285,20 @@ kernel void qwg_moe_down_shared_combine_q4g_f32(device const Block_HQ4_G32* bloc
                                                 uint2 tg   [[threadgroup_position_in_grid]],
                                                 uint  sgi  [[simdgroup_index_in_threadgroup]],
                                                 uint  lane [[thread_index_in_simdgroup]]) {
-    const uint r0 = (tg.x * 4u + sgi) * 4u, t = tg.y;
+    const uint numGroups = (E >> 11u) & 0x1Fu;
+    const uint r0 = (tg.x * 4u + sgi) * 4u;
+    const uint t = (numGroups > 0u) ? (tg.y / numGroups) : tg.y;
+    const uint targetGroup = (numGroups > 0u) ? (tg.y % numGroups) : 0u;
     const uint rowsLeft = (r0 < N) ? (N - r0) : 0u;
     if (rowsLeft == 0u) return;
     const uint filterMode = (E >> 30u) & 3u;
     const uint residentE = (E >> 16u) & 0x3FFFu;
-    const uint numToks = (E >> 8u) & 0x7u;
+    const uint numToks = (numGroups > 0u) ? 0u : ((E >> 8u) & 0x7u);
     const uint realE = E & 0xFFu;
     const bool writeOut16 = (hasOut16 & 1u) != 0u;
     const bool routeOutput = (hasOut16 & 2u) != 0u;
     const bool skipShared = (hasOut16 & 4u) != 0u;
+    const bool tokenIndexedX = (hasOut16 & 8u) != 0u;
     const uint nBlocks = K >> 5u;
     if (numToks >= 2u) {
         float4 accM[4] = {float4(0.0f), float4(0.0f), float4(0.0f), float4(0.0f)};
@@ -294,7 +307,7 @@ kernel void qwg_moe_down_shared_combine_q4g_f32(device const Block_HQ4_G32* bloc
                 const uint slot0 = t0 * realE + k0;
                 const int rawExpSigned = ids[slot0];
                 if (rawExpSigned < 0) continue;
-                const uint rawExp = uint(rawExpSigned);
+                const uint rawExp = uint(rawExpSigned) & 0xFFFFu;
                 const bool isCold = (residentE > 0u) && (rawExp >= residentE);
                 if ((filterMode == 1u && isCold) || (filterMode == 2u && !isCold)) continue;
                 bool seen = false;
@@ -322,13 +335,15 @@ kernel void qwg_moe_down_shared_combine_q4g_f32(device const Block_HQ4_G32* bloc
                 device const Block_HQ4_G32* wSrc = isCold ? coldBlocks : blocks;
                 for (uint pair = 0u; pair < mCount; pair += 2u) {
                     const uint sA = mSlot[pair], tA = mTok[pair];
+                    const uint xRowA = tokenIndexedX ? tA : sA;
                     if (pair + 1u < mCount) {
                         const uint sB = mSlot[pair + 1u], tB = mTok[pair + 1u];
+                        const uint xRowB = tokenIndexedX ? tB : sB;
                         float4 vx0 = float4(0.0f), vx1 = float4(0.0f);
                         if (nBlocks <= 32u && rowsLeft >= 4u) {
                             if (lane < nBlocks) {
-                                device const float* xg0 = x + (size_t)sA * K + (lane << 5u);
-                                device const float* xg1 = x + (size_t)sB * K + (lane << 5u);
+                                device const float* xg0 = x + (size_t)xRowA * K + (lane << 5u);
+                                device const float* xg1 = x + (size_t)xRowB * K + (lane << 5u);
                                 float4 lo0[4], hi0[4], lo1[4], hi1[4];
                                 #pragma unroll
                                 for (uint w0 = 0; w0 < 4; ++w0) {
@@ -355,8 +370,8 @@ kernel void qwg_moe_down_shared_combine_q4g_f32(device const Block_HQ4_G32* bloc
                             const uint rowBase = wExp * N + r0 + upHalf * 2u;
                             device const Block_HQ4_G32* rPtr0 = wSrc + (size_t)rowBase * nBlocks;
                             device const Block_HQ4_G32* rPtr1 = rPtr0 + nBlocks;
-                            device const float* xs0 = x + (size_t)sA * K;
-                            device const float* xs1 = x + (size_t)sB * K;
+                            device const float* xs0 = x + (size_t)xRowA * K;
+                            device const float* xs1 = x + (size_t)xRowB * K;
                             float2 v0 = float2(0.0f), v1 = float2(0.0f);
                             for (uint g = hl; g < nBlocks; g += 16u) {
                                 device const float* xg0 = xs0 + (g << 5u);
@@ -383,7 +398,7 @@ kernel void qwg_moe_down_shared_combine_q4g_f32(device const Block_HQ4_G32* bloc
                             vx0 = float4(v0.x, v0.y, v0Hi.x, v0Hi.y);
                             vx1 = float4(v1.x, v1.y, v1Hi.x, v1Hi.y);
                         } else {
-                            qwg_moe_rows4_f32_2(wSrc, x + (size_t)sA * K, x + (size_t)sB * K,
+                            qwg_moe_rows4_f32_2(wSrc, x + (size_t)xRowA * K, x + (size_t)xRowB * K,
                                                 wExp * N + r0, rowsLeft, K, lane, vx0, vx1);
                         }
                         if (routeOutput) {
@@ -399,7 +414,7 @@ kernel void qwg_moe_down_shared_combine_q4g_f32(device const Block_HQ4_G32* bloc
                         float4 vx0 = float4(0.0f);
                         if (nBlocks <= 32u && rowsLeft >= 4u) {
                             if (lane < nBlocks) {
-                                device const float* xg0 = x + (size_t)sA * K + (lane << 5u);
+                                device const float* xg0 = x + (size_t)xRowA * K + (lane << 5u);
                                 float4 lo0[4], hi0[4];
                                 #pragma unroll
                                 for (uint w0 = 0; w0 < 4; ++w0) {
@@ -422,7 +437,7 @@ kernel void qwg_moe_down_shared_combine_q4g_f32(device const Block_HQ4_G32* bloc
                             const uint rowBase = wExp * N + r0 + upHalf * 2u;
                             device const Block_HQ4_G32* rPtr0 = wSrc + (size_t)rowBase * nBlocks;
                             device const Block_HQ4_G32* rPtr1 = rPtr0 + nBlocks;
-                            device const float* xs0 = x + (size_t)sA * K;
+                            device const float* xs0 = x + (size_t)xRowA * K;
                             float2 v0 = float2(0.0f);
                             for (uint g = hl; g < nBlocks; g += 16u) {
                                 device const float* xg0 = xs0 + (g << 5u);
@@ -442,7 +457,7 @@ kernel void qwg_moe_down_shared_combine_q4g_f32(device const Block_HQ4_G32* bloc
                             const float2 v0Hi = simd_shuffle_down(v0, 16);
                             vx0 = float4(v0.x, v0.y, v0Hi.x, v0Hi.y);
                         } else {
-                            vx0 = qwg_moe_rows4_f32(wSrc, x + (size_t)sA * K, wExp * N + r0, rowsLeft, K, lane);
+                            vx0 = qwg_moe_rows4_f32(wSrc, x + (size_t)xRowA * K, wExp * N + r0, rowsLeft, K, lane);
                         }
                         if (routeOutput) {
                             if (lane == 0u) qwg_moe_write_route4(out, sA, N, r0, rowsLeft, vx0);
@@ -487,7 +502,9 @@ kernel void qwg_moe_down_shared_combine_q4g_f32(device const Block_HQ4_G32* bloc
             const uint slot = t * realE + k;
             const int rawExpSigned = ids[slot];
             if (rawExpSigned < 0) continue;
-            const uint rawExp = uint(rawExpSigned);
+            const uint rawExpUnsigned = uint(rawExpSigned);
+            if (numGroups > 0u && ((rawExpUnsigned >> 16u) & 0x7Fu) != targetGroup) continue;
+            const uint rawExp = rawExpUnsigned & 0xFFFFu;
             const bool isCold = (residentE > 0u) && (rawExp >= residentE);
             if ((filterMode == 1u && isCold) || (filterMode == 2u && !isCold)) continue;
             const uint wExp = isCold ? (rawExp - residentE) : rawExp;
@@ -495,7 +512,8 @@ kernel void qwg_moe_down_shared_combine_q4g_f32(device const Block_HQ4_G32* bloc
             const uint rowBase = wExp * N + r0;
             float4 vx = float4(0.0f);
             if (active) {
-                device const float* xg = x + (size_t)slot * K + (lane << 5u);
+                const uint xRow = tokenIndexedX ? t : slot;
+                device const float* xg = x + (size_t)xRow * K + (lane << 5u);
                 float4 lo[4], hi[4];
                 #pragma unroll
                 for (uint w0 = 0; w0 < 4; ++w0) {
@@ -526,7 +544,9 @@ kernel void qwg_moe_down_shared_combine_q4g_f32(device const Block_HQ4_G32* bloc
             const uint slot = t * realE + k;
             const int rawExpSigned = ids[slot];
             if (rawExpSigned < 0) continue;
-            const uint rawExp = uint(rawExpSigned);
+            const uint rawExpUnsigned = uint(rawExpSigned);
+            if (numGroups > 0u && ((rawExpUnsigned >> 16u) & 0x7Fu) != targetGroup) continue;
+            const uint rawExp = rawExpUnsigned & 0xFFFFu;
             const bool isCold = (residentE > 0u) && (rawExp >= residentE);
             if ((filterMode == 1u && isCold) || (filterMode == 2u && !isCold)) continue;
             const uint wExp = isCold ? (rawExp - residentE) : rawExp;
@@ -534,7 +554,7 @@ kernel void qwg_moe_down_shared_combine_q4g_f32(device const Block_HQ4_G32* bloc
             const uint rowBase = wExp * N + r0 + upHalf * 2u;
             device const Block_HQ4_G32* rPtr0 = wSrc + (size_t)rowBase * nBlocks;
             device const Block_HQ4_G32* rPtr1 = rPtr0 + nBlocks;
-            device const float* xs = x + (size_t)slot * K;
+            device const float* xs = x + (size_t)(tokenIndexedX ? t : slot) * K;
             float2 vx = float2(0.0f);
             for (uint g = hl; g < nBlocks; g += 16u) {
                 device const float* xg = xs + (g << 5u);
@@ -565,12 +585,14 @@ kernel void qwg_moe_down_shared_combine_q4g_f32(device const Block_HQ4_G32* bloc
             const uint slot = t * realE + k;
             const int rawExpSigned = ids[slot];
             if (rawExpSigned < 0) continue;
-            const uint rawExp = uint(rawExpSigned);
+            const uint rawExpUnsigned = uint(rawExpSigned);
+            if (numGroups > 0u && ((rawExpUnsigned >> 16u) & 0x7Fu) != targetGroup) continue;
+            const uint rawExp = rawExpUnsigned & 0xFFFFu;
             const bool isCold = (residentE > 0u) && (rawExp >= residentE);
             if ((filterMode == 1u && isCold) || (filterMode == 2u && !isCold)) continue;
             const uint wExp = isCold ? (rawExp - residentE) : rawExp;
             device const Block_HQ4_G32* wSrc = isCold ? coldBlocks : blocks;
-            const float4 vx = qwg_moe_rows4_f32(wSrc, x + (size_t)slot * K, wExp * N + r0, rowsLeft, K, lane);
+            const float4 vx = qwg_moe_rows4_f32(wSrc, x + (size_t)(tokenIndexedX ? t : slot) * K, wExp * N + r0, rowsLeft, K, lane);
             if (routeOutput) {
                 if (lane == 0u) qwg_moe_write_route4(out, slot, N, r0, rowsLeft, vx);
             } else {
@@ -580,23 +602,25 @@ kernel void qwg_moe_down_shared_combine_q4g_f32(device const Block_HQ4_G32* bloc
     }
     if (routeOutput) return;
     if (lane == 0u) {
-        const size_t base = (size_t)t * N + r0;
-        const float g = skipShared ? 0.0f : gate[t];
-        const float y0 = acc.x + ((filterMode == 2u) ? out[base] : (skipShared ? 0.0f : (g * shared[base])));
+        const uint outRow = (numGroups > 0u) ? tg.y : t;
+        const size_t base = (size_t)outRow * N + r0;
+        const bool effSkip = skipShared || numGroups > 0u;
+        const float g = effSkip ? 0.0f : gate[t];
+        const float y0 = acc.x + ((filterMode == 2u) ? out[base] : (effSkip ? 0.0f : (g * shared[base])));
         out[base] = y0;
         if (writeOut16) out16[base] = half(y0);
         if (rowsLeft > 1u) {
-            const float y1 = acc.y + ((filterMode == 2u) ? out[base + 1u] : (skipShared ? 0.0f : (g * shared[base + 1u])));
+            const float y1 = acc.y + ((filterMode == 2u) ? out[base + 1u] : (effSkip ? 0.0f : (g * shared[base + 1u])));
             out[base + 1u] = y1;
             if (writeOut16) out16[base + 1u] = half(y1);
         }
         if (rowsLeft > 2u) {
-            const float y2 = acc.z + ((filterMode == 2u) ? out[base + 2u] : (skipShared ? 0.0f : (g * shared[base + 2u])));
+            const float y2 = acc.z + ((filterMode == 2u) ? out[base + 2u] : (effSkip ? 0.0f : (g * shared[base + 2u])));
             out[base + 2u] = y2;
             if (writeOut16) out16[base + 2u] = half(y2);
         }
         if (rowsLeft > 3u) {
-            const float y3 = acc.w + ((filterMode == 2u) ? out[base + 3u] : (skipShared ? 0.0f : (g * shared[base + 3u])));
+            const float y3 = acc.w + ((filterMode == 2u) ? out[base + 3u] : (effSkip ? 0.0f : (g * shared[base + 3u])));
             out[base + 3u] = y3;
             if (writeOut16) out16[base + 3u] = half(y3);
         }

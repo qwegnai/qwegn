@@ -66,7 +66,11 @@ static inline void qwg_moe_gateup_aq_f32_r1_body(device const char*  w,
     const uint k = tg.y, t = tg.z;
     const int rawExpSigned = ids[t * realE + k];
     if (rawExpSigned < 0) return;
-    const uint rawExpert = uint(rawExpSigned);
+    const uint rawExpUnsigned = uint(rawExpSigned);
+    const uint rawExpert = rawExpUnsigned & 0xFFFFu;
+    const uint gIdx = (rawExpUnsigned >> 16u) & 0x7Fu;
+    const uint gStride = (rawExpUnsigned >> 23u) & 0x7Fu;
+    const size_t xRow0 = (gStride > 0u) ? ((size_t)t * gStride + gIdx) : (size_t)t;
     const bool isCold = (residentE > 0u) && (rawExpert >= residentE);
     if ((skipCold && isCold) || (onlyCold && !isCold)) return;
     if (fuseSiluFwht) {
@@ -111,7 +115,7 @@ static inline void qwg_moe_gateup_aq_f32_r1_body(device const char*  w,
         const uint st2 = rows > 2u ? 2u * rowBytes : 0u;
         const uint st3 = rows > 3u ? 3u * rowBytes : 0u;
         if (mCount == 1u) {
-            device const float* xt = x + (size_t)t * K;
+            device const float* xt = x + xRow0 * K;
             float4 acc = float4(0.0f);
             for (uint s = hl; rows != 0u && s < nSlices; s += 16u) {
                 const uint g = s / slicesPerGroup;
@@ -152,9 +156,11 @@ static inline void qwg_moe_gateup_aq_f32_r1_body(device const char*  w,
             device const char* p = a0 + size_t(g) * groupBytes;
             const uint byteInGroup = sub * slicePayloadBytes;
             float4 lo0[4], hi0[4], lo1[4], hi1[4];
+            const size_t xr0 = (gStride > 0u) ? ((size_t)tokIds[0] * gStride + gIdx) : (size_t)tokIds[0];
+            const size_t xr1 = (gStride > 0u) ? ((size_t)tokIds[1] * gStride + gIdx) : (size_t)tokIds[1];
             const float2 sumX01 = float2(
-                qwg_aq_load_prescaled32_f32<BITS>(x + (size_t)tokIds[0] * K + col, lo0, hi0),
-                qwg_aq_load_prescaled32_f32<BITS>(x + (size_t)tokIds[1] * K + col, lo1, hi1));
+                qwg_aq_load_prescaled32_f32<BITS>(x + xr0 * K + col, lo0, hi0),
+                qwg_aq_load_prescaled32_f32<BITS>(x + xr1 * K + col, lo1, hi1));
             const float2 d0 = qwg_aq_slice_dot2<BITS>(p, byteInGroup, lo0, hi0, lo1, hi1, sumX01);
             const float2 d1 = qwg_aq_slice_dot2<BITS>(p + st1, byteInGroup, lo0, hi0, lo1, hi1, sumX01);
             const float2 d2 = qwg_aq_slice_dot2<BITS>(p + st2, byteInGroup, lo0, hi0, lo1, hi1, sumX01);
@@ -162,15 +168,18 @@ static inline void qwg_moe_gateup_aq_f32_r1_body(device const char*  w,
             accM[0] += float4(d0.x, d1.x, d2.x, d3.x);
             accM[1] += float4(d0.y, d1.y, d2.y, d3.y);
             if (mCount == 3u) {
-                const float sumX2 = qwg_aq_load_prescaled32_f32<BITS>(x + (size_t)tokIds[2] * K + col, lo0, hi0);
+                const size_t xr2 = (gStride > 0u) ? ((size_t)tokIds[2] * gStride + gIdx) : (size_t)tokIds[2];
+                const float sumX2 = qwg_aq_load_prescaled32_f32<BITS>(x + xr2 * K + col, lo0, hi0);
                 accM[2].x += qwg_aq_slice_dot<BITS>(p, byteInGroup, lo0, hi0, sumX2);
                 accM[2].y += qwg_aq_slice_dot<BITS>(p + st1, byteInGroup, lo0, hi0, sumX2);
                 accM[2].z += qwg_aq_slice_dot<BITS>(p + st2, byteInGroup, lo0, hi0, sumX2);
                 accM[2].w += qwg_aq_slice_dot<BITS>(p + st3, byteInGroup, lo0, hi0, sumX2);
             } else if (mCount == 4u) {
+                const size_t xr2 = (gStride > 0u) ? ((size_t)tokIds[2] * gStride + gIdx) : (size_t)tokIds[2];
+                const size_t xr3 = (gStride > 0u) ? ((size_t)tokIds[3] * gStride + gIdx) : (size_t)tokIds[3];
                 const float2 sumX23 = float2(
-                    qwg_aq_load_prescaled32_f32<BITS>(x + (size_t)tokIds[2] * K + col, lo0, hi0),
-                    qwg_aq_load_prescaled32_f32<BITS>(x + (size_t)tokIds[3] * K + col, lo1, hi1));
+                    qwg_aq_load_prescaled32_f32<BITS>(x + xr2 * K + col, lo0, hi0),
+                    qwg_aq_load_prescaled32_f32<BITS>(x + xr3 * K + col, lo1, hi1));
                 const float2 e0 = qwg_aq_slice_dot2<BITS>(p, byteInGroup, lo0, hi0, lo1, hi1, sumX23);
                 const float2 e1 = qwg_aq_slice_dot2<BITS>(p + st1, byteInGroup, lo0, hi0, lo1, hi1, sumX23);
                 const float2 e2 = qwg_aq_slice_dot2<BITS>(p + st2, byteInGroup, lo0, hi0, lo1, hi1, sumX23);
@@ -204,7 +213,7 @@ static inline void qwg_moe_gateup_aq_f32_r1_body(device const char*  w,
     if (r >= N) return;
     const uint expert = isCold ? (rawExpert - residentE) : rawExpert;
     device const char* wSrc = isCold ? coldW : w;
-    const float v = qwg_gemv_aq_row_f32<BITS, GROUP>(wSrc, x + (size_t)t * K, expert * N + r, K, lane);
+    const float v = qwg_gemv_aq_row_f32<BITS, GROUP>(wSrc, x + xRow0 * K, expert * N + r, K, lane);
     if (lane == 0u) out[(t * realE + k) * N + r] = v;
 }
 
@@ -234,16 +243,20 @@ static inline void qwg_moe_down_shared_combine_aq_f32_body(device const char*  w
                                                            uint2               tg,
                                                            uint                sgi,
                                                            uint                lane) {
-    const uint r0 = (tg.x * 4u + sgi) * 4u, t = tg.y;
+    const uint numGroups = (E >> 11u) & 0x1Fu;
+    const uint r0 = (tg.x * 4u + sgi) * 4u;
+    const uint t = (numGroups > 0u) ? (tg.y / numGroups) : tg.y;
+    const uint targetGroup = (numGroups > 0u) ? (tg.y % numGroups) : 0u;
     const uint rowsLeft = (r0 < N) ? (N - r0) : 0u;
     if (rowsLeft == 0u) return;
     const uint filterMode = (E >> 30u) & 3u;
     const uint residentE = (E >> 16u) & 0x3FFFu;
-    const uint numToks = (E >> 8u) & 0x7u;
+    const uint numToks = (numGroups > 0u) ? 0u : ((E >> 8u) & 0x7u);
     const uint realE = E & 0xFFu;
     const bool writeOut16 = (hasOut16 & 1u) != 0u;
     const bool routeOutput = (hasOut16 & 2u) != 0u;
     const bool skipShared = (hasOut16 & 4u) != 0u;
+    const bool tokenIndexedX = (hasOut16 & 8u) != 0u;
     const uint nSlices = K >> 5u;
     if (numToks >= 2u) {
         constexpr uint groupBytes = 4u + ((GROUP * BITS) >> 3);
@@ -256,7 +269,7 @@ static inline void qwg_moe_down_shared_combine_aq_f32_body(device const char*  w
                 const uint slot0 = t0 * realE + k0;
                 const int rawExpSigned = ids[slot0];
                 if (rawExpSigned < 0) continue;
-                const uint rawExp = uint(rawExpSigned);
+                const uint rawExp = uint(rawExpSigned) & 0xFFFFu;
                 const bool isCold = (residentE > 0u) && (rawExp >= residentE);
                 if ((filterMode == 1u && isCold) || (filterMode == 2u && !isCold)) continue;
                 bool seen = false;
@@ -284,8 +297,10 @@ static inline void qwg_moe_down_shared_combine_aq_f32_body(device const char*  w
                 device const char* wSrc = isCold ? coldWBytes : wBytes;
                 for (uint pair = 0u; pair < mCount; pair += 2u) {
                     const uint sA = mSlot[pair], tA = mTok[pair];
+                    const uint xRowA = tokenIndexedX ? tA : sA;
                     if (pair + 1u < mCount) {
                         const uint sB = mSlot[pair + 1u], tB = mTok[pair + 1u];
+                        const uint xRowB = tokenIndexedX ? tB : sB;
                         float4 vx0 = float4(0.0f), vx1 = float4(0.0f);
                         if (nSlices <= 32u && rowsLeft >= 4u) {
                             if (lane < nSlices) {
@@ -295,8 +310,8 @@ static inline void qwg_moe_down_shared_combine_aq_f32_body(device const char*  w
                                 const uint byteInGroup = sub * slicePayloadBytes;
                                 float4 lo0[4], hi0[4], lo1[4], hi1[4];
                                 const float2 sumX = float2(
-                                    qwg_aq_load_prescaled32_f32<BITS>(x + (size_t)sA * K + (lane << 5u), lo0, hi0),
-                                    qwg_aq_load_prescaled32_f32<BITS>(x + (size_t)sB * K + (lane << 5u), lo1, hi1));
+                                    qwg_aq_load_prescaled32_f32<BITS>(x + (size_t)xRowA * K + (lane << 5u), lo0, hi0),
+                                    qwg_aq_load_prescaled32_f32<BITS>(x + (size_t)xRowB * K + (lane << 5u), lo1, hi1));
                                 device const char* r0p = wSrc + (size_t)(wExp * N + r0) * rowBytes + hOff;
                                 const float2 d0 = qwg_aq_slice_dot2<BITS>(r0p, byteInGroup, lo0, hi0, lo1, hi1, sumX);
                                 const float2 d1 = qwg_aq_slice_dot2<BITS>(r0p + rowBytes, byteInGroup, lo0, hi0, lo1, hi1, sumX);
@@ -314,8 +329,8 @@ static inline void qwg_moe_down_shared_combine_aq_f32_body(device const char*  w
                             const uint upHalf = lane >> 4u, hl = lane & 15u;
                             const uint rowBase = wExp * N + r0 + upHalf * 2u;
                             device const char* r0p = wSrc + (size_t)rowBase * rowBytes;
-                            device const float* xs0 = x + (size_t)sA * K;
-                            device const float* xs1 = x + (size_t)sB * K;
+                            device const float* xs0 = x + (size_t)xRowA * K;
+                            device const float* xs1 = x + (size_t)xRowB * K;
                             float2 v0 = float2(0.0f), v1 = float2(0.0f);
                             for (uint s = hl; s < nSlices; s += 16u) {
                                 const uint gIdx = s / slicesPerGroup;
@@ -340,7 +355,7 @@ static inline void qwg_moe_down_shared_combine_aq_f32_body(device const char*  w
                             vx0 = float4(v0.x, v0.y, v0Hi.x, v0Hi.y);
                             vx1 = float4(v1.x, v1.y, v1Hi.x, v1Hi.y);
                         } else {
-                            qwg_moe_rows4_aq_f32_2<BITS, GROUP>(wSrc, x + (size_t)sA * K, x + (size_t)sB * K,
+                            qwg_moe_rows4_aq_f32_2<BITS, GROUP>(wSrc, x + (size_t)xRowA * K, x + (size_t)xRowB * K,
                                                                 wExp * N + r0, rowsLeft, K, lane, vx0, vx1);
                         }
                         if (routeOutput) {
@@ -361,7 +376,7 @@ static inline void qwg_moe_down_shared_combine_aq_f32_body(device const char*  w
                                 const size_t hOff = size_t(gIdx) * groupBytes;
                                 const uint byteInGroup = sub * slicePayloadBytes;
                                 float4 lo0[4], hi0[4];
-                                const float xSum = qwg_aq_load_prescaled32_f32<BITS>(x + (size_t)sA * K + (lane << 5u), lo0, hi0);
+                                const float xSum = qwg_aq_load_prescaled32_f32<BITS>(x + (size_t)xRowA * K + (lane << 5u), lo0, hi0);
                                 device const char* r0p = wSrc + (size_t)(wExp * N + r0) * rowBytes + hOff;
                                 vx0.x = qwg_aq_slice_dot<BITS>(r0p, byteInGroup, lo0, hi0, xSum);
                                 vx0.y = qwg_aq_slice_dot<BITS>(r0p + rowBytes, byteInGroup, lo0, hi0, xSum);
@@ -377,7 +392,7 @@ static inline void qwg_moe_down_shared_combine_aq_f32_body(device const char*  w
                             const uint upHalf = lane >> 4u, hl = lane & 15u;
                             const uint rowBase = wExp * N + r0 + upHalf * 2u;
                             device const char* r0p = wSrc + (size_t)rowBase * rowBytes;
-                            device const float* xs0 = x + (size_t)sA * K;
+                            device const float* xs0 = x + (size_t)xRowA * K;
                             float2 v0 = float2(0.0f);
                             for (uint s = hl; s < nSlices; s += 16u) {
                                 const uint gIdx = s / slicesPerGroup;
@@ -396,7 +411,7 @@ static inline void qwg_moe_down_shared_combine_aq_f32_body(device const char*  w
                             const float2 v0Hi = simd_shuffle_down(v0, 16);
                             vx0 = float4(v0.x, v0.y, v0Hi.x, v0Hi.y);
                         } else {
-                            vx0 = qwg_moe_rows4_aq_f32<BITS, GROUP>(wSrc, x + (size_t)sA * K, wExp * N + r0, rowsLeft, K, lane);
+                            vx0 = qwg_moe_rows4_aq_f32<BITS, GROUP>(wSrc, x + (size_t)xRowA * K, wExp * N + r0, rowsLeft, K, lane);
                         }
                         if (routeOutput) {
                             if (lane == 0u) qwg_moe_write_route4_aq(out, sA, N, r0, rowsLeft, vx0);
@@ -449,7 +464,9 @@ static inline void qwg_moe_down_shared_combine_aq_f32_body(device const char*  w
             const uint slot = t * realE + k;
             const int rawExpSigned = ids[slot];
             if (rawExpSigned < 0) continue;
-            const uint rawExp = uint(rawExpSigned);
+            const uint rawExpUnsigned = uint(rawExpSigned);
+            if (numGroups > 0u && ((rawExpUnsigned >> 16u) & 0x7Fu) != targetGroup) continue;
+            const uint rawExp = rawExpUnsigned & 0xFFFFu;
             const bool isCold = (residentE > 0u) && (rawExp >= residentE);
             if ((filterMode == 1u && isCold) || (filterMode == 2u && !isCold)) continue;
             const uint wExp = isCold ? (rawExp - residentE) : rawExp;
@@ -458,7 +475,7 @@ static inline void qwg_moe_down_shared_combine_aq_f32_body(device const char*  w
             float4 vx = float4(0.0f);
             if (active) {
                 float4 lo[4], hi[4];
-                const float xSum = qwg_aq_load_prescaled32_f32<BITS>(x + (size_t)slot * K + (lane << 5u), lo, hi);
+                const float xSum = qwg_aq_load_prescaled32_f32<BITS>(x + (size_t)(tokenIndexedX ? t : slot) * K + (lane << 5u), lo, hi);
                 device const char* r0p = wSrc + (size_t)rowBase * rowBytes + hOff;
                 vx.x = qwg_aq_slice_dot<BITS>(r0p, byteInGroup, lo, hi, xSum);
                 vx.y = qwg_aq_slice_dot<BITS>(r0p + rowBytes, byteInGroup, lo, hi, xSum);
@@ -492,14 +509,16 @@ static inline void qwg_moe_down_shared_combine_aq_f32_body(device const char*  w
             const uint slot = t * realE + k;
             const int rawExpSigned = ids[slot];
             if (rawExpSigned < 0) continue;
-            const uint rawExp = uint(rawExpSigned);
+            const uint rawExpUnsigned = uint(rawExpSigned);
+            if (numGroups > 0u && ((rawExpUnsigned >> 16u) & 0x7Fu) != targetGroup) continue;
+            const uint rawExp = rawExpUnsigned & 0xFFFFu;
             const bool isCold = (residentE > 0u) && (rawExp >= residentE);
             if ((filterMode == 1u && isCold) || (filterMode == 2u && !isCold)) continue;
             const uint wExp = isCold ? (rawExp - residentE) : rawExp;
             device const char* wSrc = isCold ? coldWBytes : wBytes;
             const uint rowBase = wExp * N + r0 + upHalf * 2u;
             device const char* r0p = wSrc + (size_t)rowBase * rowBytes;
-            device const char* xs = (device const char*)(x + (size_t)slot * K);
+            device const char* xs = (device const char*)(x + (size_t)(tokenIndexedX ? t : slot) * K);
             float2 vx = float2(0.0f);
             for (uint s = hl; s < nSlices; s += 16u) {
                 const uint gIdx = s / slicesPerGroup;
@@ -534,12 +553,14 @@ static inline void qwg_moe_down_shared_combine_aq_f32_body(device const char*  w
             const uint slot = t * realE + k;
             const int rawExpSigned = ids[slot];
             if (rawExpSigned < 0) continue;
-            const uint rawExp = uint(rawExpSigned);
+            const uint rawExpUnsigned = uint(rawExpSigned);
+            if (numGroups > 0u && ((rawExpUnsigned >> 16u) & 0x7Fu) != targetGroup) continue;
+            const uint rawExp = rawExpUnsigned & 0xFFFFu;
             const bool isCold = (residentE > 0u) && (rawExp >= residentE);
             if ((filterMode == 1u && isCold) || (filterMode == 2u && !isCold)) continue;
             const uint wExp = isCold ? (rawExp - residentE) : rawExp;
             device const char* wSrc = isCold ? coldWBytes : wBytes;
-            const float4 vx = qwg_moe_rows4_aq_f32<BITS, GROUP>(wSrc, x + (size_t)slot * K, wExp * N + r0, rowsLeft, K, lane);
+            const float4 vx = qwg_moe_rows4_aq_f32<BITS, GROUP>(wSrc, x + (size_t)(tokenIndexedX ? t : slot) * K, wExp * N + r0, rowsLeft, K, lane);
             if (routeOutput) {
                 if (lane == 0u) {
                     const size_t rb = size_t(slot) * N + r0;
@@ -555,23 +576,25 @@ static inline void qwg_moe_down_shared_combine_aq_f32_body(device const char*  w
     }
     if (routeOutput) return;
     if (lane == 0u) {
-        const size_t base = (size_t)t * N + r0;
-        const float g = skipShared ? 0.0f : gate[t];
-        const float y0 = acc.x + ((filterMode == 2u) ? out[base] : (skipShared ? 0.0f : (g * shared[base])));
+        const uint outRow = (numGroups > 0u) ? tg.y : t;
+        const size_t base = (size_t)outRow * N + r0;
+        const bool effSkip = skipShared || numGroups > 0u;
+        const float g = effSkip ? 0.0f : gate[t];
+        const float y0 = acc.x + ((filterMode == 2u) ? out[base] : (effSkip ? 0.0f : (g * shared[base])));
         out[base] = y0;
         if (writeOut16) out16[base] = half(y0);
         if (rowsLeft > 1u) {
-            const float y1 = acc.y + ((filterMode == 2u) ? out[base + 1u] : (skipShared ? 0.0f : (g * shared[base + 1u])));
+            const float y1 = acc.y + ((filterMode == 2u) ? out[base + 1u] : (effSkip ? 0.0f : (g * shared[base + 1u])));
             out[base + 1u] = y1;
             if (writeOut16) out16[base + 1u] = half(y1);
         }
         if (rowsLeft > 2u) {
-            const float y2 = acc.z + ((filterMode == 2u) ? out[base + 2u] : (skipShared ? 0.0f : (g * shared[base + 2u])));
+            const float y2 = acc.z + ((filterMode == 2u) ? out[base + 2u] : (effSkip ? 0.0f : (g * shared[base + 2u])));
             out[base + 2u] = y2;
             if (writeOut16) out16[base + 2u] = half(y2);
         }
         if (rowsLeft > 3u) {
-            const float y3 = acc.w + ((filterMode == 2u) ? out[base + 3u] : (skipShared ? 0.0f : (g * shared[base + 3u])));
+            const float y3 = acc.w + ((filterMode == 2u) ? out[base + 3u] : (effSkip ? 0.0f : (g * shared[base + 3u])));
             out[base + 3u] = y3;
             if (writeOut16) out16[base + 3u] = half(y3);
         }

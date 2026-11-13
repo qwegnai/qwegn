@@ -122,9 +122,57 @@ public enum QWToolCallParser {
         return (calls, incomplete)
     }
 
+    static func firstCompleteToolCallEnd(in text: String) -> String.Index? {
+        guard let open = text.range(of: "<tool_call>") else { return nil }
+        return matchingToolCallClose(in: text[open.upperBound...])?.upperBound
+    }
+
+    private static func isBalancedToolPayload(_ raw: Substring) -> Bool {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("{") && trimmed.hasSuffix("}") {
+            var depth = 0
+            var inString = false
+            var escaped = false
+            let lastIdx = trimmed.index(before: trimmed.endIndex)
+            for idx in trimmed.indices {
+                let ch = trimmed[idx]
+                if inString {
+                    if escaped {
+                        escaped = false
+                    } else if ch == "\\" {
+                        escaped = true
+                    } else if ch == "\"" {
+                        inString = false
+                    }
+                    continue
+                }
+                if ch == "\"" {
+                    inString = true
+                } else if ch == "{" {
+                    depth += 1
+                } else if ch == "}" {
+                    depth -= 1
+                    if depth < 0 { return false }
+                    if depth == 0 && idx < lastIdx { return false }
+                }
+            }
+            return !inString && depth == 0
+        }
+        if trimmed.hasPrefix("<function=") && trimmed.hasSuffix("</function>") {
+            return trimmed.components(separatedBy: "<function=").count == 2
+                && trimmed.components(separatedBy: "</function>").count == 2
+                && trimmed.components(separatedBy: "<parameter=").count
+                    == trimmed.components(separatedBy: "</parameter>").count
+        }
+        return false
+    }
+
     private static func matchingToolCallClose(in afterOpen: Substring) -> Range<String.Index>? {
         var searchFrom = afterOpen.startIndex
         while let close = afterOpen[searchFrom...].range(of: "</tool_call>") {
+            if isBalancedToolPayload(afterOpen[..<close.lowerBound]) {
+                return close
+            }
             let tail = afterOpen[close.upperBound...].drop(while: { $0.isWhitespace })
             if tail.isEmpty || tail.hasPrefix("<tool_call>") || tail.range(of: "</tool_call>") == nil {
                 return close

@@ -35,6 +35,9 @@ kernel void qwg_moe_route(device const float* logits     [[buffer(0)]],
                           constant uint&      normTopK   [[buffer(5)]],
                           device const float* bias       [[buffer(6)]],
                           device const float* scaleParam [[buffer(7)]],
+                          device const int*   latentLabels [[buffer(8)]],
+                          device int*         groupIds     [[buffer(9)]],
+                          constant uint&      numGroups    [[buffer(10)]],
                           uint t    [[threadgroup_position_in_grid]],
                           uint lane [[thread_position_in_threadgroup]]) {
     const bool doNorm = (normTopK & 1u) != 0u;
@@ -75,6 +78,7 @@ kernel void qwg_moe_route(device const float* logits     [[buffer(0)]],
     bool taken[16];
     for (uint j = 0u; j < 16u; j++) taken[j] = false;
     float wsel[16];
+    uint activeMask = 0u;
     for (uint r = 0u; r < K; r++) {
         float bv = -INFINITY;
         uint bi = 0xFFFFFFFFu;
@@ -92,7 +96,13 @@ kernel void qwg_moe_route(device const float* logits     [[buffer(0)]],
         for (uint j = 0u; j < 16u; j++) if (wj == j) own = (hasBias || splitFeature) ? ex[j] : p[j];
         const float pw = simd_broadcast(own, ushort(w & 31u));
         if (lane == 0u) {
-            idx[t * K + r] = int(w);
+            if (numGroups > 0u) {
+                const int g = latentLabels[w];
+                activeMask |= (1u << uint(g));
+                idx[t * K + r] = (int(numGroups) << 23) | (g << 16) | int(w);
+            } else {
+                idx[t * K + r] = int(w);
+            }
             wsel[r] = pw;
         }
     }
@@ -104,9 +114,14 @@ kernel void qwg_moe_route(device const float* logits     [[buffer(0)]],
             if (hasBias || splitFeature) acc += 1e-20f;
         }
         for (uint r = 0u; r < K; r++) {
-            const uint eid = uint(idx[t * K + r]);
+            const uint eid = uint(idx[t * K + r]) & 0xFFFFu;
             const float scale = hasScaleParam ? scaleParam[eid] : rScale;
             wts[t * K + r] = (doNorm ? (wsel[r] / acc) : wsel[r]) * scale;
+        }
+        if (numGroups > 0u) {
+            for (uint g = 0u; g < numGroups; ++g) {
+                groupIds[t * numGroups + g] = ((activeMask & (1u << g)) != 0u) ? int(g) : -1;
+            }
         }
     }
 }
@@ -124,6 +139,9 @@ kernel void qwg_moe_route_decode(device const float* logits0    [[buffer(0)]],
                                  constant uint&      IS         [[buffer(8)]],
                                  device const float* bias       [[buffer(9)]],
                                  device const float* scaleParam [[buffer(10)]],
+                                 device const int*   latentLabels [[buffer(11)]],
+                                 device int*         groupIds     [[buffer(12)]],
+                                 constant uint&      numGroups    [[buffer(13)]],
                                  uint2 tgp  [[threadgroup_position_in_grid]],
                                  uint2 tpt  [[thread_position_in_threadgroup]],
                                  uint sgi  [[simdgroup_index_in_threadgroup]],
@@ -280,6 +298,7 @@ kernel void qwg_moe_route_decode(device const float* logits0    [[buffer(0)]],
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     const bool activeSG = (lane < JN);
+    uint activeMask = 0u;
     for (uint r = 0u; r < K; r++) {
         const uint cur = r & 1u;
         const uint nxt = cur ^ 1u;
@@ -288,7 +307,13 @@ kernel void qwg_moe_route_decode(device const float* logits0    [[buffer(0)]],
         const float vMax = simd_max(bv);
         const uint w = simd_min((bv == vMax) ? bi : 0xFFFFFFFFu);
         if (tid == 0u) {
-            idx[r] = int(w);
+            if (numGroups > 0u) {
+                const int g = latentLabels[w];
+                activeMask |= (1u << uint(g));
+                idx[r] = (int(numGroups) << 23) | (g << 16) | int(w);
+            } else {
+                idx[r] = int(w);
+            }
             if (hasBias || splitFeature) {
                 float s = 1.0f / (1.0f + exp(-logits[w]));
                 if (splitFeature) s += 1.0f / (1.0f + exp(-logits[E + w]));
@@ -322,8 +347,14 @@ kernel void qwg_moe_route_decode(device const float* logits0    [[buffer(0)]],
             if (hasBias || splitFeature) acc += 1e-20f;
         }
         for (uint r = 0u; r < K; r++) {
-            const float scale = hasScaleParam ? scaleParam[uint(idx[r])] : rScale;
+            const float scale = hasScaleParam ? scaleParam[uint(idx[r]) & 0xFFFFu] : rScale;
             wts[r] = (doNorm ? (wsel[r] / acc) : wsel[r]) * scale;
+        }
+        if (numGroups > 0u) {
+            device int* gOut = groupIds + row * numGroups;
+            for (uint g = 0u; g < numGroups; ++g) {
+                gOut[g] = ((activeMask & (1u << g)) != 0u) ? int(g) : -1;
+            }
         }
     }
 }

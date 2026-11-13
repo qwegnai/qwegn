@@ -16,13 +16,26 @@ public struct QWSamplerConfig: Sendable, Hashable {
     public var seed: UInt64
     public var uniformVersion: QWPhilox.UniformVersion
     public var repetitionPenalty: Float
+    public var hasExplicitSeed: Bool
     public init(temperature: Float = 0.7, topK: Int = 64, topP: Float = 0.9,
                 seed: UInt64 = 0, uniformVersion: QWPhilox.UniformVersion = .legacyRounded32,
-                repetitionPenalty: Float = 1.0) {
+                repetitionPenalty: Float = 1.0, hasExplicitSeed: Bool = false) {
         self.temperature = temperature; self.topK = topK
         self.topP = topP; self.seed = seed
         self.uniformVersion = uniformVersion
         self.repetitionPenalty = repetitionPenalty
+        self.hasExplicitSeed = hasExplicitSeed
+    }
+
+    public static func == (lhs: QWSamplerConfig, rhs: QWSamplerConfig) -> Bool {
+        lhs.temperature == rhs.temperature && lhs.topK == rhs.topK && lhs.topP == rhs.topP
+            && lhs.seed == rhs.seed && lhs.uniformVersion == rhs.uniformVersion
+            && lhs.repetitionPenalty == rhs.repetitionPenalty
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(temperature); hasher.combine(topK); hasher.combine(topP)
+        hasher.combine(seed); hasher.combine(uniformVersion); hasher.combine(repetitionPenalty)
     }
 
     /// True when the configuration asks for deterministic greedy argmax decoding.
@@ -47,7 +60,8 @@ public struct QWSamplerConfig: Sendable, Hashable {
                   topP: greedyWithPenalty ? 1 : Float(parameters.topP),
                   seed: parameters.resolvedSeed(),
                   uniformVersion: uniformVersion,
-                  repetitionPenalty: Float(parameters.repetitionPenalty))
+                  repetitionPenalty: Float(parameters.repetitionPenalty),
+                  hasExplicitSeed: parameters.hasExplicitSeed)
     }
 }
 

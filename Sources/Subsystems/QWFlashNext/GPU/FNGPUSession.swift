@@ -446,7 +446,9 @@ extension FNGPUEngine {
                                     relaxedRows: session.mtpSourcedDrafts + 1,
                                     relaxedMinProb: session.relaxedMinProb)
         let verifyMs = Date().timeIntervalSince(stepT0) * 1000.0
-        session.chainPolicy.observeRound(rows: activeRows, ms: verifyMs)
+        if !session.sampler.config.hasExplicitSeed {
+            session.chainPolicy.observeRound(rows: activeRows, ms: verifyMs)
+        }
         let v = head.argmaxTokens(count: activeRows)
         let mTok = stepMTP?.mtpHead.argmaxToken() ?? session.mtpDraft
         session.specProposals += dCount
@@ -551,7 +553,7 @@ extension FNGPUEngine {
                     session.mtpDraft = stepMTP.mtpHead.argmaxToken()
                 }
                 let chainMs = Date().timeIntervalSince(chainT0) * 1000
-                if passes > 0 {
+                if passes > 0 && !session.sampler.config.hasExplicitSeed {
                     session.chainPolicy.observeChain(passes: passes, ms: chainMs)
                 }
                 FNMTPChain.ms += chainMs

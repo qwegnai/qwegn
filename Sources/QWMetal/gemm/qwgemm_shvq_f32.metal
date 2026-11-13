@@ -142,25 +142,40 @@ static inline void qwg_gemv_shvq_f32_v4_body(device const char*  w,
     }
     if (ep == 3u) {
         const uint rowBase = tg.x * 32u;
+        const bool multi = M > 1u && M <= 4u;
+        const uint mN = multi ? M : 1u;
         for (uint pass = 0u; pass < 2u; ++pass) {
             const uint row0 = rowBase + pass * 16u + sg * 4u;
-            float4 acc = float4(0.0f);
-            if (row0 < N) acc = qwg_gemv_shvq_rows4_f32<BITS, GROUP>(w, x + (size_t)tg.y * K, row0, N, K, lane, tgLut);
+            float4 acc[4] = {float4(0.0f), float4(0.0f), float4(0.0f), float4(0.0f)};
+            if (row0 < N) {
+                if (multi) {
+                    if (M == 2u) {
+                        qwg_gemv_shvq_rows4_m2_f32<BITS, GROUP>(w, x, x + K, row0, N, K, lane, acc[0], acc[1], tgLut);
+                    } else {
+                        qwg_gemv_shvq_rows4_m4_f32<BITS, GROUP>(w, x, M, row0, N, K, lane, acc, tgLut);
+                    }
+                } else {
+                    acc[0] = qwg_gemv_shvq_rows4_f32<BITS, GROUP>(w, x + (size_t)tg.y * K, row0, N, K, lane, tgLut);
+                }
+            }
             if (lane == 0u) {
-                const float o[4] = {acc.x, acc.y, acc.z, acc.w};
-                for (uint r = 0u; r < 4u; ++r) {
-                    const uint col = pass * 16u + sg * 4u + r;
-                    float v = (rowBase + col < N) ? o[r] : 0.0f;
-                    const float z = v / scale;
-                    tgC[col] = z / (1.0f + exp(-z));
+                for (uint m = 0u; m < mN; ++m) {
+                    const float o[4] = {acc[m].x, acc[m].y, acc[m].z, acc[m].w};
+                    for (uint r = 0u; r < 4u; ++r) {
+                        const uint col = pass * 16u + sg * 4u + r;
+                        float v = (rowBase + col < N) ? o[r] : 0.0f;
+                        const float z = v / scale;
+                        tgC[m * 32u + col] = z / (1.0f + exp(-z));
+                    }
                 }
             }
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
-        if (sg == 0u) {
-            const float v = qwg_fwht32_lane_f32(tgC[lane], lane);
+        if (sg < mN) {
+            const float v = qwg_fwht32_lane_f32(tgC[sg * 32u + lane], lane);
             const uint row = rowBase + lane;
-            if (row < N) y[(size_t)tg.y * N + row] = v;
+            const size_t outRow = multi ? size_t(sg) : size_t(tg.y);
+            if (row < N) y[outRow * N + row] = v;
         }
         return;
     }
@@ -404,7 +419,7 @@ static inline void qwg_gemv_shvq_f32_v4_am2_body(device const char*  w,
         uint  tid  [[thread_index_in_threadgroup]],                                   \
         uint  sg   [[simdgroup_index_in_threadgroup]],                                \
         uint  lane [[thread_index_in_simdgroup]]) {                                   \
-        threadgroup float tgC[32];                                                    \
+        threadgroup float tgC[4 * 32];                                                \
         threadgroup ShvqTgLut<BITS> tgLut;                                            \
         qwg_gemv_shvq_f32_v4_body<BITS, GROUP>(w, x, y, N, K, epi, scale, tg, tid, sg, lane, tgC, tgLut); \
     }                                                                                 \

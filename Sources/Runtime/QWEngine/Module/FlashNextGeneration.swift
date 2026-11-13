@@ -119,7 +119,7 @@ extension FlashNextModule {
             useSpec: useSpec && !request.collectLogprobs,
             draftMode: draftMode,
             maxDrafts: max(1, min(FNGPUSessionData.defaultMTPDrafts, request.speculative.effectiveDrafts)),
-            relaxedMargin: request.speculative.effectiveRelaxedMargin,
+            relaxedMargin: request.sampling.hasExplicitSeed ? 0 : request.speculative.effectiveRelaxedMargin,
             relaxedMinProb: request.speculative.effectiveRelaxedMinProb,
             quadraticSeeding: request.speculative.mtpQuadraticSeeding,
             collectLogprobs: request.collectLogprobs,

@@ -15,7 +15,10 @@ extension QWGemm {
                                         bias: QWTensorValue? = nil,
                                         expertBudget: Int = 0,
                                         splitFeature: Bool = false,
-                                        routedScaleParam: QWTensorValue? = nil) throws {
+                                        routedScaleParam: QWTensorValue? = nil,
+                                        latentLabels: QWTensorValue? = nil,
+                                        groupIds: QWTensorValue? = nil,
+                                        numGroups: Int = 0) throws {
         precondition(experts % 32 == 0 && experts <= 512 && topK <= 16, "route needs E % 32 == 0, E <= 512, K <= 16")
         let hasShared = guSh != nil && actSh != nil && sharedIntermediate > 0
         let normFlags = (normTopK ? 1 : 0)
@@ -28,6 +31,9 @@ extension QWGemm {
             enc.setUInt32s(experts, topK, normFlags, startIndex: 3)
             (bias ?? logits).bind(enc, index: 9)
             (routedScaleParam ?? logits).bind(enc, index: 10)
+            (latentLabels ?? idx).bind(enc, index: 11)
+            (groupIds ?? idx).bind(enc, index: 12)
+            enc.setUInt32s(numGroups, startIndex: 13)
             if let gu = guSh, let act = actSh, sharedIntermediate > 0 {
                 enc.bindTensors(gu, act, startIndex: 6)
                 enc.setUInt32s(sharedIntermediate, startIndex: 8)
@@ -45,6 +51,9 @@ extension QWGemm {
             enc.setUInt32s(experts, topK, normFlags, startIndex: 3)
             (bias ?? logits).bind(enc, index: 6)
             (routedScaleParam ?? logits).bind(enc, index: 7)
+            (latentLabels ?? idx).bind(enc, index: 8)
+            (groupIds ?? idx).bind(enc, index: 9)
+            enc.setUInt32s(numGroups, startIndex: 10)
             enc.dispatchThreadgroups(MTLSize(width: rows, height: 1, depth: 1),
                                      threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1))
         }
@@ -57,6 +66,9 @@ extension QWGemm {
             enc.setUInt32s(max(topK, expertBudget), startIndex: 8)
             (bias ?? logits).bind(enc, index: 9)
             (routedScaleParam ?? logits).bind(enc, index: 10)
+            (latentLabels ?? idx).bind(enc, index: 11)
+            (groupIds ?? idx).bind(enc, index: 12)
+            enc.setUInt32s(0, startIndex: 13)
             enc.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
                                      threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1))
         }

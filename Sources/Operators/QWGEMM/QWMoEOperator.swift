@@ -68,6 +68,11 @@ public enum QWMoEOperator {
         public let sharedDown: QWWeightView?
         public let sharedGateScalar: QWTensorValue?
         public let latent: LatentBottleneck?
+        public let latentD: QWWeightView?
+        public let latentU: QWWeightView?
+        public let latentLabels: QWTensorValue?
+        public let numLatentGroups: Int
+        public let latentDim: Int
         public let hidden: Int
         public let experts: Int
         public let topK: Int
@@ -86,6 +91,9 @@ public enum QWMoEOperator {
                     sharedGateUp: QWWeightView? = nil, sharedDown: QWWeightView? = nil,
                     sharedGateScalar: QWTensorValue? = nil,
                     latent: LatentBottleneck? = nil,
+                    latentD: QWWeightView? = nil, latentU: QWWeightView? = nil,
+                    latentLabels: QWTensorValue? = nil,
+                    numLatentGroups: Int = 0, latentDim: Int = 0,
                     hidden: Int, experts: Int, topK: Int,
                     intermediate: Int, sharedIntermediate: Int,
                     normTopK: Bool = true, reuseExpertsAcrossTokens: Bool = true,
@@ -103,6 +111,11 @@ public enum QWMoEOperator {
             self.sharedDown = sharedDown
             self.sharedGateScalar = sharedGateScalar
             self.latent = latent
+            self.latentD = latentD
+            self.latentU = latentU
+            self.latentLabels = latentLabels
+            self.numLatentGroups = numLatentGroups
+            self.latentDim = latentDim
             self.hidden = hidden
             self.experts = experts
             self.topK = topK
@@ -140,6 +153,11 @@ public enum QWMoEOperator {
         public let naxX16: QWTensorValue?
         public let naxY16: QWTensorValue?
         public let latent: LatentScratch?
+        public let groupIds: QWTensorValue?
+        public let onesRoute: QWTensorValue?
+        public let xLatent32: QWTensorValue?
+        public let xLatent16: QWTensorValue?
+        public let zLatent32: QWTensorValue?
         public let maxTileWidth: Int
 
         public init(xRot32: QWTensorValue, xPlain32: QWTensorValue,
@@ -152,7 +170,10 @@ public enum QWMoEOperator {
                     tileE: QWTensorValue?, tileR: QWTensorValue?, tileCount: QWTensorValue?,
                     gu16: QWTensorValue?, dnHi: QWTensorValue?, dnAcc: QWTensorValue,
                     naxX16: QWTensorValue?, naxY16: QWTensorValue? = nil,
-                    latent: LatentScratch? = nil, maxTileWidth: Int) {
+                    latent: LatentScratch? = nil,
+                    groupIds: QWTensorValue? = nil, onesRoute: QWTensorValue? = nil,
+                    xLatent32: QWTensorValue? = nil, xLatent16: QWTensorValue? = nil,
+                    zLatent32: QWTensorValue? = nil, maxTileWidth: Int) {
             self.xRot32 = xRot32; self.xPlain32 = xPlain32
             self.logits = logits; self.idx = idx; self.wts = wts
             self.gu32 = gu32; self.act32 = act32
@@ -164,6 +185,8 @@ public enum QWMoEOperator {
             self.gu16 = gu16; self.dnHi = dnHi; self.dnAcc = dnAcc
             self.naxX16 = naxX16; self.naxY16 = naxY16
             self.latent = latent
+            self.groupIds = groupIds; self.onesRoute = onesRoute
+            self.xLatent32 = xLatent32; self.xLatent16 = xLatent16; self.zLatent32 = zLatent32
             self.maxTileWidth = maxTileWidth
         }
     }
@@ -193,6 +216,16 @@ public enum QWMoEOperator {
             )
             return
         }
+        if w.numLatentGroups > 0 && w.latentDim > 0 && w.latentD != nil && w.latentU != nil && w.latentLabels != nil {
+            try encodeResidentGroupLatent(
+                &enc, hal: hal, weights: w, scratch: s, input: input,
+                out32: out32, out16: out16, rows: T,
+                supportsGroupedNaxPrefill: supportsGroupedNaxPrefill,
+                concurrentBarriers: concurrentBarriers,
+                rotateEncoder: rotateEncoder, profileStage: profileStage
+            )
+            return
+        }
         @inline(__always) func barrier() {
             if concurrentBarriers { enc.memoryBarrier(scope: .buffers) }
         }
@@ -202,7 +235,9 @@ public enum QWMoEOperator {
             && s.expOff != nil && s.sortedPair != nil && s.sortedTok != nil
             && s.invPerm != nil && s.tileE != nil && s.tileR != nil
             && s.tileCount != nil && s.gu16 != nil && s.dnHi != nil && s.naxX16 != nil
-        let skipRot32 = isGroupedNax && (ISh == 0 || (T >= 64 && H % 64 == 0 && (2 * ISh) % 64 == 0))
+        let skipRot32 = isGroupedNax && (
+            ISh == 0 || (T >= 64 && H % 64 == 0 && (2 * ISh) % 64 == 0)
+        )
 
         let xPlain: QWTensorValue
         let xRot: QWTensorValue

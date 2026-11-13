@@ -38,8 +38,13 @@ kernel void qwg_moe_group_pairs_f32(device const int* selected [[buffer(0)]],
     for (int e = int(tid); e < int(experts); e += 256)
         atomic_store_explicit(&tgCount[e], 0, memory_order_relaxed);
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    for (int i = int(tid); i < int(totalPairs); i += 256)
-        atomic_fetch_add_explicit(&tgCount[selected[i]], 1, memory_order_relaxed);
+    for (int i = int(tid); i < int(totalPairs); i += 256) {
+        const int rawS = selected[i];
+        if (rawS >= 0) {
+            const uint e = uint(rawS) & 0xFFFFu;
+            if (e < experts) atomic_fetch_add_explicit(&tgCount[e], 1, memory_order_relaxed);
+        }
+    }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     if (tid < 32u) {
         const uint lane = tid;
@@ -64,12 +69,24 @@ kernel void qwg_moe_group_pairs_f32(device const int* selected [[buffer(0)]],
         }
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
+    const bool directSlotTok = (writeInv & 2u) != 0u;
     for (int i = int(tid); i < int(totalPairs); i += 256) {
-        const int e = selected[i];
+        const int rawS = selected[i];
+        if (rawS < 0) continue;
+        const uint raw = uint(rawS);
+        const uint e = raw & 0xFFFFu;
+        if (e >= experts) continue;
         const int at = atomic_fetch_add_explicit(&tgCount[e], 1, memory_order_relaxed);
         sortedPairIdx[at] = i;
-        sortedTok[at] = i / int(topK);
-        if (writeInv != 0u) invPerm[i] = at;
+        if (directSlotTok) {
+            sortedTok[at] = i;
+        } else {
+            const uint gIdx = (raw >> 16u) & 0x7Fu;
+            const uint gStride = (raw >> 23u) & 0x7Fu;
+            const int t = i / int(topK);
+            sortedTok[at] = (gStride > 0u) ? (t * int(gStride) + int(gIdx)) : t;
+        }
+        if ((writeInv & 1u) != 0u) invPerm[i] = at;
     }
     if ((writeTiles & 1u) != 0u && tid < 32u) {
         const uint lane = tid;

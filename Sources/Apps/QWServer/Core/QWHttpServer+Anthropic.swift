@@ -107,6 +107,13 @@ extension QWHttpServer {
         let hasActiveTools = !(req.tools?.isEmpty ?? true) && !req.isToolChoiceNone
         let shouldThink = req.effectiveEnableThinking(defaultValue: thinkingEnabled)
 
+        do {
+            try self.actor.validateRequestCapabilities(req)
+        } catch {
+            sendAnthropicError(connection, status: 400, type: "invalid_request_error", message: "\(error)")
+            return
+        }
+
         if (payload["stream"] as? Bool) == true {
             sendSSEHeaders(connection)
 
@@ -387,10 +394,13 @@ extension QWHttpServer {
             case "thinking":
                 if let th = block["thinking"] as? String { reasoningParts.append(th) }
             case "image":
-                if let src = block["source"] as? [String: Any],
-                   let data = src["data"] as? String, !data.isEmpty {
-                    let mediaType = (src["media_type"] as? String) ?? "image/png"
-                    imageUrls.append("data:\(mediaType);base64,\(data)")
+                if let src = block["source"] as? [String: Any] {
+                    if let data = src["data"] as? String, !data.isEmpty {
+                        let mediaType = (src["media_type"] as? String) ?? "image/png"
+                        imageUrls.append("data:\(mediaType);base64,\(data)")
+                    } else if let url = src["url"] as? String, !url.isEmpty {
+                        imageUrls.append(url)
+                    }
                 }
             case "tool_use":
                 let id = (block["id"] as? String) ?? QWToolCallParser.generateCallId()

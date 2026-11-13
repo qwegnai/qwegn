@@ -143,8 +143,21 @@ extension QWEngineLifecycleActor {
         let endThinkTokenId = prepared.endThinkTokenId
         let userTextContainsImEnd = prepared.userTextContainsImEnd
         let jsonConstraint = prepared.jsonConstraint
-        let activeConstraint = prepared.activeConstraint
         let customStopStrings = prepared.customStopStrings
+        let reportedPromptTokenCount = effectivePromptTokens.count
+        let heal = Self.prepareTokenHeal(
+            prepared: prepared,
+            request: request,
+            promptTokens: effectivePromptTokens,
+            systemPrefixTokenCount: effectiveSystemPrefixTokenCount,
+            stops: stops,
+            tokenizer: tok,
+            vocabulary: loaded.descriptor.vocab,
+            supportsTokenConstraints: loaded.modelBackend.supportsTokenConstraints,
+            hasImages: !visualSpans.isEmpty
+        )
+        let genPromptTokens = heal.promptTokens
+        let activeGenConstraint = heal.constraint
 
         final class StreamCapture: @unchecked Sendable {
             let tok: QWTokenizer
@@ -152,6 +165,8 @@ extension QWEngineLifecycleActor {
             var fullText: String
             var emittedUTF8Count: Int = 0
             var pendingPrefix: String
+            var remainingHealUTF8: Int
+            var healedConsumedTokens: Int = 0
             var hasReceivedPiece: Bool = false
             var ttftSec: Double? = nil
             var inThinking: Bool
@@ -161,7 +176,8 @@ extension QWEngineLifecycleActor {
             let onToken: ((String) -> Void)?
             let onTokenLogprob: ((ChatLogprobTokenEntry) -> Void)?
             let modelBackend: any QWModelBackend
-            init(tok: QWTokenizer, initialPrefix: String, startsInThinking: Bool,
+            init(tok: QWTokenizer, initialPrefix: String, initialHealUTF8: Int,
+                 startsInThinking: Bool,
                  onToken: ((String) -> Void)?,
                  onTokenLogprob: ((ChatLogprobTokenEntry) -> Void)?,
                  modelBackend: any QWModelBackend) {
@@ -169,6 +185,7 @@ extension QWEngineLifecycleActor {
                 self.streamDecoder = QWStreamDecoder(tok)
                 self.fullText = initialPrefix
                 self.pendingPrefix = initialPrefix
+                self.remainingHealUTF8 = initialHealUTF8
                 self.inThinking = startsInThinking
                 self.onToken = onToken
                 self.onTokenLogprob = onTokenLogprob
@@ -193,21 +210,23 @@ extension QWEngineLifecycleActor {
         let capture = StreamCapture(
             tok: tok,
             initialPrefix: isConstrainedJson ? "{" : "",
+            initialHealUTF8: heal.stripUTF8Count,
             startsInThinking: shouldThink,
             onToken: onToken,
             onTokenLogprob: onTokenLogprob,
             modelBackend: loaded.modelBackend
         )
         let maxNew = request.maxTokens ?? request.maxCompletionTokens
-            ?? config.modelMaxLength.map { max(0, $0 - effectivePromptTokens.count) }
+            ?? config.modelMaxLength.map { max(0, $0 - reportedPromptTokenCount) }
             ?? config.maxTokens
+        let genMaxNew = heal.didPeel ? (maxNew + 1) : maxNew
         if request.ignoreEos == true || (request.minTokens ?? 0) >= maxNew {
             stops.removeAll()
         }
 
         let telemetry = QWEngineTelemetryRegistry.shared
-        telemetry.beginPrefill(promptTokens: effectivePromptTokens.count)
-        let promptTokCount = effectivePromptTokens.count
+        telemetry.beginPrefill(promptTokens: genPromptTokens.count)
+        let promptTokCount = genPromptTokens.count
         let stopOnSingleTool = (request.parallelToolCalls == false) && hasActiveTools
 
         let tokenCallback: @Sendable (Int) -> Bool = { id in
@@ -245,6 +264,19 @@ extension QWEngineLifecycleActor {
                 piece = decoded
             }
             guard !piece.isEmpty else { return true }
+
+            if capture.remainingHealUTF8 > 0 {
+                let pBytes = Array(piece.utf8)
+                if pBytes.count <= capture.remainingHealUTF8 {
+                    capture.remainingHealUTF8 -= pBytes.count
+                    capture.healedConsumedTokens += 1
+                    return true
+                }
+                let tail = Array(pBytes.dropFirst(capture.remainingHealUTF8))
+                capture.remainingHealUTF8 = 0
+                piece = String(decoding: tail, as: UTF8.self)
+                guard !piece.isEmpty else { return true }
+            }
 
             if !capture.hasReceivedPiece {
                 capture.hasReceivedPiece = true
@@ -293,8 +325,8 @@ extension QWEngineLifecycleActor {
                 return false
             }
 
-            if stopOnSingleTool, let closeRange = capture.fullText.range(of: "</tool_call>") {
-                capture.fullText = String(capture.fullText[..<closeRange.upperBound])
+            if stopOnSingleTool, let closeEnd = QWToolCallParser.firstCompleteToolCallEnd(in: capture.fullText) {
+                capture.fullText = String(capture.fullText[..<closeEnd])
                 capture.stoppedByCustomRule = true
                 capture.emitUpTo(capture.fullText.utf8.count)
                 return false
@@ -330,14 +362,14 @@ extension QWEngineLifecycleActor {
             paramsSource: requestCarriesSampling ? "request override"
                 : Self.samplingParamsSourceLabel(config.sourceSummary)))
 
-        let firstVisualOffset = visualSpans.map(\.tokenOffset).min() ?? effectivePromptTokens.count
+        let firstVisualOffset = visualSpans.map(\.tokenOffset).min() ?? genPromptTokens.count
         let retainPrefixLen: Int? = ((effectiveSystemPrefixTokenCount ?? 0) >= 128
             && (effectiveSystemPrefixTokenCount ?? 0) < firstVisualOffset)
             ? effectiveSystemPrefixTokenCount
             : nil
         let genRequest = QWModelGenerationRequest(
-            promptTokens: effectivePromptTokens,
-            maxNewTokens: maxNew,
+            promptTokens: genPromptTokens,
+            maxNewTokens: genMaxNew,
             sampling: sampling,
             stopTokenIds: stops,
             retainPrefixLength: retainPrefixLen,
@@ -345,8 +377,8 @@ extension QWEngineLifecycleActor {
             collectLogprobs: collectLP,
             topLogprobsCount: topLPCount,
             onTokenLogprob: logprobCallback,
-            constraint: activeConstraint,
-            exactSpeculation: isConstrainedJson,
+            constraint: activeGenConstraint,
+            exactSpeculation: isConstrainedJson || sampling.hasExplicitSeed,
             visualSpans: visualSpans
         )
 
@@ -465,8 +497,9 @@ extension QWEngineLifecycleActor {
             outcome: "ok"
         ))
 
+        let reportedCompletionTokens = max(0, metrics.tokens.count - capture.healedConsumedTokens)
         let truncated = !capture.stoppedByCustomRule
-            && (metrics.tokens.count >= maxNew)
+            && (reportedCompletionTokens >= maxNew)
             && (metrics.tokens.last.map { !stops.contains($0) } ?? true)
         let logprobEntries: [ChatLogprobTokenEntry]? = collectLP
             ? metrics.tokenLogprobs.map { Self.makeLogprobEntry($0, tokenizer: tok) }
@@ -475,8 +508,8 @@ extension QWEngineLifecycleActor {
 
         return ChatCompletionExecutionResult(
             content: fullText,
-            promptTokens: effectivePromptTokens.count,
-            completionTokens: metrics.tokens.count,
+            promptTokens: reportedPromptTokenCount,
+            completionTokens: reportedCompletionTokens,
             reasoningTokens: reasoningToks,
             cachedTokens: metrics.cacheHitTokens,
             truncated: truncated,
@@ -646,5 +679,71 @@ extension QWEngineLifecycleActor {
             prefixTokens: prefixTokens, systemTokenCount: resolvedSystemTokenCount))
         let tailTokens = try tok.encode(tailWire)
         return (prefixTokens + tailTokens, resolvedSystemTokenCount)
+    }
+
+    nonisolated public func validateRequestCapabilities(_ request: ChatCompletionRequest) throws {
+        guard !request.extractImageUrls().isEmpty else { return }
+        let cfg = statusBox.getConfig()
+        let eager = cfg.loadVision || ProcessInfo.processInfo.environment["QW_VISION_EAGER"] == "1"
+        guard eager else {
+            throw QWMultimodalError.badArgument(
+                "Vision tower is disabled (--no-load-vision). Enable --load-vision to process image inputs."
+            )
+        }
+        let state = statusBox.engineState()
+        if state.isLoaded {
+            let visDepth = statusBox.getLoadedParamsInfo()?.modelDescriptor?.visDepth ?? 0
+            if !state.capabilities.contains(.vision) || visDepth <= 0
+                || !QWVisionOnDemandBackend.hasVisionWeights(modelPath: cfg.packPath) {
+                throw QWMultimodalError.badArgument("Loaded model does not support vision inputs.")
+            }
+        } else if !QWVisionOnDemandBackend.hasVisionWeights(modelPath: cfg.packPath) {
+            throw QWMultimodalError.badArgument("Model pack does not contain vision weights.")
+        }
+    }
+
+    nonisolated private static func prepareTokenHeal(
+        prepared: QWPreparedChatPrompt,
+        request: ChatCompletionRequest,
+        promptTokens: [Int],
+        systemPrefixTokenCount: Int?,
+        stops: Set<Int>,
+        tokenizer: QWTokenizer,
+        vocabulary: Int,
+        supportsTokenConstraints: Bool,
+        hasImages: Bool
+    ) -> (promptTokens: [Int], constraint: (any QWTokenConstraint)?, stripUTF8Count: Int, didPeel: Bool) {
+        guard prepared.isAssistantPrefill,
+              prepared.activeConstraint == nil,
+              supportsTokenConstraints,
+              !hasImages,
+              promptTokens.count >= 2 else {
+            return (promptTokens, prepared.activeConstraint, 0, false)
+        }
+        let prefillText = request.messages.last?.extractTextContent() ?? ""
+        let prefillUTF8 = Array(prefillText.utf8)
+        let lastTok = promptTokens[promptTokens.count - 1]
+        guard !prefillUTF8.isEmpty,
+              !stops.contains(lastTok),
+              (promptTokens.count - 1) >= (systemPrefixTokenCount ?? 0) else {
+            return (promptTokens, prepared.activeConstraint, 0, false)
+        }
+        let table = QWStructuredOutput.tokenTable(for: tokenizer, vocabulary: vocabulary)
+        guard lastTok >= 0 && lastTok < table.vocabulary,
+              let tokBytes = table.bytes[lastTok], !tokBytes.isEmpty,
+              tokBytes.count <= prefillUTF8.count,
+              prefillUTF8.suffix(tokBytes.count).elementsEqual(tokBytes) else {
+            return (promptTokens, prepared.activeConstraint, 0, false)
+        }
+        var probe = QWStreamDecoder(tokenizer)
+        guard let healedStr = try? probe.decode(lastTok, skipSpecialTokens: true),
+              !healedStr.isEmpty, probe.flush().isEmpty else {
+            return (promptTokens, prepared.activeConstraint, 0, false)
+        }
+        let constraint = QWPrefixHealingConstraint(prefixBytes: tokBytes, table: table)
+        guard constraint.hasSupport else {
+            return (promptTokens, prepared.activeConstraint, 0, false)
+        }
+        return (Array(promptTokens.dropLast()), constraint, healedStr.utf8.count, true)
     }
 }

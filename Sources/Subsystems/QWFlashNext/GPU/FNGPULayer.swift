@@ -477,6 +477,11 @@ public enum FNGPULayerPasses {
             sharedGateUp: m.sharedGateUp,
             sharedDown: m.sharedDown,
             sharedGateScalar: m.sharedGateScalar,
+            latentD: m.latentD,
+            latentU: m.latentU,
+            latentLabels: m.latentLabels,
+            numLatentGroups: m.numLatentGroups,
+            latentDim: m.latentDim,
             hidden: s.hidden,
             experts: m.experts,
             topK: m.topK,
@@ -495,7 +500,10 @@ public enum FNGPULayerPasses {
             sortedTok: s.sortedTok, invPerm: s.invPerm,
             tileE: s.tileE, tileR: s.tileR, tileCount: s.tileCount,
             gu16: s.gu, dnHi: s.dnHi, dnAcc: s.dnAcc,
-            naxX16: s.naxX16, naxY16: s.naxY16, maxTileWidth: s.width
+            naxX16: s.naxX16, naxY16: s.naxY16,
+            groupIds: s.groupIds, onesRoute: s.onesRoute,
+            xLatent32: s.xLatent32, xLatent16: s.xLatent16,
+            zLatent32: s.zLatent32, maxTileWidth: s.width
         )
         let rotateFn: ((inout any MTLComputeCommandEncoder) throws -> Void)? =
             cb.map { buf in { try ctx.hal.rotateEncoder(buf, &$0) } }
