@@ -12,13 +12,13 @@ Merges to `master` record changes under `## [Unreleased]` without touching
 release-preparation commit, which renames `[Unreleased]` to the new
 `[X.Y.Z] - YYYY-MM-DD` heading.
 
-## [0.43.0] - 2026-11-26
+## [0.43.1] - 2026-11-26
 
 Adds native `/v1/embeddings` and `/v1/rerank`, pure-Swift `QWCognitiveRails` with 9 Cognitive/Vault MCP tools, COW `QWSessionTree` (`/v1/sessions/*`), unified `QWResidencyPool` UMA admission, client request traceability, and modernized offline `/ui`, alongside Inkling-2 prefix-cache / thinking-off / non-null fixes and community PR [#1](https://github.com/qwegnai/qwegn/pull/1).
 
 ### Performance Improvements
 
-| Workload (Apple M5 Max, 128 GB UMA, `q4` KV) | Before | v0.43.0 | Impact |
+| Workload (Apple M5 Max, 128 GB UMA, `q4` KV) | Before | v0.43.1 | Impact |
 | :--- | :--- | :--- | :--- |
 | `Inkling-2-Mini` exact-repeat prefix cache (`1,539–1,540` tok) | `622 ms` (`0.9x`, `0/1540` cached) | **`49 ms`** (`10x` vs `490 ms` cold, `1539/1539` cached) | **`12.7x` faster warm TTFT** (`finalNormRow` bypass) |
 | `Inkling-2-Mini` `llmprobe-code100` (`--reasoning off`) | `14m 27s` (`55/100`, `40` capped, `72,961` tok) | **`2m 3s`** (`75/100`, `1` capped, `11,729` tok) | **`7.0x` faster, `+20` pts** (thinking-off prefill + `dspark`) |
@@ -41,6 +41,7 @@ Adds native `/v1/embeddings` and `/v1/rerank`, pure-Swift `QWCognitiveRails` wit
 - **Inkling-2 Exact Prefix-Cache Hits**: Cached post-`finalNorm` logits state (`finalNormRow`) to skip full 48-visit prefill on exact prompt repeats and honored `QWCacheConfig.entryLimit` (`32`).
 - **Inkling-2 Thinking-Off & Non-Null Chat Content**: Prefilled `<|message_model|><|content_text|>` with `<|end_message|>` stop when thinking is disabled, and serialized non-streaming `content` as `""` instead of JSON `null` when `tool_calls` is absent.
 - **Model Metadata & Prefill Progress Bar**: Published per-model `context_length`, `max_output_tokens`, modalities, `capabilities`, and `reasoning` metadata on `/v1/models` and `/api/show`, and kept `Qwegn.app` / `/ui` prefill progress bars fixed-height across idle and active states.
+- **AArch64 `swifterror` ABI in Cognitive Shadow Log**: Replaced `FileHandle` + `defer { try? h.close() }` in `QWHttpServer.appendShadowRouteLog` with non-throwing POSIX `open`/`write`/`close`, eliminating `[UNRESTORED_X21_TAIL]` ABI violations on release builds.
 
 ## [0.42.0] - 2026-11-25
 

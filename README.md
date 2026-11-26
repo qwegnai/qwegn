@@ -10,7 +10,7 @@
   <img src="https://img.shields.io/badge/Swift-6.2-orange.svg" alt="Swift 6.2">
   <img src="https://img.shields.io/badge/platform-macOS%2026.2%2B%20(Apple%20Silicon)-lightgrey.svg" alt="macOS 26.2+, Apple Silicon">
   <a href="https://github.com/qwegnai/qwegn/actions/workflows/ci.yml"><img src="https://github.com/qwegnai/qwegn/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/Release-v0.43.0-green.svg" alt="Release v0.43.0"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/Release-v0.43.1-green.svg" alt="Release v0.43.1"></a>
   <a href="https://huggingface.co/qwegnai"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-qwegnai-yellow.svg" alt="Hugging Face Models"></a>
 </p>
 
@@ -47,7 +47,7 @@ Pull and run a pre-quantized pack from [`huggingface.co/qwegnai`](https://huggin
 qwg pull qwegnai/Qwen3.8-Flash-Next-hq8g32-hq4g64
 qwg run Qwen3.8-Flash-Next-hq8g32-hq4g64 --prompt "Hello!" --max-tokens 128
 
-# New in v0.43.0: /v1/embeddings, /v1/rerank, Cognitive MCP, Session Trees & 10x Inkling-2 Prefix Cache
+# New in v0.43.1: /v1/embeddings, /v1/rerank, Cognitive MCP, Session Trees & 10x Inkling-2 Prefix Cache
 qwg pull qwegnai/Ling-3.2-air-hq8g32-shvq3g64
 qwg serve Ling-3.2-air-hq8g32-shvq3g64 --context-tokens 65536 --kv-mode q4
 ```
@@ -169,7 +169,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md), [CONTRIBUTORS.md](CONTRIBUTORS.md), and 
 @software{qwegn,
   title   = {Qwegn: a from-scratch LLM/VLM inference engine for Apple Silicon},
   author  = {{QwegnAI}},
-  version = {0.43.0},
+  version = {0.43.1},
   year    = {2026},
   url     = {https://github.com/qwegnai/qwegn}
 }

@@ -247,13 +247,19 @@ extension QWHttpServer {
         guard let lineData = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]) else { return }
         var out = lineData
         out.append(0x0A)
-        if fm.fileExists(atPath: file.path), let h = try? FileHandle(forWritingTo: file) {
-            defer { try? h.close() }
-            _ = try? h.seekToEnd()
-            try? h.write(contentsOf: out)
-        } else {
-            try? out.write(to: file, options: .atomic)
+        let fd = open(file.path, O_WRONLY | O_CREAT | O_APPEND, mode_t(0o600))
+        if fd >= 0 {
+            out.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                guard let base = raw.baseAddress else { return }
+                var written = 0
+                while written < raw.count {
+                    let n = Darwin.write(fd, base.advanced(by: written), raw.count - written)
+                    if n <= 0 { break }
+                    written += n
+                }
+            }
+            Darwin.close(fd)
+            chmod(file.path, mode_t(0o600))
         }
-        chmod(file.path, mode_t(0o600))
     }
 }
