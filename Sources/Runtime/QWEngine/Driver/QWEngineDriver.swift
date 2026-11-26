@@ -681,7 +681,9 @@ public final class QWEngineDriver: @unchecked Sendable {
         prelimHal.adoptPendingResidency()
         prelimHal.makeResident(allResidentBuffers())
         prelimHal.primeResidency()
-        try Self.prewarmPipelines(hal: prelimHal, doors: prewarmDoors)
+        // These selectors are only dispatched by QWLSAOperator.
+        let activePrewarmDoors = Self.prewarmDoors(prewarmDoors, hasLSAOperator: lsaOp != nil)
+        try Self.prewarmPipelines(hal: prelimHal, doors: activePrewarmDoors)
         if let (cb, enc) = prelimHal.begin() {
             enc.useResource(wsub.region.buffer, usage: .read)
             enc.useResource(asub.region.buffer, usage: [.read, .write])
