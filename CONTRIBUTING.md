@@ -55,3 +55,7 @@ Do not open a public issue for a security problem. See [SECURITY.md](SECURITY.md
 ## Conduct
 
 Participation is governed by the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+## Contributors
+
+Merged contributors are credited in [CONTRIBUTORS.md](CONTRIBUTORS.md) and the [README](README.md#contributors).

@@ -157,9 +157,13 @@ Key runtime flags: `--context-tokens` (`4096` up to `1048576`), `--kv-mode` (`q4
 - `Sources/Subsystems` (`QWMTP`, `QWToken`, `QWVision`, `QWMM`) · `Sources/Runtime` (`QWLoad`, `QWEngine`, `QWMemoryPack`)
 - `Sources/QWMetal` (Metal 4 compute shaders & headers) · `Sources/Apps` (`qwg`, `QWServer`, `QWMenuBar`, `qwg-bench-kernels`) · `Scripts` & `Tests`
 
+## Contributors
+
+Thanks to everyone who has helped improve Qwegn — see [CONTRIBUTORS.md](CONTRIBUTORS.md) (including [@ViktorBystrov72](https://github.com/ViktorBystrov72) for [#1](https://github.com/qwegnai/qwegn/pull/1)).
+
 ## Contributing, License & Citation
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md). Licensed under Apache License 2.0 ([LICENSE](LICENSE)).
+See [CONTRIBUTING.md](CONTRIBUTING.md), [CONTRIBUTORS.md](CONTRIBUTORS.md), and [SECURITY.md](SECURITY.md). Licensed under Apache License 2.0 ([LICENSE](LICENSE)).
 
 ```bibtex
 @software{qwegn,
