@@ -103,6 +103,8 @@ extension QWHttpServer {
                 "systemone": "POST /v1/systemone",
                 "systemone_batch": "POST /v1/systemone/batch",
                 "laya": "POST /v1/laya",
+                "embeddings": "POST /v1/embeddings",
+                "rerank": "POST /v1/rerank",
                 "decisions_load": "POST /v1/decisions/model/load",
                 "decisions_unload": "POST /v1/decisions/model/unload",
                 "decisions_status": "GET /v1/decisions/status",
@@ -279,6 +281,8 @@ extension QWHttpServer {
         "/v1/decisions", "/v1/decisions/batch",
         "/v1/systemone", "/v1/systemone/batch",
         "/v1/laya", "/v1/decisions/model/load", "/mcp",
+        "/v1/embeddings", "/embeddings",
+        "/v1/rerank", "/rerank",
     ]
 
     private static let multipartAllowedPostRoutes: Set<String> = [
@@ -479,108 +483,6 @@ extension QWHttpServer {
             ))
         }
         session.finish(doneMarker: true)
-    }
-
-    private func catalogModelEntries() -> [(id: String, loaded: Bool, path: String?, isDecision: Bool)] {
-        let modelName = actor.getModelName()
-        let isLoaded = actor.isLoaded()
-        let sidecar = actor.decisionSidecarStatus()
-        let settings = QWSettingsManager.shared.loadSettings()
-        var seen = Set<String>()
-        var entries: [(id: String, loaded: Bool, path: String?, isDecision: Bool)] = []
-        func appendIfNew(id: String, loaded: Bool, path: String?, isDecision: Bool) {
-            guard !id.isEmpty, seen.insert(id).inserted else { return }
-            entries.append((id: id, loaded: loaded, path: path, isDecision: isDecision))
-        }
-        if sidecar.loaded, let sidecarName = sidecar.modelName {
-            appendIfNew(id: sidecarName, loaded: true, path: sidecar.packPath, isDecision: true)
-        }
-        let activeAlias = settings.alias(for: modelName)
-        if !activeAlias.isEmpty {
-            appendIfNew(id: activeAlias, loaded: isLoaded, path: settings.modelPackPath, isDecision: false)
-        }
-        appendIfNew(id: modelName, loaded: isLoaded, path: settings.modelPackPath, isDecision: false)
-        for disc in QWServerSettings.scanModelsDirectory()
-        where !disc.packPath.isEmpty && (disc.supported || disc.isDecisionCapable) {
-            let loadedHere = (isLoaded && disc.name == modelName) || (sidecar.loaded && disc.name == sidecar.modelName)
-            let alias = settings.alias(for: disc.name)
-            if !alias.isEmpty {
-                appendIfNew(id: alias, loaded: loadedHere, path: disc.packPath, isDecision: disc.isDecisionCapable)
-            }
-            appendIfNew(id: disc.name, loaded: loadedHere, path: disc.packPath, isDecision: disc.isDecisionCapable)
-        }
-        return entries
-    }
-
-    func handleModelsListRoute(connection: NWConnection) {
-        let catalog = catalogModelEntries()
-        let models = catalog.map {
-            ModelObject(id: $0.id, loaded: $0.loaded, created: QWModelDiskStats.modifiedUnix(of: $0.path))
-        }
-        let metadata = catalog.map { item in
-            let created = QWModelDiskStats.modifiedUnix(of: item.path)
-            let desc = item.isDecision
-                ? "Single-pass decision model (\(item.id)) supporting /v1/systemone and /v1/decisions."
-                : "Qwegn Engine model '\(item.id)'."
-            return TypeSafeModelMetadata(
-                name: item.id,
-                description: desc,
-                releaseDate: ModelListResponse.formatReleaseDate(unix: created)
-            )
-        }
-        sendJsonResponse(connection, status: 200, object: ModelListResponse(models: models, metadata: metadata))
-    }
-
-    func handleDiscoveredModelsRoute(connection: NWConnection) {
-        struct DiscoveredInventoryResponse: Encodable {
-            let models: [QWServerSettings.DiscoveredModel]
-            let drafters: [QWServerSettings.DiscoveredDrafter]
-        }
-        let models = QWServerSettings.scanModelsDirectory()
-        let drafters = QWServerSettings.scanDrafterSummaries(primaryModels: models)
-        sendJsonResponse(
-            connection,
-            status: 200,
-            object: DiscoveredInventoryResponse(models: models, drafters: drafters)
-        )
-    }
-
-    func handleGetModelRoute(connection: NWConnection, requestedId: String) {
-        let modelName = actor.getModelName()
-        let isLoaded = actor.isLoaded()
-        let sidecar = actor.decisionSidecarStatus()
-        let settings = QWSettingsManager.shared.loadSettings()
-        let activeAlias = settings.alias(for: modelName)
-        let displayModel = activeAlias.isEmpty ? modelName : activeAlias
-        let resolvedPath: String?
-        let loaded: Bool
-        if sidecar.loaded, let scName = sidecar.modelName,
-           requestedId == scName || (!activeAlias.isEmpty && requestedId == activeAlias && !isLoaded) {
-            resolvedPath = sidecar.packPath
-            loaded = true
-        } else if requestedId.isEmpty || requestedId == modelName || requestedId == activeAlias {
-            resolvedPath = settings.modelPackPath
-            loaded = isLoaded || (sidecar.loaded && sidecar.modelName == modelName)
-        } else if let disc = QWServerSettings.scanModelsDirectory().first(where: {
-            $0.name == requestedId || settings.alias(for: $0.name) == requestedId
-        }), disc.supported || disc.isDecisionCapable {
-            resolvedPath = disc.packPath
-            loaded = (isLoaded && disc.name == modelName) || (sidecar.loaded && disc.name == sidecar.modelName)
-        } else {
-            let err = ServerErrorPayload(
-                message: "The model '\(requestedId)' does not exist.",
-                type: "invalid_request_error",
-                code: 404
-            )
-            sendJsonResponse(connection, status: 404, object: err)
-            return
-        }
-        let resp = ModelObject(
-            id: requestedId.isEmpty ? displayModel : requestedId,
-            loaded: loaded,
-            created: QWModelDiskStats.modifiedUnix(of: resolvedPath)
-        )
-        sendJsonResponse(connection, status: 200, object: resp)
     }
 
     func handleOllamaTagsOrPsRoute(connection: NWConnection, isPs: Bool) {

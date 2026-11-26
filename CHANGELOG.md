@@ -7,6 +7,40 @@ may change CLI flags, pack formats or profile files.
 
 The single source of the version is `QWVersion.current` in
 `Sources/Foundation/QWCore/QWVersion.swift`; release tags are `vMAJOR.MINOR.PATCH`.
+Merges to `master` record changes under `## [Unreleased]` without touching
+`QWVersion.current` or any release artifact; the version is bumped only in the
+release-preparation commit, which renames `[Unreleased]` to the new
+`[X.Y.Z] - YYYY-MM-DD` heading.
+
+## [0.43.0] - 2026-11-26
+
+Adds native `/v1/embeddings` and `/v1/rerank`, pure-Swift `QWCognitiveRails` with 9 Cognitive/Vault MCP tools, COW `QWSessionTree` (`/v1/sessions/*`), unified `QWResidencyPool` UMA admission, client request traceability, and modernized offline `/ui`, alongside Inkling-2 prefix-cache / thinking-off / non-null fixes and community PR [#1](https://github.com/qwegnai/qwegn/pull/1).
+
+### Performance Improvements
+
+| Workload (Apple M5 Max, 128 GB UMA, `q4` KV) | Before | v0.43.0 | Impact |
+| :--- | :--- | :--- | :--- |
+| `Inkling-2-Mini` exact-repeat prefix cache (`1,539–1,540` tok) | `622 ms` (`0.9x`, `0/1540` cached) | **`49 ms`** (`10x` vs `490 ms` cold, `1539/1539` cached) | **`12.7x` faster warm TTFT** (`finalNormRow` bypass) |
+| `Inkling-2-Mini` `llmprobe-code100` (`--reasoning off`) | `14m 27s` (`55/100`, `40` capped, `72,961` tok) | **`2m 3s`** (`75/100`, `1` capped, `11,729` tok) | **`7.0x` faster, `+20` pts** (thinking-off prefill + `dspark`) |
+| `Inkling-2-Mini` conformance & EvalPlus (`HE` / `MBPP`) | `288/291` (`99%`), EvalPlus `ERR(1)` | **`292/292` (`100%`, `0` warn)** · **`76.8%` / `84.4%`** | **Full parity** (`73.8%+` HE+ · `71.4%+` MBPP+) |
+| `Qwen3.8-Flash-Next` full eval (`--stream-ngrams`, `40K`) | Unbenchmarked on `bench` suite | **`291/291` (`100%`)** · **`65x`** cache (`845 -> 13 ms`) | **`93.9%` HE · `91.5%` MBPP · `86.4%` agentic · `93.3%` GSM8K** |
+
+### Added
+- **Dense Embeddings & Rerank (`/v1/embeddings`, `/v1/rerank`)**: Generalized `QWDecisionPackEngine` across all 4 `HeadKind` modes, `LayerNorm`, `GELU`/`GELU-tanh` (gated to `.decisionEncoder`), bidirectional encoder masks, and L2-normalized Matryoshka embeddings.
+- **Cognitive Rails, Episodic Memory & MCP Suite**: Added `QWCognitiveRails`, `reasoning.effort = "auto"`, `0o600` BM25 `QWEpisodicTranscriptStore`, `/v1/cognitive/*`, and 9 Cognitive + Vault tools across `POST /mcp` and `qwg mcp`.
+- **Session Trees (`/v1/sessions/*`)**: Added `QWSessionTree` with O(1) COW `fork`, Radix pin refcounts, non-leaf `prune` guard + `cascade`, `0o600` JSONL replay, and `QWResponsesStore.sessionNodeId` chaining.
+- **Client Request Traceability**: Added `QWClientIdentity` / `QWRequestTraceContext` header & User-Agent fingerprinting (`client=`, `req=`, `sess=`, non-loopback `peer=`, `499` disconnect logging) across server routes, `/ui`, and `Qwegn.app`.
+
+### Changed
+- **Unified Multi-Slot UMA & Image Preprocessing**: Extracted `QWResidencyPool` actor for multi-slot UMA admission and unified EXIF-oriented `vImage` RGB888 decoding in `QWMM+OrientedImage.swift`.
+- **Offline `/ui` Web Standards**: Upgraded `/ui` with ARIA `tablist` roving keyboard navigation, Forced-Colors active underline, shared `dialog:modal` scroll containment, `closedby` / `commandfor` invokers, and CSS container queries.
+- **Contributors & Release Hygiene**: Added `CONTRIBUTORS.md` and adopted release-only version bumps.
+
+### Fixed
+- **Inactive LSA Selector Prewarm (`#1`)**: Skipped `QWLSAOperator` selector pipeline prewarm when no LSA operator is active (e.g. `--lsa-mode off`), preventing Metal compiler failures on macOS 26.6.2 (contributed by [ViktorBystrov72](https://github.com/ViktorBystrov72) in [#1](https://github.com/qwegnai/qwegn/pull/1)).
+- **Inkling-2 Exact Prefix-Cache Hits**: Cached post-`finalNorm` logits state (`finalNormRow`) to skip full 48-visit prefill on exact prompt repeats and honored `QWCacheConfig.entryLimit` (`32`).
+- **Inkling-2 Thinking-Off & Non-Null Chat Content**: Prefilled `<|message_model|><|content_text|>` with `<|end_message|>` stop when thinking is disabled, and serialized non-streaming `content` as `""` instead of JSON `null` when `tool_calls` is absent.
+- **Model Metadata & Prefill Progress Bar**: Published per-model `context_length`, `max_output_tokens`, modalities, `capabilities`, and `reasoning` metadata on `/v1/models` and `/api/show`, and kept `Qwegn.app` / `/ui` prefill progress bars fixed-height across idle and active states.
 
 ## [0.42.0] - 2026-11-25
 

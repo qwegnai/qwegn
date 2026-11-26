@@ -1,4 +1,4 @@
-// QWDecisionPackEngine+Weights.swift — Zero-family QWP1/SafeTensors loader for native Metal decision packs.
+// QWDecisionPackEngine+Weights.swift — Zero-family QWP1/SafeTensors loader for generalized Metal decision packs.
 
 import Foundation
 import Metal
@@ -34,13 +34,20 @@ enum QWDecisionLinearW: @unchecked Sendable {
     }
 }
 
+struct QWDecisionNormTensor: @unchecked Sendable {
+    let weight: QWTensorValue
+    let bias: QWTensorValue?
+}
+
 struct QWDecisionConvWeights: @unchecked Sendable {
-    let inProj: QWDecisionLinearW
+    let inProj: QWDecisionLinearW?
     let convW: QWTensorValue
     let convB: QWTensorValue?
     let outProj: QWDecisionLinearW
     let kernelSize: Int
     let channels: Int
+    let isCentered: Bool
+    let isGated: Bool
 }
 
 struct QWDecisionAttnLayerWeights: @unchecked Sendable {
@@ -48,10 +55,15 @@ struct QWDecisionAttnLayerWeights: @unchecked Sendable {
     let kProj: QWDecisionLinearW
     let vProj: QWDecisionLinearW
     let oProj: QWDecisionLinearW
+    let qBias: QWTensorValue?
+    let kBias: QWTensorValue?
+    let vBias: QWTensorValue?
+    let oBias: QWTensorValue?
     let qNorm: QWTensorValue?
     let kNorm: QWTensorValue?
     let gateProj: QWDecisionLinearW?
     let isSliding: Bool
+    let isBidirectional: Bool
     let slidingWindow: Int
     let ropeKind: String
 }
@@ -62,36 +74,33 @@ enum QWDecisionLayerOperatorWeights: @unchecked Sendable {
 }
 
 struct QWDecisionLoadedLayer: @unchecked Sendable {
-    let preBlockNorm: QWTensorValue
-    let postBlockNorm: QWTensorValue?
+    let preBlockNorm: QWDecisionNormTensor?
+    let postBlockNorm: QWDecisionNormTensor?
     let op: QWDecisionLayerOperatorWeights
-    let preFFNNorm: QWTensorValue
-    let postFFNNorm: QWTensorValue?
+    let preFFNNorm: QWDecisionNormTensor?
+    let postFFNNorm: QWDecisionNormTensor?
     let w13: QWDecisionLinearW?
     let w1: QWDecisionLinearW?
     let w3: QWDecisionLinearW?
+    let ffnUpBias: QWTensorValue?
     let w2: QWDecisionLinearW
+    let ffnDownBias: QWTensorValue?
 }
 
 struct QWDecisionPackWeights: @unchecked Sendable {
     let embedTokens: QWTensorValue
-    let lmHeadBF16: QWTensorValue?
-    let finalNorm: QWTensorValue
+    let posEmbedBF16: QWTensorValue?
+    let embedNorm: QWDecisionNormTensor?
+    let finalNorm: QWDecisionNormTensor?
     let layers: [QWDecisionLoadedLayer]
+    let head: QWDecisionPackHeadWeights
     let usesRotatedBasis: Bool
     let retainedBuffers: [any MTLBuffer]
 }
 
-private enum QWDecisionWeightSource {
+enum QWDecisionWeightSource {
     case qwp(QWQuant.Pack)
     case safetensors(QWSafeTensorsContainer)
-
-    var allNames: Set<String> {
-        switch self {
-        case .qwp(let p): return Set(p.tensors.keys)
-        case .safetensors(let s): return Set(s.tensors.keys)
-        }
-    }
 
     func has(_ name: String) -> Bool {
         switch self {
@@ -138,68 +147,110 @@ enum QWDecisionWeightLoader {
         let kvDim = descriptor.kvHeads * descriptor.headDim
         let prefix = resolvePrefix(source)
 
-        let embName = resolveName(source, [prefix + "embed_tokens.weight", prefix + "tok_embeddings.weight", "embed_tokens.weight"])
-            ?? "\(prefix)embed_tokens.weight"
+        let embName = resolveName(source, [
+            prefix + "embed_tokens.weight",
+            prefix + "tok_embeddings.weight",
+            prefix + "embeddings.word_embeddings.weight",
+            prefix + "embeddings.tok_embeddings.weight",
+            "embed_tokens.weight",
+            "embeddings.word_embeddings.weight",
+        ]) ?? "\(prefix)embed_tokens.weight"
         let embedTokens = try loadBF16Tensor(name: embName, rows: vocab, cols: hidden, source: source, hal: hal, buffers: &buffers)
 
-        let lmHeadBF16: QWTensorValue?
-        if descriptor.tieWordEmbeddings {
-            lmHeadBF16 = embedTokens
-        } else if let lmName = resolveName(source, ["lm_head.weight", prefix + "lm_head.weight"]) {
-            lmHeadBF16 = try loadBF16Tensor(name: lmName, rows: vocab, cols: hidden, source: source, hal: hal, buffers: &buffers)
-        } else {
-            lmHeadBF16 = embedTokens
+        let posEmbedName = resolveName(source, [
+            prefix + "embeddings.position_embeddings.weight",
+            "embeddings.position_embeddings.weight",
+        ])
+        let posEmbedBF16: QWTensorValue? = try posEmbedName.flatMap { pName in
+            guard let dims = tensorShape(name: pName, source: source), dims.count == 2, dims[1] == hidden else { return nil }
+            return try loadBF16Tensor(name: pName, rows: dims[0], cols: hidden, source: source, hal: hal, buffers: &buffers)
         }
+        let embedNorm = try loadOptionalNorm(
+            weightCandidates: [prefix + "embeddings.LayerNorm.weight", prefix + "embeddings.norm.weight", "embeddings.LayerNorm.weight"],
+            biasCandidates: [prefix + "embeddings.LayerNorm.bias", prefix + "embeddings.norm.bias", "embeddings.LayerNorm.bias"],
+            count: hidden, source: source, hal: hal, buffers: &buffers
+        )
 
-        let normName = resolveName(source, [prefix + "embedding_norm.weight", prefix + "norm.weight", "norm.weight"])
-            ?? "\(prefix)norm.weight"
-        let finalNorm = try loadF16Vector(name: normName, count: hidden, source: source, hal: hal, buffers: &buffers)
+        let finalNorm = try loadOptionalNorm(
+            weightCandidates: [
+                prefix + "embedding_norm.weight", prefix + "norm.weight",
+                prefix + "final_norm.weight", prefix + "encoder.norm.weight", "norm.weight",
+            ],
+            biasCandidates: [
+                prefix + "embedding_norm.bias", prefix + "norm.bias",
+                prefix + "final_norm.bias", prefix + "encoder.norm.bias", "norm.bias",
+            ],
+            count: hidden, source: source, hal: hal, buffers: &buffers
+        )
 
         var anyRotated = false
         var loadedLayers: [QWDecisionLoadedLayer] = []
         loadedLayers.reserveCapacity(descriptor.numLayers)
 
         for l in 0..<descriptor.numLayers {
-            let lp = "\(prefix)layers.\(l)."
-            let preBlockName = resolveName(source, [lp + "operator_norm.weight", lp + "input_layernorm.weight"])
-                ?? (lp + "operator_norm.weight")
-            let preBlock = try loadF16Vector(name: preBlockName, count: hidden, source: source, hal: hal, buffers: &buffers)
-            let postBlock = try resolveName(source, [lp + "post_operator_norm.weight"]).map {
-                try loadF16Vector(name: $0, count: hidden, source: source, hal: hal, buffers: &buffers)
-            }
-            let preFFNName = resolveName(source, [lp + "ffn_norm.weight", lp + "post_attention_layernorm.weight"])
-                ?? (lp + "ffn_norm.weight")
-            let preFFN = try loadF16Vector(name: preFFNName, count: hidden, source: source, hal: hal, buffers: &buffers)
-            let postFFN = try resolveName(source, [lp + "post_ffn_norm.weight"]).map {
-                try loadF16Vector(name: $0, count: hidden, source: source, hal: hal, buffers: &buffers)
-            }
+            let lp = resolveLayerPrefix(source: source, prefix: prefix, layer: l)
+            let preBlock = try loadOptionalNorm(
+                weightCandidates: [lp + "operator_norm.weight", lp + "input_layernorm.weight", lp + "attn_norm.weight", lp + "attention_norm.weight"],
+                biasCandidates: [lp + "operator_norm.bias", lp + "input_layernorm.bias", lp + "attn_norm.bias", lp + "attention_norm.bias"],
+                count: hidden, source: source, hal: hal, buffers: &buffers
+            )
+            let postBlock = try loadOptionalNorm(
+                weightCandidates: [lp + "post_operator_norm.weight", lp + "attention.output.LayerNorm.weight", lp + "post_attention_layernorm.weight"],
+                biasCandidates: [lp + "post_operator_norm.bias", lp + "attention.output.LayerNorm.bias", lp + "post_attention_layernorm.bias"],
+                count: hidden, source: source, hal: hal, buffers: &buffers
+            )
+            let preFFN = try loadOptionalNorm(
+                weightCandidates: [lp + "ffn_norm.weight", lp + "mlp_norm.weight", lp + "post_attention_layernorm.weight", lp + "ffn.norm.weight"],
+                biasCandidates: [lp + "ffn_norm.bias", lp + "mlp_norm.bias", lp + "post_attention_layernorm.bias", lp + "ffn.norm.bias"],
+                count: hidden, source: source, hal: hal, buffers: &buffers
+            )
+            let postFFN = try loadOptionalNorm(
+                weightCandidates: [lp + "post_ffn_norm.weight", lp + "output.LayerNorm.weight"],
+                biasCandidates: [lp + "post_ffn_norm.bias", lp + "output.LayerNorm.bias"],
+                count: hidden, source: source, hal: hal, buffers: &buffers
+            )
 
             let lKind = descriptor.layerTypes[l]
             let op: QWDecisionLayerOperatorWeights
-            if lKind == "conv" || lKind == "shortconv" {
+            if lKind == "conv" || lKind == "shortconv" || lKind == "centered_conv" {
                 let kernel = descriptor.shortConvConfig?.kernelSize ?? 7
-                let inProj = try loadLinear(name: lp + "conv.in_proj.weight", n: 3 * hidden, k: hidden, source: source, hal: hal, buffers: &buffers)
-                let convW = try loadF16Vector(name: lp + "conv.conv.weight", count: hidden * kernel, source: source, hal: hal, buffers: &buffers)
-                let convB = try resolveName(source, [lp + "conv.conv.bias", lp + "conv.bias"]).map {
+                let isCentered = (lKind == "centered_conv") || (descriptor.shortConvConfig?.isCentered == true)
+                let inName = resolveName(source, [lp + "conv.in_proj.weight", lp + "short_conv.in_proj.weight"])
+                let inProj: QWDecisionLinearW? = try inName.map { name in
+                    let cols = tensorShape(name: name, source: source)?[0] ?? (3 * hidden)
+                    return try loadLinear(name: name, n: cols, k: hidden, source: source, hal: hal, buffers: &buffers)
+                }
+                let convWName = resolveName(source, [lp + "conv.conv.weight", lp + "short_conv.conv.weight", lp + "conv.weight"]) ?? (lp + "conv.conv.weight")
+                let convW = try loadF16Vector(name: convWName, count: hidden * kernel, source: source, hal: hal, buffers: &buffers)
+                let convB = try resolveName(source, [lp + "conv.conv.bias", lp + "conv.bias", lp + "short_conv.conv.bias"]).map {
                     try loadF16Vector(name: $0, count: hidden, source: source, hal: hal, buffers: &buffers)
                 }
-                let outProj = try loadLinear(name: lp + "conv.out_proj.weight", n: hidden, k: hidden, source: source, hal: hal, buffers: &buffers)
-                anyRotated = anyRotated || inProj.needsRotation || outProj.needsRotation
+                let outName = resolveName(source, [lp + "conv.out_proj.weight", lp + "short_conv.out_proj.weight"]) ?? (lp + "conv.out_proj.weight")
+                let outProj = try loadLinear(name: outName, n: hidden, k: hidden, source: source, hal: hal, buffers: &buffers)
+                anyRotated = anyRotated || (inProj?.needsRotation ?? false) || outProj.needsRotation
                 op = .conv(QWDecisionConvWeights(
                     inProj: inProj, convW: convW, convB: convB, outProj: outProj,
-                    kernelSize: kernel, channels: hidden
+                    kernelSize: kernel, channels: hidden, isCentered: isCentered,
+                    isGated: (inProj?.n ?? 0) == 3 * hidden
                 ))
             } else {
-                let qW = try loadLinear(name: lp + "self_attn.q_proj.weight", n: qDim, k: hidden, source: source, hal: hal, buffers: &buffers)
-                let kW = try loadLinear(name: lp + "self_attn.k_proj.weight", n: kvDim, k: hidden, source: source, hal: hal, buffers: &buffers)
-                let vW = try loadLinear(name: lp + "self_attn.v_proj.weight", n: kvDim, k: hidden, source: source, hal: hal, buffers: &buffers)
-                let oW = try loadLinear(name: lp + "self_attn.o_proj.weight", n: hidden, k: qDim, source: source, hal: hal, buffers: &buffers)
-                let qNorm = try resolveName(source, [lp + "self_attn.q_norm.weight", lp + "self_attn.q_layernorm.weight"]).map {
-                    try loadF16Vector(name: $0, count: descriptor.headDim, source: source, hal: hal, buffers: &buffers)
-                }
-                let kNorm = try resolveName(source, [lp + "self_attn.k_norm.weight", lp + "self_attn.k_layernorm.weight"]).map {
-                    try loadF16Vector(name: $0, count: descriptor.headDim, source: source, hal: hal, buffers: &buffers)
-                }
+                let qName = resolveName(source, [lp + "self_attn.q_proj.weight", lp + "attn.q_proj.weight", lp + "attention.self.query.weight"]) ?? (lp + "self_attn.q_proj.weight")
+                let kName = resolveName(source, [lp + "self_attn.k_proj.weight", lp + "attn.k_proj.weight", lp + "attention.self.key.weight"]) ?? (lp + "self_attn.k_proj.weight")
+                let vName = resolveName(source, [lp + "self_attn.v_proj.weight", lp + "attn.v_proj.weight", lp + "attention.self.value.weight"]) ?? (lp + "self_attn.v_proj.weight")
+                let oName = resolveName(source, [lp + "self_attn.o_proj.weight", lp + "attn.Wo.weight", lp + "attn.o_proj.weight", lp + "attention.output.dense.weight"]) ?? (lp + "self_attn.o_proj.weight")
+
+                let qW = try loadLinear(name: qName, n: qDim, k: hidden, source: source, hal: hal, buffers: &buffers)
+                let kW = try loadLinear(name: kName, n: kvDim, k: hidden, source: source, hal: hal, buffers: &buffers)
+                let vW = try loadLinear(name: vName, n: kvDim, k: hidden, source: source, hal: hal, buffers: &buffers)
+                let oW = try loadLinear(name: oName, n: hidden, k: qDim, source: source, hal: hal, buffers: &buffers)
+
+                let qBias = try loadOptionalVector(candidates: [lp + "self_attn.q_proj.bias", lp + "attn.q_proj.bias", lp + "attention.self.query.bias"], count: qDim, source: source, hal: hal, buffers: &buffers)
+                let kBias = try loadOptionalVector(candidates: [lp + "self_attn.k_proj.bias", lp + "attn.k_proj.bias", lp + "attention.self.key.bias"], count: kvDim, source: source, hal: hal, buffers: &buffers)
+                let vBias = try loadOptionalVector(candidates: [lp + "self_attn.v_proj.bias", lp + "attn.v_proj.bias", lp + "attention.self.value.bias"], count: kvDim, source: source, hal: hal, buffers: &buffers)
+                let oBias = try loadOptionalVector(candidates: [lp + "self_attn.o_proj.bias", lp + "attn.Wo.bias", lp + "attn.o_proj.bias", lp + "attention.output.dense.bias"], count: hidden, source: source, hal: hal, buffers: &buffers)
+
+                let qNorm = try loadOptionalVector(candidates: [lp + "self_attn.q_norm.weight", lp + "self_attn.q_layernorm.weight"], count: descriptor.headDim, source: source, hal: hal, buffers: &buffers)
+                let kNorm = try loadOptionalVector(candidates: [lp + "self_attn.k_norm.weight", lp + "self_attn.k_layernorm.weight"], count: descriptor.headDim, source: source, hal: hal, buffers: &buffers)
                 let gateW = try resolveName(source, [lp + "self_attn.gate_proj.weight"]).map {
                     try loadLinear(name: $0, n: descriptor.qHeads, k: hidden, source: source, hal: hal, buffers: &buffers)
                 }
@@ -207,76 +258,151 @@ enum QWDecisionWeightLoader {
                     || oW.needsRotation || (gateW?.needsRotation ?? false)
                 let sw = descriptor.layerSlidingWindow(l)
                 op = .attn(QWDecisionAttnLayerWeights(
-                    qProj: qW, kProj: kW, vProj: vW, oProj: oW, qNorm: qNorm, kNorm: kNorm, gateProj: gateW,
-                    isSliding: (lKind == "sliding_attention") || (sw > 0), slidingWindow: sw, ropeKind: lKind
+                    qProj: qW, kProj: kW, vProj: vW, oProj: oW,
+                    qBias: qBias, kBias: kBias, vBias: vBias, oBias: oBias,
+                    qNorm: qNorm, kNorm: kNorm, gateProj: gateW,
+                    isSliding: (lKind == "sliding_attention") || (sw > 0),
+                    isBidirectional: lKind == "encoder_attention" || lKind == "bidirectional_attention",
+                    slidingWindow: sw, ropeKind: lKind
                 ))
             }
 
-            let w1Name = resolveName(source, [lp + "feed_forward.w1.weight", lp + "mlp.gate_proj.weight"])
-                ?? (lp + "feed_forward.w1.weight")
+            let w1Name = resolveName(source, [
+                lp + "feed_forward.w1.weight", lp + "mlp.gate_proj.weight",
+                lp + "mlp.fc1.weight", lp + "mlp.Wi.weight", lp + "intermediate.dense.weight",
+            ]) ?? (lp + "feed_forward.w1.weight")
             let w3Name = resolveName(source, [lp + "feed_forward.w3.weight", lp + "mlp.up_proj.weight"])
-                ?? (lp + "feed_forward.w3.weight")
-            let w2Name = resolveName(source, [lp + "feed_forward.w2.weight", lp + "mlp.down_proj.weight"])
-                ?? (lp + "feed_forward.w2.weight")
-            let (w13, w1Sep, w3Sep) = try loadFusedGateUp(
+            let w2Name = resolveName(source, [
+                lp + "feed_forward.w2.weight", lp + "mlp.down_proj.weight",
+                lp + "mlp.fc2.weight", lp + "mlp.Wo.weight", lp + "output.dense.weight",
+            ]) ?? (lp + "feed_forward.w2.weight")
+
+            let (w13, w1Sep, w3Sep) = try loadFFNUpOrGate(
                 w1Name: w1Name, w3Name: w3Name, nEach: ffn, k: hidden,
                 source: source, hal: hal, buffers: &buffers
             )
+            let ffnUpBias = try loadOptionalVector(
+                candidates: [lp + "mlp.fc1.bias", lp + "mlp.Wi.bias", lp + "intermediate.dense.bias", lp + "feed_forward.w1.bias"],
+                count: ffn, source: source, hal: hal, buffers: &buffers
+            )
             let w2 = try loadLinear(name: w2Name, n: hidden, k: ffn, source: source, hal: hal, buffers: &buffers)
+            let ffnDownBias = try loadOptionalVector(
+                candidates: [lp + "mlp.fc2.bias", lp + "mlp.Wo.bias", lp + "output.dense.bias", lp + "feed_forward.w2.bias"],
+                count: hidden, source: source, hal: hal, buffers: &buffers
+            )
             anyRotated = anyRotated || (w13?.needsRotation ?? false)
                 || (w1Sep?.needsRotation ?? false) || (w3Sep?.needsRotation ?? false) || w2.needsRotation
 
             loadedLayers.append(QWDecisionLoadedLayer(
                 preBlockNorm: preBlock, postBlockNorm: postBlock, op: op,
                 preFFNNorm: preFFN, postFFNNorm: postFFN,
-                w13: w13, w1: w1Sep, w3: w3Sep, w2: w2
+                w13: w13, w1: w1Sep, w3: w3Sep, ffnUpBias: ffnUpBias,
+                w2: w2, ffnDownBias: ffnDownBias
             ))
         }
 
+        let headKind = descriptor.decisionConfig?.head
+            ?? .vocabVerbalizer(vocabSize: vocab, tieEmbeddings: descriptor.tieWordEmbeddings, sparseGatherThreshold: 256)
+        let headWeights = try loadHeadWeights(
+            head: headKind, activationKind: descriptor.activationKind,
+            prefix: prefix, hidden: hidden, source: source, hal: hal,
+            buffers: &buffers, embedTokens: embedTokens
+        )
+
         return QWDecisionPackWeights(
-            embedTokens: embedTokens, lmHeadBF16: lmHeadBF16, finalNorm: finalNorm,
-            layers: loadedLayers, usesRotatedBasis: anyRotated, retainedBuffers: buffers
+            embedTokens: embedTokens, posEmbedBF16: posEmbedBF16, embedNorm: embedNorm,
+            finalNorm: finalNorm, layers: loadedLayers, head: headWeights,
+            usesRotatedBasis: anyRotated, retainedBuffers: buffers
         )
     }
 
-    private static func resolvePrefix(_ source: QWDecisionWeightSource) -> String {
-        for cand in ["model.language_model.", "language_model.model.", "model.", ""] {
-            if source.has(cand + "embed_tokens.weight") || source.has(cand + "tok_embeddings.weight") {
+    static func resolvePrefix(_ source: QWDecisionWeightSource) -> String {
+        for cand in ["model.language_model.", "language_model.model.", "model.", "encoder.", ""] {
+            if source.has(cand + "embed_tokens.weight") || source.has(cand + "tok_embeddings.weight")
+                || source.has(cand + "embeddings.word_embeddings.weight") || source.has(cand + "embeddings.tok_embeddings.weight") {
                 return cand
             }
         }
         return "model."
     }
 
-    private static func resolveName(_ source: QWDecisionWeightSource, _ candidates: [String]) -> String? {
+    private static func resolveLayerPrefix(source: QWDecisionWeightSource, prefix: String, layer: Int) -> String {
+        let candidates = [
+            "\(prefix)layers.\(layer).",
+            "\(prefix)encoder.layers.\(layer).",
+            "\(prefix)encoder.layer.\(layer).",
+            "layers.\(layer).",
+            "encoder.layer.\(layer).",
+        ]
+        for lp in candidates {
+            if source.has(lp + "operator_norm.weight") || source.has(lp + "input_layernorm.weight")
+                || source.has(lp + "attn_norm.weight") || source.has(lp + "self_attn.q_proj.weight")
+                || source.has(lp + "attention.self.query.weight") || source.has(lp + "conv.conv.weight") {
+                return lp
+            }
+        }
+        return "\(prefix)layers.\(layer)."
+    }
+
+    static func resolveName(_ source: QWDecisionWeightSource, _ candidates: [String]) -> String? {
         candidates.first(where: { source.has($0) })
     }
 
-    private static func loadFusedGateUp(
+    private static func loadOptionalVector(
+        candidates: [String], count: Int, source: QWDecisionWeightSource, hal: QWHal, buffers: inout [any MTLBuffer]
+    ) throws -> QWTensorValue? {
+        guard let name = resolveName(source, candidates) else { return nil }
+        return try loadF16Vector(name: name, count: count, source: source, hal: hal, buffers: &buffers)
+    }
+
+    private static func loadOptionalNorm(
+        weightCandidates: [String], biasCandidates: [String], count: Int,
+        source: QWDecisionWeightSource, hal: QWHal, buffers: inout [any MTLBuffer]
+    ) throws -> QWDecisionNormTensor? {
+        guard let wName = resolveName(source, weightCandidates) else { return nil }
+        let w = try loadF16Vector(name: wName, count: count, source: source, hal: hal, buffers: &buffers)
+        let b = try loadOptionalVector(candidates: biasCandidates, count: count, source: source, hal: hal, buffers: &buffers)
+        return QWDecisionNormTensor(weight: w, bias: b)
+    }
+
+    private static func loadFFNUpOrGate(
         w1Name: String,
-        w3Name: String,
+        w3Name: String?,
         nEach: Int,
         k: Int,
         source: QWDecisionWeightSource,
         hal: QWHal,
         buffers: inout [any MTLBuffer]
     ) throws -> (w13: QWDecisionLinearW?, w1: QWDecisionLinearW?, w3: QWDecisionLinearW?) {
+        guard let w3Name else {
+            let w1 = try loadLinear(name: w1Name, n: nEach, k: k, source: source, hal: hal, buffers: &buffers)
+            return (nil, w1, nil)
+        }
         if let fused = try tryLoadFusedQWPOrST(w1Name: w1Name, w3Name: w3Name, nEach: nEach, k: k, source: source, hal: hal, buffers: &buffers) {
             return (fused, nil, nil)
         }
-        let w1 = try loadLinear(name: w1Name, n: nEach, k: k, source: source, hal: hal, buffers: &buffers)
-        let w3 = try loadLinear(name: w3Name, n: nEach, k: k, source: source, hal: hal, buffers: &buffers)
-        return (nil, w1, w3)
+        // Fallback: concatenate w1 and w3 into a BF16 w13 bank so mixed-container SwiGLU runs on NAX.
+        let b1 = try loadBF16Tensor(name: w1Name, rows: nEach, cols: k, source: source, hal: hal, buffers: &buffers)
+        let b3 = try loadBF16Tensor(name: w3Name, rows: nEach, cols: k, source: source, hal: hal, buffers: &buffers)
+        let halfBytes = nEach * k * 2
+        let totalBytes = halfBytes * 2
+        let buf = try allocSharedBuffer(bytes: totalBytes, hal: hal, buffers: &buffers)
+        let dst = buf.contents()
+        withExtendedLifetime(buf) {
+            withExtendedLifetime(b1.region.buffer) {
+                dst.copyMemory(from: b1.region.pointer.advanced(by: b1.offset), byteCount: halfBytes)
+            }
+            withExtendedLifetime(b3.region.buffer) {
+                dst.advanced(by: halfBytes).copyMemory(from: b3.region.pointer.advanced(by: b3.offset), byteCount: halfBytes)
+            }
+        }
+        let slice = QWFPBufferSlice(buffer: buf, offset: 0, bytes: totalBytes)
+        return (.bf16(QWGemmFP.BF16Bank(weights: slice, n: 2 * nEach, k: k)), nil, nil)
     }
 
     private static func tryLoadFusedQWPOrST(
-        w1Name: String,
-        w3Name: String,
-        nEach: Int,
-        k: Int,
-        source: QWDecisionWeightSource,
-        hal: QWHal,
-        buffers: inout [any MTLBuffer]
+        w1Name: String, w3Name: String, nEach: Int, k: Int,
+        source: QWDecisionWeightSource, hal: QWHal, buffers: inout [any MTLBuffer]
     ) throws -> QWDecisionLinearW? {
         switch source {
         case .safetensors(let st):
@@ -302,9 +428,7 @@ enum QWDecisionWeightLoader {
             let e1 = try pack.entry(w1Name)
             let e3 = try pack.entry(w3Name)
             guard let l1 = PlaneLayout.resolve(e1), let o1 = l1.offset(e1), let b1 = l1.byteCount(e1),
-                  let l3 = PlaneLayout.resolve(e3), let o3 = l3.offset(e3), let b3 = l3.byteCount(e3) else {
-                return nil
-            }
+                  let l3 = PlaneLayout.resolve(e3), let o3 = l3.offset(e3), let b3 = l3.byteCount(e3) else { return nil }
             if e1.rawOff != nil && e3.rawOff != nil {
                 guard e1.kind != "f32", e3.kind != "f32", e1.kind != "f16", e3.kind != "f16",
                       b1 == nEach * k * 2, b3 == nEach * k * 2 else { return nil }
@@ -312,29 +436,18 @@ enum QWDecisionWeightLoader {
                 let buf = try allocSharedBuffer(bytes: totalBytes, hal: hal, buffers: &buffers)
                 let dst = buf.contents()
                 try withExtendedLifetime(buf) {
-                    try pack.withRawPointer(at: o1, byteCount: b1) { (p1: UnsafeRawPointer) in
-                        dst.copyMemory(from: p1, byteCount: b1)
-                    }
-                    try pack.withRawPointer(at: o3, byteCount: b3) { (p3: UnsafeRawPointer) in
-                        dst.advanced(by: b1).copyMemory(from: p3, byteCount: b3)
-                    }
+                    try pack.withRawPointer(at: o1, byteCount: b1) { (p1: UnsafeRawPointer) in dst.copyMemory(from: p1, byteCount: b1) }
+                    try pack.withRawPointer(at: o3, byteCount: b3) { (p3: UnsafeRawPointer) in dst.advanced(by: b1).copyMemory(from: p3, byteCount: b3) }
                 }
-                let slice = QWFPBufferSlice(buffer: buf, offset: 0, bytes: totalBytes)
-                return .bf16(QWGemmFP.BF16Bank(weights: slice, n: 2 * nEach, k: k))
+                return .bf16(QWGemmFP.BF16Bank(weights: QWFPBufferSlice(buffer: buf, offset: 0, bytes: totalBytes), n: 2 * nEach, k: k))
             }
-            guard let k1 = containerKind(from: e1), let k3 = containerKind(from: e3), k1 == k3, b1 == b3 else {
-                return nil
-            }
+            guard let k1 = containerKind(from: e1), let k3 = containerKind(from: e3), k1 == k3, b1 == b3 else { return nil }
             let totalBytes = b1 + b3
             let buf = try allocSharedBuffer(bytes: totalBytes, hal: hal, buffers: &buffers)
             let dst = buf.contents()
             try withExtendedLifetime(buf) {
-                try pack.withRawPointer(at: o1, byteCount: b1) { (p1: UnsafeRawPointer) in
-                    dst.copyMemory(from: p1, byteCount: b1)
-                }
-                try pack.withRawPointer(at: o3, byteCount: b3) { (p3: UnsafeRawPointer) in
-                    dst.advanced(by: b1).copyMemory(from: p3, byteCount: b3)
-                }
+                try pack.withRawPointer(at: o1, byteCount: b1) { (p1: UnsafeRawPointer) in dst.copyMemory(from: p1, byteCount: b1) }
+                try pack.withRawPointer(at: o3, byteCount: b3) { (p3: UnsafeRawPointer) in dst.advanced(by: b1).copyMemory(from: p3, byteCount: b3) }
             }
             let tv = QWTensorValue(region: QWMRegion(buffer: buf, base: 0, length: buf.length), offset: 0, shape: QWTensorShape([totalBytes / 2], .f16))
             guard let view = QWWeightView(blocks: tv, n: 2 * nEach, k: k, containerKind: k1) else { return nil }
@@ -342,7 +455,7 @@ enum QWDecisionWeightLoader {
         }
     }
 
-    private static func loadLinear(
+    static func loadLinear(
         name: String, n: Int, k: Int, source: QWDecisionWeightSource, hal: QWHal, buffers: inout [any MTLBuffer]
     ) throws -> QWDecisionLinearW {
         if case .qwp(let pack) = source {
@@ -367,7 +480,7 @@ enum QWDecisionWeightLoader {
         return .bf16(QWGemmFP.BF16Bank(weights: tv, n: n, k: k))
     }
 
-    private static func loadBF16Tensor(
+    static func loadBF16Tensor(
         name: String, rows: Int, cols: Int, source: QWDecisionWeightSource, hal: QWHal, buffers: inout [any MTLBuffer]
     ) throws -> QWTensorValue {
         let count = rows * cols
@@ -403,7 +516,7 @@ enum QWDecisionWeightLoader {
         return QWTensorValue(region: QWMRegion(buffer: buf, base: 0, length: buf.length), offset: 0, shape: QWTensorShape([rows, cols], .bf16))
     }
 
-    private static func loadF16Vector(
+    static func loadF16Vector(
         name: String, count: Int, source: QWDecisionWeightSource, hal: QWHal, buffers: inout [any MTLBuffer]
     ) throws -> QWTensorValue {
         let buf = try allocSharedBuffer(bytes: count * 2, hal: hal, buffers: &buffers)
@@ -411,17 +524,21 @@ enum QWDecisionWeightLoader {
         switch source {
         case .safetensors(let st):
             guard let t = st.tensor(name) else { throw QWDecisionError.backendFailed("missing SafeTensors tensor: \(name)") }
-            try st.withBytes(of: name) { (raw: UnsafeRawBufferPointer) in
-                guard let src = raw.baseAddress else { return }
-                convertToF16(src: src, srcDtype: t.dtype.rawValue, count: count, expectedSrcBytes: t.byteLength, dst: dst)
+            try withExtendedLifetime(buf) {
+                try st.withBytes(of: name) { (raw: UnsafeRawBufferPointer) in
+                    guard let src = raw.baseAddress else { return }
+                    convertToF16(src: src, srcDtype: t.dtype.rawValue, count: count, expectedSrcBytes: t.byteLength, dst: dst)
+                }
             }
         case .qwp(let pack):
             let e = try pack.entry(name)
             guard let off = e.rawOff else { throw QWDecisionError.backendFailed("expected raw norm/conv tensor for \(name)") }
             let elemBytes = (e.kind == "f32") ? 4 : 2
             let byteCount = count * elemBytes
-            try pack.withRawPointer(at: off, byteCount: byteCount) { (src: UnsafeRawPointer) in
-                convertToF16(src: src, srcDtype: e.kind ?? "bf16", count: count, expectedSrcBytes: byteCount, dst: dst)
+            try withExtendedLifetime(buf) {
+                try pack.withRawPointer(at: off, byteCount: byteCount) { (src: UnsafeRawPointer) in
+                    convertToF16(src: src, srcDtype: e.kind ?? "bf16", count: count, expectedSrcBytes: byteCount, dst: dst)
+                }
             }
         }
         return QWTensorValue(region: QWMRegion(buffer: buf, base: 0, length: buf.length), offset: 0, shape: QWTensorShape([count], .f16))
@@ -435,7 +552,7 @@ enum QWDecisionWeightLoader {
         return rotated ? .rotatedHQ(bits: e.hqBits, group: e.hqGroup) : .nativeAffine(bits: e.hqBits, group: e.hqGroup)
     }
 
-    private static func allocSharedBuffer(bytes: Int, hal: QWHal, buffers: inout [any MTLBuffer]) throws -> any MTLBuffer {
+    static func allocSharedBuffer(bytes: Int, hal: QWHal, buffers: inout [any MTLBuffer]) throws -> any MTLBuffer {
         let len = max(64, qwAlignUp(bytes, 64))
         guard let buf = hal.device.makeBuffer(length: len, options: .storageModeShared) else {
             throw QWDecisionError.backendFailed("failed to allocate Metal buffer of \(len) bytes")
@@ -445,7 +562,7 @@ enum QWDecisionWeightLoader {
         return buf
     }
 
-    private static func convertToBF16(
+    static func convertToBF16(
         src: UnsafeRawPointer, srcDtype: String, count: Int, expectedSrcBytes: Int, dst: UnsafeMutableRawPointer
     ) {
         let low = srcDtype.lowercased()
@@ -457,11 +574,11 @@ enum QWDecisionWeightLoader {
             let hp = src.assumingMemoryBound(to: Float16.self)
             for i in 0..<count { out[i] = f32ToBF16(Float(hp[i])) }
         } else if expectedSrcBytes >= count * 2 {
-            memcpy(dst, src, count * 2)
+            dst.copyMemory(from: src, byteCount: count * 2)
         }
     }
 
-    private static func convertToF16(
+    static func convertToF16(
         src: UnsafeRawPointer, srcDtype: String, count: Int, expectedSrcBytes: Int, dst: UnsafeMutablePointer<Float16>
     ) {
         let low = srcDtype.lowercased()
@@ -469,7 +586,7 @@ enum QWDecisionWeightLoader {
             let fp = src.assumingMemoryBound(to: Float.self)
             for i in 0..<count { dst[i] = Float16(fp[i]) }
         } else if low == "f16" && expectedSrcBytes >= count * 2 {
-            memcpy(dst, src, count * 2)
+            UnsafeMutableRawPointer(dst).copyMemory(from: src, byteCount: count * 2)
         } else if expectedSrcBytes >= count * 2 {
             let bp = src.assumingMemoryBound(to: UInt16.self)
             for i in 0..<count { dst[i] = Float16(Float(bitPattern: UInt32(bp[i]) << 16)) }

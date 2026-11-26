@@ -27,12 +27,13 @@ final class QWInkling2PrefixCache: @unchecked Sendable {
         let dsparkSlices: [QWInkling2DSpark.KVSlice]?
         let dsparkLastTap: Data?
         let lsaIndexerData: Data?
+        let finalNormRow: Data?
         let byteCount: Int
         var lastAccess: UInt64
 
         init(key: Key, convData: Data, visitSlices: [VisitSlice],
              dsparkSlices: [QWInkling2DSpark.KVSlice]? = nil, dsparkLastTap: Data? = nil,
-             lsaIndexerData: Data? = nil,
+             lsaIndexerData: Data? = nil, finalNormRow: Data? = nil,
              byteCount: Int, tick: UInt64) {
             self.key = key
             self.convData = convData
@@ -40,6 +41,7 @@ final class QWInkling2PrefixCache: @unchecked Sendable {
             self.dsparkSlices = dsparkSlices
             self.dsparkLastTap = dsparkLastTap
             self.lsaIndexerData = lsaIndexerData
+            self.finalNormRow = finalNormRow
             self.byteCount = byteCount
             self.lastAccess = tick
         }
@@ -87,36 +89,29 @@ final class QWInkling2PrefixCache: @unchecked Sendable {
         }
     }
 
-    func matchLongestPrefix(tokens: [Int], salt: String?, limit: Int) -> Entry? {
+    func matchLongestPrefix(tokens: [Int], salt: String?, limit: Int, allowExact: Bool = false) -> Entry? {
         guard limit > 0 else { return nil }
         return lock.withLock {
             guard warmByteLimit > 0, !entries.isEmpty else { return nil }
+            if allowExact, limit >= tokens.count {
+                let exactKey = Key(salt: salt, tokens: tokens)
+                if let exactEntry = entries[exactKey], exactEntry.finalNormRow != nil {
+                    tick &+= 1
+                    exactEntry.lastAccess = tick
+                    return exactEntry
+                }
+            }
+            let prefixLimit = min(limit, max(0, tokens.count - 1))
+            guard prefixLimit > 0 else { return nil }
             var best: Entry? = nil
             var bestLen = 0
-            for (k, entry) in entries where k.salt == salt {
-                let n = min(limit, k.tokens.count)
+            for (k, entry) in entries where k.salt == salt && k.tokens.count <= prefixLimit {
+                let n = k.tokens.count
                 guard n > bestLen else { continue }
-                if k.tokens[0..<n].elementsEqual(tokens[0..<n]) {
+                if tokens[0..<n].elementsEqual(k.tokens) {
                     best = entry
                     bestLen = n
                 }
-            }
-            if let best, best.key.tokens.count > limit {
-                // Only exact prefix snapshots up to `limit` can restore conv/KV cleanly.
-                var exactBest: Entry? = nil
-                var exactLen = 0
-                for (k, entry) in entries where k.salt == salt && k.tokens.count <= limit {
-                    let n = k.tokens.count
-                    if n > exactLen && tokens[0..<n].elementsEqual(k.tokens) {
-                        exactBest = entry
-                        exactLen = n
-                    }
-                }
-                if let exactBest {
-                    tick &+= 1
-                    exactBest.lastAccess = tick
-                }
-                return exactBest
             }
             if let best {
                 tick &+= 1
@@ -126,14 +121,24 @@ final class QWInkling2PrefixCache: @unchecked Sendable {
         }
     }
 
+    static func captureFinalNormRow(session: QWInkling2Session, lastChunkRows: Int, hidden: Int) -> Data {
+        let rowBytes = hidden * 2
+        let rowOff = max(0, lastChunkRows - 1) * rowBytes
+        let src = session.normBuf.contents().advanced(by: rowOff)
+        return withExtendedLifetime(session.normBuf) {
+            Data(bytes: src, count: rowBytes)
+        }
+    }
+
     static func capture(session: QWInkling2Session, dspark: QWInkling2DSpark? = nil,
                         lsaOperator: QWLSAOperator? = nil,
                         tokens: [Int], salt: String?,
-                        slidingWindow: Int, tick: UInt64 = 0) -> Entry {
+                        slidingWindow: Int, finalNormRow: Data? = nil, tick: UInt64 = 0) -> Entry {
         capture(
             slot: session.primarySlotState, kvModeRaw: session.kvModeRaw,
             dspark: dspark, lsaOperator: lsaOperator,
-            tokens: tokens, salt: salt, slidingWindow: slidingWindow, tick: tick
+            tokens: tokens, salt: salt, slidingWindow: slidingWindow,
+            finalNormRow: finalNormRow, tick: tick
         )
     }
 
@@ -141,7 +146,7 @@ final class QWInkling2PrefixCache: @unchecked Sendable {
                         dspark: QWInkling2DSpark? = nil,
                         lsaOperator: QWLSAOperator? = nil,
                         tokens: [Int], salt: String?,
-                        slidingWindow: Int, tick: UInt64 = 0) -> Entry {
+                        slidingWindow: Int, finalNormRow: Data? = nil, tick: UInt64 = 0) -> Entry {
         let pos = tokens.count
         let slab = slot.convStatesSlab
         let convData = Data(bytes: slab.contents(), count: slab.length)
@@ -191,9 +196,10 @@ final class QWInkling2PrefixCache: @unchecked Sendable {
             lsaData = capturedLsa
             bytes += capturedLsa.count
         }
+        bytes += finalNormRow?.count ?? 0
         return Entry(key: Key(salt: salt, tokens: tokens), convData: convData,
                      visitSlices: slices, dsparkSlices: dsparkSlices, dsparkLastTap: dsparkLastTap,
-                     lsaIndexerData: lsaData, byteCount: bytes, tick: tick)
+                     lsaIndexerData: lsaData, finalNormRow: finalNormRow, byteCount: bytes, tick: tick)
     }
 
     @discardableResult

@@ -218,7 +218,7 @@ public enum QWChatTurnPreparer {
             wire += lastMsg.extractTextContent()
         } else {
             wire = try chatTemplate.render(messages: msgs, options: tplOpts)
-            if chatTemplate.isInkling2Template && !shouldThink && (enforceJson || isConstrainedJson) {
+            if chatTemplate.isInkling2Template && !shouldThink && (!hasActiveTools || enforceJson || isConstrainedJson) {
                 wire += "<|message_model|><|content_text|>"
             }
             if isConstrainedJson {
@@ -228,6 +228,10 @@ public enum QWChatTurnPreparer {
 
         let specialTokens = tok.resolveSpecialTokens(fallback: specialTokensFallback)
         var stops: Set<Int> = specialTokens.defaultStopTokenIds
+        if chatTemplate.isInkling2Template && !shouldThink && !hasActiveTools,
+           let endMsgId = tok.tokenId(for: "<|end_message|>") {
+            stops.insert(endMsgId)
+        }
         let imEndTokenId = specialTokens.imEndTokenId
         let endThinkTokenId = chatTemplate.thinkCloseTag.flatMap { tok.tokenId(for: $0) }
             ?? specialTokens.endThinkTokenId

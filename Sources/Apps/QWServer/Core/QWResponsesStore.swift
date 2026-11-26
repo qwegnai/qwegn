@@ -7,15 +7,18 @@ public final class QWResponsesStore: @unchecked Sendable {
     public struct StoredResponse: Sendable {
         public var resource: OpenAIResponseResource
         public var historyMessages: [ChatMessage]
+        public var sessionNodeId: String?
         public var task: Task<Void, Never>?
 
         public init(
             resource: OpenAIResponseResource,
             historyMessages: [ChatMessage],
+            sessionNodeId: String? = nil,
             task: Task<Void, Never>? = nil
         ) {
             self.resource = resource
             self.historyMessages = historyMessages
+            self.sessionNodeId = sessionNodeId
             self.task = task
         }
     }
@@ -93,13 +96,21 @@ public final class QWResponsesStore: @unchecked Sendable {
         }
     }
 
-    public func update(id: String, resource: OpenAIResponseResource, historyMessages: [ChatMessage]? = nil) {
+    public func update(
+        id: String,
+        resource: OpenAIResponseResource,
+        historyMessages: [ChatMessage]? = nil,
+        sessionNodeId: String? = nil
+    ) {
         var evictedTasks: [Task<Void, Never>] = []
         lock.withLock {
             guard var existing = entries[id] else { return }
             existing.resource = resource
             if let historyMessages {
                 existing.historyMessages = historyMessages
+            }
+            if let sessionNodeId {
+                existing.sessionNodeId = sessionNodeId
             }
             existing.task = nil
             let newSize = Self.estimateBytes(existing)

@@ -1,5 +1,6 @@
 import Foundation
 import Jinja
+import QWCore
 import QWToken
 
 public struct QWChatTemplateOptions: Sendable {
@@ -47,7 +48,52 @@ public struct QWChatTemplate: Sendable {
         let detectedThink = Self.detectThinkTags(in: normalizedSource)
         self.thinkOpenTag = detectedThink?.open
         self.thinkCloseTag = detectedThink?.close
-        self.supportsThinkingTags = detectedThink != nil || self.isInkling2Template
+        self.supportsThinkingTags = Self.supportsThinkingTags(inNormalizedSource: normalizedSource, detectedThink: detectedThink)
+    }
+
+    public static func supportsThinkingTags(inSource source: String) -> Bool {
+        let normalized = normalizePythonJinjaSyntax(source)
+        return supportsThinkingTags(inNormalizedSource: normalized, detectedThink: detectThinkTags(in: normalized))
+    }
+
+    private static func supportsThinkingTags(
+        inNormalizedSource normalized: String,
+        detectedThink: (open: String, close: String)?
+    ) -> Bool {
+        let isInkling2 = normalized.contains("<|content_thinking|>") && normalized.contains("<|message_model|>")
+        return detectedThink != nil || isInkling2
+    }
+
+    /// Probes `chat_template.jinja` or `tokenizer_config.json` in `packPath` without compiling Jinja or loading weights.
+    public static func detectSupportsThinkingTags(atPackPath packPath: String) -> Bool? {
+        let expanded = packPath.trimmingCharacters(in: .whitespacesAndNewlines).expandingTildePath
+        guard !expanded.isEmpty else { return nil }
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: expanded) else { return nil }
+        let assets = QWModelRoot(url: URL(fileURLWithPath: expanded)).assets
+        let jinjaURL = assets.appendingPathComponent("chat_template.jinja")
+        if fm.fileExists(atPath: jinjaURL.path),
+           let source = try? String(contentsOf: jinjaURL, encoding: .utf8) {
+            return supportsThinkingTags(inSource: source)
+        }
+        let tokCfgURL = assets.appendingPathComponent("tokenizer_config.json")
+        guard fm.fileExists(atPath: tokCfgURL.path),
+              let data = try? Data(contentsOf: tokCfgURL),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let rawTemplate = obj["chat_template"] else {
+            return nil
+        }
+        if let str = rawTemplate as? String {
+            return supportsThinkingTags(inSource: str)
+        }
+        if let entries = rawTemplate as? [[String: Any]], !entries.isEmpty {
+            let selected = entries.first(where: { ($0["name"] as? String) == "default" })
+                ?? (entries.count == 1 ? entries[0] : nil)
+            if let str = selected?["template"] as? String {
+                return supportsThinkingTags(inSource: str)
+            }
+        }
+        return nil
     }
 
     private static func detectThinkTags(in source: String) -> (open: String, close: String)? {

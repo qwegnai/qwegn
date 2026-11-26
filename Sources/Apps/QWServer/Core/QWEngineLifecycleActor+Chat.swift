@@ -317,6 +317,7 @@ extension QWEngineLifecycleActor {
 
     nonisolated public func handleChatCompletion(
         request: ChatCompletionRequest,
+        trace: QWRequestTraceContext? = nil,
         onStreamReady: (@Sendable () async -> Void)? = nil,
         onPromptTokensComputed: (@Sendable (Int) -> Void)? = nil,
         onToken: ((String) -> Void)? = nil,
@@ -335,6 +336,7 @@ extension QWEngineLifecycleActor {
         do {
             let result = try await executeChatCompletion(
                 request: request,
+                trace: trace,
                 admitted: admitted,
                 memState: memState,
                 onStreamReady: onStreamReady,
@@ -353,6 +355,7 @@ extension QWEngineLifecycleActor {
 
     nonisolated private func executeChatCompletion(
         request: ChatCompletionRequest,
+        trace: QWRequestTraceContext?,
         admitted: AdmittedRequest,
         memState: (mountedTokens: [Int], deltaTokens: [Int], manifest: QWMemoryManifest?),
         onStreamReady: (@Sendable () async -> Void)?,
@@ -519,6 +522,12 @@ extension QWEngineLifecycleActor {
             }
         )
 
+        let resolvedRoute = trace?.route ?? "/v1/chat/completions"
+        let resolvedClient = trace?.client ?? QWClientIdentity.resolve(headers: request.httpHeaders ?? [:]).client
+        let resolvedReqId = trace?.requestId ?? request.effectiveRequestId
+        let resolvedSessId = trace?.sessionId ?? request.effectiveSessionId
+        let resolvedPeer = trace?.peerHost
+
         let metrics: QWModelCompletionMetrics
         preparingActive = false
         QWConcurrentBatchTracker.endPreparing()
@@ -542,9 +551,25 @@ extension QWEngineLifecycleActor {
             )
         } catch {
             telemetry.resetToIdle()
+            let wasCancelled = (error is CancellationError) || cancelFlag.isCancelled || shouldStop?() == true || Task.isCancelled
+            if wasCancelled {
+                logger.logSimpleRequest(
+                    method: trace?.method ?? "POST",
+                    path: resolvedRoute,
+                    statusCode: 499,
+                    client: resolvedClient,
+                    requestId: resolvedReqId,
+                    sessionId: resolvedSessId,
+                    peerHost: resolvedPeer,
+                    detail: "cancelled",
+                    totalSec: Date().timeIntervalSince(inferStart)
+                )
+            }
             Self.recordChatOutcome(
                 request: request, config: config, hasMountedManifest: memState.manifest != nil,
-                promptTokens: effectivePromptTokens.count, generatedTokens: 0, outcome: "failed"
+                trace: trace,
+                promptTokens: effectivePromptTokens.count, generatedTokens: 0,
+                outcome: wasCancelled ? "cancelled" : "failed"
             )
             throw error
         }
@@ -589,21 +614,39 @@ extension QWEngineLifecycleActor {
             active: effectivePromptTokens.count + metrics.tokens.count,
             capacity: metrics.activeContextCapacity
         )
-        logger.logRequest(
-            method: "POST", path: "/v1/chat/completions", statusCode: 200,
-            promptTokens: effectivePromptTokens.count, completionTokens: metrics.tokens.count,
-            imagesCount: imageUrls.count + videoInputs.count, cacheHitTokens: metrics.cacheHitTokens,
-            cacheTier: metrics.cacheTier, cacheActive: metrics.cacheActive,
-            specSummary: metrics.speculativeSummary,
-            ttftMs: ttftMs, decodeTokPerSec: decodeTokPerSec, totalSec: totalDuration
-        )
+        let wasCancelled = cancelFlag.isCancelled || shouldStop?() == true || Task.isCancelled
+        if wasCancelled {
+            logger.logSimpleRequest(
+                method: trace?.method ?? "POST",
+                path: resolvedRoute,
+                statusCode: 499,
+                client: resolvedClient,
+                requestId: resolvedReqId,
+                sessionId: resolvedSessId,
+                peerHost: resolvedPeer,
+                detail: "cancelled",
+                totalSec: totalDuration
+            )
+        } else {
+            logger.logRequest(
+                method: trace?.method ?? "POST", path: resolvedRoute, statusCode: 200,
+                promptTokens: effectivePromptTokens.count, completionTokens: metrics.tokens.count,
+                imagesCount: imageUrls.count + videoInputs.count, cacheHitTokens: metrics.cacheHitTokens,
+                cacheTier: metrics.cacheTier, cacheActive: metrics.cacheActive,
+                specSummary: metrics.speculativeSummary,
+                ttftMs: ttftMs, decodeTokPerSec: decodeTokPerSec, totalSec: totalDuration,
+                client: resolvedClient, requestId: resolvedReqId,
+                sessionId: resolvedSessId, peerHost: resolvedPeer
+            )
+        }
         Self.recordChatOutcome(
             request: request, config: config, hasMountedManifest: memState.manifest != nil,
+            trace: trace,
             promptTokens: effectivePromptTokens.count, generatedTokens: metrics.tokens.count,
             cachedTokens: metrics.cacheHitTokens, cacheHitTier: metrics.cacheTier,
             ttftMs: ttftMs, prefillMs: metrics.prefillSec.map { $0 * 1000.0 },
             decodeMs: decodeSec.map { $0 * 1000.0 }, decodeTps: decodeTokPerSec,
-            stageGPU: metrics.stageGPU, outcome: "ok"
+            stageGPU: metrics.stageGPU, outcome: wasCancelled ? "cancelled" : "ok"
         )
 
         let reportedCompletionTokens = max(0, metrics.tokens.count - finalState.healedConsumedTokens)
@@ -671,6 +714,7 @@ extension QWEngineLifecycleActor {
         request: ChatCompletionRequest,
         config: Config,
         hasMountedManifest: Bool,
+        trace: QWRequestTraceContext? = nil,
         promptTokens: Int,
         generatedTokens: Int,
         cachedTokens: Int = 0,
@@ -684,7 +728,7 @@ extension QWEngineLifecycleActor {
     ) {
         guard request.effectiveStore else { return }
         QWRequestRecordStore.shared.append(QWRequestRecord(
-            id: request.effectiveRequestId ?? QWRequestRecordStore.shared.nextId(),
+            id: trace?.requestId ?? request.effectiveRequestId ?? QWRequestRecordStore.shared.nextId(),
             time: Date(),
             modelId: config.packName,
             promptTokens: promptTokens,
@@ -697,7 +741,7 @@ extension QWEngineLifecycleActor {
             decodeTps: decodeTps,
             stageGPU: stageGPU,
             config: QWChatPolicyResolver.buildLedgerConfig(
-                request: request, config: config, hasMountedManifest: hasMountedManifest
+                request: request, config: config, hasMountedManifest: hasMountedManifest, trace: trace
             ),
             outcome: outcome
         ))

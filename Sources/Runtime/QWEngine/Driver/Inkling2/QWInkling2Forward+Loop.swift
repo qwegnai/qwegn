@@ -401,70 +401,129 @@ extension QWInkling2Forward {
         if runHeadRows > 0 {
             let efHead = try beginEncoder(.finalHead)
             let headStartRow = max(0, t - runHeadRows)
-            let V = session.ink2.unpaddedVocabSize
-            let cap = session.ink2.finalLogitSoftcapping
-            switch weights.lmHeadStorage {
-            case .bf16(let headTV):
-                if greedyHead {
-                    let xHeadTV = QWTensorValue(
-                        region: QWMRegion(buffer: session.normBuf, base: 0, length: session.normBuf.length),
-                        offset: headStartRow * H * 2,
-                        shape: QWTensorShape([runHeadRows * H], .bf16)
-                    )
-                    try QWHead.encodeBatchedGreedyArgmax(
-                        efHead, hal: hal,
-                        storage: .bf16(headTV),
-                        x: xHeadTV,
-                        keysHi: session.headKeysHiTV,
-                        keysLo: session.headKeysLoTV,
-                        tokens: session.headTokensTV,
-                        geometry: session.geometry,
-                        M: runHeadRows, N: V, softcap: cap
-                    )
-                } else {
-                    guard let headBank = weights.lmHeadBank else {
-                        throw QWInkling2Error.badState("missing BF16 lmHeadBank")
-                    }
-                    try encodeFPGemm(
-                        efHead, bank: headBank,
-                        xBuf: session.normBuf, xOff: headStartRow * H * 2,
-                        yBuf: session.logitsF32Buf, m: runHeadRows,
-                        outIsF32: true, softcap: cap
-                    )
-                }
-            case .q4g(let hw):
-                encodeRotateToF16(
-                    efHead, srcBF16: session.normBuf, srcOff: headStartRow * H * 2,
-                    dst: session.qwpF16InBuf, count: runHeadRows * H,
-                    rotate: hw.view.isRotated, outIsF32: false
+            try encodeHeadProjection(
+                efHead, headStartRow: headStartRow, runHeadRows: runHeadRows, greedyHead: greedyHead
+            )
+        }
+    }
+
+    private func encodeHeadProjection(
+        _ efHead: any MTLComputeCommandEncoder,
+        headStartRow: Int,
+        runHeadRows: Int,
+        greedyHead: Bool
+    ) throws {
+        let H = session.descriptor.hidden
+        let V = session.ink2.unpaddedVocabSize
+        let cap = session.ink2.finalLogitSoftcapping
+        switch weights.lmHeadStorage {
+        case .bf16(let headTV):
+            if greedyHead {
+                let xHeadTV = QWTensorValue(
+                    region: QWMRegion(buffer: session.normBuf, base: 0, length: session.normBuf.length),
+                    offset: headStartRow * H * 2,
+                    shape: QWTensorShape([runHeadRows * H], .bf16)
                 )
-                let x16HeadTV = session.qwpF16InTV.slice(byteOffset: 0, count: runHeadRows * H, dtype: .f16)
-                if greedyHead {
-                    try QWHead.encodeBatchedGreedyArgmax(
-                        efHead, hal: hal,
-                        storage: weights.lmHeadStorage,
-                        x: x16HeadTV,
-                        keysHi: session.headKeysHiTV,
-                        keysLo: session.headKeysLoTV,
-                        tokens: session.headTokensTV,
-                        geometry: session.geometry,
-                        M: runHeadRows, N: V, softcap: cap
-                    )
-                } else {
-                    let logitsTV = session.logitsF32TV.slice(byteOffset: 0, count: runHeadRows * V, dtype: .f32)
-                    if runHeadRows == 1 {
-                        try QWHead.encodeQ4g(efHead, hal: hal, weight: hw, x: x16HeadTV, y: logitsTV)
-                    } else {
-                        try QWHead.encodeBatched(efHead, hal: hal, view: hw.view, x: x16HeadTV, y: logitsTV, m: runHeadRows)
-                    }
-                    if cap > 0 {
-                        encodeSoftcapF32(efHead, data: session.logitsF32Buf, count: runHeadRows * V, softcap: cap)
-                    }
+                try QWHead.encodeBatchedGreedyArgmax(
+                    efHead, hal: hal,
+                    storage: .bf16(headTV),
+                    x: xHeadTV,
+                    keysHi: session.headKeysHiTV,
+                    keysLo: session.headKeysLoTV,
+                    tokens: session.headTokensTV,
+                    geometry: session.geometry,
+                    M: runHeadRows, N: V, softcap: cap
+                )
+            } else {
+                guard let headBank = weights.lmHeadBank else {
+                    throw QWInkling2Error.badState("missing BF16 lmHeadBank")
                 }
-            case .f16:
-                throw QWInkling2Error.badState("unsupported .f16 lmHeadStorage for Inkling-2")
+                try encodeFPGemm(
+                    efHead, bank: headBank,
+                    xBuf: session.normBuf, xOff: headStartRow * H * 2,
+                    yBuf: session.logitsF32Buf, m: runHeadRows,
+                    outIsF32: true, softcap: cap
+                )
+            }
+        case .q4g(let hw):
+            encodeRotateToF16(
+                efHead, srcBF16: session.normBuf, srcOff: headStartRow * H * 2,
+                dst: session.qwpF16InBuf, count: runHeadRows * H,
+                rotate: hw.view.isRotated, outIsF32: false
+            )
+            let x16HeadTV = session.qwpF16InTV.slice(byteOffset: 0, count: runHeadRows * H, dtype: .f16)
+            if greedyHead {
+                try QWHead.encodeBatchedGreedyArgmax(
+                    efHead, hal: hal,
+                    storage: weights.lmHeadStorage,
+                    x: x16HeadTV,
+                    keysHi: session.headKeysHiTV,
+                    keysLo: session.headKeysLoTV,
+                    tokens: session.headTokensTV,
+                    geometry: session.geometry,
+                    M: runHeadRows, N: V, softcap: cap
+                )
+            } else {
+                let logitsTV = session.logitsF32TV.slice(byteOffset: 0, count: runHeadRows * V, dtype: .f32)
+                if runHeadRows == 1 {
+                    try QWHead.encodeQ4g(efHead, hal: hal, weight: hw, x: x16HeadTV, y: logitsTV)
+                } else {
+                    try QWHead.encodeBatched(efHead, hal: hal, view: hw.view, x: x16HeadTV, y: logitsTV, m: runHeadRows)
+                }
+                if cap > 0 {
+                    encodeSoftcapF32(efHead, data: session.logitsF32Buf, count: runHeadRows * V, softcap: cap)
+                }
+            }
+        case .f16:
+            throw QWInkling2Error.badState("unsupported .f16 lmHeadStorage for Inkling-2")
+        }
+    }
+
+    /// Recomputes final head logits/argmax from a cached final-norm row on exact prompt cache hits.
+    func runHeadFromFinalNorm(
+        finalNormRow: Data,
+        greedyHead: Bool,
+        profiler: QWInkling2Profiler? = nil
+    ) throws {
+        let rowBytes = session.descriptor.hidden * 2
+        guard finalNormRow.count == rowBytes else {
+            throw QWInkling2Error.badState("invalid cached finalNormRow bytes=\(finalNormRow.count) expected=\(rowBytes)")
+        }
+        let dst = session.normBuf.contents()
+        withExtendedLifetime(session.normBuf) {
+            finalNormRow.withUnsafeBytes { raw in
+                guard let base = raw.baseAddress else { return }
+                dst.copyMemory(from: base, byteCount: rowBytes)
             }
         }
+        let hostStartNs = profiler?.beginHostTimer() ?? 0
+        let cbOpt = (profiler == nil)
+            ? (hal.queue.makeCommandBufferWithUnretainedReferences() ?? hal.queue.makeCommandBuffer())
+            : hal.queue.makeCommandBuffer()
+        guard let cb = cbOpt else {
+            throw QWInkling2Error.badState("failed to create head command buffer for exact cache hit")
+        }
+        var encOpt: (any MTLComputeCommandEncoder)? = nil
+        profiler?.beginStage(.finalHead, on: cb, encoder: &encOpt, hal: hal)
+        if encOpt == nil {
+            guard let plain = cb.makeComputeCommandEncoder() else {
+                throw QWInkling2Error.badState("failed to create compute encoder for exact cache hit")
+            }
+            hal.touchKeepAlive(plain)
+            encOpt = plain
+        }
+        if let activeEnc = encOpt {
+            try encodeHeadProjection(activeEnc, headStartRow: 0, runHeadRows: 1, greedyHead: greedyHead)
+        }
+        profiler?.endActiveStage(encoder: &encOpt)
+        encOpt?.endEncoding()
+        profiler?.endHostTimer(hostStartNs)
+        cb.commit()
+        cb.waitUntilCompleted()
+        if let err = cb.error {
+            throw QWInkling2Error.badState("Metal execution failed on exact cache hit: \(err.localizedDescription)")
+        }
+        profiler?.finishCommandBuffer(cb, tokens: 1)
     }
 
     func encodeLoopCoreTransition(

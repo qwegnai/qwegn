@@ -46,10 +46,12 @@ final class QWMenuBarStabilityTests: XCTestCase {
         XCTAssertEqual(req?.url?.absoluteString, "http://[::1]:9090/v1/models/unload")
         XCTAssertEqual(req?.httpMethod, "POST")
         XCTAssertEqual(req?.value(forHTTPHeaderField: "Authorization"), "Bearer secret-bearer-token")
+        XCTAssertEqual(req?.value(forHTTPHeaderField: "X-Qwegn-Client"), "menubar")
 
         telemetry.settings.apiKey = "   "
         let unauthReq = telemetry.authorizedRequest(path: "/health")
         XCTAssertNil(unauthReq?.value(forHTTPHeaderField: "Authorization"))
+        XCTAssertEqual(unauthReq?.value(forHTTPHeaderField: "X-Qwegn-Client"), "menubar")
     }
 
     @MainActor

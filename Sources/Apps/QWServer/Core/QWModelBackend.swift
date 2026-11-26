@@ -148,6 +148,7 @@ public protocol QWModelBackend: Sendable {
     ) throws -> Int
     func mountStandalonePrefixCache(from fileURL: URL) throws -> (tokens: [Int], byteCount: Int)
     func unmountSharedBasePrefixes()
+    func hasCachedPrefix(tokens: [Int], cacheSalt: String?) -> Bool
     func computePromptLogprobs(
         promptTokens: [Int],
         topLogprobsCount: Int,
@@ -171,6 +172,7 @@ extension QWModelBackend {
         ([], 0)
     }
     public func unmountSharedBasePrefixes() {}
+    public func hasCachedPrefix(tokens: [Int], cacheSalt: String?) -> Bool { false }
     public func computePromptLogprobs(
         promptTokens: [Int],
         topLogprobsCount: Int,
@@ -318,6 +320,9 @@ public struct QWUnifiedModelBackend: QWModelBackend {
     /// come from the module behind it, not from the family it serves.
     public var capabilities: Set<QWKnobCapability> { engine.capabilities }
     public var supportsTokenConstraints: Bool { engine.supportsTokenConstraints }
+    public func hasCachedPrefix(tokens: [Int], cacheSalt: String?) -> Bool {
+        engine.hasCachedPrefix(tokens: tokens, cacheSalt: cacheSalt)
+    }
 
     public init(
         engine: any QWInferenceEngine,

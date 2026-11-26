@@ -10,11 +10,20 @@ import QWVision
 
 extension QWHttpServer {
 
-    func handleCreateResponse(connection: NWConnection, headers: [String: String] = [:], body: Data) async throws {
+    func handleCreateResponse(
+        connection: NWConnection,
+        headers: [String: String] = [:],
+        body: Data,
+        trace: QWRequestTraceContext? = nil
+    ) async throws {
+        let baseTrace = trace ?? QWClientIdentity.makeTraceContext(
+            method: "POST", route: "/v1/responses", headers: headers, peerEndpoint: connection.endpoint
+        )
         let req: OpenAIResponseCreateRequest
         do {
             req = try QWServerRequestDecoder.decode(OpenAIResponseCreateRequest.self, from: body)
         } catch {
+            logger.log(.warn, "HTTP POST \(baseTrace.route) malformed JSON | \(baseTrace.logTag): \(error.localizedDescription)")
             sendOpenAIError(connection, status: 400, message: "Malformed JSON payload: \(error.localizedDescription)")
             return
         }
@@ -85,6 +94,7 @@ extension QWHttpServer {
         }
 
         let respId = chatReq.effectiveRequestId ?? ("resp_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(24))
+        let effectiveTrace = baseTrace.withRequestId(respId)
         let hasClientRequestId = (chatReq.effectiveRequestId != nil)
         let replyModel = resolveReplyModelName(requested: req.model, strictNotFound: false) ?? actor.getModelName()
         var extraHeaders = ["x-request-id: \(respId)"]
@@ -120,12 +130,15 @@ extension QWHttpServer {
                 responsesStore.put(queuedEntry)
             }
             let bgAllowInk2 = actor.isInkling2Template() && (!streamPolicy.isJsonResponseFormat || streamPolicy.shouldThink)
+            let parentNodeId = prevEntry?.sessionNodeId
             let bgTask = Task { [weak self] in
                 guard let self else { return }
                 await self.runBackgroundResponse(
                     template: template, chatReq: chatReq, baseHistory: conversationMessages,
+                    parentSessionNodeId: parentNodeId,
                     hasActiveTools: streamPolicy.hasActiveTools, allowReasoningTags: streamPolicy.allowReasoningTags,
-                    thinkingExplicitlyDisabled: thinkingExplicitlyDisabled, allowInk2Markers: bgAllowInk2
+                    thinkingExplicitlyDisabled: thinkingExplicitlyDisabled, allowInk2Markers: bgAllowInk2,
+                    trace: effectiveTrace
                 )
             }
             responsesStore.attachTask(id: respId, task: bgTask)
@@ -146,9 +159,11 @@ extension QWHttpServer {
             try await runStreamingResponse(
                 connection: connection, extraHeaders: extraHeaders, template: template,
                 chatReq: chatReq, baseHistory: conversationMessages, shouldStore: shouldStore,
+                parentSessionNodeId: prevEntry?.sessionNodeId,
                 reservedClientEntry: reservedClientEntry,
                 streamPolicy: streamPolicy,
-                thinkingExplicitlyDisabled: thinkingExplicitlyDisabled
+                thinkingExplicitlyDisabled: thinkingExplicitlyDisabled,
+                trace: effectiveTrace
             )
             return
         }
@@ -156,11 +171,13 @@ extension QWHttpServer {
         let shouldStop = generationShouldStop(for: connection)
         let result: ChatCompletionExecutionResult
         do {
-            result = try await actor.handleChatCompletion(request: chatReq, onToken: nil, shouldStop: shouldStop)
+            result = try await actor.handleChatCompletion(
+                request: chatReq, trace: effectiveTrace, onToken: nil, shouldStop: shouldStop
+            )
         } catch {
             if reservedClientEntry { _ = responsesStore.delete(respId) }
             if shouldStop() { return }
-            sendChatError(connection, error: error, path: "/v1/responses")
+            sendChatError(connection, error: error, path: effectiveTrace.route, trace: effectiveTrace)
             return
         }
         if shouldStop() {
@@ -175,7 +192,20 @@ extension QWHttpServer {
             allowInk2Markers: actor.isInkling2Template()
         )
         if shouldStore {
-            responsesStore.put(QWResponsesStore.StoredResponse(resource: finalResource, historyMessages: nextHistory))
+            let node = try? sessionTree.checkpoint(
+                parentId: prevEntry?.sessionNodeId,
+                label: respId,
+                modelName: replyModel,
+                kvMode: String(describing: serverCfg.kvMode),
+                cacheSalt: chatReq.cacheSalt,
+                tokenIds: [],
+                metadata: ["response_id": respId]
+            )
+            responsesStore.put(QWResponsesStore.StoredResponse(
+                resource: finalResource,
+                historyMessages: nextHistory,
+                sessionNodeId: node?.id
+            ))
         }
         sendJsonResponse(connection, status: 200, object: finalResource, extraHeaders: extraHeaders)
     }
@@ -205,14 +235,16 @@ extension QWHttpServer {
         template: OpenAIResponseTemplate,
         chatReq: ChatCompletionRequest,
         baseHistory: [ChatMessage],
+        parentSessionNodeId: String?,
         hasActiveTools: Bool,
         allowReasoningTags: Bool,
         thinkingExplicitlyDisabled: Bool,
-        allowInk2Markers: Bool
+        allowInk2Markers: Bool,
+        trace: QWRequestTraceContext? = nil
     ) async {
         do {
             let result = try await actor.handleChatCompletion(
-                request: chatReq, onToken: nil, shouldStop: { Task.isCancelled }
+                request: chatReq, trace: trace, onToken: nil, shouldStop: { Task.isCancelled }
             )
             if Task.isCancelled { return }
             let (finalResource, nextHistory) = OpenAIResponsesMapper.finalizeResponse(
@@ -221,7 +253,16 @@ extension QWHttpServer {
                 thinkingExplicitlyDisabled: thinkingExplicitlyDisabled,
                 allowInk2Markers: allowInk2Markers
             )
-            responsesStore.update(id: template.id, resource: finalResource, historyMessages: nextHistory)
+            let node = try? sessionTree.checkpoint(
+                parentId: parentSessionNodeId,
+                label: template.id,
+                modelName: template.model,
+                kvMode: String(describing: actor.getConfig().kvMode),
+                cacheSalt: chatReq.cacheSalt,
+                tokenIds: [],
+                metadata: ["response_id": template.id]
+            )
+            responsesStore.update(id: template.id, resource: finalResource, historyMessages: nextHistory, sessionNodeId: node?.id)
         } catch {
             if Task.isCancelled { return }
             let code = (error is QWServerContextLengthError) ? "context_length_exceeded" : "server_error"
@@ -240,9 +281,11 @@ extension QWHttpServer {
         chatReq: ChatCompletionRequest,
         baseHistory: [ChatMessage],
         shouldStore: Bool,
+        parentSessionNodeId: String?,
         reservedClientEntry: Bool,
         streamPolicy: QWChatStreamPolicy,
-        thinkingExplicitlyDisabled: Bool
+        thinkingExplicitlyDisabled: Bool,
+        trace: QWRequestTraceContext? = nil
     ) async throws {
         let shouldStop = generationShouldStop(for: connection)
         let serverConfig = actor.getConfig()
@@ -260,6 +303,7 @@ extension QWHttpServer {
         do {
             result = try await actor.handleChatCompletion(
                 request: chatReq,
+                trace: trace,
                 onStreamReady: { [weak self] in
                     guard let self else { return }
                     let readyPolicy = QWChatPolicyResolver.resolveStreamPolicy(
@@ -291,9 +335,11 @@ extension QWHttpServer {
             if reservedClientEntry { _ = responsesStore.delete(template.id) }
             if shouldStop() { return }
             if !session.isStarted {
-                sendChatError(connection, error: error, path: "/v1/responses")
+                sendChatError(connection, error: error, path: trace?.route ?? "/v1/responses", trace: trace)
                 return
             }
+            let tag = trace.map { " | \($0.logTag)" } ?? ""
+            logger.log(.error, "HTTP POST \(trace?.route ?? "/v1/responses") (stream) failed\(tag): \(error)")
             let code = (error is QWServerContextLengthError) ? "context_length_exceeded" : "server_error"
             let failed = template.makeResource(
                 status: "failed", completedAt: nil, output: [], usage: nil,
@@ -330,7 +376,20 @@ extension QWHttpServer {
             streamedItemIDs: emitter.snapshotItemIDs
         )
         if shouldStore {
-            responsesStore.put(QWResponsesStore.StoredResponse(resource: finalResource, historyMessages: nextHistory))
+            let node = try? sessionTree.checkpoint(
+                parentId: parentSessionNodeId,
+                label: template.id,
+                modelName: template.model,
+                kvMode: String(describing: serverConfig.kvMode),
+                cacheSalt: chatReq.cacheSalt,
+                tokenIds: [],
+                metadata: ["response_id": template.id]
+            )
+            responsesStore.put(QWResponsesStore.StoredResponse(
+                resource: finalResource,
+                historyMessages: nextHistory,
+                sessionNodeId: node?.id
+            ))
         }
         let terminalType = result.truncated ? "response.incomplete" : "response.completed"
         emitter.finishWithCompleted(type: terminalType, resource: finalResource)

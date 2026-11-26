@@ -58,6 +58,37 @@ final class QWEnginePrefixStore<Value: Sendable> {
     var evictions: Int { core.evictions }
     var hasSharedBase: Bool { core.hasSharedBase }
 
+    /// Non-mutating lookup checking whether `tokens` + `mode` is currently held in the warm or radix prefix store.
+    func hasCachedPrefix(tokens: [Int], mode: String) -> Bool {
+        guard !tokens.isEmpty, !mode.isEmpty,
+              tokens.allSatisfy({ (0..<vocab).contains($0) }) else {
+            return false
+        }
+        let base = Self.baseMode(of: mode)
+        let exact = Key(tokens: tokens, mode: mode)
+        if core.value(for: exact, touchOnHit: false) != nil {
+            return true
+        }
+        if base != mode {
+            let saltedBase = Key(tokens: tokens, mode: base)
+            if core.isSharedBaseKey(saltedBase), core.value(for: saltedBase, touchOnHit: false) != nil {
+                return true
+            }
+        }
+        if QWRadixKVGate.isEnabled,
+           let radixHit = radixTree.lookupLongestCheckpoint(
+               tokens: tokens,
+               mode: mode,
+               fallbackSharedBaseMode: base != mode ? base : nil,
+               allowExact: true
+           ),
+           radixHit.matchedTokens == tokens.count,
+           core.value(for: radixHit.key, touchOnHit: false) != nil {
+            return true
+        }
+        return false
+    }
+
     static func baseMode(of mode: String) -> String {
         guard let range = mode.range(of: "|salt=") else { return mode }
         return String(mode[..<range.lowerBound])

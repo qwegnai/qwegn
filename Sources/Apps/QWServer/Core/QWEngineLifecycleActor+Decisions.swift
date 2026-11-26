@@ -260,6 +260,10 @@ extension QWEngineLifecycleActor {
         decisionStatusBox.isLoaded()
     }
 
+    nonisolated public func residencyLeases() -> [QWResidencyLease] {
+        residencyPool.currentLeases()
+    }
+
     /// Hot-loads a decision sidecar alongside the primary model after UMA admission checks.
     @discardableResult
     public func loadDecisionSidecar(
@@ -276,9 +280,13 @@ extension QWEngineLifecycleActor {
 
         let estimatedSidecarBytes = Self.estimateDecisionSidecarBytes(at: expanded, loadVision: loadVision)
         let primaryWiredBytes = Int(Self.deviceAllocatedBytes())
-        let admission = QWResidencyAdmission.admitDecisionSidecar(
-            primaryWiredBytes: primaryWiredBytes,
-            sidecarEstimateBytes: estimatedSidecarBytes,
+        let admission = await residencyPool.admit(
+            slot: .decisionSidecar,
+            modelName: resolvedName,
+            packPath: expanded,
+            estimatedBytes: estimatedSidecarBytes,
+            computeUnit: computeUnit.rawValue,
+            measuredPrimaryWiredBytes: primaryWiredBytes,
             requestedWarmCacheBytes: config.cacheConfig.warmByteLimit,
             requestedSessions: config.maxConcurrentSessions
         )
@@ -295,6 +303,14 @@ extension QWEngineLifecycleActor {
         do {
             let loadedSidecar = try await loader(expanded, computeUnit, loadVision, arbitrator, logger)
             self.decisionSidecar = loadedSidecar
+            await residencyPool.commitLease(QWResidencyLease(
+                slot: .decisionSidecar,
+                modelName: loadedSidecar.modelName,
+                packPath: loadedSidecar.packPath,
+                estimatedBytes: loadedSidecar.estimatedBytes,
+                computeUnit: loadedSidecar.computeUnit,
+                bypassesGPUArbitrator: loadedSidecar.backendKind.hasPrefix("coreai")
+            ))
             decisionStatusBox.setLoaded(loadedSidecar)
             return decisionStatusBox.get()
         } catch {
@@ -318,6 +334,7 @@ extension QWEngineLifecycleActor {
     @discardableResult
     public func unloadDecisionSidecar() async -> QWDecisionSidecarStatus {
         decisionSidecar = nil
+        _ = await residencyPool.releaseLease(for: .decisionSidecar)
         decisionStatusBox.setUnloaded()
         return decisionStatusBox.get()
     }
@@ -416,6 +433,52 @@ extension QWEngineLifecycleActor {
             }
         }
         throw QWDecisionError.backendFailed("no decision sidecar or resident primary model available")
+    }
+
+    /// Computes dense embeddings over the loaded embedding-capable sidecar backend.
+    public func embedTexts(
+        _ inputs: [String],
+        preferredModel: String? = nil,
+        pooling: QWDecisionModelConfig.PoolingKind? = nil,
+        normalize: Bool = true,
+        dimensions: Int? = nil
+    ) async throws -> (embeddings: [[Float]], modelName: String, promptTokens: Int) {
+        if decisionSidecar == nil && !config.decisionModelPackPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let unit = QWDecisionComputeUnit(rawValue: config.decisionComputeUnit.lowercased()) ?? .auto
+            _ = try await loadDecisionSidecar(
+                packPath: config.decisionModelPackPath,
+                computeUnit: unit,
+                loadVision: config.decisionLoadVision
+            )
+        }
+        let requested = preferredModel?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let sidecar = decisionSidecar, Self.matchesSidecar(requested: requested, sidecar: sidecar),
+              let embBackend = sidecar.runner.backend as? any QWEmbeddingExecutionBackend else {
+            throw QWDecisionError.backendFailed("no embedding-capable decision sidecar loaded")
+        }
+        let resolvedPooling: QWDecisionModelConfig.PoolingKind
+        if let pooling {
+            resolvedPooling = pooling
+        } else if case .pooledClassifier(let p, _, _) = sidecar.runner.backend.decisionConfig.head {
+            resolvedPooling = p
+        } else {
+            resolvedPooling = .meanNonPad
+        }
+        let tokenBatches = try inputs.map { text -> [Int] in
+            let ids = try sidecar.runner.tokenizer.encode(text, addSpecialTokens: true)
+            guard !ids.isEmpty else {
+                throw QWDecisionError.invalidQuestion("embedding input must tokenize to at least 1 token")
+            }
+            return Array(ids.prefix(embBackend.maxContextLength))
+        }
+        let out = try await embBackend.embedBatch(
+            tokenBatches: tokenBatches,
+            pooling: resolvedPooling,
+            normalize: normalize,
+            truncateDimensions: dimensions
+        )
+        decisionStatusBox.recordSuccess(latencyMs: out.latencyMs, promptTokens: out.promptTokens)
+        return (out.embeddings, sidecar.modelName, out.promptTokens)
     }
 
     private static func matchesSidecar(requested: String?, sidecar: QWLoadedDecisionSidecar) -> Bool {

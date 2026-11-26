@@ -15,9 +15,14 @@ public enum QWMCPDispatchOutcome: Sendable, Equatable {
 /// Shared MCP JSON-RPC 2.0 dispatcher serving `qwg_decide`, `laya_ask`, `laya_guard`, and `laya_status`.
 public struct QWMCPDispatcher: Sendable {
     public let actor: QWEngineLifecycleActor
+    public let episodicStore: QWEpisodicTranscriptStore
 
-    public init(actor: QWEngineLifecycleActor) {
+    public init(
+        actor: QWEngineLifecycleActor,
+        episodicStore: QWEpisodicTranscriptStore = QWEpisodicTranscriptStore()
+    ) {
         self.actor = actor
+        self.episodicStore = episodicStore
     }
 
     public func dispatch(body: Data) async -> QWMCPDispatchOutcome {
@@ -96,29 +101,8 @@ public struct QWMCPDispatcher: Sendable {
                 guard !trimmedCmd.isEmpty else {
                     return Self.toolResponse(text: "{\"error\":\"missing command argument\"}", isError: true)
                 }
-                let guardReq = QWLayaHTTPRequest(
-                    model: {
-                        if case .string(let m) = arguments.get("model") { return m }
-                        return nil
-                    }(),
-                    context: nil,
-                    state: .string("About to execute command: \(trimmedCmd)"),
-                    question: "How should the harness handle this command?",
-                    instructions: nil,
-                    kind: "choice",
-                    mode: "guard",
-                    command: trimmedCmd,
-                    options: ["allow", "confirm", "deny"],
-                    labels: nil,
-                    criteria: nil,
-                    questions: nil,
-                    chain: "guardrail",
-                    guardMode: true,
-                    scoreReadout: nil,
-                    images: nil
-                )
-                let envelope = try await actor.decide(try guardReq.toDecisionRequest(), preferredModel: guardReq.model)
-                textPayload = try Self.encodeToString(QWLayaHTTPResponse(envelope: envelope))
+                let railResult = await makeCognitiveRails().guardCommand(trimmedCmd)
+                textPayload = try Self.encodeToString(railResult)
 
             case "laya_status":
                 let sidecar = actor.decisionSidecarStatus()
@@ -134,7 +118,11 @@ public struct QWMCPDispatcher: Sendable {
                 textPayload = String(decoding: data, as: UTF8.self)
 
             default:
-                return Self.toolResponse(text: "{\"error\":\"unknown tool '\(name)'\"}", isError: true)
+                if let cogOut = try await executeCognitiveOrVaultTool(name: name, arguments: arguments) {
+                    textPayload = cogOut
+                } else {
+                    return Self.toolResponse(text: "{\"error\":\"unknown tool '\(name)'\"}", isError: true)
+                }
             }
             return Self.toolResponse(text: textPayload, isError: false)
         } catch let decErr as QWDecisionError {
@@ -243,18 +231,56 @@ public struct QWMCPDispatcher: Sendable {
                 properties: [],
                 required: []
             ),
-        ]
+        ] + cognitiveAndVaultToolDefinitions()
     }
 }
 
 extension QWHttpServer {
-    func handleMCPRoute(connection: NWConnection, body: Data) async {
-        let dispatcher = QWMCPDispatcher(actor: actor)
+    func handleMCPRoute(
+        connection: NWConnection,
+        headers: [String: String] = [:],
+        body: Data,
+        trace: QWRequestTraceContext? = nil
+    ) async {
+        let startedAt = Date()
+        let root = try? QWServerRequestDecoder.decode(QWJson.self, from: body)
+        let rpcMethod: String? = if case .string(let m) = root?.get("method") { m } else { nil }
+        var toolName: String? = nil
+        var mcpClientName: String? = nil
+        if rpcMethod == "tools/call",
+           case .string(let name) = root?.get("params").get("name"), !name.isEmpty {
+            toolName = name
+        } else if rpcMethod == "initialize",
+                  case .string(let name) = root?.get("params").get("clientInfo").get("name"), !name.isEmpty {
+            mcpClientName = name
+        }
+
+        let baseTrace = trace ?? QWClientIdentity.makeTraceContext(
+            method: "POST", route: "/mcp", headers: headers, peerEndpoint: connection.endpoint
+        )
+        let effectiveTrace: QWRequestTraceContext = if let mcpClientName,
+                                                      QWClientIdentity.isGenericClient(baseTrace.client) {
+            baseTrace.withClient(mcpClientName)
+        } else {
+            baseTrace
+        }
+        let detail = toolName.map { "tools/call(\($0))" } ?? rpcMethod
+
+        let dispatcher = QWMCPDispatcher(actor: actor, episodicStore: episodicStore)
+        let status: Int
         switch await dispatcher.dispatch(body: body) {
         case .notificationAccepted:
+            status = 202
             sendRawData(connection, status: 202, contentType: "application/json", data: Data())
         case .jsonRPCResponse(let data):
+            status = 200
             sendRawData(connection, status: 200, contentType: "application/json", data: data)
         }
+        logger.logSimpleRequest(
+            method: "POST", path: effectiveTrace.route, statusCode: status,
+            client: effectiveTrace.client, requestId: effectiveTrace.requestId,
+            sessionId: effectiveTrace.sessionId, peerHost: effectiveTrace.peerHost,
+            detail: detail, totalSec: Date().timeIntervalSince(startedAt)
+        )
     }
 }

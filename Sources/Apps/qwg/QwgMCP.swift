@@ -11,7 +11,7 @@ import QWServer
 struct Mcp: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "mcp",
-        abstract: "Run a stdio JSON-RPC 2.0 MCP server exposing qwg_decide, laya_ask, laya_guard, and laya_status."
+        abstract: "Run a stdio JSON-RPC 2.0 MCP server exposing decision, cognitive rail, episodic recovery, and memory vault tools."
     )
 
     @Option(name: [.customLong("model"), .customShort("m")], help: "Optional decision model path or ~/.qwg/models name to load into the sidecar slot.")

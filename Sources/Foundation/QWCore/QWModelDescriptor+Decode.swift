@@ -474,6 +474,9 @@ extension QWModelDescriptor {
             )
         }()
 
+        let allowsGelu = familySpec.defaultRole == .decisionEncoder
+            || rawText["decision_head"] != nil
+            || rawRoot?["decision_head"] != nil
         let parsedAct: ActivationKind
         if let rawAct = t.hidden_act {
             let act = rawAct.lowercased()
@@ -482,6 +485,10 @@ extension QWModelDescriptor {
                                   linearBeta: t.activation_situ_linear_beta ?? 25.0)
             } else if act == "silu" {
                 parsedAct = .silu
+            } else if allowsGelu && (act == "gelu" || act == "gelu_erf") {
+                parsedAct = .gelu
+            } else if allowsGelu && (act == "gelu_new" || act == "gelu_pytorch_tanh" || act == "gelu_fast" || act == "quick_gelu") {
+                parsedAct = .geluTanh
             } else {
                 throw DescriptorError.invariant("unsupported hidden_act '\(rawAct)'")
             }

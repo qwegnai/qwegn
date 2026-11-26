@@ -701,7 +701,7 @@ async function executeChatCompletion(session, opts) {
   const startedAt = performance.now();
   const acc = { content: basePrefix, reasoning: isContinue ? (assistantMsg.reasoning || "") : "", toolCalls: isContinue ? (assistantMsg.toolCalls || []) : [] };
   const reqId = generateChatId("req");
-  const reqHeaders = { "Content-Type": "application/json", "X-Request-ID": reqId };
+  const reqHeaders = { "Content-Type": "application/json", "X-Request-ID": reqId, "X-Qwegn-Client": "webui" };
   if (session && session.id) reqHeaders["X-Session-ID"] = session.id;
   try {
     const res = await fetch(`${API_BASE}/v1/chat/completions`, {

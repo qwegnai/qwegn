@@ -72,6 +72,9 @@ public final class QWEngine: QWInferenceEngine, @unchecked Sendable {
     public var capabilities: Set<QWKnobCapability> { underlying.capabilities }
     public var hasPrefixCache: Bool { underlying.hasPrefixCache }
     public var prefixCache: QWPrefixCacheState { underlying.prefixCache }
+    public func hasCachedPrefix(tokens: [Int], cacheSalt: String?) -> Bool {
+        underlying.hasCachedPrefix(tokens: tokens, cacheSalt: cacheSalt)
+    }
 
     public var onCacheEvent: (@Sendable (QWPrefixCacheEvent) -> Void)? {
         get { underlying.onCacheEvent }

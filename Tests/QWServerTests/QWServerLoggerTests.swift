@@ -58,4 +58,83 @@ final class QWServerLoggerTests: XCTestCase {
         logger.log(.warn, "Test warning message")
         logger.log(.error, "Test error message")
     }
+
+    func testEnrichedLogRequestAndSimpleRequestFormatting() {
+        final class CapturedBox: @unchecked Sendable {
+            private let lock = NSLock()
+            private var items: [String] = []
+            func append(_ line: String) { lock.withLock { items.append(line) } }
+            var count: Int { lock.withLock { items.count } }
+        }
+        let logger = QWServerLogger(level: .info)
+        let captured = CapturedBox()
+        let subId = logger.subscribe { line in captured.append(line) }
+        defer { logger.unsubscribe(subId) }
+
+        logger.logRequest(
+            method: "POST",
+            path: "/v1/messages",
+            statusCode: 200,
+            promptTokens: 512,
+            completionTokens: 64,
+            cacheHitTokens: 480,
+            cacheTier: "warm",
+            cacheActive: true,
+            specSummary: String(repeating: "s", count: 320),
+            ttftMs: 24.3,
+            decodeTokPerSec: 81.2,
+            totalSec: 0.81,
+            client: "claude-code",
+            requestId: "msg_8f2a9c",
+            sessionId: "sess_42",
+            peerHost: "192.168.1.50"
+        )
+        logger.logRequest(
+            method: "POST",
+            path: "/v1/chat/completions",
+            statusCode: 200,
+            promptTokens: 10,
+            completionTokens: 5,
+            ttftMs: 5.0,
+            decodeTokPerSec: 50.0,
+            totalSec: 0.2
+        )
+        logger.logSimpleRequest(
+            method: "POST",
+            path: "/mcp",
+            statusCode: 202,
+            client: "cursor",
+            requestId: "req_1",
+            detail: "notifications/initialized",
+            totalSec: 0.01
+        )
+        logger.logSimpleRequest(
+            method: "POST",
+            path: "/v1/responses",
+            statusCode: 499,
+            client: "webui",
+            requestId: "resp_9",
+            detail: "cancelled",
+            totalSec: 1.25
+        )
+
+        let recent = logger.getRecentLogs()
+        XCTAssertEqual(captured.count, 4)
+        XCTAssertEqual(recent.count, 4)
+
+        let msgLine = recent[0]
+        XCTAssertGreaterThan(msgLine.utf8.count, 512)
+        XCTAssertTrue(msgLine.contains("POST /v1/messages -> 200 OK | client=claude-code req=msg_8f2a9c sess=sess_42 peer=192.168.1.50 | "))
+        XCTAssertTrue(msgLine.contains("512 prompt (hit 480 [warm]) + 64 gen tok"))
+
+        let legacyLine = recent[1]
+        XCTAssertTrue(legacyLine.contains("POST /v1/chat/completions -> 200 OK | 10 prompt + 5 gen tok"))
+        XCTAssertFalse(legacyLine.contains("client="))
+
+        let mcpLine = recent[2]
+        XCTAssertTrue(mcpLine.contains("POST /mcp -> 202 OK | client=cursor req=req_1 | notifications/initialized | 0.01s"))
+
+        let cancelLine = recent[3]
+        XCTAssertTrue(cancelLine.contains("POST /v1/responses -> 499 ERR | client=webui req=resp_9 | cancelled | 1.25s"))
+    }
 }

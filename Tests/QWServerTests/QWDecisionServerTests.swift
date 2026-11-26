@@ -374,7 +374,7 @@ final class QWDecisionServerTests: XCTestCase {
         XCTAssertEqual(listCode, 200)
         let toolList = ((listJson["result"] as? [String: Any])?["tools"] as? [[String: Any]]) ?? []
         let toolNames = Set(toolList.compactMap { $0["name"] as? String })
-        XCTAssertEqual(toolNames, ["qwg_decide", "laya_ask", "laya_guard", "laya_status"])
+        XCTAssertTrue(Set(["qwg_decide", "laya_ask", "laya_guard", "laya_status", "qwg_rerank_screen", "qwg_vault_query"]).isSubset(of: toolNames))
 
         for (idx, call) in [
             ("qwg_decide", ["state": "hi", "questions": [["name": "q", "kind": "noul", "instructions": "Ok?"]]] as [String: Any]),

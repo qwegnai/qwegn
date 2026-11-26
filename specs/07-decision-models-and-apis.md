@@ -1,6 +1,6 @@
 # 07 — Generalized Decision Models, Dual-Slot Sidecar & Decision APIs
 
-> Normative specification for Qwegn's capability-generalized System-1 Decision Engine (`L0.0 QWCore`, `L1.0 QWToken`, `L1.5 QWDecision`, `L4–L7` adapters, `QWServer`, `QWCli`, and `Qwegn.app`), codifying `ADR-001`–`ADR-010`.
+> Normative specification for Qwegn's capability-generalized System-1 Decision Engine (`L0.0 QWCore`, `L1.0 QWToken`, `L1.5 QWDecision`, `L6.0 QWMM`, `L4–L7` adapters, `QWServer`, `QWCli`, and `Qwegn.app`), codifying `ADR-001`–`ADR-012`.
 
 ## 1. Five-Axis Model Generalization (`QWDecisionModelConfig`)
 
@@ -47,17 +47,20 @@ L0.0 QWCore     ── QWDecisionModelConfig, ShortConvConfig, NormKind, PerKind
                    QWResidencyAdmission.admitDecisionSidecar
 L1.0 QWToken    ── QWTokenizer+Offsets (encodeWithOffsets, singleTokenId, allSpecialTokenStrings)
 L1.5 QWDecision ── Zero-Metal deep subsystem:
-                   QWDecisionTypes, QWDecisionExecutionBackend (protocol),
+                   QWDecisionTypes, QWDecisionExecutionBackend & QWEmbeddingExecutionBackend,
                    QWSequenceFramingEngine, QWCalibrationEngine, QWCalibrationFitter,
-                   QWTypedAnswerDecoder, QWDecisionRunner
-L7.0 QWEngine   ── QWEngineDecisionAdapter (Metal 4: qwg_gemm_bf16_nax_coop_fast F16+BF16,
-                   qwg_attn_topology_prefill_nax_d64/d128, qwg_cast_f16_to_f32,
-                   QWDecisionScratchArena, QWDecisionWeightLoader.estimateResidentBytes)
-                   & QWCoreAIDecisionAdapter (CoreAI ANE)
-L7.8 QWServer   ── Dual-slot & standalone (--no-lazy) lifecycle actor, coalesced GPU batching,
-                   REST (/v1/decisions[/batch], /v1/systemone[/batch], /v1/laya, /v1/models
-                   metadata, RFC 7578 multipart image uploads), Stateless Streamable-HTTP /mcp,
-                   X-Qwegn-Decision-Route auto-router hook, /ui?tab=decisions
+                   QWTypedAnswerDecoder, QWDecisionRunner, QWCognitiveRails (7 policies)
+L6.0 QWMM       ── Unified EXIF-oriented vImage RGB888 slab preprocessing
+                   (QWMM+OrientedImage: qwInspectImageHeader, qwRenderOrientedRGBSlab,
+                   qwDecodeOrientedRGBSlab) shared by System-1 & QWImageDecoder
+L7.0 QWEngine   ── QWDecisionPackEngine (+Weights/+HeadWeights/+Forward/+Heads:
+                   vocabVerbalizer, markerScorer, pooledClassifier, jointOptionProjector,
+                   LayerNorm, GELU/GELU-tanh, centered ShortConv, bidirectional masks,
+                   embedBatch Matryoshka L2), QWEngineDecisionAdapter, QWCoreAIDecisionAdapter
+L7.8 QWServer   ── QWResidencyPool multi-slot UMA orchestrator, dual-slot & standalone lifecycle,
+                   coalesced batching, /v1/decisions[/batch], /v1/systemone[/batch], /v1/laya,
+                   /v1/embeddings, /v1/rerank, /v1/cognitive/*, QWEpisodicTranscriptStore (0o600),
+                   Stateless HTTP & stdio MCP Cognitive+Vault suite (qwg mcp), /ui?tab=decisions
 ```
 
 **Backend Parity Guarantee:** `L1.5 QWDecision` depends strictly on `QWCore` and `QWToken` (never `Metal` or `QWHAL`). Every unit test runs natively on Apple Silicon and virtualized `GITHUB_ACTIONS=true` runners (`QWSyntheticDecisionBackend` lives strictly in `Tests/QWDecisionTests/`, never in `Sources/`).
@@ -75,7 +78,9 @@ L7.8 QWServer   ── Dual-slot & standalone (--no-lazy) lifecycle actor, coale
 - **ADR-007 (Cross-Encoder Reranker Fan-Out & Fixed-Head Honesty):** `1/2`-logit `.pooledClassifier` checkpoints evaluate arbitrary $K$-way `choice`/`score` options via single-batch $K$-pair cross-encoder fan-out; fixed $C \ge 3$ `id2label` heads validate option subsets case-insensitively (`allowed_labels` HTTP `400` on mismatch).
 - **ADR-008 (Native Context Cap & Honest Truncation):** `/v1/laya` and `laya_ask` enforce the `60,000`-char wire rail; `/v1/decisions` and `/v1/systemone` accept up to full `contextBudget`. Fixed-window `.optionMarkers` / ANE encoders auto-truncate `state` (`usage.truncated_tokens`) while preserving options; `.turnVerbalizer` and `Read` pointer heads default to `truncation: "error"` (`400`) unless `"head" | "tail" | "middle"` is requested.
 - **ADR-009 (Calibration-Preserving Safetensors & `qwg calibrate`):** Unquantized Safetensors decision packs ($\le 8\text{B}$) load at `BF16`/`HQ8_G32` rather than online `HQ4` to preserve shipped `calibration.json` tables; `qwg calibrate` fits NLL bucket temperatures + PAV monotone knot tables + 15-bin `ECE` / Brier diagnostics; `4-bit` `.qwp` decision packs require $\Delta\text{ECE} \le 0.005$, $\Delta\text{Brier} \le 0.003$, Top-1 $\ge 99.0\%$.
-- **ADR-010 (Opt-In `reasoning.effort="auto"`, Configuration Parity & UI):** When `reasoning.effort == "auto"` (across `off | low | medium | high | xhigh | auto`) and a decision sidecar is loaded on a thinking template, a `< 10 ms` 3-tier complexity rubric (`["trivial", "moderate", "deep"]`) routes `off | low | xhigh` only when `confidence >= 0.7`, failing open otherwise and emitting `X-Qwegn-Decision-Route` (CORS-exposed). All 6 decision knobs (`--decision-model` / `QWG_DECISION_MODEL`, `--decision-compute-unit` / `QWG_DECISION_COMPUTE_UNIT`, `--decision-load-vision` / `QWG_DECISION_LOAD_VISION`, `--decision-score-readout` / `QWG_DECISION_SCORE_READOUT`, `--decision-truncation` / `QWG_DECISION_TRUNCATION`, `--decision-always-emit-box` / `QWG_DECISION_ALWAYS_EMIT_BOX`) stay synchronized across CLI, `/v1/settings`, `Qwegn.app` `SettingsView`, and `/ui` Settings; `Qwegn.app` and `/ui?tab=decisions` render from single-source `QWDashboardViewModel` and never report `0`-token decisions in `decodeRateSeries`.
+- **ADR-010 (Opt-In `reasoning.effort="auto"`, Configuration Parity & UI):** When `reasoning.effort == "auto"` (across `off | low | medium | high | xhigh | auto`) and a decision sidecar is loaded on a thinking template, `QWCognitiveRails.routeTurn` evaluates a `< 10 ms` 3-tier complexity + costly-risk rubric (`["trivial", "moderate", "deep"]`) with a sticky `>= 32K` context guard (`confidence >= 0.7`), routing `off | low | xhigh`, failing open otherwise, and emitting `X-Qwegn-Decision-Route` (CORS-exposed). All 6 decision knobs (`--decision-model` / `QWG_DECISION_MODEL`, `--decision-compute-unit` / `QWG_DECISION_COMPUTE_UNIT`, `--decision-load-vision` / `QWG_DECISION_LOAD_VISION`, `--decision-score-readout` / `QWG_DECISION_SCORE_READOUT`, `--decision-truncation` / `QWG_DECISION_TRUNCATION`, `--decision-always-emit-box` / `QWG_DECISION_ALWAYS_EMIT_BOX`) stay synchronized across CLI, `/v1/settings`, `Qwegn.app` `SettingsView`, and `/ui` Settings; `Qwegn.app` and `/ui?tab=decisions` render from single-source `QWDashboardViewModel` and never report `0`-token decisions in `decodeRateSeries`.
+- **ADR-011 (`QWCognitiveRails`, Episodic Recovery & Cognitive/Vault MCP Suite):** Seven pure-Swift deterministic rails in `QWDecision` (`guardCommand` red lines + `0.70` acting rail + fail-closed `confirm`; `screenAndRerankPassages` local injection screen + coalesced dual-gate rerank + local-only fallback; `selectCompaction` pinning `system`/pinned/tail-6 turns + `0.70` drop rail; `selectSkills` filtering `existsOnDisk` + 120-skill Stage-1 shortlist + `needs_skill` Stage-2 verify; `evaluateSearchSufficiency` query dedup + conflict detection; `superviseDelegatedRun` exit-code & `180 s` silence fact overrides + `alert_after = 2` streak; `routeTurn` `on|shadow|off` + sticky `32K` guard) back `/v1/cognitive/*` and the expanded `POST /mcp` / `qwg mcp` tool suite (`qwg_rerank_screen`, `qwg_compact_select`, `qwg_episodic_recover`, `qwg_skill_select`, `qwg_search_enough`, `qwg_supervise`, `qwg_route_turn`, `qwg_vault_query`, `qwg_vault_status`) alongside `QWEpisodicTranscriptStore` (`0o700`/`0o600`, BM25 recovery) and workspace-contained Vault queries.
+- **ADR-012 (Generalized Decision Pack Engine, Dense Embeddings & Shared `QWMM` Image Preprocessing):** `QWDecisionPackEngine` generalizes natively across all 4 `HeadKind`s (`.vocabVerbalizer`, `.markerScorer`, `.pooledClassifier`, `.jointOptionProjector`), `NormKind.layerNorm`, `GELU`/`GELU-tanh` (`qwg_vis_gelu_erf_f16` / `qwg_vis_gelu_tanh_f16`), centered/causal `ShortConv`, bidirectional/isolated-media attention topologies, and `QWEmbeddingExecutionBackend.embedBatch` (L2-normalized Matryoshka truncation powering `POST /v1/embeddings` and `POST /v1/rerank`); `QWMM+OrientedImage` serves as the single EXIF-oriented `vImage` RGB888 preprocessor shared by System-1 vision inputs and `QWImageDecoder`.
 
 ---
 

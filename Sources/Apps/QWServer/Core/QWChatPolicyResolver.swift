@@ -436,15 +436,19 @@ public enum QWChatPolicyResolver {
     public static func buildLedgerConfig(
         request: ChatCompletionRequest,
         config: QWEngineLifecycleActor.Config,
-        hasMountedManifest: Bool
+        hasMountedManifest: Bool,
+        trace: QWRequestTraceContext? = nil
     ) -> [String: String] {
         var out: [String: String] = [
             "kvMode": String(describing: config.kvMode),
             "mtpDrafts": String(config.mtpDrafts),
             "speculative": config.speculativeDecodingEnabled ? "on" : "off",
             "cachePrompt": request.effectiveCachePrompt ? "on" : "off",
-            "memPack": hasMountedManifest ? "mounted" : (request.effectiveUseMemoryPack ? "auto" : "off")
+            "memPack": hasMountedManifest ? "mounted" : (request.effectiveUseMemoryPack ? "auto" : "off"),
+            "route": trace?.route ?? "/v1/chat/completions",
+            "client": trace?.client ?? QWClientIdentity.resolve(headers: request.httpHeaders ?? [:]).client
         ]
+        if let peer = trace?.peerHost { out["peer"] = peer }
         if let sid = request.effectiveSessionId { out["sessionId"] = sid }
         if let preset = request.effectivePresetId { out["preset"] = preset }
         if let salt = request.effectiveCacheSalt { out["cacheKey"] = salt }

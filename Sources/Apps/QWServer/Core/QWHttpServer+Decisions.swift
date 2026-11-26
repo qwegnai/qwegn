@@ -56,7 +56,16 @@ extension QWHttpServer {
         return try items.map { try $0.prepareExecution(defaults: defaults, multipartParts: parts) }
     }
 
-    func handleDecisionRoute(connection: NWConnection, headers: [String: String], body: Data) async {
+    func handleDecisionRoute(
+        connection: NWConnection,
+        headers: [String: String],
+        body: Data,
+        trace: QWRequestTraceContext? = nil
+    ) async {
+        let effectiveTrace = trace ?? QWClientIdentity.makeTraceContext(
+            method: "POST", route: "/v1/decisions", headers: headers, peerEndpoint: connection.endpoint
+        )
+        let startedAt = Date()
         do {
             let prepared = try decodeHTTPRequestPayload(headers: headers, body: body, forceAlwaysEmitBox: false)
             let envelope = try await actor.decide(prepared.request, preferredModel: prepared.preferredModel)
@@ -68,12 +77,28 @@ extension QWHttpServer {
             } else {
                 sendJsonResponse(connection, status: 200, object: QWDecisionHTTPResponse(envelope: envelope))
             }
+            logger.logSimpleRequest(
+                method: "POST", path: effectiveTrace.route, statusCode: 200,
+                client: effectiveTrace.client, requestId: effectiveTrace.requestId,
+                sessionId: effectiveTrace.sessionId, peerHost: effectiveTrace.peerHost,
+                detail: "\(envelope.modelName) (\(envelope.backendKind))",
+                totalSec: Date().timeIntervalSince(startedAt)
+            )
         } catch {
-            sendDecisionError(connection, error: error)
+            sendDecisionError(connection, error: error, trace: effectiveTrace)
         }
     }
 
-    func handleDecisionBatchRoute(connection: NWConnection, headers: [String: String], body: Data) async {
+    func handleDecisionBatchRoute(
+        connection: NWConnection,
+        headers: [String: String],
+        body: Data,
+        trace: QWRequestTraceContext? = nil
+    ) async {
+        let effectiveTrace = trace ?? QWClientIdentity.makeTraceContext(
+            method: "POST", route: "/v1/decisions/batch", headers: headers, peerEndpoint: connection.endpoint
+        )
+        let startedAt = Date()
         do {
             let preparedItems = try decodeHTTPBatchPayloads(headers: headers, body: body, forceAlwaysEmitBox: false)
             let envelopes = try await executeCoalescedBatch(preparedItems)
@@ -82,12 +107,28 @@ extension QWHttpServer {
                 return QWDecisionHTTPResponse(envelope: env)
             }
             sendJsonResponse(connection, status: 200, object: QWDecisionBatchHTTPResponse(results: results))
+            logger.logSimpleRequest(
+                method: "POST", path: effectiveTrace.route, statusCode: 200,
+                client: effectiveTrace.client, requestId: effectiveTrace.requestId,
+                sessionId: effectiveTrace.sessionId, peerHost: effectiveTrace.peerHost,
+                detail: "batch=\(envelopes.count)",
+                totalSec: Date().timeIntervalSince(startedAt)
+            )
         } catch {
-            sendDecisionError(connection, error: error)
+            sendDecisionError(connection, error: error, trace: effectiveTrace)
         }
     }
 
-    func handleSystemOneRoute(connection: NWConnection, headers: [String: String], body: Data) async {
+    func handleSystemOneRoute(
+        connection: NWConnection,
+        headers: [String: String],
+        body: Data,
+        trace: QWRequestTraceContext? = nil
+    ) async {
+        let effectiveTrace = trace ?? QWClientIdentity.makeTraceContext(
+            method: "POST", route: "/v1/systemone", headers: headers, peerEndpoint: connection.endpoint
+        )
+        let startedAt = Date()
         do {
             let prepared = try decodeHTTPRequestPayload(headers: headers, body: body, forceAlwaysEmitBox: true)
             let envelope = try await actor.decide(prepared.request, preferredModel: prepared.preferredModel)
@@ -95,12 +136,28 @@ extension QWHttpServer {
                 connection, status: 200,
                 object: QWSystemOneHTTPResponse(envelope: envelope, meta: prepared.questionMeta)
             )
+            logger.logSimpleRequest(
+                method: "POST", path: effectiveTrace.route, statusCode: 200,
+                client: effectiveTrace.client, requestId: effectiveTrace.requestId,
+                sessionId: effectiveTrace.sessionId, peerHost: effectiveTrace.peerHost,
+                detail: "\(envelope.modelName) (\(envelope.backendKind))",
+                totalSec: Date().timeIntervalSince(startedAt)
+            )
         } catch {
-            sendDecisionError(connection, error: error)
+            sendDecisionError(connection, error: error, trace: effectiveTrace)
         }
     }
 
-    func handleSystemOneBatchRoute(connection: NWConnection, headers: [String: String], body: Data) async {
+    func handleSystemOneBatchRoute(
+        connection: NWConnection,
+        headers: [String: String],
+        body: Data,
+        trace: QWRequestTraceContext? = nil
+    ) async {
+        let effectiveTrace = trace ?? QWClientIdentity.makeTraceContext(
+            method: "POST", route: "/v1/systemone/batch", headers: headers, peerEndpoint: connection.endpoint
+        )
+        let startedAt = Date()
         do {
             let preparedItems = try decodeHTTPBatchPayloads(headers: headers, body: body, forceAlwaysEmitBox: true)
             let envelopes = try await executeCoalescedBatch(preparedItems)
@@ -108,8 +165,15 @@ extension QWHttpServer {
                 QWSystemOneHTTPResponse(envelope: env, meta: prep.questionMeta)
             }
             sendJsonResponse(connection, status: 200, object: QWSystemOneBatchHTTPResponse(results: results))
+            logger.logSimpleRequest(
+                method: "POST", path: effectiveTrace.route, statusCode: 200,
+                client: effectiveTrace.client, requestId: effectiveTrace.requestId,
+                sessionId: effectiveTrace.sessionId, peerHost: effectiveTrace.peerHost,
+                detail: "batch=\(envelopes.count)",
+                totalSec: Date().timeIntervalSince(startedAt)
+            )
         } catch {
-            sendDecisionError(connection, error: error)
+            sendDecisionError(connection, error: error, trace: effectiveTrace)
         }
     }
 
@@ -140,14 +204,30 @@ extension QWHttpServer {
         return out
     }
 
-    func handleLayaRoute(connection: NWConnection, body: Data) async {
+    func handleLayaRoute(
+        connection: NWConnection,
+        headers: [String: String] = [:],
+        body: Data,
+        trace: QWRequestTraceContext? = nil
+    ) async {
+        let effectiveTrace = trace ?? QWClientIdentity.makeTraceContext(
+            method: "POST", route: "/v1/laya", headers: headers, peerEndpoint: connection.endpoint
+        )
+        let startedAt = Date()
         do {
             let layaReq = try QWServerRequestDecoder.decode(QWLayaHTTPRequest.self, from: body)
             let domainReq = try layaReq.toDecisionRequest()
             let envelope = try await actor.decide(domainReq, preferredModel: layaReq.model)
             sendJsonResponse(connection, status: 200, object: QWLayaHTTPResponse(envelope: envelope))
+            logger.logSimpleRequest(
+                method: "POST", path: effectiveTrace.route, statusCode: 200,
+                client: effectiveTrace.client, requestId: effectiveTrace.requestId,
+                sessionId: effectiveTrace.sessionId, peerHost: effectiveTrace.peerHost,
+                detail: "\(envelope.modelName) (\(envelope.backendKind))",
+                totalSec: Date().timeIntervalSince(startedAt)
+            )
         } catch {
-            sendDecisionError(connection, error: error)
+            sendDecisionError(connection, error: error, trace: effectiveTrace)
         }
     }
 
@@ -193,10 +273,17 @@ extension QWHttpServer {
         sendJsonResponse(connection, status: 200, object: status)
     }
 
-    func sendDecisionError(_ connection: NWConnection, error: any Error) {
+    func sendDecisionError(
+        _ connection: NWConnection,
+        error: any Error,
+        trace: QWRequestTraceContext? = nil
+    ) {
+        let route = trace?.route ?? "/v1/decisions"
+        let tag = trace.map { " | \($0.logTag)" } ?? ""
         if let decErr = error as? QWDecisionError {
             switch decErr {
             case .unsupportedLabelSubset(_, let allowed):
+                logger.log(.warn, "HTTP POST \(route) invalid labels\(tag): \(decErr.description)")
                 let payload = QWDecisionErrorPayload(
                     message: decErr.description,
                     type: "invalid_request_error",
@@ -205,6 +292,7 @@ extension QWHttpServer {
                 )
                 sendJsonResponse(connection, status: 400, object: payload)
             case .invalidQuestion, .contextOverflow, .missingSingleTokenAlias, .calibrationFailed:
+                logger.log(.warn, "HTTP POST \(route) invalid request\(tag): \(decErr.description)")
                 let payload = QWDecisionErrorPayload(
                     message: decErr.description,
                     type: "invalid_request_error",
@@ -213,7 +301,9 @@ extension QWHttpServer {
                 sendJsonResponse(connection, status: 400, object: payload)
             case .backendFailed(let msg):
                 let isUnavailable = msg.localizedCaseInsensitiveContains("no decision sidecar")
+                    || msg.localizedCaseInsensitiveContains("no embedding-capable")
                 let status = isUnavailable ? 503 : 500
+                logger.log(isUnavailable ? .warn : .error, "HTTP POST \(route) backend error\(tag): \(decErr.description)")
                 let payload = QWDecisionErrorPayload(
                     message: decErr.description,
                     type: isUnavailable ? "service_unavailable" : "server_error",
@@ -224,10 +314,12 @@ extension QWHttpServer {
             return
         }
         if let metaErr = error as? QWMetadataValidationError {
+            logger.log(.warn, "HTTP POST \(route) forbidden\(tag): \(metaErr.description)")
             let payload = QWDecisionErrorPayload(message: metaErr.description, type: "invalid_request_error", code: 403)
             sendJsonResponse(connection, status: 403, object: payload)
             return
         }
+        logger.log(.warn, "HTTP POST \(route) malformed payload\(tag): \(error.localizedDescription)")
         let payload = QWDecisionErrorPayload(
             message: "Malformed decision payload: \(error.localizedDescription)",
             type: "invalid_request_error",

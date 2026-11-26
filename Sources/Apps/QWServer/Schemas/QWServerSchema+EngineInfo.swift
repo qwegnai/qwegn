@@ -1,7 +1,37 @@
 import Foundation
 import QWCore
 
-public struct ModelObject: Codable, Sendable {
+public struct ModelObject: Codable, Sendable, Equatable {
+    public struct Architecture: Codable, Sendable, Equatable {
+        public let inputModalities: [String]
+        public let outputModalities: [String]
+
+        enum CodingKeys: String, CodingKey {
+            case inputModalities = "input_modalities"
+            case outputModalities = "output_modalities"
+        }
+
+        public init(inputModalities: [String], outputModalities: [String]) {
+            self.inputModalities = inputModalities
+            self.outputModalities = outputModalities
+        }
+    }
+
+    public struct Meta: Codable, Sendable, Equatable {
+        public let nCtx: Int?
+        public let nCtxTrain: Int?
+
+        enum CodingKeys: String, CodingKey {
+            case nCtx = "n_ctx"
+            case nCtxTrain = "n_ctx_train"
+        }
+
+        public init(nCtx: Int? = nil, nCtxTrain: Int? = nil) {
+            self.nCtx = nCtx
+            self.nCtxTrain = nCtxTrain
+        }
+    }
+
     public let id: String
     public let object: String
     /// When the model's bytes last changed on disk, as unix seconds.
@@ -10,6 +40,18 @@ public struct ModelObject: Codable, Sendable {
     public let created: Int?
     public let ownedBy: String
     public let loaded: Bool
+    public let contextLength: Int?
+    public let maxModelLen: Int?
+    public let maxOutputTokens: Int?
+    public let maxCompletionTokens: Int?
+    public let inputModalities: [String]?
+    public let outputModalities: [String]?
+    public let architecture: Architecture?
+    public let meta: Meta?
+    public let capabilities: [String]?
+    public let reasoning: Bool?
+    public let supportedReasoningLevels: [String]?
+    public let defaultReasoningLevel: String?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -17,14 +59,54 @@ public struct ModelObject: Codable, Sendable {
         case created
         case ownedBy = "owned_by"
         case loaded
+        case contextLength = "context_length"
+        case maxModelLen = "max_model_len"
+        case maxOutputTokens = "max_output_tokens"
+        case maxCompletionTokens = "max_completion_tokens"
+        case inputModalities = "input_modalities"
+        case outputModalities = "output_modalities"
+        case architecture
+        case meta
+        case capabilities
+        case reasoning
+        case supportedReasoningLevels = "supported_reasoning_levels"
+        case defaultReasoningLevel = "default_reasoning_level"
     }
 
-    public init(id: String, loaded: Bool = true, created: Int? = nil) {
+    public init(
+        id: String,
+        loaded: Bool = true,
+        created: Int? = nil,
+        contextLength: Int? = nil,
+        maxModelLen: Int? = nil,
+        maxOutputTokens: Int? = nil,
+        maxCompletionTokens: Int? = nil,
+        inputModalities: [String]? = nil,
+        outputModalities: [String]? = nil,
+        architecture: Architecture? = nil,
+        meta: Meta? = nil,
+        capabilities: [String]? = nil,
+        reasoning: Bool? = nil,
+        supportedReasoningLevels: [String]? = nil,
+        defaultReasoningLevel: String? = nil
+    ) {
         self.id = id
         self.object = "model"
         self.created = created
         self.ownedBy = "qwegine"
         self.loaded = loaded
+        self.contextLength = contextLength
+        self.maxModelLen = maxModelLen
+        self.maxOutputTokens = maxOutputTokens
+        self.maxCompletionTokens = maxCompletionTokens
+        self.inputModalities = inputModalities
+        self.outputModalities = outputModalities
+        self.architecture = architecture
+        self.meta = meta
+        self.capabilities = capabilities
+        self.reasoning = reasoning
+        self.supportedReasoningLevels = supportedReasoningLevels
+        self.defaultReasoningLevel = defaultReasoningLevel
     }
 }
 

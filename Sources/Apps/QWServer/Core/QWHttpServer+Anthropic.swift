@@ -8,8 +8,18 @@ import QWVision
 
 extension QWHttpServer {
 
-    func handleMessagesCountTokens(connection: NWConnection, headers: [String: String] = [:], body: Data) async throws {
-        guard let parsedReq = parseAnthropicRequest(connection: connection, headers: headers, body: body, requireMaxTokens: false) else {
+    func handleMessagesCountTokens(
+        connection: NWConnection,
+        headers: [String: String] = [:],
+        body: Data,
+        trace: QWRequestTraceContext? = nil
+    ) async throws {
+        let effectiveTrace = trace ?? QWClientIdentity.makeTraceContext(
+            method: "POST", route: "/v1/messages/count_tokens", headers: headers, peerEndpoint: connection.endpoint
+        )
+        guard let parsedReq = parseAnthropicRequest(
+            connection: connection, headers: headers, body: body, requireMaxTokens: false, trace: effectiveTrace
+        ) else {
             return
         }
         do {
@@ -18,12 +28,22 @@ extension QWHttpServer {
             let data = try JSONSerialization.data(withJSONObject: payload)
             sendRawData(connection, status: 200, contentType: "application/json", data: data)
         } catch {
-            sendAnthropicCaughtError(connection, error: error)
+            sendAnthropicCaughtError(connection, error: error, trace: effectiveTrace)
         }
     }
 
-    func handleMessages(connection: NWConnection, headers: [String: String] = [:], body: Data) async throws {
-        guard let parsedReq = parseAnthropicRequest(connection: connection, headers: headers, body: body, requireMaxTokens: true) else {
+    func handleMessages(
+        connection: NWConnection,
+        headers: [String: String] = [:],
+        body: Data,
+        trace: QWRequestTraceContext? = nil
+    ) async throws {
+        let baseTrace = trace ?? QWClientIdentity.makeTraceContext(
+            method: "POST", route: "/v1/messages", headers: headers, peerEndpoint: connection.endpoint
+        )
+        guard let parsedReq = parseAnthropicRequest(
+            connection: connection, headers: headers, body: body, requireMaxTokens: true, trace: baseTrace
+        ) else {
             return
         }
         let req = parsedReq.req
@@ -31,6 +51,7 @@ extension QWHttpServer {
         let thinkingEnabled = parsedReq.thinkingEnabled
 
         let msgId = req.effectiveRequestId ?? ("msg_" + UUID().uuidString.replacingOccurrences(of: "-", with: ""))
+        let effectiveTrace = baseTrace.withRequestId(msgId)
         var hdrs = ["x-request-id: \(msgId)"]
         if let sid = req.effectiveSessionId {
             hdrs.append("x-session-id: \(sid)")
@@ -123,6 +144,7 @@ extension QWHttpServer {
             do {
                 result = try await actor.handleChatCompletion(
                     request: req,
+                    trace: effectiveTrace,
                     onStreamReady: { [weak self] in
                         guard let self else { return }
                         let readyPolicy = QWChatPolicyResolver.resolveStreamPolicy(
@@ -160,9 +182,10 @@ extension QWHttpServer {
             } catch {
                 if shouldStop() { return }
                 if !session.isStarted {
-                    sendAnthropicCaughtError(connection, error: error)
+                    sendAnthropicCaughtError(connection, error: error, trace: effectiveTrace)
                     return
                 }
+                logger.log(.error, "HTTP POST \(effectiveTrace.route) (stream) failed | \(effectiveTrace.logTag): \(error)")
                 session.finishWithNamedSSEError(
                     event: "error",
                     fields: ["type": "error", "error": ["type": "api_error", "message": "\(error)"]],
@@ -228,10 +251,12 @@ extension QWHttpServer {
         } else {
             let result: ChatCompletionExecutionResult
             do {
-                result = try await actor.handleChatCompletion(request: req, onToken: nil, shouldStop: shouldStop)
+                result = try await actor.handleChatCompletion(
+                    request: req, trace: effectiveTrace, onToken: nil, shouldStop: shouldStop
+                )
             } catch {
                 if shouldStop() { return }
-                sendAnthropicCaughtError(connection, error: error)
+                sendAnthropicCaughtError(connection, error: error, trace: effectiveTrace)
                 return
             }
             guard !shouldStop() else { return }
@@ -356,16 +381,26 @@ extension QWHttpServer {
         }
     }
 
-    private func sendAnthropicCaughtError(_ connection: NWConnection, error: any Error) {
+    private func sendAnthropicCaughtError(
+        _ connection: NWConnection,
+        error: any Error,
+        trace: QWRequestTraceContext? = nil
+    ) {
+        let route = trace?.route ?? "/v1/messages"
+        let tag = trace.map { " | \($0.logTag)" } ?? ""
         if let valErr = error as? AnthropicValidationError {
+            logger.log(.warn, "HTTP POST \(route) invalid request\(tag): \(valErr.message)")
             sendAnthropicError(connection, status: valErr.status, type: valErr.type, message: valErr.message)
         } else if let ctxErr = error as? QWServerContextLengthError {
+            logger.log(.warn, "HTTP POST \(route) context length exceeded\(tag): \(ctxErr.description)")
             sendAnthropicError(connection, status: 400, type: "invalid_request_error", message: ctxErr.description)
         } else if error is QWMultimodalError || error is QWJSONSchemaError
                     || error is QWMetadataValidationError || error is QWChatTemplateError
                     || error is DecodingError {
+            logger.log(.warn, "HTTP POST \(route) invalid request\(tag): \(error)")
             sendAnthropicError(connection, status: 400, type: "invalid_request_error", message: "\(error)")
         } else {
+            logger.log(.error, "HTTP POST \(route) failed\(tag): \(error)")
             sendAnthropicError(connection, status: 500, type: "api_error", message: "\(error)")
         }
     }
@@ -374,7 +409,8 @@ extension QWHttpServer {
         connection: NWConnection,
         headers: [String: String],
         body: Data,
-        requireMaxTokens: Bool
+        requireMaxTokens: Bool,
+        trace: QWRequestTraceContext? = nil
     ) -> (req: ChatCompletionRequest, replyModel: String, thinkingEnabled: Bool)? {
         let parsed: AnthropicMessagesRequest
         do {
@@ -390,9 +426,13 @@ extension QWHttpServer {
             default:
                 msg = "\(decErr)"
             }
+            let tag = trace.map { " | \($0.logTag)" } ?? ""
+            logger.log(.warn, "HTTP POST \(trace?.route ?? "/v1/messages") invalid JSON\(tag): \(msg)")
             sendAnthropicError(connection, status: 400, type: "invalid_request_error", message: msg)
             return nil
         } catch {
+            let tag = trace.map { " | \($0.logTag)" } ?? ""
+            logger.log(.warn, "HTTP POST \(trace?.route ?? "/v1/messages") invalid JSON\(tag)")
             sendAnthropicError(connection, status: 400, type: "invalid_request_error",
                                message: "request body must be a JSON object")
             return nil
@@ -429,7 +469,7 @@ extension QWHttpServer {
             try actor.validateRequestCapabilities(mapped.request)
             return (mapped.request, replyModel, mapped.thinkingEnabled)
         } catch {
-            sendAnthropicCaughtError(connection, error: error)
+            sendAnthropicCaughtError(connection, error: error, trace: trace)
             return nil
         }
     }

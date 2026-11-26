@@ -165,6 +165,7 @@ function renderPrefillBanner(model) {
   const prog = cards[0] && typeof cards[0].number === "number" ? cards[0].number : null;
   const total = cards[1] && typeof cards[1].number === "number" ? cards[1].number : null;
   const isPrefilling = model.generation === "prefill" && prog !== null && total !== null && total > 0;
+  const inactiveReason = (cards[0] && cards[0].reason) || (cards[1] && cards[1].reason) || "";
 
   if (isPrefilling) {
     if (prefillHoldTimer) {
@@ -175,6 +176,8 @@ function renderPrefillBanner(model) {
     lastPrefillTargetValue = cards[1] && cards[1].value !== null && cards[1].value !== undefined ? cards[1].value : null;
     lastPrefillTargetText = cardText(cards[1]);
     banner.classList.remove("is-complete");
+    banner.classList.add("is-active");
+    banner.removeAttribute("title");
     if (titleEl) titleEl.textContent = "Prefill in Progress";
     if (countWrap) countWrap.hidden = false;
     if (completeCountEl) {
@@ -184,13 +187,14 @@ function renderPrefillBanner(model) {
     const pct = Math.min(100, Math.max(0, (prog / total) * 100));
     if (pctEl) pctEl.textContent = `${Math.round(pct)}%`;
     if (fill) fill.style.width = `${pct.toFixed(1)}%`;
-    banner.hidden = false;
     return;
   }
 
   if (wasPrefilling && lastPrefillTargetValue !== null) {
     wasPrefilling = false;
+    banner.classList.remove("is-active");
     banner.classList.add("is-complete");
+    banner.removeAttribute("title");
     if (titleEl) titleEl.textContent = "Prefill Complete";
     if (countWrap) countWrap.hidden = true;
     if (completeCountEl) {
@@ -199,20 +203,20 @@ function renderPrefillBanner(model) {
     }
     if (pctEl) pctEl.textContent = "100%";
     if (fill) fill.style.width = "100%";
-    banner.hidden = false;
     prefillHoldTimer = setTimeout(() => {
       prefillHoldTimer = null;
       lastPrefillTargetValue = null;
       lastPrefillTargetText = "";
-      banner.classList.remove("is-complete");
-      banner.hidden = true;
-      if (titleEl) titleEl.textContent = "Prefill in Progress";
+      banner.classList.remove("is-active", "is-complete");
+      if (inactiveReason) banner.title = inactiveReason;
+      else banner.removeAttribute("title");
+      if (titleEl) titleEl.textContent = "Prefill Progress";
       if (countWrap) countWrap.hidden = false;
       if (completeCountEl) {
         completeCountEl.hidden = true;
         completeCountEl.textContent = "";
       }
-      if (pctEl) pctEl.textContent = "";
+      if (pctEl) pctEl.textContent = "—";
       if (fill) fill.style.width = "0%";
     }, 650);
     return;
@@ -222,9 +226,16 @@ function renderPrefillBanner(model) {
   if (!prefillHoldTimer) {
     lastPrefillTargetValue = null;
     lastPrefillTargetText = "";
-    banner.classList.remove("is-complete");
-    banner.hidden = true;
-    if (pctEl) pctEl.textContent = "";
+    banner.classList.remove("is-active", "is-complete");
+    if (inactiveReason) banner.title = inactiveReason;
+    else banner.removeAttribute("title");
+    if (titleEl) titleEl.textContent = "Prefill Progress";
+    if (countWrap) countWrap.hidden = false;
+    if (completeCountEl) {
+      completeCountEl.hidden = true;
+      completeCountEl.textContent = "";
+    }
+    if (pctEl) pctEl.textContent = "—";
     if (fill) fill.style.width = "0%";
   }
 }
@@ -603,11 +614,11 @@ function renderDisconnected() {
   lastPrefillTargetText = "";
   const prefillBanner = document.getElementById("prefill-banner");
   if (prefillBanner) {
-    prefillBanner.classList.remove("is-complete");
-    prefillBanner.hidden = true;
+    prefillBanner.classList.remove("is-active", "is-complete");
+    prefillBanner.removeAttribute("title");
   }
   const prefillTitle = document.getElementById("prefill-banner-title");
-  if (prefillTitle) prefillTitle.textContent = "Prefill in Progress";
+  if (prefillTitle) prefillTitle.textContent = "Prefill Progress";
   const prefillCountWrap = document.getElementById("prefill-count-wrap");
   if (prefillCountWrap) prefillCountWrap.hidden = false;
   const prefillCompleteCount = document.getElementById("prefill-complete-count");
@@ -616,7 +627,7 @@ function renderDisconnected() {
     prefillCompleteCount.textContent = "";
   }
   const prefillPct = document.getElementById("prefill-pct");
-  if (prefillPct) prefillPct.textContent = "";
+  if (prefillPct) prefillPct.textContent = "—";
   const prefillFill = document.getElementById("prefill-progress-fill");
   if (prefillFill) prefillFill.style.width = "0%";
 

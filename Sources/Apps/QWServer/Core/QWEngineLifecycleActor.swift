@@ -233,6 +233,7 @@ public actor QWEngineLifecycleActor {
     let backendRegistry: QWModelBackendRegistry
     let load: Load
     public let gpuTurnArbitrator = QWGPUTurnArbitrator()
+    public let residencyPool = QWResidencyPool()
     let decisionLoader: DecisionRunnerLoader
     var decisionSidecar: QWLoadedDecisionSidecar? = nil
     let decisionStatusBox = QWDecisionSidecarStatusBox()
@@ -635,6 +636,23 @@ public actor QWEngineLifecycleActor {
                 // weights it was given — the phase describes what the
                 // engine holds now, not what one request still holds.
                 if loadGeneration == generation {
+                    let primaryBytes = max(
+                        Self.deviceAllocatedBytes(),
+                        UInt64(max(0, (result.loaded.params.weightsSizeBytes ?? 0) + (result.loaded.params.kvCacheSizeBytes ?? 0)))
+                    )
+                    let primaryLease = QWResidencyLease(
+                        slot: .primaryLLM,
+                        modelName: config.packName,
+                        packPath: config.packPath,
+                        estimatedBytes: primaryBytes,
+                        computeUnit: "metal",
+                        bypassesGPUArbitrator: false
+                    )
+                    await residencyPool.commitLease(primaryLease)
+                    guard loadGeneration == generation else {
+                        _ = await residencyPool.releaseLease(for: .primaryLLM)
+                        throw QWEngineError.unloading
+                    }
                     let initialSamplingMsg = Self.denseNaxSelectionLogMessage(
                         temperature: config.temperature, topP: config.topP, topK: config.topK,
                         paramsSource: Self.samplingParamsSourceLabel(config.sourceSummary))

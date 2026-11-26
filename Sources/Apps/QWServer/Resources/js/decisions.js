@@ -272,7 +272,7 @@ async function loadDecisionSidecarFromWeb(packPath, computeUnit, loadVision) {
   try {
     const res = await fetch(`${API_BASE}/v1/decisions/model/load`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-Qwegn-Client": "webui" },
       body: JSON.stringify({
         pack_path: pathVal,
         compute_unit: computeUnit || decisionWorkbenchState.selectedComputeUnit || "auto",
@@ -418,7 +418,7 @@ async function runDecisionWorkbench(mode) {
   try {
     const res = await fetch(`${API_BASE}${reqObj.endpoint}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-Qwegn-Client": "webui" },
       body: JSON.stringify(reqObj.body)
     });
     const data = await res.json().catch(() => ({}));

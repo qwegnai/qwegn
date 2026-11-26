@@ -111,10 +111,11 @@ extension QWInkling2Runtime {
         var matchedTokens = 0
         var pos = 0
         var restored = false
+        var restoredExactFinalNorm: Data? = nil
 
-        if canUseCache, req.prompt.count > 1,
+        if canUseCache, req.prompt.count >= 1,
            let entry = prefixCache.matchLongestPrefix(
-               tokens: req.prompt, salt: req.cacheSalt, limit: req.prompt.count - 1
+               tokens: req.prompt, salt: req.cacheSalt, limit: req.prompt.count, allowExact: true
            ) {
             let outcome = QWInkling2PrefixCache.restore(
                 entry: entry, into: slot, kvModeRaw: session.kvModeRaw,
@@ -122,6 +123,7 @@ extension QWInkling2Runtime {
             )
             if outcome.baseOk {
                 pos = entry.key.tokens.count
+                if pos == req.prompt.count { restoredExactFinalNorm = entry.finalNormRow }
                 cacheHit = true
                 matchedTokens = pos
                 restored = true
@@ -172,20 +174,28 @@ extension QWInkling2Runtime {
             prefixCache.store(entry: snap)
         }
 
-        if pos < req.prompt.count {
+        if let normRow = restoredExactFinalNorm {
+            try forwardPass.runHeadFromFinalNorm(
+                finalNormRow: normRow, greedyHead: canUseGreedyHead, profiler: prefillProfiler
+            )
+            req.onPrefillProgress?(pos, req.prompt.count)
+        } else if pos < req.prompt.count {
             let startPos = pos
             let seg = Array(req.prompt[pos..<req.prompt.count])
-            try forwardPass.forwardOnSlot(
+            let lastChunkRows = try forwardPass.forwardOnSlot(
                 slot: slot, tokens: seg, posOffset: startPos, runHeadRows: 1,
                 greedyHead: canUseGreedyHead, useLSA: false, profiler: prefillProfiler,
                 onPrefillProgress: { done, _ in req.onPrefillProgress?(startPos + done, req.prompt.count) }
             )
             pos = req.prompt.count
             if let retainLen = retainTarget, pos == retainLen {
+                let normRow = QWInkling2PrefixCache.captureFinalNormRow(
+                    session: session, lastChunkRows: lastChunkRows, hidden: descriptor.hidden
+                )
                 let snap = QWInkling2PrefixCache.capture(
                     slot: slot, kvModeRaw: session.kvModeRaw, dspark: nil, lsaOperator: nil,
                     tokens: Array(req.prompt.prefix(retainLen)), salt: req.cacheSalt,
-                    slidingWindow: ink2.slidingWindowSize
+                    slidingWindow: ink2.slidingWindowSize, finalNormRow: normRow
                 )
                 prefixCache.store(entry: snap)
             }

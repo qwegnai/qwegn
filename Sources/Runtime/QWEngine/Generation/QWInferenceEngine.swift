@@ -56,9 +56,13 @@ public protocol QWInferenceEngine: AnyObject, Sendable {
 
     /// Unmounts all pinned shared-base prefixes from the warm prefix store.
     func unmountSharedBasePrefixes()
+
+    /// Non-mutating probe checking whether `tokens` (plus optional `cacheSalt`) are currently resident.
+    func hasCachedPrefix(tokens: [Int], cacheSalt: String?) -> Bool
 }
 
 extension QWInferenceEngine {
+    public func hasCachedPrefix(tokens: [Int], cacheSalt: String?) -> Bool { false }
     public var supportsTokenConstraints: Bool { false }
 
     public func buildStandalonePrefixCache(

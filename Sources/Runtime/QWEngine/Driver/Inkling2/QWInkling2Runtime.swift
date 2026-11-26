@@ -286,7 +286,7 @@ final class QWInkling2Runtime: @unchecked Sendable {
         )
         self.prefixCache = QWInkling2PrefixCache(
             warmByteLimit: warmAdm.admittedWarmBytes,
-            maxEntries: max(1, warmAdm.maxConcurrentSessions)
+            maxEntries: max(32, warmAdm.maxConcurrentSessions)
         )
         wireCacheCallbacks()
     }
@@ -356,7 +356,7 @@ final class QWInkling2Runtime: @unchecked Sendable {
             )
             prefixCache.reconfigure(
                 warmByteLimit: warmAdm.admittedWarmBytes,
-                maxEntries: min(config.entryLimit, max(1, warmAdm.maxConcurrentSessions))
+                maxEntries: max(1, config.entryLimit)
             )
         }
     }
@@ -460,9 +460,11 @@ final class QWInkling2Runtime: @unchecked Sendable {
             var dsparkActive = dspark != nil
 
             var restoredFromCache = false
-            if canUseCache, request.prompt.count > 1,
+            var restoredExactFinalNorm: Data? = nil
+            if canUseCache, request.prompt.count >= 1,
                let entry = prefixCache.matchLongestPrefix(
-                   tokens: request.prompt, salt: request.cacheSalt, limit: request.prompt.count - 1
+                   tokens: request.prompt, salt: request.cacheSalt,
+                   limit: request.prompt.count, allowExact: true
                ) {
                 let outcome = QWInkling2PrefixCache.restore(
                     entry: entry, into: session, dspark: dspark, lsaOperator: lsaOperator
@@ -470,6 +472,7 @@ final class QWInkling2Runtime: @unchecked Sendable {
                 if outcome.baseOk {
                     if dspark != nil && !outcome.dsparkOk { dsparkActive = false }
                     pos = entry.key.tokens.count
+                    if pos == request.prompt.count { restoredExactFinalNorm = entry.finalNormRow }
                     cacheHit = true
                     matchedTokens = pos
                     restoredFromCache = true
@@ -511,6 +514,12 @@ final class QWInkling2Runtime: @unchecked Sendable {
 
             prefillProfiler?.reset()
             decodeProfiler?.reset()
+            if let normRow = restoredExactFinalNorm {
+                try forwardPass.runHeadFromFinalNorm(
+                    finalNormRow: normRow, greedyHead: canUseGreedyHeadBase, profiler: prefillProfiler
+                )
+                request.onPrefillProgress?(pos, request.prompt.count)
+            }
             while pos < request.prompt.count {
                 let targetLimit: Int = if let r = retainTarget, r > pos, r < request.prompt.count {
                     r
@@ -556,13 +565,17 @@ final class QWInkling2Runtime: @unchecked Sendable {
                 pos = nextEnd
                 request.onPrefillProgress?(pos, request.prompt.count)
                 if let r = retainTarget, pos == r {
+                    let normRow = isLast
+                        ? QWInkling2PrefixCache.captureFinalNormRow(session: session, lastChunkRows: chunk.count, hidden: descriptor.hidden)
+                        : nil
                     let snap = QWInkling2PrefixCache.capture(
                         session: session,
                         dspark: tapDS,
                         lsaOperator: lsaOperator,
                         tokens: Array(request.prompt.prefix(r)),
                         salt: request.cacheSalt,
-                        slidingWindow: ink2.slidingWindowSize
+                        slidingWindow: ink2.slidingWindowSize,
+                        finalNormRow: normRow
                     )
                     prefixCache.store(entry: snap)
                 }

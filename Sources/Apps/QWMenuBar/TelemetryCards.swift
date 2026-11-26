@@ -426,7 +426,7 @@ extension CupertinoTelemetryView {
         let hasDecodeTrace = decodeSeries.contains { $0 != nil }
         let prefillProgNum = prefillProgCard?.number
         let prefillTotalNum = prefillTotalCard?.number
-        let showPrefillProgress = telemetry.dashboard?.generation == .prefill
+        let isPrefilling = telemetry.dashboard?.generation == .prefill
             && prefillProgNum != nil
             && (prefillTotalNum ?? 0) > 0
 
@@ -438,15 +438,15 @@ extension CupertinoTelemetryView {
             }
             .padding(.vertical, 10)
 
-            if showPrefillProgress, let prog = prefillProgNum, let total = prefillTotalNum, total > 0 {
-                horizontalHairline
-                prefillProgressBarRow(
-                    prog: prog,
-                    total: total,
-                    progValue: prefillProgCard?.value ?? "—",
-                    totalText: formattedCardValue(prefillTotalCard)
-                )
-            }
+            horizontalHairline
+            prefillProgressBarRow(
+                isActive: isPrefilling,
+                prog: prefillProgNum,
+                total: prefillTotalNum,
+                progValue: prefillProgCard?.value,
+                totalText: formattedCardValue(prefillTotalCard),
+                reason: prefillProgCard?.reason ?? prefillTotalCard?.reason
+            )
 
             horizontalHairline
 
@@ -671,23 +671,35 @@ extension CupertinoTelemetryView {
     }
 
     private func prefillProgressBarRow(
-        prog: Double,
-        total: Double,
-        progValue: String,
-        totalText: String
+        isActive: Bool,
+        prog: Double?,
+        total: Double?,
+        progValue: String?,
+        totalText: String,
+        reason: String?
     ) -> some View {
-        let fraction = min(1.0, max(0.0, prog / total))
+        let fraction: Double = if isActive, let prog, let total, total > 0 {
+            min(1.0, max(0.0, prog / total))
+        } else {
+            0
+        }
         let pct = Int((fraction * 100.0).rounded())
+        let statusText = isActive
+            ? "\(progValue ?? "—") / \(totalText) · \(String(format: "%3d%%", pct))"
+            : "—"
+        let secondaryInk = TelemetryTheme.secondary(increasedContrast: contrast == .increased)
+        let quietInk = TelemetryTheme.quiet(increasedContrast: contrast == .increased)
+
         return VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 6) {
                 Text("PREFILL PROGRESS")
                     .font(TelemetryTheme.ui(9.5, .semibold))
                     .tracking(0.4)
-                    .foregroundStyle(TelemetryTheme.prefill)
+                    .foregroundStyle(isActive ? TelemetryTheme.prefill : quietInk)
                 Spacer(minLength: 4)
-                Text("\(progValue) / \(totalText) · \(String(format: "%3d%%", pct))")
+                Text(statusText)
                     .font(TelemetryTheme.numeric(11, .medium))
-                    .foregroundStyle(TelemetryTheme.secondary(increasedContrast: contrast == .increased))
+                    .foregroundStyle(isActive ? secondaryInk : quietInk)
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
             }
@@ -698,12 +710,13 @@ extension CupertinoTelemetryView {
                         .frame(height: 4.5)
                     RoundedRectangle(cornerRadius: 2.5)
                         .fill(TelemetryTheme.prefill)
-                        .frame(width: max(fraction > 0 ? 3 : 0, geo.size.width * fraction), height: 4.5)
+                        .frame(width: isActive ? max(fraction > 0 ? 3 : 0, geo.size.width * fraction) : 0, height: 4.5)
                 }
             }
             .frame(height: 4.5)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+        .help(isActive ? "" : (reason ?? ""))
     }
 }

@@ -7,12 +7,23 @@ import QWEngine
 
 extension QWHttpServer {
 
-    func handleCompletions(connection: NWConnection, headers: [String: String] = [:], body: Data) async throws {
-        var req: CompletionRequest
+    func handleCompletions(
+        connection: NWConnection,
+        headers: [String: String] = [:],
+        body: Data,
+        trace: QWRequestTraceContext? = nil
+    ) async throws {
+        let baseTrace = trace ?? QWClientIdentity.makeTraceContext(
+            method: "POST", route: "/v1/completions", headers: headers, peerEndpoint: connection.endpoint
+        )
+        let startedAt = Date()
+        let req: CompletionRequest
         do {
-            req = try QWServerRequestDecoder.decode(CompletionRequest.self, from: body)
-            req.httpHeaders = headers
+            var parsedReq = try QWServerRequestDecoder.decode(CompletionRequest.self, from: body)
+            parsedReq.httpHeaders = headers
+            req = parsedReq
         } catch {
+            logger.log(.warn, "HTTP POST \(baseTrace.route) malformed JSON | \(baseTrace.logTag): \(error.localizedDescription)")
             sendOpenAIError(connection, status: 400, message: "Malformed JSON payload: \(error.localizedDescription)")
             return
         }
@@ -31,10 +42,23 @@ extension QWHttpServer {
         }
 
         let replyModel = resolveReplyModelName(requested: req.model, strictNotFound: false) ?? actor.getModelName()
-        let reqId = "cmpl-\(UUID().uuidString.prefix(12))"
+        let reqId = baseTrace.requestId ?? "cmpl-\(UUID().uuidString.prefix(12))"
+        let effectiveTrace = baseTrace.withRequestId(reqId)
         let shouldStop = generationShouldStop(for: connection)
         let created = Int(Date().timeIntervalSince1970)
-        let extraHeaders = ["x-request-id: \(reqId)"]
+        var extraHeaders = ["x-request-id: \(reqId)"]
+        if let sid = effectiveTrace.sessionId {
+            extraHeaders.append("x-session-id: \(sid)")
+        }
+
+        @Sendable func logCompletionCancelled() {
+            logger.logSimpleRequest(
+                method: "POST", path: effectiveTrace.route, statusCode: 499,
+                client: effectiveTrace.client, requestId: effectiveTrace.requestId,
+                sessionId: effectiveTrace.sessionId, peerHost: effectiveTrace.peerHost,
+                detail: "cancelled", totalSec: Date().timeIntervalSince(startedAt)
+            )
+        }
 
         if req.stream ?? false {
             let session = makeSSESession(for: connection, format: .sse, extraHeaders: extraHeaders)
@@ -63,16 +87,23 @@ extension QWHttpServer {
                     shouldStop: shouldStop
                 )
             } catch {
-                if shouldStop() { return }
-                if !session.isStarted {
-                    sendCompletionError(connection, error: error)
+                if shouldStop() {
+                    logCompletionCancelled()
                     return
                 }
+                if !session.isStarted {
+                    sendCompletionError(connection, error: error, trace: effectiveTrace)
+                    return
+                }
+                logger.log(.error, "HTTP POST \(effectiveTrace.route) (stream) failed | \(effectiveTrace.logTag): \(error)")
                 session.finishWithOpenAIError(error)
                 return
             }
 
-            guard !shouldStop() else { return }
+            guard !shouldStop() else {
+                logCompletionCancelled()
+                return
+            }
             let finalChoices = result.choices.map {
                 CompletionChoice(text: "", index: $0.index, logprobs: nil, finishReason: $0.finishReason)
             }
@@ -86,16 +117,29 @@ extension QWHttpServer {
                 usage: usage, created: created
             ))
             session.finish(doneMarker: true)
+            logger.logRequest(
+                method: "POST", path: effectiveTrace.route, statusCode: 200,
+                promptTokens: result.totalPromptTokens, completionTokens: result.totalCompletionTokens,
+                ttftMs: nil, decodeTokPerSec: nil, totalSec: Date().timeIntervalSince(startedAt),
+                client: effectiveTrace.client, requestId: effectiveTrace.requestId,
+                sessionId: effectiveTrace.sessionId, peerHost: effectiveTrace.peerHost
+            )
         } else {
             let result: CompletionExecutionResult
             do {
                 result = try await actor.handleTextCompletion(request: req, shouldStop: shouldStop)
             } catch {
-                if shouldStop() { return }
-                sendCompletionError(connection, error: error)
+                if shouldStop() {
+                    logCompletionCancelled()
+                    return
+                }
+                sendCompletionError(connection, error: error, trace: effectiveTrace)
                 return
             }
-            guard !shouldStop() else { return }
+            guard !shouldStop() else {
+                logCompletionCancelled()
+                return
+            }
             let choices = result.choices.map {
                 CompletionChoice(text: $0.text, index: $0.index, logprobs: $0.logprobs, finishReason: $0.finishReason)
             }
@@ -107,6 +151,13 @@ extension QWHttpServer {
                 created: created
             )
             sendJsonResponse(connection, status: 200, object: resp, extraHeaders: extraHeaders)
+            logger.logRequest(
+                method: "POST", path: effectiveTrace.route, statusCode: 200,
+                promptTokens: result.totalPromptTokens, completionTokens: result.totalCompletionTokens,
+                ttftMs: nil, decodeTokPerSec: nil, totalSec: Date().timeIntervalSince(startedAt),
+                client: effectiveTrace.client, requestId: effectiveTrace.requestId,
+                sessionId: effectiveTrace.sessionId, peerHost: effectiveTrace.peerHost
+            )
         }
     }
 
@@ -151,16 +202,22 @@ extension QWHttpServer {
         }
     }
 
-    private func sendCompletionError(_ connection: NWConnection, error: any Error) {
+    private func sendCompletionError(
+        _ connection: NWConnection,
+        error: any Error,
+        trace: QWRequestTraceContext? = nil
+    ) {
+        let route = trace?.route ?? "/v1/completions"
+        let tag = trace.map { " | \($0.logTag)" } ?? ""
         if let ctxErr = error as? QWServerContextLengthError {
-            logger.log(.warn, "HTTP POST /v1/completions context length exceeded: \(ctxErr.description)")
+            logger.log(.warn, "HTTP POST \(route) context length exceeded\(tag): \(ctxErr.description)")
             sendOpenAIError(connection, status: 400, message: ctxErr.description,
                             type: "invalid_request_error", code: "context_length_exceeded")
         } else if let inputErr = error as? CompletionInvalidInputError {
-            logger.log(.warn, "HTTP POST /v1/completions invalid request: \(inputErr.message)")
+            logger.log(.warn, "HTTP POST \(route) invalid request\(tag): \(inputErr.message)")
             sendOpenAIError(connection, status: 400, message: inputErr.message, type: "invalid_request_error")
         } else {
-            logger.log(.error, "HTTP POST /v1/completions failed: \(error)")
+            logger.log(.error, "HTTP POST \(route) failed\(tag): \(error)")
             sendOpenAIError(connection, status: 500, message: "\(error)", type: "server_error")
         }
     }

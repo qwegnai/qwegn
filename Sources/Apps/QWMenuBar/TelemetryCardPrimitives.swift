@@ -44,6 +44,7 @@ extension CupertinoTelemetryView {
                         .clipShape(.rect(cornerRadius: 4))
                 }
             }
+            .frame(minHeight: 15)
 
             ZStack(alignment: .leading) {
                 HStack(alignment: .firstTextBaseline, spacing: 4) {

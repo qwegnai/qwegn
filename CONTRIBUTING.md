@@ -21,6 +21,8 @@ make ci     # build, lint, tests, CLI smoke test
 
 Only the repository owner merges to `main` and creates releases. Every pull request needs one approving review from the code owner (see `.github/CODEOWNERS`) before it merges.
 
+Do not bump the version in a pull request. Record your change under `## [Unreleased]` in `CHANGELOG.md`; `QWVersion.current` and the release artifacts (`README.md` badge/BibTeX, `CITATION.cff`, `assets/qwegn_engine_bento.svg`) change only in the owner's release-preparation commit.
+
 ## Rules the code must follow
 
 These are enforced by `make lint` and `make ci`:

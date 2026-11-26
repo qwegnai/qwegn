@@ -512,6 +512,8 @@ final class MenuBarRendererParityTests: XCTestCase {
         XCTAssertTrue(cardsSource.contains("card(\"prefill.progress_tokens\")"))
         XCTAssertTrue(cardsSource.contains("card(\"prefill.total_tokens\")"))
         XCTAssertTrue(cardsSource.contains("PREFILL PROGRESS"))
+        XCTAssertTrue(cardsSource.contains("prefillProgressBarRow("))
+        XCTAssertFalse(cardsSource.contains("if showPrefillProgress"))
         let primitivesSource = try Self.read("\(menuBarDirectory)/TelemetryCardPrimitives.swift")
         XCTAssertTrue(primitivesSource.contains("QWTokenCountFormatter.format("))
     }

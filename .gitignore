@@ -44,6 +44,7 @@ models/
 !/specs/06-menubar-and-webui-parity.md
 !/specs/07-decision-models-and-apis.md
 /docs/*
+/roadmap/
 /.hermes/
 /handoff.md
 /1M_context.md

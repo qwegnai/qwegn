@@ -56,13 +56,13 @@
         </div>
       </div>
 
-      <nav class="nav-tabs" aria-label="Dashboard sections">
-        <button id="nav-tab-monitor" type="button" class="tab-btn is-active" onclick="switchTab('monitor')">Monitor</button>
-        <button id="nav-tab-chat" type="button" class="tab-btn" onclick="switchTab('chat')">Chat</button>
-        <button id="nav-tab-decisions" type="button" class="tab-btn" onclick="switchTab('decisions')">Decisions</button>
-        <button id="nav-tab-models" type="button" class="tab-btn" onclick="switchTab('models')">Models</button>
-        <button id="nav-tab-logs" type="button" class="tab-btn" onclick="switchTab('logs')">Live Logs</button>
-        <button id="nav-tab-settings" type="button" class="tab-btn" onclick="switchTab('settings')">Settings</button>
+      <nav class="nav-tabs" role="tablist" aria-label="Dashboard sections">
+        <button id="nav-tab-monitor" type="button" role="tab" aria-selected="true" aria-controls="view-monitor" tabindex="0" class="tab-btn is-active" onclick="switchTab('monitor')">Monitor</button>
+        <button id="nav-tab-chat" type="button" role="tab" aria-selected="false" aria-controls="view-chat" tabindex="-1" class="tab-btn" onclick="switchTab('chat')">Chat</button>
+        <button id="nav-tab-decisions" type="button" role="tab" aria-selected="false" aria-controls="view-decisions" tabindex="-1" class="tab-btn" onclick="switchTab('decisions')">Decisions</button>
+        <button id="nav-tab-models" type="button" role="tab" aria-selected="false" aria-controls="view-models" tabindex="-1" class="tab-btn" onclick="switchTab('models')">Models</button>
+        <button id="nav-tab-logs" type="button" role="tab" aria-selected="false" aria-controls="view-logs" tabindex="-1" class="tab-btn" onclick="switchTab('logs')">Live Logs</button>
+        <button id="nav-tab-settings" type="button" role="tab" aria-selected="false" aria-controls="view-settings" tabindex="-1" class="tab-btn" onclick="switchTab('settings')">Settings</button>
       </nav>
 
       <div class="status-pill">
@@ -74,7 +74,7 @@
 
   <main id="main-content" class="shell">
     <!-- TAB 1: MONITOR -->
-    <section id="view-monitor" class="tab-pane">
+    <section id="view-monitor" class="tab-pane" role="tabpanel" aria-labelledby="nav-tab-monitor">
       <div style="display:flex;flex-direction:column;gap:16px;">
         <!-- Zone 1: Hero & Facts & Actions -->
         <article class="card-panel">
@@ -153,17 +153,17 @@
           </details>
         </article>
 
-        <!-- Zone 2: Prefill Progress Banner (Visible when prefill in flight) -->
-        <div id="prefill-banner" class="prefill-banner" hidden>
-          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
-            <div>
-              <strong id="prefill-banner-title">Prefill in Progress</strong>
-              <span id="prefill-count-wrap" class="mono" style="margin-left:8px;">
+        <!-- Zone 2: Prefill Progress Banner (Always visible to prevent layout shift) -->
+        <div id="prefill-banner" class="prefill-banner">
+          <div class="prefill-banner-meta">
+            <div class="prefill-banner-label">
+              <strong id="prefill-banner-title" class="prefill-banner-title">Prefill Progress</strong>
+              <span id="prefill-count-wrap" class="mono prefill-count">
                 <span data-card="prefill.progress_tokens" data-card-unit="separate">—</span> / <span data-card="prefill.total_tokens">—</span>
               </span>
-              <span id="prefill-complete-count" class="mono" style="margin-left:8px;" hidden></span>
+              <span id="prefill-complete-count" class="mono prefill-count" hidden></span>
             </div>
-            <span id="prefill-pct" class="mono ink-secondary" style="font-size:12px;"></span>
+            <span id="prefill-pct" class="mono prefill-pct">—</span>
           </div>
           <div class="progress-track">
             <div id="prefill-progress-fill" class="progress-fill"></div>
@@ -330,7 +330,7 @@
     </section>
 
     <!-- TAB 2: CHAT -->
-    <section id="view-chat" class="tab-pane hidden">
+    <section id="view-chat" class="tab-pane hidden" role="tabpanel" aria-labelledby="nav-tab-chat">
       <div id="chat-layout" class="chat-layout">
         <aside id="chat-sidebar" class="card-panel chat-sidebar" aria-label="Chat sessions">
           <div class="chat-sidebar-head">
@@ -563,12 +563,12 @@
     </section>
 
     <!-- TAB: DECISIONS -->
-    <section id="view-decisions" class="tab-pane hidden">
+    <section id="view-decisions" class="tab-pane hidden" role="tabpanel" aria-labelledby="nav-tab-decisions">
       <div id="decisions-workbench-host"></div>
     </section>
 
     <!-- TAB 3: MODELS -->
-    <section id="view-models" class="tab-pane hidden">
+    <section id="view-models" class="tab-pane hidden" role="tabpanel" aria-labelledby="nav-tab-models">
       <article class="card-panel">
         <div class="panel-head">
           <h2 class="panel-title">Installed Models (~/.qwg/models)</h2>
@@ -579,7 +579,7 @@
     </section>
 
     <!-- TAB 3: LIVE LOGS -->
-    <section id="view-logs" class="tab-pane hidden">
+    <section id="view-logs" class="tab-pane hidden" role="tabpanel" aria-labelledby="nav-tab-logs">
       <article class="card-panel">
         <div class="panel-head">
           <h2 class="panel-title">
@@ -608,7 +608,7 @@
     </section>
 
     <!-- TAB 4: SETTINGS -->
-    <section id="view-settings" class="tab-pane hidden">
+    <section id="view-settings" class="tab-pane hidden" role="tabpanel" aria-labelledby="nav-tab-settings">
       <article class="card-panel">
         <div class="panel-head">
           <h2 class="panel-title">Engine Settings (~/.qwg/settings.json)</h2>
@@ -635,21 +635,21 @@
     <span id="ftr-metal-version" class="mono">—</span>
   </footer>
 
-  <dialog id="modal-switch-model" aria-labelledby="switch-dialog-title">
+  <dialog id="modal-switch-model" closedby="any" aria-labelledby="switch-dialog-title">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
       <h3 id="switch-dialog-title" style="margin:0;font-size:14px;">Switch Resident Model</h3>
-      <button type="button" class="btn btn-sm" onclick="closeSwitchModelModal()">Close</button>
+      <button type="button" class="btn btn-sm" command="close" commandfor="modal-switch-model" autofocus onclick="closeSwitchModelModal()">Close</button>
     </div>
     <div id="modal-model-options" style="display:flex;flex-direction:column;gap:8px;max-height:360px;overflow:auto;"></div>
   </dialog>
 
-  <dialog id="modal-memory-pack" aria-labelledby="mempack-dialog-title">
+  <dialog id="modal-memory-pack" closedby="closerequest" aria-labelledby="mempack-dialog-title">
     <div class="mempack-modal-head">
       <div class="mempack-modal-title-group">
         <h3 id="mempack-dialog-title" class="mempack-modal-title">Codebase Memory Pack (.qwcache)</h3>
         <span id="mempack-status-badge" class="mempack-badge is-missing">Missing</span>
       </div>
-      <button id="mempack-close-btn" type="button" class="btn btn-sm" onclick="closeMemoryPackModal()">Close</button>
+      <button id="mempack-close-btn" type="button" class="btn btn-sm" command="close" commandfor="modal-memory-pack" onclick="closeMemoryPackModal()">Close</button>
     </div>
 
     <div class="mempack-summary-card">
@@ -719,13 +719,13 @@
     <div id="mempack-actions-bar" class="mempack-modal-actions"></div>
   </dialog>
 
-  <dialog id="modal-update" aria-labelledby="update-dialog-title">
+  <dialog id="modal-update" closedby="closerequest" aria-labelledby="update-dialog-title">
     <div class="mempack-modal-head">
       <div class="mempack-modal-title-group">
         <h3 id="update-dialog-title" class="mempack-modal-title">Software Update</h3>
         <span id="update-status-badge" class="mempack-badge is-missing">Checking…</span>
       </div>
-      <button id="update-close-btn" type="button" class="btn btn-sm" onclick="closeUpdateModal()">Close</button>
+      <button id="update-close-btn" type="button" class="btn btn-sm" command="close" commandfor="modal-update" onclick="closeUpdateModal()">Close</button>
     </div>
 
     <div class="mempack-summary-card">

@@ -130,3 +130,57 @@ public protocol QWDecisionExecutionBackend: Sendable {
     var maxContextLength: Int { get }
     func evaluate(_ request: QWDecisionBackendBatchRequest) async throws -> QWDecisionBackendOutput
 }
+
+/// Pure-host dense embedding backend seam sharing the decision engine's Metal 4 backbone.
+public protocol QWEmbeddingExecutionBackend: Sendable {
+    var embeddingDimension: Int { get }
+    var maxContextLength: Int { get }
+    func embedBatch(
+        tokenBatches: [[Int]],
+        pooling: QWDecisionModelConfig.PoolingKind,
+        normalize: Bool,
+        truncateDimensions: Int?
+    ) async throws -> (embeddings: [[Float]], promptTokens: Int, latencyMs: Double)
+}
+
+/// Shared Matryoshka truncation, L2 normalization, and IEEE-754 base64 helpers.
+public enum QWEmbeddingMath {
+    public static func postProcess(
+        _ vector: [Float],
+        normalize: Bool,
+        truncateDimensions: Int?
+    ) -> [Float] {
+        var out: [Float]
+        if let dim = truncateDimensions, dim > 0, dim < vector.count {
+            out = Array(vector.prefix(dim))
+        } else {
+            out = vector
+        }
+        guard normalize, !out.isEmpty else { return out }
+        var sumSq: Double = 0
+        for v in out {
+            let d = Double(v)
+            sumSq += d * d
+        }
+        let norm = sumSq.squareRoot()
+        guard norm > 1e-12 else { return out }
+        let inv = Float(1.0 / norm)
+        for i in out.indices {
+            out[i] *= inv
+        }
+        return out
+    }
+
+    public static func encodeBase64LittleEndian(_ vector: [Float]) -> String {
+        var data = Data(capacity: vector.count * 4)
+        for v in vector {
+            var le = v.bitPattern.littleEndian
+            withUnsafeBytes(of: &le) { (raw: UnsafeRawBufferPointer) in
+                if let base = raw.baseAddress {
+                    data.append(base.assumingMemoryBound(to: UInt8.self), count: 4)
+                }
+            }
+        }
+        return data.base64EncodedString()
+    }
+}

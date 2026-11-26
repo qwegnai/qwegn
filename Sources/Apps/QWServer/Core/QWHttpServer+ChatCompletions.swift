@@ -10,13 +10,22 @@ import QWVision
 
 extension QWHttpServer {
 
-    func handleChatCompletions(connection: NWConnection, headers: [String: String] = [:], body: Data) async throws {
+    func handleChatCompletions(
+        connection: NWConnection,
+        headers: [String: String] = [:],
+        body: Data,
+        trace: QWRequestTraceContext? = nil
+    ) async throws {
+        let baseTrace = trace ?? QWClientIdentity.makeTraceContext(
+            method: "POST", route: "/v1/chat/completions", headers: headers, peerEndpoint: connection.endpoint
+        )
         let req: ChatCompletionRequest
         do {
             var parsedReq = try QWServerRequestDecoder.decode(ChatCompletionRequest.self, from: body)
             parsedReq.httpHeaders = headers
             req = parsedReq
         } catch {
+            logger.log(.warn, "HTTP POST \(baseTrace.route) malformed JSON | \(baseTrace.logTag): \(error.localizedDescription)")
             let err = ServerErrorPayload(
                 message: "Malformed JSON payload: \(error.localizedDescription)",
                 type: "invalid_request_error",
@@ -61,6 +70,7 @@ extension QWHttpServer {
 
         let returnModelName = resolveReplyModelName(requested: effectiveReq.model, strictNotFound: false) ?? actor.getModelName()
         let reqId = effectiveReq.effectiveRequestId ?? "chatcmpl-\(UUID().uuidString.prefix(12))"
+        let effectiveTrace = baseTrace.withRequestId(reqId)
         var resolvedHeaders = ["x-request-id: \(reqId)"]
         if let sid = effectiveReq.effectiveSessionId {
             resolvedHeaders.append("x-session-id: \(sid)")
@@ -109,6 +119,7 @@ extension QWHttpServer {
             do {
                 result = try await actor.handleChatCompletion(
                     request: effectiveReq,
+                    trace: effectiveTrace,
                     onStreamReady: { [weak self] in
                         guard let self else { return }
                         let readyPolicy = QWChatPolicyResolver.resolveStreamPolicy(
@@ -152,10 +163,10 @@ extension QWHttpServer {
             } catch {
                 if shouldStop() { return }
                 if !session.isStarted {
-                    sendChatError(connection, error: error, path: "/v1/chat/completions")
+                    sendChatError(connection, error: error, path: effectiveTrace.route, trace: effectiveTrace)
                     return
                 }
-                logger.log(.error, "HTTP POST /v1/chat/completions (stream) failed: \(error)")
+                logger.log(.error, "HTTP POST \(effectiveTrace.route) (stream) failed | \(effectiveTrace.logTag): \(error)")
                 session.finishWithOpenAIError(error)
                 return
             }
@@ -208,10 +219,12 @@ extension QWHttpServer {
         } else {
             let result: ChatCompletionExecutionResult
             do {
-                result = try await actor.handleChatCompletion(request: effectiveReq, onToken: nil, shouldStop: shouldStop)
+                result = try await actor.handleChatCompletion(
+                    request: effectiveReq, trace: effectiveTrace, onToken: nil, shouldStop: shouldStop
+                )
             } catch {
                 if shouldStop() { return }
-                sendChatError(connection, error: error, path: "/v1/chat/completions")
+                sendChatError(connection, error: error, path: effectiveTrace.route, trace: effectiveTrace)
                 return
             }
             guard !shouldStop() else { return }
@@ -231,7 +244,7 @@ extension QWHttpServer {
             let resp = ChatCompletionResponse(
                 id: reqId,
                 model: returnModelName,
-                content: parsed.content,
+                content: parsed.content ?? (effectiveCalls == nil ? "" : nil),
                 toolCalls: effectiveCalls,
                 reasoningContent: parsed.reasoningContent,
                 logprobs: result.logprobs.map { ChoiceLogprobs(content: $0) },
@@ -257,44 +270,43 @@ extension QWHttpServer {
               !promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return (req, nil)
         }
-        let complexityReq = QWDecisionRequest(
-            state: .text(promptText),
-            questions: [
-                QWDecisionQuestion(
-                    name: "complexity",
-                    kind: .choice,
-                    instructions: "How much reasoning effort does this request require before answering?",
-                    criteria: [
-                        QWDecisionCriterion(key: "trivial", description: "direct fact lookup or trivial rewrite"),
-                        QWDecisionCriterion(key: "moderate", description: "single-step explanation or routine coding"),
-                        QWDecisionCriterion(key: "deep", description: "multi-step planning, debugging, or complex reasoning"),
-                    ]
-                ),
-            ]
-        )
-        guard let env = try? await actor.decide(complexityReq),
-              let answer = env.response.answers.first,
-              let tier = answer.choice,
-              let resolved = QWChatPolicyResolver.resolveAutoReasoningEffort(tier: tier, confidence: answer.confidence) else {
+        let estTokens = max(1, req.messages.reduce(0) { $0 + $1.extractTextContent().utf8.count } / 4)
+        let routeRes = await makeCognitiveRails().routeTurn(QWRouteTurnInput(
+            prompt: promptText,
+            contextTokens: estTokens,
+            currentTier: "balanced",
+            hasTools: !(req.tools?.isEmpty ?? true),
+            policy: QWRoutePolicy(mode: .on)
+        ))
+        guard !routeRes.stickyGuardApplied,
+              let resolved = QWChatPolicyResolver.resolveAutoReasoningEffort(
+                  tier: routeRes.difficulty, confidence: routeRes.confidence
+              ) else {
             return (req, nil)
         }
-        let route = "\(tier)->\(resolved) (\(String(format: "%.2f", answer.confidence)))"
+        let route = "\(routeRes.difficulty)->\(resolved) (\(String(format: "%.2f", routeRes.confidence)))"
         return (req.withResolvedReasoningEffort(resolved), route)
     }
 
-    func sendChatError(_ connection: NWConnection, error: any Error, path: String) {
+    func sendChatError(
+        _ connection: NWConnection,
+        error: any Error,
+        path: String,
+        trace: QWRequestTraceContext? = nil
+    ) {
+        let tag = trace.map { " | \($0.logTag)" } ?? ""
         if let ctxErr = error as? QWServerContextLengthError {
-            logger.log(.warn, "HTTP POST \(path) context length exceeded: \(ctxErr.description)")
+            logger.log(.warn, "HTTP POST \(path) context length exceeded\(tag): \(ctxErr.description)")
             sendOpenAIError(connection, status: 400, message: ctxErr.description,
                             type: "invalid_request_error", code: "context_length_exceeded")
         } else if let mmErr = error as? QWMultimodalError {
-            logger.log(.warn, "HTTP POST \(path) bad multimodal request: \(mmErr)")
+            logger.log(.warn, "HTTP POST \(path) bad multimodal request\(tag): \(mmErr)")
             sendOpenAIError(connection, status: 400, message: "\(mmErr)", type: "invalid_request_error")
         } else if error is QWJSONSchemaError || error is QWMetadataValidationError || error is QWChatTemplateError {
-            logger.log(.warn, "HTTP POST \(path) invalid request: \(error)")
+            logger.log(.warn, "HTTP POST \(path) invalid request\(tag): \(error)")
             sendOpenAIError(connection, status: 400, message: "\(error)", type: "invalid_request_error")
         } else {
-            logger.log(.error, "HTTP POST \(path) failed: \(error)")
+            logger.log(.error, "HTTP POST \(path) failed\(tag): \(error)")
             sendOpenAIError(connection, status: 500, message: "\(error)", type: "server_error")
         }
     }

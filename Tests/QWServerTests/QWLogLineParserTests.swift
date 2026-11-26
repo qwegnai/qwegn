@@ -60,4 +60,20 @@ final class QWLogLineParserTests: XCTestCase {
         XCTAssertTrue(sysWarn.matches(filter: .all, query: "pressure"))
         XCTAssertFalse(sysWarn.matches(filter: .all, query: "nonexistent"))
     }
+
+    func testParsesEnrichedClientAndCancelledHttpLines() {
+        let okLine = "[2026-11-25 20:32:07] POST /v1/messages -> 200 OK | client=claude-code req=msg_123 sess=s_9 | 512 prompt + 64 gen tok | TTFT 24.3ms | 81.2 tok/s | 0.81s"
+        let okEntry = QWLogLineParser.parse(id: 20, line: okLine)
+        XCTAssertEqual(okEntry.kind, .http)
+        XCTAssertEqual(okEntry.level, .info)
+        XCTAssertTrue(okEntry.matches(filter: .http, query: "claude-code"))
+        XCTAssertTrue(okEntry.matches(filter: .http, query: "msg_123"))
+
+        let cancelLine = "[2026-11-25 20:32:08] POST /v1/responses -> 499 ERR | client=webui req=resp_7 | cancelled | 0.42s"
+        let cancelEntry = QWLogLineParser.parse(id: 21, line: cancelLine)
+        XCTAssertEqual(cancelEntry.kind, .http)
+        XCTAssertEqual(cancelEntry.level, .error)
+        XCTAssertTrue(cancelEntry.matches(filter: .http, query: "webui"))
+        XCTAssertTrue(cancelEntry.matches(filter: .all, query: "cancelled"))
+    }
 }

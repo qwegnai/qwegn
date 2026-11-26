@@ -322,6 +322,7 @@ final class DashboardRendererParityTests: XCTestCase {
     func testPrefillBannerTracksProgressHoldsCompletionAndResetsOnDisconnect() throws {
         let html = try html()
         let script = try script()
+        XCTAssertTrue(html.contains("<div id=\"prefill-banner\" class=\"prefill-banner\">"))
         XCTAssertTrue(html.contains("data-card=\"prefill.progress_tokens\" data-card-unit=\"separate\""))
         XCTAssertTrue(html.contains("id=\"prefill-pct\""))
 
@@ -337,11 +338,13 @@ final class DashboardRendererParityTests: XCTestCase {
         XCTAssertTrue(bannerFn.contains("Prefill Complete"))
         XCTAssertTrue(bannerFn.contains("prefillHoldTimer"))
         XCTAssertTrue(bannerFn.contains("100%"))
+        XCTAssertFalse(bannerFn.contains("banner.hidden = true"))
 
         let disconnectFn = try XCTUnwrap(Self.function("renderDisconnected", in: script))
         XCTAssertTrue(disconnectFn.contains("prefillHoldTimer"))
         XCTAssertTrue(disconnectFn.contains("prefill-progress-fill"))
         XCTAssertTrue(disconnectFn.contains("prefill-pct"))
+        XCTAssertFalse(disconnectFn.contains("prefillBanner.hidden = true"))
     }
 
     /// Smoke probe output parses Markdown safely into styled elements while neutralizing raw HTML and unsafe URLs.

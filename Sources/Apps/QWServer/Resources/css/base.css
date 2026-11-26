@@ -115,10 +115,14 @@ html, body {
   min-height: 34px;
   border-radius: var(--radius-md);
   border: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: none;
+  flex-wrap: nowrap;
 }
 .tab-btn {
   appearance: none;
   border: 0;
+  border-block-end: 2px solid transparent;
   background: transparent;
   color: var(--ink-secondary);
   padding: 0 12px;
@@ -126,17 +130,27 @@ html, body {
   border-radius: 7px;
   font: 500 12px/1 var(--font-sans);
   cursor: pointer;
+  white-space: nowrap;
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  transition: background 120ms ease, color 120ms ease;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
 }
 .tab-btn:hover { color: var(--ink); background: var(--bg-subtle); }
-.tab-btn.is-active {
+.tab-btn.is-active,
+.tab-btn[aria-selected="true"] {
   background: rgba(56, 139, 253, 0.24);
   color: #ffffff;
   font-weight: 600;
   box-shadow: inset 0 0 0 1px rgba(56, 139, 253, 0.52);
+  border-block-end: 2px solid currentColor;
+}
+@media (forced-colors: active) {
+  .tab-btn.is-active,
+  .tab-btn[aria-selected="true"] {
+    border-block-end: 2px solid Highlight;
+    forced-color-adjust: none;
+  }
 }
 
 .status-pill {
@@ -447,20 +461,51 @@ h1#hero-model-title {
 
 /* Zone 2 Prefill Banner */
 .prefill-banner {
-  background: var(--prefill-soft);
-  border: 1px solid rgba(240, 180, 41, 0.35);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
   border-radius: var(--radius-md);
   padding: 10px 14px;
+  min-height: 40px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 14px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  transition: background-color 160ms ease, border-color 160ms ease;
+}
+.prefill-banner-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex: 0 0 auto;
+  min-width: 310px;
+}
+.prefill-banner-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+.prefill-banner-title {
+  color: var(--ink-secondary);
+  font-weight: 600;
+  transition: color 160ms ease;
+}
+.prefill-count {
+  color: var(--ink-muted);
+  font-size: 12px;
+}
+.prefill-pct {
+  color: var(--ink-muted);
+  font-size: 12px;
+  min-width: 4ch;
+  text-align: right;
 }
 .progress-track {
   flex: 1 1 220px;
   height: 7px;
-  background: rgba(0, 0, 0, 0.35);
+  background: rgba(255, 255, 255, 0.08);
   border-radius: 999px;
   overflow: hidden;
 }
@@ -468,14 +513,43 @@ h1#hero-model-title {
   height: 100%;
   background: var(--prefill);
   width: 0%;
-  transition: width 160ms ease;
+  transition: width 160ms ease, background-color 160ms ease;
+}
+.prefill-banner.is-active {
+  background: var(--prefill-soft);
+  border-color: rgba(240, 180, 41, 0.35);
+}
+.prefill-banner.is-active .prefill-banner-title,
+.prefill-banner.is-active .prefill-pct {
+  color: var(--prefill);
+}
+.prefill-banner.is-active .prefill-count {
+  color: var(--ink);
 }
 .prefill-banner.is-complete {
   background: var(--active-soft);
   border-color: rgba(63, 185, 80, 0.35);
 }
+.prefill-banner.is-complete .prefill-banner-title,
+.prefill-banner.is-complete .prefill-pct {
+  color: var(--active);
+}
+.prefill-banner.is-complete .prefill-count {
+  color: var(--ink);
+}
 .prefill-banner.is-complete .progress-fill {
   background: var(--active);
+}
+@media (max-width: 720px) {
+  .prefill-banner {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .prefill-banner-meta {
+    min-width: 0;
+    width: 100%;
+  }
 }
 
 /* Zone 3 Velocity & Sparkline */
@@ -662,3 +736,26 @@ h1#hero-model-title {
 .ink-tertiary { color: var(--prefill); }
 .ink-error { color: var(--error); }
 .ink-muted { color: var(--ink-muted); }
+
+/* Shared Modal Scroll Containment & Container Queries (ADR-014) */
+html:has(dialog:modal) { overflow: hidden; }
+dialog:modal {
+  background: var(--bg-elevated);
+  color: var(--ink);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  padding: 18px;
+  max-height: 88vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.68);
+}
+dialog::backdrop {
+  background: rgba(0, 0, 0, 0.62);
+  backdrop-filter: blur(4px);
+}
+.tab-pane, .card-panel { container-type: inline-size; }
+@container (max-width: 560px) {
+  .cards-grid { grid-template-columns: 1fr; }
+  .hero-top { flex-direction: column; align-items: flex-start; }
+}

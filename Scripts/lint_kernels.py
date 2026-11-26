@@ -25,7 +25,18 @@ ROOT = Path(__file__).resolve().parent.parent
 METALLIB = ROOT / "Sources" / "QWMetal" / "kernel.metallib"
 PREFIXES = ("qwg_", "qwfn_", "qwm_", "qws_", "qwc_", "qwh_", "qwr_")
 # Public MCP tool names that share the qwg_ prefix are not Metal kernels.
-NON_KERNEL_LITERALS = {"qwg_decide"}
+NON_KERNEL_LITERALS = {
+    "qwg_decide",
+    "qwg_rerank_screen",
+    "qwg_compact_select",
+    "qwg_episodic_recover",
+    "qwg_skill_select",
+    "qwg_search_enough",
+    "qwg_supervise",
+    "qwg_route_turn",
+    "qwg_vault_query",
+    "qwg_vault_status",
+}
 # Names that are library objects rather than dispatch targets.
 AIR_NOISE = re.compile(r"(llvm\.|air\.|_Z|MTL_|__tensorops|metal18|cooperative)")
 

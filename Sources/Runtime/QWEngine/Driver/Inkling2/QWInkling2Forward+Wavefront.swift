@@ -6,6 +6,7 @@ import QWCore
 
 extension QWInkling2Forward {
     /// Executes chunked prefill or single-slot decode into an arbitrary `Ink2SlotState`.
+    @discardableResult
     func forwardOnSlot(
         slot: Ink2SlotState,
         tokens: [Int],
@@ -15,7 +16,7 @@ extension QWInkling2Forward {
         useLSA: Bool = false,
         profiler: QWInkling2Profiler? = nil,
         onPrefillProgress: ((Int, Int) -> Void)? = nil
-    ) throws {
+    ) throws -> Int {
         guard !tokens.isEmpty, posOffset >= 0, posOffset + tokens.count <= slot.capacity else {
             throw QWInkling2Error.badState(
                 "invalid forwardOnSlot range pos=\(posOffset) count=\(tokens.count) cap=\(slot.capacity)"
@@ -37,9 +38,10 @@ extension QWInkling2Forward {
                 profiler: profiler
             )
             onPrefillProgress?(tokens.count, tokens.count)
-            return
+            return tokens.count
         }
         var consumed = 0
+        var lastChunkRows = 0
         while consumed < tokens.count {
             let rem = tokens.count - consumed
             let chunkSize: Int
@@ -62,9 +64,11 @@ extension QWInkling2Forward {
                 useLSA: useLSA,
                 profiler: profiler
             )
+            lastChunkRows = chunk.count
             consumed = nextEnd
             onPrefillProgress?(consumed, tokens.count)
         }
+        return lastChunkRows
     }
 
     private func sliceAttnProjRow(

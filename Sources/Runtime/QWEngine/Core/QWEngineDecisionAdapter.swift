@@ -1,7 +1,5 @@
 // QWEngineDecisionAdapter.swift — Metal 4 QWDecisionExecutionBackend adapter (ADR-002/004/006).
 
-import Accelerate
-import CoreGraphics
 import Dispatch
 import Foundation
 import ImageIO
@@ -233,114 +231,33 @@ public final class QWEngineDecisionAdapter: QWDecisionExecutionBackend, @uncheck
         maxPixels: Int,
         spec: QWMMSpec
     ) throws -> (rgb: [UInt8], width: Int, height: Int, grid: QWVisionGrid) {
-        guard !data.isEmpty, data.count <= maxImageSourceBytes else {
-            throw QWDecisionError.invalidQuestion("Invalid or oversized image buffer (\(data.count) bytes)")
+        let header: QWImageHeaderInfo
+        do {
+            (_, header) = try qwInspectImageHeader(
+                data: data,
+                maxSourceBytes: maxImageSourceBytes,
+                maxDimension: maxImageDimension,
+                maxArea: maxImageArea
+            )
+        } catch let err as QWOrientedImageError {
+            throw QWDecisionError.invalidQuestion(err.description)
         }
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-              let w = (props[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
-              let h = (props[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue,
-              w > 0, h > 0 else {
-            throw QWDecisionError.invalidQuestion("Failed to inspect image header")
-        }
-        let rawOrient = (props[kCGImagePropertyOrientation] as? NSNumber)?.uint32Value ?? 1
-        let orientation: UInt32 = (1...8).contains(rawOrient) ? rawOrient : 1
-        let orientedW = (5...8).contains(orientation) ? h : w
-        let orientedH = (5...8).contains(orientation) ? w : h
-        let (area, overflow) = Int64(orientedW).multipliedReportingOverflow(by: Int64(orientedH))
-        guard orientedW <= maxImageDimension, orientedH <= maxImageDimension,
-              !overflow, area <= maxImageArea else {
-            throw QWDecisionError.invalidQuestion("Image dimensions \(orientedW)x\(orientedH) exceed bounds")
-        }
-        let resized = try QWMMConfig.smartResize(height: orientedH, width: orientedW, maxPixels: maxPixels, spec: spec)
+        let resized = try QWMMConfig.smartResize(height: header.height, width: header.width, maxPixels: maxPixels, spec: spec)
         let grid = try QWVisionGrid(t: 1, h: resized.h / spec.patch, w: resized.w / spec.patch, spec: spec)
-
-        let cgImage: CGImage
-        let renderOrientation: UInt32
-        if resized.w < orientedW || resized.h < orientedH {
-            let thumbOpts: [CFString: Any] = [
-                kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceCreateThumbnailWithTransform: true,
-                kCGImageSourceShouldCacheImmediately: false,
-                kCGImageSourceThumbnailMaxPixelSize: max(resized.w, resized.h),
-            ]
-            guard let thumb = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbOpts as CFDictionary) else {
-                throw QWDecisionError.invalidQuestion("Failed to create image thumbnail")
-            }
-            cgImage = thumb
-            renderOrientation = 1
-        } else {
-            guard let full = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
-                throw QWDecisionError.invalidQuestion("Failed to decode CGImage")
-            }
-            cgImage = full
-            renderOrientation = orientation
+        let decoded: QWOrientedRGBImage
+        do {
+            decoded = try qwDecodeOrientedRGBSlab(
+                data: data,
+                targetWidth: resized.w,
+                targetHeight: resized.h,
+                maxSourceBytes: maxImageSourceBytes,
+                maxDimension: maxImageDimension,
+                maxArea: maxImageArea,
+                useThumbnailDownsample: true
+            )
+        } catch let err as QWOrientedImageError {
+            throw QWDecisionError.backendFailed(err.description)
         }
-        let rgb = try renderRGB888(cgImage: cgImage, width: resized.w, height: resized.h, orientation: renderOrientation)
-        return (rgb, resized.w, resized.h, grid)
-    }
-
-    private static func renderRGB888(
-        cgImage: CGImage,
-        width: Int,
-        height: Int,
-        orientation: UInt32
-    ) throws -> [UInt8] {
-        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else {
-            throw QWDecisionError.backendFailed("Failed to create sRGB colorspace")
-        }
-        var rgba = [UInt8](repeating: 255, count: width * height * 4)
-        let bitmapInfo = CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.premultipliedLast.rawValue
-        let drew = rgba.withUnsafeMutableBytes { (ptr: UnsafeMutableRawBufferPointer) -> Bool in
-            guard let ctx = CGContext(
-                data: ptr.baseAddress, width: width, height: height, bitsPerComponent: 8,
-                bytesPerRow: width * 4, space: colorSpace, bitmapInfo: bitmapInfo
-            ) else { return false }
-            ctx.setFillColor(CGColor(srgbRed: 1.0, green: 1.0, blue: 1.0, alpha: 1.0))
-            ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
-            let swaps = (5...8).contains(orientation)
-            let w = CGFloat(width)
-            let h = CGFloat(height)
-            let tx: CGAffineTransform = switch orientation {
-            case 2: CGAffineTransform(a: -1, b: 0, c: 0, d: 1, tx: w, ty: 0)
-            case 3: CGAffineTransform(a: -1, b: 0, c: 0, d: -1, tx: w, ty: h)
-            case 4: CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: h)
-            case 5: CGAffineTransform(a: 0, b: -1, c: -1, d: 0, tx: w, ty: h)
-            case 6: CGAffineTransform(a: 0, b: -1, c: 1, d: 0, tx: 0, ty: h)
-            case 7: CGAffineTransform(a: 0, b: 1, c: 1, d: 0, tx: 0, ty: 0)
-            case 8: CGAffineTransform(a: 0, b: 1, c: -1, d: 0, tx: w, ty: 0)
-            default: .identity
-            }
-            ctx.concatenate(tx)
-            ctx.interpolationQuality = .high
-            ctx.draw(cgImage, in: CGRect(x: 0, y: 0, width: swaps ? height : width, height: swaps ? width : height))
-            return true
-        }
-        guard drew else {
-            throw QWDecisionError.backendFailed("CGContext image render failed")
-        }
-        var rgb = [UInt8](repeating: 0, count: width * height * 3)
-        rgba.withUnsafeBytes { srcRaw in
-            rgb.withUnsafeMutableBytes { dstRaw in
-                guard let sBase = srcRaw.baseAddress, let dBase = dstRaw.baseAddress else { return }
-                var srcBuf = vImage_Buffer(
-                    data: UnsafeMutableRawPointer(mutating: sBase),
-                    height: vImagePixelCount(height), width: vImagePixelCount(width), rowBytes: width * 4
-                )
-                var dstBuf = vImage_Buffer(
-                    data: dBase, height: vImagePixelCount(height), width: vImagePixelCount(width), rowBytes: width * 3
-                )
-                if vImageConvert_RGBA8888toRGB888(&srcBuf, &dstBuf, vImage_Flags(kvImageNoFlags)) != kvImageNoError {
-                    let sPtr = sBase.assumingMemoryBound(to: UInt8.self)
-                    let dPtr = dBase.assumingMemoryBound(to: UInt8.self)
-                    for i in 0..<(width * height) {
-                        dPtr[i * 3 + 0] = sPtr[i * 4 + 0]
-                        dPtr[i * 3 + 1] = sPtr[i * 4 + 1]
-                        dPtr[i * 3 + 2] = sPtr[i * 4 + 2]
-                    }
-                }
-            }
-        }
-        return rgb
+        return (decoded.rgb, decoded.width, decoded.height, grid)
     }
 }

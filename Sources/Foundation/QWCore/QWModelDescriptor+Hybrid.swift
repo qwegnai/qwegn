@@ -181,9 +181,11 @@ extension QWModelDescriptor {
         }
     }
 
-    /// Gated FFN nonlinearity (`SwiGLU` vs bounded `SituAndMul`).
+    /// Gated/standard FFN nonlinearity (`SwiGLU`, `GELU`, or bounded `SituAndMul`).
     public enum ActivationKind: Sendable, Hashable, Codable, Equatable {
         case silu
+        case gelu
+        case geluTanh
         case situ(beta: Float, linearBeta: Float)
     }
 
@@ -281,6 +283,10 @@ extension QWModelDescriptor {
         switch d.activationKind {
         case .silu:
             f.append("act=silu")
+        case .gelu:
+            f.append("act=gelu")
+        case .geluTanh:
+            f.append("act=gelu_tanh")
         case .situ(let beta, let linearBeta):
             let bHex = String(beta.bitPattern, radix: 16, uppercase: false)
             let lbHex = String(linearBeta.bitPattern, radix: 16, uppercase: false)

@@ -328,8 +328,65 @@ function handleDelegatedActionClick(event) {
   if (btn.getAttribute("data-close-switch-modal") === "true") closeSwitchModelModal();
 }
 
+function wireModernWebPlatformControls() {
+  if (typeof document === "undefined") return;
+  const tablist = document.querySelector("[role='tablist']");
+  if (tablist) {
+    tablist.addEventListener("keydown", (e) => {
+      const tabs = Array.from(tablist.querySelectorAll("[role='tab']"));
+      const idx = tabs.indexOf(document.activeElement);
+      if (idx < 0 || !tabs.length) return;
+      let next = -1;
+      if (e.key === "ArrowRight") next = (idx + 1) % tabs.length;
+      else if (e.key === "ArrowLeft") next = (idx - 1 + tabs.length) % tabs.length;
+      else if (e.key === "Home") next = 0;
+      else if (e.key === "End") next = tabs.length - 1;
+      if (next >= 0) {
+        e.preventDefault();
+        tabs[next].focus();
+        const tabId = String(tabs[next].id || "").replace(/^nav-tab-/, "");
+        if (tabId && typeof switchTab === "function") switchTab(tabId);
+      }
+    });
+  }
+  const switchDlg = document.getElementById("modal-switch-model");
+  if (switchDlg) {
+    let downOut = false;
+    const isOutside = (ev, d) => {
+      const r = d.getBoundingClientRect();
+      return ev.clientX < r.left || ev.clientX > r.right || ev.clientY < r.top || ev.clientY > r.bottom;
+    };
+    switchDlg.addEventListener("pointerdown", (e) => { downOut = isOutside(e, switchDlg); });
+    switchDlg.addEventListener("pointerup", (e) => { if (downOut && isOutside(e, switchDlg)) switchDlg.close(); downOut = false; });
+  }
+  const memDlg = document.getElementById("modal-memory-pack");
+  if (memDlg) {
+    memDlg.addEventListener("cancel", (e) => {
+      if (typeof mempackModalState !== "undefined" && mempackModalState && mempackModalState.indexing) e.preventDefault();
+    });
+  }
+  const updDlg = document.getElementById("modal-update");
+  if (updDlg) {
+    updDlg.addEventListener("cancel", (e) => {
+      const p = typeof webUpdateState !== "undefined" && webUpdateState && webUpdateState.snapshot && webUpdateState.snapshot.phase;
+      if (p === "downloading" || p === "verifying" || p === "installing") e.preventDefault();
+    });
+  }
+  if (typeof HTMLButtonElement === "undefined" || !("command" in HTMLButtonElement.prototype)) {
+    document.addEventListener("click", (e) => {
+      const inv = e.target && e.target.closest ? e.target.closest("[command][commandfor]") : null;
+      if (!inv) return;
+      const target = document.getElementById(inv.getAttribute("commandfor") || "");
+      const cmd = inv.getAttribute("command");
+      if (target && cmd === "close" && typeof target.close === "function") target.close();
+      else if (target && cmd === "show-modal" && typeof target.showModal === "function") target.showModal();
+    });
+  }
+}
+
 if (typeof window !== "undefined") {
   window.addEventListener("DOMContentLoaded", () => {
+    wireModernWebPlatformControls();
     const port = new URL(API_BASE, window.location.href).port;
     const portEl = document.getElementById("header-port");
     if (portEl) portEl.textContent = port ? `Port ${port}` : "Port —";

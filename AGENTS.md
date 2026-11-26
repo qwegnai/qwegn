@@ -167,11 +167,19 @@ the owner's private `docs/agent-retrospective-*.md`.
     on `.ready` and poll `server.activeConnectionCount` deterministically rather
     than relying on fixed sleeps.
 
-Verification footer: when you finish and merge to `master`, bump the semantic
-version in `Sources/Foundation/QWCore/QWVersion.swift`, `CHANGELOG.md`,
-`README.md`, `CITATION.cff`, and `assets/qwegn_engine_bento.svg` according to significance
-(fix/cleanup = patch, feature = minor, breaking/major milestone = major),
-sync affected `~/.qwg/models/*/README.md` + `media/*.{svg,png}`, preserve
+Verification footer: when you finish and merge to `master`, do **not** bump the
+version and do **not** touch release artifacts (`QWVersion.swift`, `README.md`
+badge/BibTeX, `CITATION.cff`, `assets/qwegn_engine_bento.svg`). Record the
+change under `## [Unreleased]` in `CHANGELOG.md`, sync affected
+`~/.qwg/models/*/README.md` + `media/*.{svg,png}`, preserve
 `out/llmprobe/*.json` when cleaning worktrees/artifacts,
-update the component ledger row, and state which gates you ran — including any
-you did not.
+and state which gates you ran — including any you did not.
+
+Version bumps are release-only: change the semantic version in
+`Sources/Foundation/QWCore/QWVersion.swift`, rename `[Unreleased]` to
+`[X.Y.Z] - YYYY-MM-DD` in `CHANGELOG.md`, and update `README.md`,
+`CITATION.cff`, `assets/qwegn_engine_bento.svg`, and the component ledger row
+in `docs/tuning.md` only in one dedicated release-preparation commit, and only
+when the owner explicitly requests publishing a release. Choose the level by
+the significance of everything accumulated since the last tag
+(fix/cleanup = patch, feature = minor, breaking/major milestone = major).

@@ -172,8 +172,8 @@ public final class QWServerLogger: @unchecked Sendable {
     /// Emits a single rate-governed, non-allocating structured request log line directly
     /// to STDOUT_FILENO via stack allocation and POSIX write(2).
     public func logRequest(
-        method: StaticString,
-        path: StaticString,
+        method: String,
+        path: String,
         statusCode: Int,
         promptTokens: Int,
         completionTokens: Int,
@@ -184,24 +184,28 @@ public final class QWServerLogger: @unchecked Sendable {
         specSummary: String? = nil,
         ttftMs: Double?,
         decodeTokPerSec: Double?,
-        totalSec: Double
+        totalSec: Double,
+        client: String? = nil,
+        requestId: String? = nil,
+        sessionId: String? = nil,
+        peerHost: String? = nil
     ) {
         guard getLevel() <= .info else { return }
 
-        // Stack-allocated 512-byte scratch buffer — zero heap allocations
-        withUnsafeTemporaryAllocation(of: UInt8.self, capacity: 512) { buf in
+        // Stack-allocated 768-byte scratch buffer — zero heap allocations
+        withUnsafeTemporaryAllocation(of: UInt8.self, capacity: 768) { buf in
             guard let ptr = buf.baseAddress else { return }
             var idx = 0
 
             func appendByte(_ b: UInt8) {
-                if idx < 510 {
+                if idx < 766 {
                     ptr[idx] = b
                     idx += 1
                 }
             }
 
             func appendBytes(_ bytes: UnsafeRawBufferPointer) {
-                let count = min(bytes.count, 510 - idx)
+                let count = min(bytes.count, 766 - idx)
                 if count > 0, let src = bytes.baseAddress {
                     memcpy(ptr + idx, src, count)
                     idx += count
@@ -210,6 +214,12 @@ public final class QWServerLogger: @unchecked Sendable {
 
             func appendStatic(_ str: StaticString) {
                 str.withUTF8Buffer { appendBytes(UnsafeRawBufferPointer($0)) }
+            }
+
+            func appendString(_ str: String) {
+                for b in str.utf8 where b != UInt8(ascii: "\r") && b != UInt8(ascii: "\n") {
+                    appendByte(b)
+                }
             }
 
             func appendInt(_ val: Int) {
@@ -287,12 +297,43 @@ public final class QWServerLogger: @unchecked Sendable {
             }
             appendByte(UInt8(ascii: " "))
 
-            appendStatic(method)
+            appendString(method)
             appendByte(UInt8(ascii: " "))
-            appendStatic(path)
+            appendString(path)
             appendStatic(" -> ")
             appendInt(statusCode)
             appendStatic(statusCode == 200 ? " OK | " : " ERR | ")
+
+            let hasTraceMeta = (client?.isEmpty == false)
+                || (requestId?.isEmpty == false)
+                || (sessionId?.isEmpty == false)
+                || (peerHost?.isEmpty == false)
+            if hasTraceMeta {
+                var wroteField = false
+                if let client, !client.isEmpty {
+                    appendStatic("client=")
+                    appendString(client)
+                    wroteField = true
+                }
+                if let requestId, !requestId.isEmpty {
+                    if wroteField { appendByte(UInt8(ascii: " ")) }
+                    appendStatic("req=")
+                    appendString(requestId)
+                    wroteField = true
+                }
+                if let sessionId, !sessionId.isEmpty {
+                    if wroteField { appendByte(UInt8(ascii: " ")) }
+                    appendStatic("sess=")
+                    appendString(sessionId)
+                    wroteField = true
+                }
+                if let peerHost, !peerHost.isEmpty {
+                    if wroteField { appendByte(UInt8(ascii: " ")) }
+                    appendStatic("peer=")
+                    appendString(peerHost)
+                }
+                appendStatic(" | ")
+            }
 
             appendInt(promptTokens)
             appendStatic(" prompt")
@@ -343,6 +384,56 @@ public final class QWServerLogger: @unchecked Sendable {
                 broadcast(str)
             }
         }
+    }
+
+    /// Emits a structured HTTP request log line for non-chat/control routes and cancellations.
+    public func logSimpleRequest(
+        method: String,
+        path: String,
+        statusCode: Int,
+        client: String? = nil,
+        requestId: String? = nil,
+        sessionId: String? = nil,
+        peerHost: String? = nil,
+        detail: String? = nil,
+        totalSec: Double
+    ) {
+        guard getLevel() <= .info else { return }
+
+        var now = time(nil)
+        var tmVal = tm()
+        localtime_r(&now, &tmVal)
+        var timeBuf = [CChar](repeating: 0, count: 32)
+        let timeLen = strftime(&timeBuf, 32, "[%Y-%m-%d %H:%M:%S]", &tmVal)
+        let timeStr = timeLen > 0 ? (timeBuf.withUnsafeBufferPointer { ptr in ptr.baseAddress.map { String(cString: $0) } } ?? "") : ""
+
+        let okTag = (statusCode >= 200 && statusCode < 300) ? "OK" : "ERR"
+        var sections: [String] = ["\(timeStr) \(method) \(path) -> \(statusCode) \(okTag)"]
+
+        var traceParts: [String] = []
+        if let client, !client.isEmpty { traceParts.append("client=\(client)") }
+        if let requestId, !requestId.isEmpty { traceParts.append("req=\(requestId)") }
+        if let sessionId, !sessionId.isEmpty { traceParts.append("sess=\(sessionId)") }
+        if let peerHost, !peerHost.isEmpty { traceParts.append("peer=\(peerHost)") }
+        if !traceParts.isEmpty { sections.append(traceParts.joined(separator: " ")) }
+
+        if let detail, !detail.isEmpty {
+            let cleanDetail = detail
+                .replacingOccurrences(of: "\r", with: " ")
+                .replacingOccurrences(of: "\n", with: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !cleanDetail.isEmpty { sections.append(cleanDetail) }
+        }
+        sections.append(String(format: "%.2fs", max(0.0, totalSec)))
+
+        let line = sections.joined(separator: " | ") + "\n"
+        line.utf8CString.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            let byteCount = max(0, raw.count - 1)
+            if byteCount > 0, let base = raw.baseAddress {
+                emitOutput(streamFD: STDOUT_FILENO, buffer: base, count: byteCount)
+            }
+        }
+        broadcast(line)
     }
 
     /// Emits simple structured log message

@@ -156,7 +156,7 @@ extension QWHttpServer {
         let cfg = actor.getConfig()
         let activeName = actor.getModelName()
         let params = actor.getLoadedParamsInfo()
-        let settings = QWSettingsManager.shared.loadSettings()
+        let settings = QWSettingsManager.shared.loadSettings(from: settingsFileURL)
 
         let resolvedModelName: String
         let resolvedPackPath: String
@@ -168,7 +168,7 @@ extension QWHttpServer {
             resolvedPackPath = cfg.packPath
             descriptor = params?.modelDescriptor ?? (!cfg.packPath.isEmpty ? QWModelCatalog.loadPrimaryDescriptor(at: cfg.packPath) : nil)
         } else {
-            let discovered = QWServerSettings.scanModelsDirectory()
+            let discovered = modelCatalogScanner()
             let ref = settings.resolveModelReference(requested, discovered: discovered)
             let exists = discovered.contains(where: {
                 $0.name.caseInsensitiveCompare(ref.modelName) == .orderedSame || $0.packPath == ref.packPath
@@ -182,6 +182,8 @@ extension QWHttpServer {
             descriptor = !resolvedPackPath.isEmpty ? QWModelCatalog.loadPrimaryDescriptor(at: resolvedPackPath) : nil
         }
 
+        let isActiveModel = resolvedModelName.caseInsensitiveCompare(activeName) == .orderedSame
+            || (!cfg.packPath.isEmpty && resolvedPackPath == cfg.packPath)
         let family = descriptor?.architectureDisplayName ?? descriptor?.modelType ?? "unknown"
         let paramSize = Self.ollamaParameterSize(modelName: resolvedModelName, descriptor: descriptor)
         let quantLevel: String
@@ -193,6 +195,19 @@ extension QWHttpServer {
             quantLevel = String(describing: cfg.kvMode)
         }
         let contextLen = descriptor?.maxPositionEmbeddings ?? params?.contextBudget ?? cfg.maxContext
+        let packHasVision = (descriptor?.visDepth ?? 0) > 0 || descriptor?.visionTowerConfig != nil
+        let hasVision = isActiveModel && actor.isLoaded() ? (packHasVision && cfg.loadVision) : packHasVision
+        let supportsThinking: Bool
+        if isActiveModel && actor.isLoaded() {
+            supportsThinking = actor.supportsThinkingTags()
+        } else if !resolvedPackPath.isEmpty {
+            supportsThinking = QWChatTemplate.detectSupportsThinkingTags(atPackPath: resolvedPackPath) ?? false
+        } else {
+            supportsThinking = false
+        }
+        var capabilities = ["completion"]
+        if hasVision { capabilities.append("vision") }
+        if supportsThinking { capabilities.append("thinking") }
         let details: [String: Any] = [
             "format": "qwg",
             "family": family,
@@ -201,8 +216,10 @@ extension QWHttpServer {
         ]
         let resp: [String: Any] = [
             "modelfile": "# Modelfile for Qwegine\nFROM \(resolvedModelName)",
-            "parameters": "context_length \(contextLen)",
-            "details": details
+            "parameters": "num_ctx \(contextLen)",
+            "details": details,
+            "capabilities": capabilities,
+            "model_info": ["context_length": contextLen]
         ]
         if let data = try? JSONSerialization.data(withJSONObject: resp) {
             sendRawData(connection, status: 200, contentType: "application/json", data: data)
@@ -220,17 +237,28 @@ extension QWHttpServer {
     }
 
     /// POST /api/chat — the Ollama chat endpoint.
-    func handleOllamaChat(connection: NWConnection, body: Data) async throws {
+    func handleOllamaChat(
+        connection: NWConnection,
+        headers: [String: String] = [:],
+        body: Data,
+        trace: QWRequestTraceContext? = nil
+    ) async throws {
+        let effectiveTrace = trace ?? QWClientIdentity.makeTraceContext(
+            method: "POST", route: "/api/chat", headers: headers, peerEndpoint: connection.endpoint
+        )
         let req: ChatCompletionRequest
         do {
             let ollamaReq = try QWServerRequestDecoder.decode(OllamaChatRequest.self, from: body)
-            req = ollamaReq.toChatCompletionRequest()
+            var mapped = ollamaReq.toChatCompletionRequest()
+            mapped.httpHeaders = headers
+            req = mapped
             try req.validateMetadata()
             _ = try QWStructuredOutput.grammar(for: req)
             try actor.validateRequestCapabilities(req)
         } catch let valErr {
             let code = Self.ollamaErrorStatus(for: valErr)
             let status = code == 500 ? 400 : code
+            logger.log(.warn, "HTTP POST \(effectiveTrace.route) invalid request | \(effectiveTrace.logTag): \(valErr)")
             sendJsonResponse(connection, status: status, object: ["error": "invalid request: \(valErr)"])
             return
         }
@@ -281,6 +309,7 @@ extension QWHttpServer {
             do {
                 result = try await actor.handleChatCompletion(
                     request: req,
+                    trace: effectiveTrace,
                     onStreamReady: { [weak self] in
                         guard let self else { return }
                         let readyPolicy = QWChatPolicyResolver.resolveStreamPolicy(
@@ -307,9 +336,11 @@ extension QWHttpServer {
             } catch {
                 if shouldStop() { return }
                 if !session.isStarted {
+                    logger.log(.error, "HTTP POST \(effectiveTrace.route) failed | \(effectiveTrace.logTag): \(error)")
                     sendJsonResponse(connection, status: Self.ollamaErrorStatus(for: error), object: ["error": "\(error)"])
                     return
                 }
+                logger.log(.error, "HTTP POST \(effectiveTrace.route) (stream) failed | \(effectiveTrace.logTag): \(error)")
                 session.finishWithNDJSONError(error)
                 return
             }
@@ -341,9 +372,12 @@ extension QWHttpServer {
         } else {
             let result: ChatCompletionExecutionResult
             do {
-                result = try await actor.handleChatCompletion(request: req, onToken: nil, shouldStop: shouldStop)
+                result = try await actor.handleChatCompletion(
+                    request: req, trace: effectiveTrace, onToken: nil, shouldStop: shouldStop
+                )
             } catch {
                 if shouldStop() { return }
+                logger.log(.error, "HTTP POST \(effectiveTrace.route) failed | \(effectiveTrace.logTag): \(error)")
                 sendJsonResponse(connection, status: Self.ollamaErrorStatus(for: error), object: ["error": "\(error)"])
                 return
             }

@@ -112,6 +112,7 @@ extension TelemetryObservable {
     ) -> URLRequest {
         var req = URLRequest(url: url)
         req.httpMethod = method
+        req.setValue("menubar", forHTTPHeaderField: "X-Qwegn-Client")
         if let timeoutInterval {
             req.timeoutInterval = timeoutInterval
         }

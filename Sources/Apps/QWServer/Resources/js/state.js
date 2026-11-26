@@ -63,7 +63,16 @@ function switchTab(tabId, updateUrl = true) {
 
   validTabs.forEach((t) => {
     const btn = document.getElementById(`nav-tab-${t}`);
-    if (btn) btn.classList.toggle("is-active", t === resolved);
+    if (!btn) return;
+    const active = t === resolved;
+    btn.classList.toggle("is-active", active);
+    if (typeof btn.setAttribute === "function") {
+      btn.setAttribute("aria-selected", active ? "true" : "false");
+      btn.setAttribute("tabindex", active ? "0" : "-1");
+    }
+    if (active && typeof btn.scrollIntoView === "function") {
+      btn.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
   });
 
   if (updateUrl && window.history && typeof window.history.replaceState === "function") {

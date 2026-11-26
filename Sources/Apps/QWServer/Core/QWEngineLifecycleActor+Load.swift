@@ -183,6 +183,7 @@ extension QWEngineLifecycleActor {
         // on purpose, so a reader can watch the unload happen instead of
         // seeing a jump from `loaded` to `unloaded`.
         try? await Task.sleep(nanoseconds: Self.unloadPhaseWindow)
+        _ = await residencyPool.releaseLease(for: .primaryLLM)
         transition(to: .unloaded)
 
         let telemetry = QWEngineTelemetryRegistry.shared

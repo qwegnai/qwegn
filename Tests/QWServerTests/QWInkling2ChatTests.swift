@@ -174,4 +174,92 @@ final class QWInkling2ChatTests: XCTestCase {
         let padExpected = Float((-1.0 / 255.0 - 0.5) / 0.5)
         XCTAssertEqual(res.patches.last!, padExpected, accuracy: 1e-5)
     }
+
+    private func makeInk2TestTokenizer() throws -> QWTokenizer {
+        var vocab: [String: Int] = [:]
+        for b in 0..<256 { vocab[String(format: "<0x%02X>", b)] = b }
+        let obj: [String: Any] = [
+            "model": ["type": "BPE", "byte_fallback": true, "vocab": vocab, "merges": [String]()],
+            "pre_tokenizer": ["type": "Metaspace", "replacement": "\u{2581}", "prepend_scheme": "always", "split": false],
+            "added_tokens": [
+                ["id": 256, "content": "<|im_end|>", "special": true],
+                ["id": 257, "content": "<|end_message|>", "special": true],
+                ["id": 258, "content": "<|message_model|>", "special": true],
+                ["id": 259, "content": "<|content_thinking|>", "special": true],
+                ["id": 260, "content": "<|content_text|>", "special": true],
+                ["id": 261, "content": "<|content_invoke_tool_json|>", "special": true],
+                ["id": 262, "content": "<|content_model_end_sampling|>", "special": true],
+            ],
+        ]
+        return try QWTokenizer(json: JSONSerialization.data(withJSONObject: obj))
+    }
+
+    func testPreparePromptThinkingOffForcesContentTextChannelAndEndMessageStop() throws {
+        let tok = try makeInk2TestTokenizer()
+        let tpl = try QWChatTemplate(source: Self.minimalInk2Jinja)
+        let cfg = QWEngineLifecycleActor.Config(packPath: "/tmp/ink2-synthetic")
+
+        for body in [
+            "{\"model\":\"ink2\",\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}],\"enable_thinking\":false}",
+            "{\"model\":\"ink2\",\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}],\"reasoning_effort\":\"none\"}",
+        ] {
+            let req = try JSONDecoder().decode(ChatCompletionRequest.self, from: Data(body.utf8))
+            let prepared = try QWChatTurnPreparer.preparePrompt(
+                request: req, config: cfg, chatTemplate: tpl, tokenizer: tok,
+                vocabularySize: 263, supportsTokenConstraints: true
+            )
+            XCTAssertFalse(prepared.shouldThink)
+            XCTAssertTrue(prepared.wire.hasSuffix("<|message_model|><|content_text|>"))
+            XCTAssertTrue(prepared.stops.contains(257))
+        }
+
+        let toolsBody = """
+        {
+          "model": "ink2",
+          "messages": [{"role": "user", "content": "Weather?"}],
+          "enable_thinking": false,
+          "tools": [{"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object"}}}]
+        }
+        """
+        let toolsReq = try JSONDecoder().decode(ChatCompletionRequest.self, from: Data(toolsBody.utf8))
+        let toolsPrepared = try QWChatTurnPreparer.preparePrompt(
+            request: toolsReq, config: cfg, chatTemplate: tpl, tokenizer: tok,
+            vocabularySize: 263, supportsTokenConstraints: true
+        )
+        XCTAssertFalse(toolsPrepared.wire.hasSuffix("<|message_model|><|content_text|>"))
+        XCTAssertFalse(toolsPrepared.stops.contains(257))
+
+        let onBody = "{\"model\":\"ink2\",\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}],\"enable_thinking\":true}"
+        let onReq = try JSONDecoder().decode(ChatCompletionRequest.self, from: Data(onBody.utf8))
+        let onPrepared = try QWChatTurnPreparer.preparePrompt(
+            request: onReq, config: cfg, chatTemplate: tpl, tokenizer: tok,
+            vocabularySize: 263, supportsTokenConstraints: true
+        )
+        XCTAssertTrue(onPrepared.shouldThink)
+        XCTAssertFalse(onPrepared.wire.hasSuffix("<|message_model|><|content_text|>"))
+        XCTAssertFalse(onPrepared.stops.contains(257))
+    }
+
+    func testChatCompletionResponseEmptyContentSerializationVsToolCallsNull() throws {
+        let reasoningOnly = ChatCompletionResponse(
+            id: "chatcmpl-1", model: "ink2", content: "",
+            toolCalls: nil, reasoningContent: "Still thinking...",
+            promptTokens: 10, completionTokens: 20, finishReason: "length"
+        )
+        let rObj = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(reasoningOnly)) as? [String: Any])
+        let rChoice = try XCTUnwrap((rObj["choices"] as? [[String: Any]])?.first)
+        let rMsg = try XCTUnwrap(rChoice["message"] as? [String: Any])
+        XCTAssertEqual(rMsg["content"] as? String, "")
+        XCTAssertEqual(rMsg["reasoning_content"] as? String, "Still thinking...")
+
+        let withToolCall = ChatCompletionResponse(
+            id: "chatcmpl-2", model: "ink2", content: nil,
+            toolCalls: [ToolCall(id: "call_1", function: ToolCallFunction(name: "fn", arguments: "{}"))],
+            reasoningContent: nil, promptTokens: 10, completionTokens: 5, finishReason: "tool_calls"
+        )
+        let tObj = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(withToolCall)) as? [String: Any])
+        let tChoice = try XCTUnwrap((tObj["choices"] as? [[String: Any]])?.first)
+        let tMsg = try XCTUnwrap(tChoice["message"] as? [String: Any])
+        XCTAssertTrue(tMsg["content"] is NSNull)
+    }
 }

@@ -33,6 +33,16 @@ extension QWEngineDriver: QWSessionInferenceEngine {
         if let ink = inkling2Runtime { return ink.hasPrefixCacheTier }
         return prefixStore != nil
     }
+    public func hasCachedPrefix(tokens: [Int], cacheSalt: String?) -> Bool {
+        guard let store = prefixStore, !tokens.isEmpty else { return false }
+        for mode in GDNPrefillMode.allCases {
+            let key = Self.prefixPolicyKey(backend: mtpBackend, drafts: mtpDrafts, mode: mode, cacheSalt: cacheSalt)
+            if store.hasCachedPrefix(tokens: tokens, mode: key) {
+                return true
+            }
+        }
+        return false
+    }
     public var arenaBytes: Int {
         if let hyper = hyperRuntime { return hyper.arenaBytes }
         if let ink = inkling2Runtime { return ink.arenaBytes }

@@ -19,6 +19,8 @@ public final class QWHttpServer: @unchecked Sendable {
     let maxConcurrentConnections: Int
     let requestReadTimeoutSeconds: TimeInterval
     let finderRevealRunner: (@Sendable ([String]) async throws -> Int32)?
+    let modelCatalogScanner: @Sendable () -> [QWServerSettings.DiscoveredModel]
+    let settingsFileURL: URL
     let updateService: QWServerUpdateService
     let enableAutoUpdateChecks: Bool
     let logger: QWServerLogger
@@ -28,6 +30,8 @@ public final class QWHttpServer: @unchecked Sendable {
     var cancellationHubs: [ObjectIdentifier: QWConnectionCancellationHub] = [:]
     var connectionOrigins: [ObjectIdentifier: String] = [:]
     let responsesStore = QWResponsesStore()
+    let episodicStore: QWEpisodicTranscriptStore
+    let sessionTree: QWSessionTree
 
     var activeConnectionCount: Int {
         connectionStateLock.withLock { cancellationHubs.count }
@@ -76,8 +80,12 @@ public final class QWHttpServer: @unchecked Sendable {
         maxConcurrentConnections: Int = 64,
         requestReadTimeoutSeconds: TimeInterval = 30.0,
         finderRevealRunner: (@Sendable ([String]) async throws -> Int32)?,
+        modelCatalogScanner: (@Sendable () -> [QWServerSettings.DiscoveredModel])? = nil,
+        settingsFileURL: URL? = nil,
         enableAutoUpdateChecks: Bool = false,
-        updateService: QWServerUpdateService? = nil
+        updateService: QWServerUpdateService? = nil,
+        episodicStore: QWEpisodicTranscriptStore = QWEpisodicTranscriptStore(),
+        sessionTree: QWSessionTree = QWSessionTree()
     ) {
         self.actor = actor
         self.host = host
@@ -91,8 +99,14 @@ public final class QWHttpServer: @unchecked Sendable {
         self.maxConcurrentConnections = max(1, maxConcurrentConnections)
         self.requestReadTimeoutSeconds = max(0.05, requestReadTimeoutSeconds)
         self.finderRevealRunner = finderRevealRunner
+        self.modelCatalogScanner = modelCatalogScanner ?? { QWServerSettings.scanModelsDirectory() }
+        self.settingsFileURL = settingsFileURL
+            ?? actor.configPath.map { $0.canonicalFileURL }
+            ?? QWSettingsManager.defaultSettingsFileURL
         self.enableAutoUpdateChecks = enableAutoUpdateChecks
         self.updateService = updateService ?? QWServerUpdateService()
+        self.episodicStore = episodicStore
+        self.sessionTree = sessionTree
         if !allowedWorkspaceRoots.isEmpty {
             actor.configureAllowedWorkspaceRoots(allowedWorkspaceRoots)
         }
@@ -382,7 +396,7 @@ public final class QWHttpServer: @unchecked Sendable {
             var corsHeader = "HTTP/1.1 204 No Content\r\n"
             corsHeader += corsHeaderLines(for: connection)
             corsHeader += "Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\n"
-            corsHeader += "Access-Control-Allow-Headers: Content-Type, Authorization, x-api-key, x-request-id, x-session-id\r\n"
+            corsHeader += "Access-Control-Allow-Headers: Content-Type, Authorization, x-api-key, x-request-id, x-session-id, x-qwegn-client, x-client-name, x-title\r\n"
             corsHeader += "Access-Control-Expose-Headers: x-request-id, x-session-id, x-qwegn-decision-route\r\n"
             corsHeader += "Access-Control-Max-Age: 86400\r\n"
             corsHeader += "Content-Length: 0\r\nConnection: close\r\n\r\n"
@@ -399,16 +413,25 @@ public final class QWHttpServer: @unchecked Sendable {
             return
         }
 
+        // Clean path (strip query params)
+        let cleanPath = path.components(separatedBy: "?").first ?? path
+        let trace = QWClientIdentity.makeTraceContext(
+            method: method, route: cleanPath, headers: headers, peerEndpoint: connection.endpoint
+        )
+
         if let expectedKey = apiKey {
             let presented = QWHttpSecurity.extractPresentedToken(headers: headers)
             guard let presented, QWHttpSecurity.constantTimeEquals(presented, expectedKey) else {
+                logger.log(.warn, "HTTP \(method) \(cleanPath) unauthorized | \(trace.logTag)")
                 sendSimpleResponse(connection, status: 401, body: "Unauthorized\n")
                 return
             }
         }
 
-        // Clean path (strip query params)
-        let cleanPath = path.components(separatedBy: "?").first ?? path
+        if logger.getLevel() <= .debug && !cleanPath.hasPrefix("/ui") {
+            let hdrs = QWClientIdentity.debugHeaderSummary(headers: headers)
+            logger.log(.debug, "HTTP \(method) \(cleanPath) incoming | \(trace.logTag)\(hdrs.isEmpty ? "" : " | \(hdrs)")")
+        }
 
         guard validateMutationRequest(
             connection: connection,
@@ -424,10 +447,10 @@ public final class QWHttpServer: @unchecked Sendable {
             do {
                 switch (method, cleanPath) {
                 case ("POST", "/v1/chat/completions"), ("POST", "/chat/completions"):
-                    try await self.handleChatCompletions(connection: connection, headers: headers, body: body)
+                    try await self.handleChatCompletions(connection: connection, headers: headers, body: body, trace: trace)
 
                 case ("POST", "/v1/completions"), ("POST", "/completions"):
-                    try await self.handleCompletions(connection: connection, headers: headers, body: body)
+                    try await self.handleCompletions(connection: connection, headers: headers, body: body, trace: trace)
 
                 case ("GET", "/tokenizer_info"), ("GET", "/v1/tokenizer_info"):
                     let model = URLComponents(string: path)?.queryItems?.first(where: { $0.name == "model" })?.value
@@ -440,7 +463,7 @@ public final class QWHttpServer: @unchecked Sendable {
                     try await self.handleDetokenize(connection: connection, body: body)
 
                 case ("POST", "/v1/responses"), ("POST", "/responses"):
-                    try await self.handleCreateResponse(connection: connection, headers: headers, body: body)
+                    try await self.handleCreateResponse(connection: connection, headers: headers, body: body, trace: trace)
 
                 case ("GET", let path) where path.hasPrefix("/v1/responses/") || path.hasPrefix("/responses/"):
                     let prefix = path.hasPrefix("/v1/responses/") ? "/v1/responses/" : "/responses/"
@@ -461,18 +484,19 @@ public final class QWHttpServer: @unchecked Sendable {
                     }
 
                 case ("POST", "/api/chat"):
-                    try await self.handleOllamaChat(connection: connection, body: body)
+                    try await self.handleOllamaChat(connection: connection, headers: headers, body: body, trace: trace)
 
                 case ("POST", "/api/generate"):
-                    try await self.handleOllamaGenerate(connection: connection, body: body)
+                    try await self.handleOllamaGenerate(connection: connection, headers: headers, body: body, trace: trace)
 
                 case ("POST", "/v1/messages/count_tokens"), ("POST", "/messages/count_tokens"):
-                    try await self.handleMessagesCountTokens(connection: connection, headers: headers, body: body)
+                    try await self.handleMessagesCountTokens(connection: connection, headers: headers, body: body, trace: trace)
 
                 case ("POST", "/v1/messages"), ("POST", "/messages"):
-                    try await self.handleMessages(connection: connection, headers: headers, body: body)
+                    try await self.handleMessages(connection: connection, headers: headers, body: body, trace: trace)
 
                 case ("POST", "/v1/models/load"), ("POST", "/api/load"):
+                    let startedAt = Date()
                     if !body.isEmpty,
                        let payload = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
                        let requestedModel = payload["model"] as? String {
@@ -482,12 +506,25 @@ public final class QWHttpServer: @unchecked Sendable {
                     let modelName = self.actor.getModelName()
                     let resp = ModelLifecycleResponse(status: "ok", model: modelName, loaded: true)
                     self.sendJsonResponse(connection, status: 200, object: resp)
+                    self.logger.logSimpleRequest(
+                        method: method, path: cleanPath, statusCode: 200,
+                        client: trace.client, requestId: trace.requestId,
+                        sessionId: trace.sessionId, peerHost: trace.peerHost,
+                        detail: modelName, totalSec: Date().timeIntervalSince(startedAt)
+                    )
 
                 case ("POST", "/v1/models/unload"), ("POST", "/api/unload"):
+                    let startedAt = Date()
                     let reclaimed = try await self.actor.unloadExplicit()
                     let modelName = self.actor.getModelName()
                     let resp = ModelLifecycleResponse(status: "ok", model: modelName, loaded: false, memoryReclaimedMB: reclaimed)
                     self.sendJsonResponse(connection, status: 200, object: resp)
+                    self.logger.logSimpleRequest(
+                        method: method, path: cleanPath, statusCode: 200,
+                        client: trace.client, requestId: trace.requestId,
+                        sessionId: trace.sessionId, peerHost: trace.peerHost,
+                        detail: modelName, totalSec: Date().timeIntervalSince(startedAt)
+                    )
 
                 case ("GET", "/v1/models"), ("GET", "/models"):
                     self.handleModelsListRoute(connection: connection)
@@ -558,28 +595,50 @@ public final class QWHttpServer: @unchecked Sendable {
                     await self.handleScreenCaptureRoute(connection: connection, body: body)
 
                 case ("POST", "/v1/engine/restart"), ("POST", "/api/restart"):
+                    let startedAt = Date()
                     _ = try await self.actor.restartExplicit()
                     let modelName = self.actor.getModelName()
                     let resp = ModelLifecycleResponse(status: "ok", model: modelName, loaded: true)
                     self.sendJsonResponse(connection, status: 200, object: resp)
+                    self.logger.logSimpleRequest(
+                        method: method, path: cleanPath, statusCode: 200,
+                        client: trace.client, requestId: trace.requestId,
+                        sessionId: trace.sessionId, peerHost: trace.peerHost,
+                        detail: modelName, totalSec: Date().timeIntervalSince(startedAt)
+                    )
 
                 case ("GET", "/v1/engine/info"), ("GET", "/api/engine/info"):
                     self.handleEngineInfoRoute(connection: connection)
 
                 case ("POST", "/v1/decisions"):
-                    await self.handleDecisionRoute(connection: connection, headers: headers, body: body)
+                    await self.handleDecisionRoute(connection: connection, headers: headers, body: body, trace: trace)
 
                 case ("POST", "/v1/decisions/batch"):
-                    await self.handleDecisionBatchRoute(connection: connection, headers: headers, body: body)
+                    await self.handleDecisionBatchRoute(connection: connection, headers: headers, body: body, trace: trace)
 
                 case ("POST", "/v1/systemone"):
-                    await self.handleSystemOneRoute(connection: connection, headers: headers, body: body)
+                    await self.handleSystemOneRoute(connection: connection, headers: headers, body: body, trace: trace)
 
                 case ("POST", "/v1/systemone/batch"):
-                    await self.handleSystemOneBatchRoute(connection: connection, headers: headers, body: body)
+                    await self.handleSystemOneBatchRoute(connection: connection, headers: headers, body: body, trace: trace)
 
                 case ("POST", "/v1/laya"):
-                    await self.handleLayaRoute(connection: connection, body: body)
+                    await self.handleLayaRoute(connection: connection, headers: headers, body: body, trace: trace)
+
+                case ("POST", let path) where path.hasPrefix("/v1/cognitive/"):
+                    await self.handleCognitiveRoute(connection: connection, path: path, body: body)
+
+                case ("GET", let path) where path == "/v1/sessions" || path.hasPrefix("/v1/sessions/"):
+                    self.handleSessionsGetRoute(connection: connection, path: path)
+
+                case ("POST", let path) where path.hasPrefix("/v1/sessions/"):
+                    await self.handleSessionsPostRoute(connection: connection, path: path, body: body)
+
+                case ("POST", "/v1/embeddings"), ("POST", "/embeddings"):
+                    await self.handleEmbeddingsRoute(connection: connection, body: body)
+
+                case ("POST", "/v1/rerank"), ("POST", "/rerank"):
+                    await self.handleRerankRoute(connection: connection, body: body)
 
                 case ("POST", "/v1/decisions/model/load"):
                     await self.handleDecisionLoadRoute(connection: connection, body: body)
@@ -591,7 +650,7 @@ public final class QWHttpServer: @unchecked Sendable {
                     self.handleDecisionStatusRoute(connection: connection)
 
                 case ("POST", "/mcp"):
-                    await self.handleMCPRoute(connection: connection, body: body)
+                    await self.handleMCPRoute(connection: connection, headers: headers, body: body, trace: trace)
 
                 case ("GET", "/v1/update"), ("GET", "/api/update"):
                     await self.handleUpdateStatusRoute(connection: connection)
@@ -636,11 +695,11 @@ public final class QWHttpServer: @unchecked Sendable {
                 }
             } catch let accessErr as QWMemoryWorkspaceAccessError {
                 let err = ServerErrorPayload(message: accessErr.message, type: "invalid_request_error", code: 403)
-                self.logger.log(.warn, "HTTP \(method) \(cleanPath) workspace forbidden: \(accessErr.message)")
+                self.logger.log(.warn, "HTTP \(method) \(cleanPath) workspace forbidden | \(trace.logTag): \(accessErr.message)")
                 self.sendJsonResponse(connection, status: 403, object: err)
             } catch let valErr as QWMetadataValidationError {
                 let err = ServerErrorPayload(message: valErr.description, type: "invalid_request_error", code: 400)
-                self.logger.log(.warn, "HTTP \(method) \(cleanPath) invalid request: \(valErr.description)")
+                self.logger.log(.warn, "HTTP \(method) \(cleanPath) invalid request | \(trace.logTag): \(valErr.description)")
                 self.sendJsonResponse(connection, status: 400, object: err)
             } catch let memError as QWMemoryPackError {
                 let code: Int
@@ -651,18 +710,18 @@ public final class QWHttpServer: @unchecked Sendable {
                     code = 400
                 }
                 let err = ServerErrorPayload(message: memError.localizedDescription, type: "invalid_request_error", code: code)
-                self.logger.log(.warn, "HTTP \(method) \(cleanPath) memory pack error: \(memError.localizedDescription)")
+                self.logger.log(.warn, "HTTP \(method) \(cleanPath) memory pack error | \(trace.logTag): \(memError.localizedDescription)")
                 self.sendJsonResponse(connection, status: code, object: err)
             } catch let mmError as QWMultimodalError {
                 let err = ServerErrorPayload(message: "\(mmError)", type: "invalid_request_error", code: 400)
-                self.logger.log(.warn, "HTTP \(method) \(cleanPath) bad multimodal request: \(mmError)")
+                self.logger.log(.warn, "HTTP \(method) \(cleanPath) bad multimodal request | \(trace.logTag): \(mmError)")
                 self.sendJsonResponse(connection, status: 400, object: err)
             } catch {
                 if Task.isCancelled || self.isPeerGone(connection) { return }
                 let err = ServerErrorPayload(message: "\(error)", type: "server_error", code: 500)
                 // The reason goes to the log, not only to the response body:
                 // a 500 with no recorded reason is undebuggable after the fact.
-                self.logger.log(.error, "HTTP \(method) \(cleanPath) failed: \(error)")
+                self.logger.log(.error, "HTTP \(method) \(cleanPath) failed | \(trace.logTag): \(error)")
                 self.sendJsonResponse(connection, status: 500, object: err)
             }
         }
