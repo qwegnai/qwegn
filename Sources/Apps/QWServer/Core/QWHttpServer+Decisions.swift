@@ -1,4 +1,4 @@
-// QWHttpServer+Decisions.swift — HTTP handlers for /v1/decisions, /v1/systemone, and /v1/laya.
+// QWHttpServer+Decisions.swift — HTTP handlers for /v1/decisions, /v1/systemone, and /v1/qwegn.
 
 import Foundation
 import Network
@@ -204,21 +204,21 @@ extension QWHttpServer {
         return out
     }
 
-    func handleLayaRoute(
+    func handleQwegnAskRoute(
         connection: NWConnection,
         headers: [String: String] = [:],
         body: Data,
         trace: QWRequestTraceContext? = nil
     ) async {
         let effectiveTrace = trace ?? QWClientIdentity.makeTraceContext(
-            method: "POST", route: "/v1/laya", headers: headers, peerEndpoint: connection.endpoint
+            method: "POST", route: "/v1/qwegn", headers: headers, peerEndpoint: connection.endpoint
         )
         let startedAt = Date()
         do {
-            let layaReq = try QWServerRequestDecoder.decode(QWLayaHTTPRequest.self, from: body)
-            let domainReq = try layaReq.toDecisionRequest()
-            let envelope = try await actor.decide(domainReq, preferredModel: layaReq.model)
-            sendJsonResponse(connection, status: 200, object: QWLayaHTTPResponse(envelope: envelope))
+            let askReq = try QWServerRequestDecoder.decode(QWQwegnAskHTTPRequest.self, from: body)
+            let domainReq = try askReq.toDecisionRequest()
+            let envelope = try await actor.decide(domainReq, preferredModel: askReq.model)
+            sendJsonResponse(connection, status: 200, object: QWQwegnAskHTTPResponse(envelope: envelope))
             logger.logSimpleRequest(
                 method: "POST", path: effectiveTrace.route, statusCode: 200,
                 client: effectiveTrace.client, requestId: effectiveTrace.requestId,

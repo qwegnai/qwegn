@@ -10,7 +10,7 @@
   <img src="https://img.shields.io/badge/Swift-6.2-orange.svg" alt="Swift 6.2">
   <img src="https://img.shields.io/badge/platform-macOS%2026.2%2B%20(Apple%20Silicon)-lightgrey.svg" alt="macOS 26.2+, Apple Silicon">
   <a href="https://github.com/qwegnai/qwegn/actions/workflows/ci.yml"><img src="https://github.com/qwegnai/qwegn/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/Release-v0.43.1-green.svg" alt="Release v0.43.1"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/Release-v0.43.2-green.svg" alt="Release v0.43.2"></a>
   <a href="https://huggingface.co/qwegnai"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-qwegnai-yellow.svg" alt="Hugging Face Models"></a>
 </p>
 
@@ -47,7 +47,7 @@ Pull and run a pre-quantized pack from [`huggingface.co/qwegnai`](https://huggin
 qwg pull qwegnai/Qwen3.8-Flash-Next-hq8g32-hq4g64
 qwg run Qwen3.8-Flash-Next-hq8g32-hq4g64 --prompt "Hello!" --max-tokens 128
 
-# New in v0.43.1: /v1/embeddings, /v1/rerank, Cognitive MCP, Session Trees & 10x Inkling-2 Prefix Cache
+# New in v0.43.2: /ui layout fix, always-on prefill bar, Qwegn-native /v1/qwegn & /v1/embeddings
 qwg pull qwegnai/Ling-3.2-air-hq8g32-shvq3g64
 qwg serve Ling-3.2-air-hq8g32-shvq3g64 --context-tokens 65536 --kv-mode q4
 ```
@@ -113,7 +113,7 @@ qwg serve ~/.qwg/models/Ling-3.2-air-hq8g32-shvq3g64 \
 | **OpenAI** | `/v1/chat/completions` · `/v1/responses` · `/v1/completions` · `/v1/models` | Streaming SSE (`TCP_NODELAY`), multimodal `image_url`, JSON schema & tool calls, `reasoning_content`, live model load/unload |
 | **Anthropic** | `/v1/messages` · `/v1/messages/count_tokens` | SSE streams, system prompts, extended thinking blocks, tool use, exact token counts |
 | **Ollama & Tokenizers** | `/api/{chat,generate,show,tags,ps,load,unload}` · `/tokenize` · `/detokenize` · `/tokenizer_info` | NDJSON streaming and `lm_eval` / `inspect_ai` tokenizer inspection |
-| **Decisions & MCP** | `/v1/decisions[/batch]` · `/v1/systemone[/batch]` · `/v1/laya` · `/mcp` | Calibrated System-1 sidecar (`d1-2B`, SystemOne, OpenAI Decisions, RFC 7578 multipart vision, `X-Qwegn-Decision-Route` auto-routing) |
+| **Decisions & MCP** | `/v1/decisions[/batch]` · `/v1/systemone[/batch]` · `/v1/qwegn` · `/mcp` | Calibrated System-1 sidecar (`d1-2B`, SystemOne, OpenAI Decisions, RFC 7578 multipart vision, `X-Qwegn-Decision-Route` auto-routing) |
 | **Memory & Telemetry** | `/v1/memory/{inspect,index,mount,unmount}` · `/v1/engine/info` · `/ui` · `/metrics` | Streaming `.qwcache` indexing (`#modal-memory-pack`), built-in web workbench (`/ui`), and Prometheus telemetry |
 
 <table>
@@ -169,7 +169,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md), [CONTRIBUTORS.md](CONTRIBUTORS.md), and 
 @software{qwegn,
   title   = {Qwegn: a from-scratch LLM/VLM inference engine for Apple Silicon},
   author  = {{QwegnAI}},
-  version = {0.43.1},
+  version = {0.43.2},
   year    = {2026},
   url     = {https://github.com/qwegnai/qwegn}
 }

@@ -18,6 +18,9 @@ fi
 tail -3 "$CI_TMP_DIR/build.log"
 echo "== style gate (Swift + Metal + Python)"
 python3 Scripts/lint_style.py Sources Tests Scripts || { echo "FAIL: style gate"; exit 1; }
+echo "== skill hygiene & SDLC script gates"
+python3 Scripts/lint_skills.py || { echo "FAIL: skill hygiene gate"; exit 1; }
+python3 Scripts/test_sdlc_scripts.py || { echo "FAIL: SDLC script tests"; exit 1; }
 echo "== kernel reachability (metallib vs dispatch sites)"
 python3 Scripts/test_kernel_inventory.py || { echo "FAIL: kernel inventory tests"; exit 1; }
 ./Scripts/build_metallib.sh > "$CI_TMP_DIR/metallib.log" 2>&1 || { cat "$CI_TMP_DIR/metallib.log"; echo "FAIL: metallib build"; exit 1; }

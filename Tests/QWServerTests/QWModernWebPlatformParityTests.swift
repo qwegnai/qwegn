@@ -65,6 +65,15 @@ final class QWModernWebPlatformParityTests: XCTestCase {
         ] {
             XCTAssertTrue(baseCSS.contains(cssTok), "css/base.css missing '\(cssTok)'")
         }
+        XCTAssertTrue(baseCSS.contains(".tab-pane { container-type: inline-size; }"))
+        XCTAssertFalse(
+            baseCSS.contains(".card-panel { container-type: inline-size; }"),
+            "card-panel must not be a container-query root or narrow monitor grid-2 cards collapse to 1 column on desktop"
+        )
+        XCTAssertFalse(
+            baseCSS.contains("border-block-end: 2px solid currentColor"),
+            "active tab pills must only draw an underline under forced-colors"
+        )
 
         // Roving keyboard nav, busy cancel guards, Safari pointerdown/up dismiss, commandfor fallback.
         XCTAssertTrue(stateJS.contains("aria-selected"))

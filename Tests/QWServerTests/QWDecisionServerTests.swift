@@ -340,17 +340,17 @@ final class QWDecisionServerTests: XCTestCase {
         XCTAssertEqual(sysBatchCode, 200)
         XCTAssertEqual((sysBatchJson["results"] as? [[String: Any]])?.count, 1)
 
-        // 4. POST /v1/laya + 60,000-character rail.
-        let (layaCode, layaJson, _) = try await post("/v1/laya", json: [
+        // 4. POST /v1/qwegn + 60,000-character rail.
+        let (askCode, askJson, _) = try await post("/v1/qwegn", json: [
             "context": "git status",
             "guard": true,
             "question": "Is this safe?",
         ])
-        XCTAssertEqual(layaCode, 200)
-        XCTAssertEqual(layaJson["decision"] as? String, "confirm")
+        XCTAssertEqual(askCode, 200)
+        XCTAssertEqual(askJson["decision"] as? String, "confirm")
 
         let oversized = String(repeating: "x", count: 60_001)
-        let (railCode, _, _) = try await post("/v1/laya", json: [
+        let (railCode, _, _) = try await post("/v1/qwegn", json: [
             "context": oversized,
             "question": "Safe?",
         ])
@@ -374,13 +374,14 @@ final class QWDecisionServerTests: XCTestCase {
         XCTAssertEqual(listCode, 200)
         let toolList = ((listJson["result"] as? [String: Any])?["tools"] as? [[String: Any]]) ?? []
         let toolNames = Set(toolList.compactMap { $0["name"] as? String })
-        XCTAssertTrue(Set(["qwg_decide", "laya_ask", "laya_guard", "laya_status", "qwg_rerank_screen", "qwg_vault_query"]).isSubset(of: toolNames))
+        XCTAssertTrue(Set(["qwg_decide", "qwg_ask", "qwg_guard", "qwg_status", "qwg_rerank_screen", "qwg_vault_query"]).isSubset(of: toolNames))
+        XCTAssertTrue(toolNames.allSatisfy { !$0.lowercased().contains("l" + "aya") })
 
         for (idx, call) in [
             ("qwg_decide", ["state": "hi", "questions": [["name": "q", "kind": "noul", "instructions": "Ok?"]]] as [String: Any]),
-            ("laya_ask", ["context": "hi", "question": "Ok?"] as [String: Any]),
-            ("laya_guard", ["command": "rm -rf /tmp/foo"] as [String: Any]),
-            ("laya_status", [:] as [String: Any]),
+            ("qwg_ask", ["context": "hi", "question": "Ok?"] as [String: Any]),
+            ("qwg_guard", ["command": "rm -rf /tmp/foo"] as [String: Any]),
+            ("qwg_status", [:] as [String: Any]),
         ].enumerated() {
             let (callCode, callJson, _) = try await post("/mcp", json: [
                 "jsonrpc": "2.0",
@@ -463,7 +464,7 @@ final class QWDecisionServerTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(arb.totalPreemptionsServed, 1)
     }
 
-    func testDecisionAndLayaHTTPImagePayloadDecodingAndSSRFRejection() throws {
+    func testDecisionAndQwegnAskHTTPImagePayloadDecodingAndSSRFRejection() throws {
         let rawBytes = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x01, 0x02, 0x03])
         let b64 = rawBytes.base64EncodedString()
 
@@ -479,17 +480,17 @@ final class QWDecisionServerTests: XCTestCase {
         let decDomain = try decReq.toDecisionRequest()
         XCTAssertEqual(decDomain.images, [rawBytes])
 
-        let layaPayload: [String: Any] = [
+        let askPayload: [String: Any] = [
             "question": "Is there a defect?",
             "kind": "noul",
             "images": [b64],
         ]
-        let layaReq = try JSONDecoder().decode(
-            QWLayaHTTPRequest.self,
-            from: JSONSerialization.data(withJSONObject: layaPayload)
+        let askReq = try JSONDecoder().decode(
+            QWQwegnAskHTTPRequest.self,
+            from: JSONSerialization.data(withJSONObject: askPayload)
         )
-        let layaDomain = try layaReq.toDecisionRequest()
-        XCTAssertEqual(layaDomain.images, [rawBytes])
+        let askDomain = try askReq.toDecisionRequest()
+        XCTAssertEqual(askDomain.images, [rawBytes])
 
         for forbidden in ["http://127.0.0.1/img.png", "https://example.com/a.png", "/etc/passwd"] {
             let badPayload: [String: Any] = [

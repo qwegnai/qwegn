@@ -12,6 +12,23 @@ Merges to `master` record changes under `## [Unreleased]` without touching
 release-preparation commit, which renames `[Unreleased]` to the new
 `[X.Y.Z] - YYYY-MM-DD` heading.
 
+## [Unreleased]
+
+## [0.43.2] - 2026-11-26
+
+Restores the `/ui` 3-column `Silicon, Memory & Pipeline` hardware grid and underline-free active tab pills while preserving the always-on `Prefill Progress` banner, alongside Qwegn-native System-1 API/MCP/skill naming (`Law 34`) and SDLC/skill linter hardening (`Laws 31–33`).
+
+### Fixed
+- **`/ui` Monitor Grid & Active Tab Pill Restoration (`css/base.css`, `QWModernWebPlatformParityTests`)**:
+  - Scoped `container-type: inline-size` to `.tab-pane` (removing `.card-panel` from the container-query root) and restricted active tab `border-block-end` underlines to `@media (forced-colors: active)`, restoring the 3-column `Silicon, Memory & Pipeline` `.cards-grid` on desktop and underline-free tab pills while keeping the always-on `Prefill Progress` banner intact.
+
+### Added
+- **SDLC Laws 31–33 & Code-Mode Tooling (`AGENTS.md`, `Scripts/`)**: Codified headless-first / zero-cockpit-bloat (`ADR-012`, `ADR-022`), spike-first & scope-critic gates (`ADR-019`), and skill/Code-Mode hygiene (`Law 33`); added `Scripts/lint_skills.py` (`S1–S7` skill gate wired into `make lint` and `Scripts/ci.sh`), `Scripts/log_papercut.py` (`.agents/papercuts.jsonl` friction flywheel), `Scripts/preflight.sh` (deterministic worktree/UMA/quiet-GPU check), and `Scripts/test_sdlc_scripts.py` (evaluating Uber Engineering's agent-skills & evaluation practices against Qwegn's SDLC).
+- **Refactored `.agents/skills/` & Tracked `skills/qwegn-mcp/` Suite**: Added `qwegine-sdlc-and-architecture` (with `references/disqualified-patterns.md`) and user-invoked `qwegine-skill-workshop` (`0` context load); split `qwegine-release-and-infographics` into model-invoked `qwegine-infographics-and-cards`, user-invoked `qwegine-release` (`0` context load), and `qwegine-inference-qa-and-sampling` (`llmprobe` + `1M`-context qualification); offloaded dense kernel/flag details to `qwegine-quant-and-kernels/references/kernel-invariants-and-bench-flags.md`; added structured `## Error Recovery` tables across all skills; persisted live-on-`master` external-harness MCP micro-skills under `skills/qwegn-mcp/`.
+
+### Changed
+- **Qwegn-Only Naming Law (`Law 34`, `QWServer`, `specs/`, `skills/`)**: Standardized all concise System-1 HTTP/MCP routes, wire DTOs, `/ui` workbench dialects, specs, and skills onto Qwegn-native naming (`POST /v1/qwegn`, `qwg_ask`, `qwg_guard`, `qwg_status`, `QWQwegnAskHTTPRequest`/`Response`, and `Scripts/lint_skills.py` rule `S8`).
+
 ## [0.43.1] - 2026-11-26
 
 Adds native `/v1/embeddings` and `/v1/rerank`, pure-Swift `QWCognitiveRails` with 9 Cognitive/Vault MCP tools, COW `QWSessionTree` (`/v1/sessions/*`), unified `QWResidencyPool` UMA admission, client request traceability, and modernized offline `/ui`, alongside Inkling-2 prefix-cache / thinking-off / non-null fixes and community PR [#1](https://github.com/qwegnai/qwegn/pull/1).

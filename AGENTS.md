@@ -166,6 +166,41 @@ the owner's private `docs/agent-retrospective-*.md`.
     `NWConnection` test clients must start `receive` concurrently with `send`
     on `.ready` and poll `server.activeConnectionCount` deterministically rather
     than relying on fixed sleeps.
+31. **Headless-first, zero-cockpit-bloat & compact MCP surface (`ADR-012`, `ADR-022`)**:
+    New engine and MCP capabilities ship headless (CLI/HTTP/MCP) by default.
+    Add `0` new `/ui` tabs, `0` new `Qwegn.app` `440pt` cards, and `0` new
+    `QWKnobRegistry` knobs unless a human operates that control weekly
+    (requires an explicit ADR). Keep Qwegn's `/mcp` surface compact (`<= 16`
+    cohesive tools) to avoid client tool-schema token bloat. Never clone
+    external coding harnesses (`qwg agent`), reimplement
+    `Scripts/quantize/pack.py` in Swift/Metal, or display unprivileged
+    fabricated hardware gauges (`ANE %`/`AMX %`).
+32. **Spike-first gate & independent scope critic (`ADR-019`, Law 19, Law 21)**:
+    Any speculative compute or transport subsystem (ANE offload, multi-node
+    cluster, new quant/attention paradigm) must pass a bounded `Scripts/spike/`
+    paired interleaved A/B beating the incumbent above noise floor with
+    `100%` SHA-256 parity (`<= 2` attempts or auto-drop) before creating
+    `Sources/` targets. Multi-file feature proposals must pass a read-only
+    critic (`VERDICT: PASS|FAIL|PARTIAL`) checking YAGNI, `Package.swift` DAG,
+    and existing `master` capabilities before implementation.
+33. **Skill hygiene, Code Mode & papercut flywheel**:
+    Every skill under `.agents/skills/` and `skills/` must pass
+    `python3 Scripts/lint_skills.py` (enforced by `make lint` and
+    `Scripts/ci.sh`): `<= 250` lines, numbered checkable steps, a structured
+    `## Error Recovery` table, live path references, `0` `.mcp.json` files,
+    and deep references offloaded to `references/`. Put deterministic
+    multi-step checks in `Scripts/` (Code Mode: `./Scripts/preflight.sh`,
+    `Scripts/log_papercut.py`). When hitting a broken flag, stale skill step,
+    wrong doc, or silent error, record one structured entry via
+    `python3 Scripts/log_papercut.py log --area ... --target ... --tried ... --expected ... --actual ... --fix ...`
+    and graduate recurring friction via `/qwegine-skill-workshop`.
+34. **Qwegn-only naming across APIs, MCP tools, skills & specs**:
+    Every API endpoint, MCP tool, Swift symbol, WebUI dialect, skill, spec,
+    plan, scenario, and validation script in this repository must use strictly
+    Qwegn-native naming (`/v1/qwegn`, `/v1/decisions`, `/v1/cognitive/*`,
+    `qwg_ask`, `qwg_guard`, `qwg_status`, `qwegn-*` skills) with zero
+    legacy third-party decision-daemon prefixes in skills, routes, or docs
+    (enforced on skills by `Scripts/lint_skills.py` `S8`).
 
 Verification footer: when you finish and merge to `master`, do **not** bump the
 version and do **not** touch release artifacts (`QWVersion.swift`, `README.md`

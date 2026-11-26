@@ -484,7 +484,7 @@ extension QWEngineLifecycleActor {
     private static func matchesSidecar(requested: String?, sidecar: QWLoadedDecisionSidecar) -> Bool {
         guard let requested, !requested.isEmpty else { return true }
         let low = requested.lowercased()
-        if low == "decision" || low == "sidecar" || low == "laya" || low == "systemone" {
+        if low == "decision" || low == "sidecar" || low == "qwegn" || low == "systemone" {
             return true
         }
         return requested == sidecar.modelName || requested == sidecar.packPath

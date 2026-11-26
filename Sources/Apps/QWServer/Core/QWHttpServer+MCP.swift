@@ -12,7 +12,7 @@ public enum QWMCPDispatchOutcome: Sendable, Equatable {
     case jsonRPCResponse(Data)
 }
 
-/// Shared MCP JSON-RPC 2.0 dispatcher serving `qwg_decide`, `laya_ask`, `laya_guard`, and `laya_status`.
+/// Shared MCP JSON-RPC 2.0 dispatcher serving `qwg_decide`, `qwg_ask`, `qwg_guard`, and `qwg_status`.
 public struct QWMCPDispatcher: Sendable {
     public let actor: QWEngineLifecycleActor
     public let episodicStore: QWEpisodicTranscriptStore
@@ -86,12 +86,12 @@ public struct QWMCPDispatcher: Sendable {
                 let envelope = try await actor.decide(try req.toDecisionRequest(), preferredModel: req.model)
                 textPayload = try Self.encodeToString(QWDecisionHTTPResponse(envelope: envelope))
 
-            case "laya_ask":
-                let req = try QWServerRequestDecoder.decode(QWLayaHTTPRequest.self, from: Data(arguments.tojson.utf8))
+            case "qwg_ask":
+                let req = try QWServerRequestDecoder.decode(QWQwegnAskHTTPRequest.self, from: Data(arguments.tojson.utf8))
                 let envelope = try await actor.decide(try req.toDecisionRequest(), preferredModel: req.model)
-                textPayload = try Self.encodeToString(QWLayaHTTPResponse(envelope: envelope))
+                textPayload = try Self.encodeToString(QWQwegnAskHTTPResponse(envelope: envelope))
 
-            case "laya_guard":
+            case "qwg_guard":
                 let cmd: String = {
                     if case .string(let s) = arguments.get("command") { return s }
                     if case .string(let s) = arguments.get("state") { return s }
@@ -104,7 +104,7 @@ public struct QWMCPDispatcher: Sendable {
                 let railResult = await makeCognitiveRails().guardCommand(trimmedCmd)
                 textPayload = try Self.encodeToString(railResult)
 
-            case "laya_status":
+            case "qwg_status":
                 let sidecar = actor.decisionSidecarStatus()
                 let primaryState = actor.engineState()
                 let doc: [String: Any] = [
@@ -205,7 +205,7 @@ public struct QWMCPDispatcher: Sendable {
                 required: ["questions"]
             ),
             toolSchema(
-                "laya_ask",
+                "qwg_ask",
                 "Evaluate a concise System-1 decision question over context up to 60,000 characters.",
                 properties: [
                     ("context", .object([("type", .string("string"))])),
@@ -217,7 +217,7 @@ public struct QWMCPDispatcher: Sendable {
                 required: ["question"]
             ),
             toolSchema(
-                "laya_guard",
+                "qwg_guard",
                 "Classify shell/tool command safety into allow, confirm, or deny with calibrated confidence.",
                 properties: [
                     ("command", .object([("type", .string("string"))])),
@@ -226,7 +226,7 @@ public struct QWMCPDispatcher: Sendable {
                 required: ["command"]
             ),
             toolSchema(
-                "laya_status",
+                "qwg_status",
                 "Report decision sidecar and primary LLM residency, compute unit, and latency metrics.",
                 properties: [],
                 required: []

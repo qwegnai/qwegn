@@ -292,7 +292,7 @@ final class QWDecisionConfigTests: XCTestCase {
     func testCoreAIBundleDiscoveryAndSidecarAdmission() throws {
         let fm = FileManager.default
         let tmp = fm.temporaryDirectory.appendingPathComponent("qw_coreai_test_\(UUID().uuidString)")
-        let bundle = tmp.appendingPathComponent("laya-edge-ane")
+        let bundle = tmp.appendingPathComponent("qwegn-edge-ane")
         let aimodel = bundle.appendingPathComponent("rl_agent.aimodel")
         try fm.createDirectory(at: aimodel, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: tmp) }
@@ -300,7 +300,7 @@ final class QWDecisionConfigTests: XCTestCase {
 
         let root = QWModelRoot(url: bundle)
         XCTAssertEqual(root.kind, .coreAIModel)
-        XCTAssertEqual(QWModelRoot.canonicalModelName(for: aimodel), "laya-edge-ane")
+        XCTAssertEqual(QWModelRoot.canonicalModelName(for: aimodel), "qwegn-edge-ane")
 
         let entries = QWModelCatalog.scan(directory: tmp.path)
         XCTAssertEqual(entries.count, 1)

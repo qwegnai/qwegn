@@ -622,8 +622,8 @@ public final class QWHttpServer: @unchecked Sendable {
                 case ("POST", "/v1/systemone/batch"):
                     await self.handleSystemOneBatchRoute(connection: connection, headers: headers, body: body, trace: trace)
 
-                case ("POST", "/v1/laya"):
-                    await self.handleLayaRoute(connection: connection, headers: headers, body: body, trace: trace)
+                case ("POST", "/v1/qwegn"):
+                    await self.handleQwegnAskRoute(connection: connection, headers: headers, body: body, trace: trace)
 
                 case ("POST", let path) where path.hasPrefix("/v1/cognitive/"):
                     await self.handleCognitiveRoute(connection: connection, path: path, body: body)

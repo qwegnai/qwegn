@@ -1,4 +1,4 @@
-// QWCalibrationEngine.swift — Multi-format temperature scaling, PAV knot interpolation, and LayaOps roundPy renormalization.
+// QWCalibrationEngine.swift — Multi-format temperature scaling, PAV knot interpolation, and 10-decimal roundPy renormalization.
 import Foundation
 import QWCore
 
@@ -121,7 +121,7 @@ public enum QWCalibrationEngine {
     public static let massSlack = 1e-12
     public static let residualMax = 1e-9
 
-    /// Matches `calibration.py` + `d1-omni` + `Laya` bucket keys in exact fallback order.
+    /// Matches `calibration.py` + `d1-omni` + Qwegn bucket keys in exact fallback order.
     public static func candidateBucketKeys(kind: QWDecisionKind, cardinality k: Int) -> [String] {
         switch kind {
         case .noul:
@@ -219,7 +219,7 @@ public enum QWCalibrationEngine {
         return d
     }
 
-    /// Insertion-order argmax matching Laya & d1 tie-break semantics.
+    /// Insertion-order argmax matching Qwegn & d1 tie-break semantics.
     public static func argmaxIndex(_ values: [Double]) -> Int {
         guard !values.isEmpty else { return 0 }
         var best = 0
@@ -227,7 +227,7 @@ public enum QWCalibrationEngine {
         return best
     }
 
-    /// Exact port of `LayaOps.renormalize`: rounds to 10 decimals and adjusts residual onto argmax within 1e-12.
+    /// Rounds probabilities to 10 decimals and adjusts residual onto argmax within 1e-12.
     public static func renormalize(
         questionName: String,
         keys: [String],

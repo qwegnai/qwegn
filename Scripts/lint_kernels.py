@@ -27,6 +27,9 @@ PREFIXES = ("qwg_", "qwfn_", "qwm_", "qws_", "qwc_", "qwh_", "qwr_")
 # Public MCP tool names that share the qwg_ prefix are not Metal kernels.
 NON_KERNEL_LITERALS = {
     "qwg_decide",
+    "qwg_ask",
+    "qwg_guard",
+    "qwg_status",
     "qwg_rerank_screen",
     "qwg_compact_select",
     "qwg_episodic_recover",

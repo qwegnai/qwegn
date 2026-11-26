@@ -102,7 +102,7 @@ extension QWHttpServer {
                 "decisions_batch": "POST /v1/decisions/batch",
                 "systemone": "POST /v1/systemone",
                 "systemone_batch": "POST /v1/systemone/batch",
-                "laya": "POST /v1/laya",
+                "qwegn_ask": "POST /v1/qwegn",
                 "embeddings": "POST /v1/embeddings",
                 "rerank": "POST /v1/rerank",
                 "decisions_load": "POST /v1/decisions/model/load",
@@ -280,7 +280,7 @@ extension QWHttpServer {
         "/v1/update/skip", "/api/update/skip",
         "/v1/decisions", "/v1/decisions/batch",
         "/v1/systemone", "/v1/systemone/batch",
-        "/v1/laya", "/v1/decisions/model/load", "/mcp",
+        "/v1/qwegn", "/v1/decisions/model/load", "/mcp",
         "/v1/embeddings", "/embeddings",
         "/v1/rerank", "/rerank",
     ]

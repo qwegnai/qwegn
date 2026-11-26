@@ -155,13 +155,13 @@ function buildDecisionDialectRequest(st) {
     try { parsedState = JSON.parse(parsedState || "{}"); } catch (_) { parsedState = s.stateText || ""; }
   }
   const hasImages = Array.isArray(s.images) && s.images.length > 0;
-  if (dialect === "laya") {
+  if (dialect === "qwegn_ask") {
     const q0 = (s.questions && s.questions[0]) || { kind: "noul", instructions: "", options: "" };
     const opts = String(q0.options || "").split(",").map((x) => x.trim()).filter(Boolean);
     const body = { state: s.stateText || "", question: q0.instructions || "", kind: q0.kind || "noul", chain: s.chain || "default" };
     if (opts.length) body.options = opts;
     if (hasImages) body.images = s.images.slice();
-    return { endpoint: "/v1/laya", body };
+    return { endpoint: "/v1/qwegn", body };
   }
   if (dialect === "openai") {
     const stateInput = hasImages ? { text: parsedState, images: s.images.slice() } : parsedState;

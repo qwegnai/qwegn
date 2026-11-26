@@ -1,4 +1,4 @@
-// QWServerSchema+DecisionsWire.swift — Wire response DTOs for /v1/decisions, /v1/systemone, and /v1/laya.
+// QWServerSchema+DecisionsWire.swift — Wire response DTOs for /v1/decisions, /v1/systemone, and /v1/qwegn.
 
 import Foundation
 import QWCore
@@ -229,8 +229,8 @@ public struct QWOpenAIDecisionHTTPResponse: Encodable, Sendable {
     }
 }
 
-/// Wire payload for `POST /v1/laya` enforcing the 60,000-character rail (`ADR-008`).
-public struct QWLayaHTTPRequest: Codable, Sendable {
+/// Wire payload for `POST /v1/qwegn` (`qwg_ask`) enforcing the 60,000-character rail (`ADR-008`).
+public struct QWQwegnAskHTTPRequest: Codable, Sendable {
     public static let maxContextCharacters = 60_000
 
     public let model: String?
@@ -272,7 +272,7 @@ public struct QWLayaHTTPRequest: Codable, Sendable {
         }
         guard charCount <= Self.maxContextCharacters else {
             throw QWDecisionError.invalidQuestion(
-                "state length \(charCount) exceeds \(Self.maxContextCharacters)-character Laya rail"
+                "state length \(charCount) exceeds \(Self.maxContextCharacters)-character Qwegn Ask rail"
             )
         }
 
@@ -310,7 +310,7 @@ public struct QWLayaHTTPRequest: Codable, Sendable {
         } else {
             let promptText = question ?? instructions ?? ""
             guard !promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                throw QWDecisionError.invalidQuestion("Laya request requires 'question', 'questions', or 'command'")
+                throw QWDecisionError.invalidQuestion("Qwegn Ask request requires 'question', 'questions', or 'command'")
             }
             let single = QWDecisionHTTPQuestion(
                 name: "answer",
@@ -336,7 +336,7 @@ public struct QWLayaHTTPRequest: Codable, Sendable {
     }
 }
 
-public struct QWLayaHTTPResponse: Codable, Sendable {
+public struct QWQwegnAskHTTPResponse: Codable, Sendable {
     public let answer: QWJson
     public let decision: String?
     public let confidence: Double

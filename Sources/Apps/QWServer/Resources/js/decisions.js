@@ -408,7 +408,7 @@ function openDecisionsWithPrefill(text, images) {
 
 async function runDecisionWorkbench(mode) {
   if (mode && mode !== "decisions") decisionWorkbenchState.dialect = mode;
-  else if (mode === "decisions" && decisionWorkbenchState.dialect === "laya") decisionWorkbenchState.dialect = "native";
+  else if (mode === "decisions" && decisionWorkbenchState.dialect === "qwegn_ask") decisionWorkbenchState.dialect = "native";
   const reqObj = typeof buildDecisionDialectRequest === "function"
     ? buildDecisionDialectRequest(decisionWorkbenchState)
     : { endpoint: "/v1/decisions", body: buildDecisionRequestPayload(decisionWorkbenchState) };
@@ -470,14 +470,14 @@ function renderDecisionWorkbench() {
     ["native", "Qwegn (/v1/decisions)"],
     ["systemone", "SystemOne (/v1/systemone)"],
     ["openai", "OpenAI Dialect"],
-    ["laya", "Laya (/v1/laya)"]
+    ["qwegn_ask", "Qwegn Ask (/v1/qwegn)"]
   ];
   const dialectBtns = dialects.map(([id, lbl]) =>
     `<button type="button" class="chip-btn dec-ctrl-btn ${st.dialect === id ? "is-active" : ""}" onclick="decisionWorkbenchState.dialect='${id}';renderDecisionWorkbench()">${escapeHtml(lbl)}</button>`
   ).join("");
   const thumbs = st.images.map((uri) => `<img class="dec-thumb" width="64" height="64" src="${escapeHtml(uri)}" alt="Attached image" />`).join("");
   const runLabel = st.dialect === "systemone" ? "Evaluate (/v1/systemone)"
-    : (st.dialect === "laya" ? "Ask Laya (/v1/laya)"
+    : (st.dialect === "qwegn_ask" ? "Ask Qwegn (/v1/qwegn)"
     : (st.dialect === "openai" ? "Evaluate (OpenAI Dialect)" : "Evaluate (/v1/decisions)"));
 
   host.innerHTML = `<div class="dec-shell">
