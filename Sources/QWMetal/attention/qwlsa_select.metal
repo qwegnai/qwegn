@@ -181,7 +181,7 @@ static inline void lsa_select_blocks_body(device const half*   qIdx,
             else atomic_store_explicit(&rowScores[m - 1u], su, memory_order_relaxed);
         }
     }
-    threadgroup_barrier(useSram ? mem_flags::mem_threadgroup : mem_flags::mem_device);
+    threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup);
 
     if (tid == 0u) { greaterAccum = 0u; chosenBin = 0u; sgTotal = 0u; }
     threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -206,6 +206,7 @@ static inline void lsa_select_blocks_body(device const half*   qIdx,
     }
 
     const uint skipTies = sgTotal - kEff;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
     device int* outRow = blockList + uint64_t(qRow) * listStride;
     if (tid == 0u) {
         outRow[0] = 0;
@@ -231,6 +232,7 @@ static inline void lsa_select_blocks_body(device const half*   qIdx,
         uint tieBase = greaterAccum;
         for (uint s = 0u; s < sg; s++) tieBase += scanSum[s];
         const bool keepTie = isTie && ((tieBase + tieRank) >= skipTies);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
         if (tid == 0u) {
             uint chunkTies = 0u;
             for (uint s = 0u; s < 8u; s++) chunkTies += scanSum[s];

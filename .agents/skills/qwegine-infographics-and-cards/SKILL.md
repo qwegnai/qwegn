@@ -29,6 +29,7 @@ Follow these five steps whenever creating or updating benchmark/architecture SVG
      .venv-oracle/bin/python Scripts/quantize/audit_release.py --release ~/.qwg/models/<pack>
      ```
 5. **Sync Multi-Variant Hugging Face Repos Sequentially:**
+   - Name quantized repos per `AGENTS.md` Law 35 (`<Model>-QWP_{4,8,3,2,15,1}` for uniform packs, `<Model>-QWP-Mixed[-Fast]` for mixed packs) and state exact plane formats/group sizes in `README.md`.
    - Create repos with `hf repos create <org>/<repo> --type model --public --exist-ok` and upload sequentially with `HF_HUB_DISABLE_PROGRESS_BARS=1 hf upload ... > out/hf_upload.log 2>&1` so HF Xet deduplicates shared chunks.
    - Generate/upload matching `model.qlsa` via `qwg lsa-convert` when applicable, copy `media/*.{svg,png}` and `LICENSE`, sync `~/.qwg/models/<pack>/README.md` + repo docs (`README.md`, `CHANGELOG.md`, `docs/*.md`) without touching `~/.qwg/models/<pack>/assets/*`, and verify `hf models info <org>/<repo>` lists `model.qwp`, sidecars, `README.md`, `LICENSE`, `media/`, and `assets/`.
 

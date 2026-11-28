@@ -8,7 +8,7 @@
 set -u
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 BIN="$REPO/.build/release/qwg"
-PACK="${PACK:-$HOME/.qwg/models/Qwen3.8-Flash-Next-hq4g32/model.qwp}"
+PACK="${PACK:-$HOME/.qwg/models/Qwen3.8-Flash-Next-QWP_4/model.qwp}"
 OUT="${GATE_DIR:-/tmp/qw-gate}"
 MAXNEW="${MAXNEW:-24}"
 mkdir -p "$OUT"

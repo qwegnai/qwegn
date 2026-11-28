@@ -75,7 +75,7 @@ def inspect_runtime_packs(models_dir: Path | None) -> dict[str, dict]:
     if models_dir is None or not models_dir.is_dir():
         return {}
     out: dict[str, dict] = {}
-    for name in ("Inkling-2-Mini-QWP-Fast", "Inkling-2-Mini-QWP-Cand5"):
+    for name in ("Inkling-2-Mini-QWP-Mixed-Fast", "Inkling-2-Mini-QWP-Cand5"):
         qwp = models_dir / name / "model.qwp"
         if not qwp.is_file():
             continue

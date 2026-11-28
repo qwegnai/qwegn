@@ -52,8 +52,8 @@ FIXTURE = os.path.join(ROOT, "Tests", "QWEngineTests", "Fixtures", "golden_pre_p
 MODELS_DIR = os.path.expanduser(os.environ.get("QWG_MODELS_DIR", "~/.qwg/models"))
 DENSE_PREFIX = "Qwen3.8-27B-"
 FLASH_PREFIX = "Qwen3.8-Flash-Next-"
-DENSE_PREFERRED = ("Qwen3.8-27B-hq4g32",)
-FLASH_PREFERRED = ("Qwen3.8-Flash-Next-hq8g32-hq4g64", "Qwen3.8-Flash-Next-hq4g32")
+DENSE_PREFERRED = ("Qwen3.8-27B-QWP_4",)
+FLASH_PREFERRED = ("Qwen3.8-Flash-Next-QWP-Mixed", "Qwen3.8-Flash-Next-QWP_4")
 
 
 def resolve_pack(prefix, preferred=(), models_dir=MODELS_DIR):

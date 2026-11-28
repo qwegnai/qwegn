@@ -5,7 +5,7 @@ against the shipped `assets/ngram.bin` of a real model. Re-run it to check
 them; do not quote a number this script does not print.
 
     python Scripts/quantize/measure_ngram_quality.py \
-        ~/.qwg/models/Qwen3.8-Flash-Next-hq4g32/assets/ngram.bin
+        ~/.qwg/models/Qwen3.8-Flash-Next-QWP_4/assets/ngram.bin
 
 The reader's rule is one line: value = code * scale. This script applies it
 to the rows the writer would have produced, and reports what it costs.

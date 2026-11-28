@@ -8,7 +8,7 @@
 #
 set -euo pipefail
 
-MODEL_PACK="${1:-$HOME/.qwg/models/Qwen3.8-27B-hq4g32/model.qwp}"
+MODEL_PACK="${1:-$HOME/.qwg/models/Qwen3.8-27B-QWP_4/model.qwp}"
 BIN=".build/release/qwg"
 
 if [ ! -f "$BIN" ]; then

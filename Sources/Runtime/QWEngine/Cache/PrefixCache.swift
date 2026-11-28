@@ -173,9 +173,12 @@ extension QWEngineDriver {
             try commitGreedyVerification(session, round: round, drain: drain, permit: permit)
             decision = round.decision
         }
-        if !drain, session.stochastic != nil, waitForStreamCommit {
+        let allowAsyncStochasticOverlap = !mtpStageProfiling && !mtpVerificationProfiling
+            && coldEvents == nil && mtpDeviceEmbedding != nil
+            && (echoDrafter != nil || mtpDraftEncoder != nil)
+        if !drain, session.stochastic != nil, waitForStreamCommit, !allowAsyncStochasticOverlap {
             try awaitCommitAndCheck(session, context: "during streaming speculative generation")
-        } else if !drain, session.stochastic == nil {
+        } else if !drain {
             let cb = session.lastCommitCB
             if syncCommitFailure(for: session, cb: cb?.status == .error ? cb : nil) {
                 session.lastCommitCB = nil

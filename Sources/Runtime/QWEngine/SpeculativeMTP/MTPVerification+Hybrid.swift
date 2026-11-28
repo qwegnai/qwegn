@@ -43,7 +43,20 @@ extension QWEngineDriver {
     struct MTPRoundProposal {
         let drafts: [Int]
         let proposals: [QWMTPGumbelProposal]
+        let draftProposals: [QWSpeculativeRoundResolver.DraftProposal]
         let draftedPairs: Int
+
+        init(
+            drafts: [Int],
+            proposals: [QWMTPGumbelProposal] = [],
+            draftProposals: [QWSpeculativeRoundResolver.DraftProposal] = [],
+            draftedPairs: Int
+        ) {
+            self.drafts = drafts
+            self.proposals = proposals
+            self.draftProposals = draftProposals
+            self.draftedPairs = draftedPairs
+        }
     }
 
     func pendingHistoryContext(session: QWEngineSession, pending: Int) -> (extraPending: Int?, previousToken: Int?) {
@@ -62,7 +75,7 @@ extension QWEngineDriver {
         let trunkBits = layersW.first?.gu.view.bits ?? defaultTrunkBits
         let expertBits = layersW.compactMap({ $0.moe?.gateUp.bits }).first ?? trunkBits
         let acceptRate = Double(mtpDraftAccepted) / Double(max(1, mtpDraftProposals))
-        return QWMTPAdaptiveDepth.optimalDraftCount(
+        return QWAdaptiveDraftPolicy.optimalDraftCount(
             geometry: geometry, trunkBits: trunkBits, expertBits: expertBits,
             acceptRate: acceptRate, maxDrafts: count)
     }
@@ -111,125 +124,92 @@ extension QWEngineDriver {
         )
     }
 
+    private func dflashAnchorEmbed(
+        _ dflashDrafter: QWDFlashDrafter, table: QWMTPEmbeddingTable
+    ) -> (any MTLComputeCommandEncoder, QWTensorValue, Int, Int, Int) throws -> Void {
+        { enc, propX32, anchorToken, maskToken, rows in
+            dflashDrafter.encodeStagePropBF16(
+                enc, tableBuffer: table.buffer, byteOffset: table.byteOffset,
+                propX: propX32, anchorToken: anchorToken, maskToken: maskToken, rows: rows)
+        }
+    }
+
     func prepareAsyncDFlashOrPLDRound(
-        session: QWEngineSession,
-        dflashDrafter: QWDFlashDrafter,
-        dSlot: QWDFlashSessionSlot,
-        pending: Int,
-        count: Int,
-        table: QWMTPEmbeddingTable
+        session: QWEngineSession, dflashDrafter: QWDFlashDrafter, dSlot: QWDFlashSessionSlot,
+        pending: Int, count: Int, table: QWMTPEmbeddingTable
     ) throws -> AsyncNeuralDraftPlan {
         let resolvedStrategy = (try? QWDraftStrategy.resolve(mtpDraftStrategy)) ?? .hybrid
         if let cand = proposeCanonicalOrFilteredDrafts(
-            constraint: activeConstraint?.constraint,
-            maxCount: count,
+            constraint: activeConstraint?.constraint, maxCount: count,
             fallbackCandidates: {
                 guard resolvedStrategy != .mtp else { return nil }
                 let raw = selectDFlashPLDCandidates(
-                    session: session, pending: pending, count: count, resolvedStrategy: resolvedStrategy
-                )
+                    session: session, pending: pending, count: count, resolvedStrategy: resolvedStrategy)
                 return raw.isEmpty ? nil : raw
-            }
-        ), !cand.isEmpty {
+            }), !cand.isEmpty {
             session.dflashRoundStartNs = nil
             return .pld(cand)
         }
         let canAdapt = resolvedStrategy != .mtp
         let activeCount = canAdapt ? session.dflashPolicy.selectDraftCount(maxDrafts: count) : count
         session.dflashRoundStartNs = canAdapt ? DispatchTime.now().uptimeNanoseconds : nil
-        let ids = table.tokens.contents().assumingMemoryBound(to: Int32.self)
-        ids[0] = Int32(pending)
+        table.tokens.contents().assumingMemoryBound(to: Int32.self)[0] = Int32(pending)
         let draftCB: any MTLCommandBuffer
         do {
             draftCB = try dflashDrafter.enqueueGreedyPropose(
                 hal: hal, slot: dSlot, cacheOffset: session.dflashCacheOffset,
-                pendingToken: pending, draftCount: activeCount,
-                headStorage: headStorage,
+                pendingToken: pending, draftCount: activeCount, headStorage: headStorage,
                 encodeHeadLogits: { enc, xRot16, xNorm16, _, yLogits32, rows, vocabRows in
                     try self.encodeDFlashHeadLogits(
-                        enc, xRot16: xRot16, xNorm16: xNorm16,
-                        yLogits32: yLogits32, rows: rows, vocabRows: vocabRows)
+                        enc, xRot16: xRot16, xNorm16: xNorm16, yLogits32: yLogits32, rows: rows, vocabRows: vocabRows)
                 },
-                encodeAnchorMaskEmbed: { enc, propX32, anchorToken, maskToken, rows in
-                    dflashDrafter.encodeStagePropBF16(
-                        enc, tableBuffer: table.buffer, byteOffset: table.byteOffset,
-                        propX: propX32, anchorToken: anchorToken, maskToken: maskToken, rows: rows)
-                },
-                journalBuffer: table.tokens,
-                journalByteOffset: 4)
+                encodeAnchorMaskEmbed: dflashAnchorEmbed(dflashDrafter, table: table),
+                journalBuffer: table.tokens, journalByteOffset: 4)
         } catch {
-            admission.commandBufferErrors += 1
-            throw error
+            admission.commandBufferErrors += 1; throw error
         }
         return .asyncNeural(draftCBs: [draftCB], draftedPairs: activeCount)
     }
 
     func proposeDFlashOrPLDRound(
-        session: QWEngineSession,
-        dflashDrafter: QWDFlashDrafter,
-        dSlot: QWDFlashSessionSlot,
-        pending: Int,
-        count: Int,
-        owner: QWStochasticSession?,
+        session: QWEngineSession, dflashDrafter: QWDFlashDrafter, dSlot: QWDFlashSessionSlot,
+        pending: Int, count: Int, owner: QWStochasticSession?,
         draftCompleted: ((any MTLCommandBuffer) throws -> Void)?
     ) throws -> MTPRoundProposal {
         let resolvedStrategy = (try? QWDraftStrategy.resolve(mtpDraftStrategy)) ?? .hybrid
         let canUseCanonical = (owner == nil || owner?.config.isGreedy == true) && !mtpStageProfiling
-        let canUsePLD = canUseCanonical && resolvedStrategy != .mtp
-        let canAdapt = (!mtpStageProfiling && resolvedStrategy != .mtp)
+        let canAdapt = !mtpStageProfiling && resolvedStrategy != .mtp
         if canUseCanonical,
            let cand = proposeCanonicalOrFilteredDrafts(
-               constraint: activeConstraint?.constraint,
-               maxCount: count,
+               constraint: activeConstraint?.constraint, maxCount: count,
                fallbackCandidates: {
-                   canUsePLD ? selectDFlashPLDCandidates(
-                       session: session, pending: pending, count: count, resolvedStrategy: resolvedStrategy
-                   ) : nil
-               }),
-           !cand.isEmpty {
-            lastRoundUsedPLD = true
-            mtpDraftProposals += cand.count
-            session.dflashRoundStartNs = nil
+                   (resolvedStrategy != .mtp) ? selectDFlashPLDCandidates(
+                       session: session, pending: pending, count: count, resolvedStrategy: resolvedStrategy) : nil
+               }), !cand.isEmpty {
+            lastRoundUsedPLD = true; mtpDraftProposals += cand.count; session.dflashRoundStartNs = nil
             return MTPRoundProposal(drafts: cand, proposals: [], draftedPairs: cand.count)
         }
         let activeCount = canAdapt ? session.dflashPolicy.selectDraftCount(maxDrafts: count) : count
         session.dflashRoundStartNs = canAdapt ? DispatchTime.now().uptimeNanoseconds : nil
-        if let owner {
-            try owner.stream.beginGumbelRound(drafts: activeCount, vocabulary: geometry.vocab, maxDrafts: 15)
-        }
-        let anchorMaskEmbed: ((any MTLComputeCommandEncoder, QWTensorValue, Int, Int, Int) throws -> Void)? =
-            self.mtpDeviceEmbedding.map { devEmb in
-                { enc, propX32, anchorToken, maskToken, rows in
-                    dflashDrafter.encodeStagePropBF16(
-                        enc, tableBuffer: devEmb.buffer, byteOffset: devEmb.byteOffset,
-                        propX: propX32, anchorToken: anchorToken, maskToken: maskToken, rows: rows
-                    )
-                }
-            }
+        if let owner { try owner.stream.beginGumbelRound(drafts: activeCount, vocabulary: geometry.vocab, maxDrafts: 15) }
         let proposed: (drafts: [Int], proposals: [QWMTPGumbelProposal])
         do {
             proposed = try dflashDrafter.propose(
                 hal: hal, slot: dSlot, cacheOffset: session.dflashCacheOffset,
-                pendingToken: pending, draftCount: activeCount,
-                headStorage: headStorage,
+                pendingToken: pending, draftCount: activeCount, headStorage: headStorage,
                 encodeHeadLogits: { enc, xRot16, xNorm16, _, yLogits32, rows, vocabRows in
                     try self.encodeDFlashHeadLogits(
-                        enc, xRot16: xRot16, xNorm16: xNorm16,
-                        yLogits32: yLogits32, rows: rows, vocabRows: vocabRows)
+                        enc, xRot16: xRot16, xNorm16: xNorm16, yLogits32: yLogits32, rows: rows, vocabRows: vocabRows)
                 },
-                encodeAnchorMaskEmbed: anchorMaskEmbed,
+                encodeAnchorMaskEmbed: mtpDeviceEmbedding.map { dflashAnchorEmbed(dflashDrafter, table: $0) },
                 embedding: { try self.copyEmbedRow($0, to: $1) },
                 stochastic: owner.map { ($0.config.isGreedy ? Float(1e-6) : Float($0.config.temperature), $0.stream) },
                 completed: draftCompleted)
         } catch {
-            admission.commandBufferErrors += 1
-            throw error
+            admission.commandBufferErrors += 1; throw error
         }
         mtpDraftProposals += proposed.drafts.count
-        return MTPRoundProposal(
-            drafts: proposed.drafts,
-            proposals: proposed.proposals,
-            draftedPairs: proposed.drafts.count)
+        return MTPRoundProposal(drafts: proposed.drafts, proposals: proposed.proposals, draftedPairs: proposed.drafts.count)
     }
 
     var isWeightFreeSpeculation: Bool {
@@ -284,11 +264,23 @@ extension QWEngineDriver {
             defaultTrunkBits: 8, owner: owner, traceTag: "[echo-draft]",
             useFullNeuralDepth: { $0 == .mtp || mtpStageProfiling || owner != nil },
             proposeNeural: { neuralCount, sampledToken, stopAfterDraft in
-                try echoDrafter.propose(
+                if let owner, !owner.config.isGreedy, !mtpStageProfiling, !mtpAdaptiveDepth,
+                   mtpDeviceEmbedding != nil {
+                    let drawBase = try owner.stream.reserveDraws(UInt64(neuralCount))
+                    let params = QWStochasticSelectionParams(
+                        temperature: owner.config.temperature, topK: owner.config.topK, topP: owner.config.topP,
+                        repetitionPenalty: 1.0, seed: owner.config.seed, philoxOffsetBase: drawBase)
+                    return try echoDrafter.proposeStochastic(
+                        driver: self, initialStream: hidden, kv: views,
+                        pendingToken: pending, cacheRows: basePairs, drafts: neuralCount,
+                        params: params, writeLogitsOnFinalDraft: false, completed: draftCompleted)
+                }
+                let toks = try echoDrafter.propose(
                     driver: self, initialStream: hidden, kv: views,
                     pendingToken: pending, cacheRows: basePairs, drafts: neuralCount,
                     sampledToken: sampledToken, shouldStopAfterDraft: stopAfterDraft,
                     writeLogitsOnFinalDraft: mtpStageProfiling, completed: draftCompleted)
+                return (toks, [])
             })
     }
 
@@ -303,7 +295,7 @@ extension QWEngineDriver {
         owner: QWStochasticSession?,
         draftCompleted: ((any MTLCommandBuffer) throws -> Void)?
     ) throws -> MTPRoundProposal {
-        let neuralCap = QWMTPAdaptiveDepth.hybridNextNNeuralDepthCap(
+        let neuralCap = QWAdaptiveDraftPolicy.neuralDepthCap(
             isStochastic: owner != nil, stageProfiling: mtpStageProfiling,
             hasDeviceEmbedding: mtpDeviceEmbedding != nil, numExperts: geometry.numExperts)
         return try proposeHybridRound(
@@ -312,19 +304,33 @@ extension QWEngineDriver {
             maxHybridNeuralDepth: neuralCap,
             useFullNeuralDepth: { !($0 == .ngram && owner == nil && !mtpStageProfiling) },
             proposeNeural: { neuralCount, sampledToken, stopAfterDraft in
-                try QWMTPDraftChain.run(
+                if let owner, !owner.config.isGreedy, !mtpStageProfiling, !mtpAdaptiveDepth,
+                   let table = mtpDeviceEmbedding {
+                    let drawBase = try owner.stream.reserveDraws(UInt64(neuralCount))
+                    let params = QWStochasticSelectionParams(
+                        temperature: owner.config.temperature, topK: owner.config.topK, topP: owner.config.topP,
+                        repetitionPenalty: 1.0, seed: owner.config.seed, philoxOffsetBase: drawBase)
+                    let res = try QWMTPDraftChain.runStochastic(
+                        hal: hal, draft: draftEncoder, headStorage: headStorage,
+                        draftHead: mtpDraftHead, hidden: hidden, kv: views,
+                        pendingToken: pending, drafts: neuralCount, position: session.position,
+                        cacheRows: basePairs, mropeDelta: session.roundRecord.mropeDelta,
+                        deviceEmbedding: table, params: params,
+                        completed: draftCompleted, gpuFailure: { self.commandBufferErrors += 1 })
+                    return (res.tokens, res.proposals)
+                }
+                let devEmb = (owner != nil && !(owner?.config.isGreedy ?? false)) ? nil : mtpDeviceEmbedding
+                let toks = try QWMTPDraftChain.run(
                     hal: hal, draft: draftEncoder, headStorage: headStorage,
                     draftHead: mtpDraftHead, hidden: hidden, kv: views,
                     pendingToken: pending, drafts: neuralCount, position: session.position, cacheRows: basePairs,
                     mropeDelta: session.roundRecord.mropeDelta,
-                    selection: .gpuChecked,
-                    deviceEmbedding: owner != nil ? nil : mtpDeviceEmbedding,
+                    selection: .gpuChecked, deviceEmbedding: devEmb,
                     embedding: { try self.copyEmbedRow($0, to: $1) },
-                    sampledToken: sampledToken,
-                    shouldStopAfterDraft: stopAfterDraft,
+                    sampledToken: sampledToken, shouldStopAfterDraft: stopAfterDraft,
                     writeLogitsOnFinalDraft: mtpStageProfiling,
-                    completed: draftCompleted,
-                    gpuFailure: { self.commandBufferErrors += 1 })
+                    completed: draftCompleted, gpuFailure: { self.commandBufferErrors += 1 })
+                return (toks, [])
             })
     }
 
@@ -341,7 +347,7 @@ extension QWEngineDriver {
             _ neuralCount: Int,
             _ sampledToken: ((QWTensorValue) throws -> Int)?,
             _ stopAfterDraft: ((QWTensorValue, Int) throws -> Bool)?
-        ) throws -> [Int]
+        ) throws -> (drafts: [Int], proposals: [QWSpeculativeRoundResolver.DraftProposal])
     ) throws -> MTPRoundProposal {
         let effectiveCount = adaptiveDraftCount(count: count, defaultTrunkBits: defaultTrunkBits)
         let resolvedStrategy = (try? QWDraftStrategy.resolve(mtpDraftStrategy)) ?? .hybrid
@@ -362,33 +368,33 @@ extension QWEngineDriver {
             lastRoundUsedPLD = true
             lastDraftedPairs = 0
             mtpDraftProposals += chosen.count
-            return MTPRoundProposal(drafts: chosen, proposals: [], draftedPairs: 0)
+            return MTPRoundProposal(
+                drafts: chosen,
+                draftProposals: owner != nil ? chosen.map { .greedyToken($0) } : [],
+                draftedPairs: 0)
         }
 
         var neuralCount = useFullNeuralDepth(resolvedStrategy) ? effectiveCount : 1
-        if resolvedStrategy == .hybrid, owner == nil, !mtpStageProfiling, let maxHybridNeuralDepth {
+        if resolvedStrategy == .hybrid, !mtpStageProfiling, let maxHybridNeuralDepth {
             neuralCount = min(neuralCount, max(1, maxHybridNeuralDepth))
         }
-        var proposals: [QWMTPGumbelProposal] = []
-        if let owner {
-            try owner.stream.beginGumbelRound(drafts: neuralCount, vocabulary: geometry.vocab)
-        }
         var extraDrafts: [Int] = extraPending.map { [$0] } ?? []
-        let sampledToken: ((QWTensorValue) throws -> Int)? = owner.map { owner in
-            { logits in
-                let draftHistory = session.activeRepetitionHistory(extraTokens: extraDrafts)
-                let proposal = try owner.stream.sampleGumbelProposal(
-                    owner.distribution(logits: logits, repetitionHistory: draftHistory))
-                proposals.append(proposal)
-                extraDrafts.append(proposal.token)
-                return proposal.token
+        var fallbackProposals: [QWSpeculativeRoundResolver.DraftProposal] = []
+        let sampledToken: ((QWTensorValue) throws -> Int)? = owner.flatMap { owner in
+            guard !owner.config.isGreedy else { return nil }
+            return { logits in
+                let draftHistory = owner.config.repetitionPenalty == 1.0
+                    ? [] : session.activeRepetitionHistory(extraTokens: extraDrafts)
+                let dist = try owner.distribution(logits: logits, repetitionHistory: draftHistory)
+                let tok = try dist.sampleToken(uniform: try owner.stream.nextUniformUpper24(), version: .upper24)
+                fallbackProposals.append(.distribution(token: tok, distribution: dist))
+                extraDrafts.append(tok)
+                return tok
             }
         }
         let needsAdaptiveStop = mtpAdaptiveDepth && owner == nil && (neuralCount > 1 || mtpStageProfiling)
         let stopAfterDraft: ((QWTensorValue, Int) throws -> Bool)? = needsAdaptiveStop ? { logits, completedDrafts in
-            if completedDrafts >= neuralCount && !self.mtpStageProfiling {
-                return false
-            }
+            if completedDrafts >= neuralCount && !self.mtpStageProfiling { return false }
             let values = logits.region.pointer.advanced(by: logits.offset).assumingMemoryBound(to: Float.self)
             let entropy = try QWMTPAdaptiveDepth.normalizedEntropy(
                 UnsafeBufferPointer(start: values, count: logits.shape.elementCount))
@@ -399,7 +405,12 @@ extension QWEngineDriver {
         } : nil
 
         let tDraft0 = Self.decodeTraceEnabled ? Date() : nil
-        var drafts = try proposeNeural(neuralCount, sampledToken, stopAfterDraft)
+        let result = try proposeNeural(neuralCount, sampledToken, stopAfterDraft)
+        var drafts = result.drafts
+        var draftProposals = result.proposals.isEmpty ? fallbackProposals : result.proposals
+        if owner?.config.isGreedy == true && draftProposals.isEmpty {
+            draftProposals = drafts.map { .greedyToken($0) }
+        }
         let draftedPairs = drafts.count
         let isMoE = geometry.numExperts > 0
         if owner == nil, !mtpStageProfiling, resolvedStrategy != .mtp, count > drafts.count {
@@ -425,103 +436,69 @@ extension QWEngineDriver {
         }
         lastDraftedPairs = draftedPairs
         mtpDraftProposals += drafts.count
-        return MTPRoundProposal(drafts: drafts, proposals: proposals, draftedPairs: draftedPairs)
+        return MTPRoundProposal(drafts: drafts, draftProposals: draftProposals, draftedPairs: draftedPairs)
+    }
+
+    private func stageCommitDeviceEmbeddings(
+        _ enc: any MTLComputeCommandEncoder, tokens: ArraySlice<Int>, destination: QWTensorValue
+    ) throws {
+        guard let table = mtpDeviceEmbedding, tokens.count <= 32 else { return }
+        let ids = table.tokens.contents().assumingMemoryBound(to: Int32.self)
+        for (i, tok) in tokens.enumerated() { ids[32 + i] = Int32(tok) }
+        enc.useResource(table.buffer, usage: .read)
+        enc.useResource(table.tokens, usage: .read)
+        try table.encodeRows(enc, tokensBuffer: table.tokens, tokensByteOffset: 128,
+                             rows: tokens.count, destination: destination)
     }
 
     func encodeEchoCommitResolution(
-        _ cb: any MTLCommandBuffer,
-        session: QWEngineSession,
-        echoDrafter: QWEchoDraftEncoder,
-        window: QWVerifyWindow,
-        trunkHidden: QWTensorValue,
-        basePairs: Int,
-        retained: Int,
-        usedPLD: Bool
+        _ cb: any MTLCommandBuffer, session: QWEngineSession, echoDrafter: QWEchoDraftEncoder,
+        window: QWVerifyWindow, trunkHidden: QWTensorValue, basePairs: Int,
+        retained: Int, usedPLD: Bool
     ) throws {
         guard let views = session.mtpKVViews.first, let windowStream = window.mhcStream else {
             throw QWEngineDriverError.state("ECHO commit resolution requires MTP KV views and window mHC stream")
         }
-        let streamElems = echoDrafter.streams * geometry.hidden
-        let streamBytes = streamElems * 4
-
-        func resolveCommitEmbeddings(
-            _ enc: (any MTLComputeCommandEncoder)?, tokens: ArraySlice<Int>, destination: QWTensorValue
-        ) throws {
-            if let table = mtpDeviceEmbedding, let enc, tokens.count <= 32 {
-                let ids = table.tokens.contents().assumingMemoryBound(to: Int32.self)
-                for (i, tok) in tokens.enumerated() { ids[32 + i] = Int32(tok) }
-                enc.useResource(table.buffer, usage: .read)
-                enc.useResource(table.tokens, usage: .read)
-                try table.encodeRows(enc, tokensBuffer: table.tokens, tokensByteOffset: 128,
-                                     rows: tokens.count, destination: destination)
-            } else if enc == nil, mtpDeviceEmbedding == nil {
-                _ = try echoDrafter.stageEmbeddings(driver: self, tokens: tokens)
-            }
-        }
+        let streamElems = echoDrafter.streams * geometry.hidden, streamBytes = streamElems * 4
         let hasDeviceEmbed = mtpDeviceEmbedding != nil
-        if usedPLD {
-            guard retained > 0 else { return }
-            let embSlice = hasDeviceEmbed
-                ? echoDrafter.embedBuf.slice(byteOffset: 0, count: retained * geometry.hidden, dtype: .f16)
-                : try echoDrafter.stageEmbeddings(driver: self, tokens: verifiedInputs[0..<retained])
-            let prevSlice: QWTensorValue
-            if retained == 1 {
-                prevSlice = trunkHidden
-            } else {
-                guard let prepBlit = cb.makeBlitCommandEncoder() else {
-                    throw QWEngineDriverError.state("ECHO PLD commit stage blit encoder")
-                }
-                prepBlit.copy(from: trunkHidden.region.buffer,
-                              sourceOffset: trunkHidden.region.base + trunkHidden.offset,
-                              to: echoDrafter.prevStreamBuf.region.buffer,
-                              destinationOffset: echoDrafter.prevStreamBuf.region.base + echoDrafter.prevStreamBuf.offset,
-                              size: streamBytes)
-                prepBlit.copy(from: windowStream.region.buffer,
-                              sourceOffset: windowStream.region.base + windowStream.offset,
-                              to: echoDrafter.prevStreamBuf.region.buffer,
-                              destinationOffset: echoDrafter.prevStreamBuf.region.base + echoDrafter.prevStreamBuf.offset + streamBytes,
-                              size: (retained - 1) * streamBytes)
-                prepBlit.endEncoding()
-                prevSlice = echoDrafter.prevStreamBuf.slice(byteOffset: 0, count: retained * streamElems, dtype: .f32)
-            }
-            guard let enc = cb.makeComputeCommandEncoder() else {
-                throw QWEngineDriverError.state("ECHO PLD commit seed compute encoder")
-            }
-            do {
-                hal.touchKeepAlive(enc)
-                enc.useResource(echoDrafter.region.buffer, usage: [.read, .write])
-                if hasDeviceEmbed {
-                    try resolveCommitEmbeddings(enc, tokens: verifiedInputs[0..<retained], destination: embSlice)
-                }
-                try echoDrafter.encodeSeedChunk(enc, driver: self, prevStream: prevSlice,
-                                                embeddings: embSlice, kv: views,
-                                                cacheRows: basePairs, rows: retained)
-            } catch {
-                enc.endEncoding()
-                throw error
-            }
-            enc.endEncoding()
-            return
-        }
-
-        guard retained >= 2 else { return }
-        let extraRows = retained - 1
-        let prevSlice = windowStream.slice(byteOffset: 0, count: extraRows * streamElems, dtype: .f32)
+        let targetRows = usedPLD ? retained : (retained - 1)
+        guard targetRows >= 1 else { return }
+        let tokens = usedPLD ? verifiedInputs[0..<retained] : verifiedInputs[1..<retained]
         let embSlice = hasDeviceEmbed
-            ? echoDrafter.embedBuf.slice(byteOffset: 0, count: extraRows * geometry.hidden, dtype: .f16)
-            : try echoDrafter.stageEmbeddings(driver: self, tokens: verifiedInputs[1..<retained])
+            ? echoDrafter.embedBuf.slice(byteOffset: 0, count: targetRows * geometry.hidden, dtype: .f16)
+            : try echoDrafter.stageEmbeddings(driver: self, tokens: tokens)
+        let prevSlice: QWTensorValue
+        if !usedPLD {
+            prevSlice = windowStream.slice(byteOffset: 0, count: targetRows * streamElems, dtype: .f32)
+        } else if retained == 1 {
+            prevSlice = trunkHidden
+        } else {
+            guard let prepBlit = cb.makeBlitCommandEncoder() else {
+                throw QWEngineDriverError.state("ECHO PLD commit stage blit encoder")
+            }
+            prepBlit.copy(from: trunkHidden.region.buffer,
+                          sourceOffset: trunkHidden.region.base + trunkHidden.offset,
+                          to: echoDrafter.prevStreamBuf.region.buffer,
+                          destinationOffset: echoDrafter.prevStreamBuf.region.base + echoDrafter.prevStreamBuf.offset,
+                          size: streamBytes)
+            prepBlit.copy(from: windowStream.region.buffer,
+                          sourceOffset: windowStream.region.base + windowStream.offset,
+                          to: echoDrafter.prevStreamBuf.region.buffer,
+                          destinationOffset: echoDrafter.prevStreamBuf.region.base + echoDrafter.prevStreamBuf.offset + streamBytes,
+                          size: (retained - 1) * streamBytes)
+            prepBlit.endEncoding()
+            prevSlice = echoDrafter.prevStreamBuf.slice(byteOffset: 0, count: retained * streamElems, dtype: .f32)
+        }
         guard let enc = cb.makeComputeCommandEncoder() else {
             throw QWEngineDriverError.state("ECHO verify refresh compute encoder")
         }
         do {
             hal.touchKeepAlive(enc)
             enc.useResource(echoDrafter.region.buffer, usage: [.read, .write])
-            if hasDeviceEmbed {
-                try resolveCommitEmbeddings(enc, tokens: verifiedInputs[1..<retained], destination: embSlice)
-            }
-            try echoDrafter.encodeSeedChunk(enc, driver: self, prevStream: prevSlice,
-                                            embeddings: embSlice, kv: views,
-                                            cacheRows: basePairs + 1, rows: extraRows)
+            if hasDeviceEmbed { try stageCommitDeviceEmbeddings(enc, tokens: tokens, destination: embSlice) }
+            try echoDrafter.encodeSeedChunk(
+                enc, driver: self, prevStream: prevSlice, embeddings: embSlice, kv: views,
+                cacheRows: usedPLD ? basePairs : (basePairs + 1), rows: targetRows)
         } catch {
             enc.endEncoding()
             throw error
@@ -530,14 +507,9 @@ extension QWEngineDriver {
     }
 
     func encodeNextNCommitResolution(
-        _ cb: any MTLCommandBuffer,
-        session: QWEngineSession,
-        draft: QWMTPDraftEncoder,
-        window: QWVerifyWindow,
-        trunkHidden: QWTensorValue,
-        basePairs: Int,
-        retained: Int,
-        usedPLD: Bool
+        _ cb: any MTLCommandBuffer, session: QWEngineSession, draft: QWMTPDraftEncoder,
+        window: QWVerifyWindow, trunkHidden: QWTensorValue, basePairs: Int,
+        retained: Int, usedPLD: Bool
     ) throws {
         guard let views = session.mtpKVViews.first else {
             throw QWEngineDriverError.state("NextN commit resolution requires MTP KV views")
@@ -545,21 +517,19 @@ extension QWEngineDriver {
         let h = geometry.hidden
         let seedable = min(retained, max(0, draft.positionCapacity - session.position))
         let rows = usedPLD ? seedable : (seedable - 1)
-        let needed = usedPLD ? 1 : 2
-        guard seedable >= needed else { return }
+        guard seedable >= (usedPLD ? 1 : 2) else { return }
         let tokens = usedPLD ? verifiedInputs[0..<seedable] : verifiedInputs[1..<seedable]
-        let embOffset = usedPLD ? window.embeddings.offset : (window.embeddings.offset + h * 2)
-        let embSlice = QWTensorValue(region: window.embeddings.region, offset: embOffset,
+        let embSlice = QWTensorValue(region: window.embeddings.region,
+                                     offset: usedPLD ? window.embeddings.offset : (window.embeddings.offset + h * 2),
                                      shape: QWTensorShape([rows * h], .f16))
-        let trunkOffset = usedPLD ? window.hidden.offset : (window.hidden.offset + h * 2)
-        let trunkSlice = QWTensorValue(region: window.hidden.region, offset: trunkOffset,
+        let trunkSlice = QWTensorValue(region: window.hidden.region,
+                                       offset: usedPLD ? window.hidden.offset : (window.hidden.offset + h * 2),
                                        shape: QWTensorShape([rows * h], .f16))
         let prevHidden = usedPLD ? trunkHidden : (try window.hiddenRow(0))
         let startPos = usedPLD ? session.position : (session.position + 1)
         let startCacheRow = usedPLD ? basePairs : (basePairs + 1)
         if mtpDeviceEmbedding == nil {
-            let startRow = usedPLD ? 0 : 1
-            for r in startRow..<seedable {
+            for r in (usedPLD ? 0 : 1)..<seedable {
                 try copyEmbedRow(verifiedInputs[r], to: try window.embeddingRow(r))
             }
         }
@@ -568,28 +538,21 @@ extension QWEngineDriver {
         }
         do {
             hal.touchKeepAlive(enc)
-            if let table = mtpDeviceEmbedding, rows <= 32 {
-                let ids = table.tokens.contents().assumingMemoryBound(to: Int32.self)
-                for (i, tok) in tokens.enumerated() { ids[32 + i] = Int32(tok) }
-                enc.useResource(table.buffer, usage: .read)
-                enc.useResource(table.tokens, usage: .read)
-                try table.encodeRows(enc, tokensBuffer: table.tokens, tokensByteOffset: 128,
-                                     rows: rows, destination: embSlice)
-            }
+            if mtpDeviceEmbedding != nil { try stageCommitDeviceEmbeddings(enc, tokens: tokens, destination: embSlice) }
             if let mw = mtpWeights, rows >= 2, rows <= psc.maxChunk, h % 256 == 0 {
                 let seedMRoPE = mlaOperator.flatMap {
                     session.mropeSlice(pos: startPos, count: rows, mropeLayout: $0.mropeLayout)
                 }
                 try encodeBatchedMTPPairSeed(
                     enc, mtpWeights: mw, embeddings: embSlice, hidden: trunkSlice,
-                    previous: prevHidden, pos: startPos, tStart: 0,
-                    pairs: rows, cacheRows: startCacheRow, views: views,
+                    previous: prevHidden, pos: startPos, tStart: 0, pairs: rows,
+                    cacheRows: startCacheRow, views: views,
                     mropePositions: seedMRoPE, mropeDelta: session.roundRecord.mropeDelta)
             } else {
-                try QWMTPPromptSeeder.encode(enc, draft: draft, embeddings: embSlice, trunkHidden: trunkSlice,
-                                             previousHidden: prevHidden, position: startPos,
-                                             count: rows, cacheRows: startCacheRow, kv: views,
-                                             mropeDelta: session.roundRecord.mropeDelta)
+                try QWMTPPromptSeeder.encode(
+                    enc, draft: draft, embeddings: embSlice, trunkHidden: trunkSlice,
+                    previousHidden: prevHidden, position: startPos, count: rows,
+                    cacheRows: startCacheRow, kv: views, mropeDelta: session.roundRecord.mropeDelta)
             }
         } catch {
             enc.endEncoding()

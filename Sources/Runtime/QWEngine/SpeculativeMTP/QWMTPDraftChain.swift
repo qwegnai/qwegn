@@ -4,6 +4,7 @@ import QWCore
 import QWHAL
 import QWHead
 import QWKV
+import QWMTP
 
 /// Ordered diagnostic backend. Mapped embedding feedback needs one completion
 /// wait per chain; the CPU-reference gather needs one wait per draft.
@@ -41,42 +42,11 @@ enum QWMTPDraftChain {
             guard sampledToken == nil, selection == .gpuChecked else {
                 throw QWEngineDriverError.state("device draft embedding geometry/selection mismatch")
             }
-            let activeDriver = draft.driver
-            var allDrained = false
-            let cbs = try runDeviceChain(
-                hal: hal, draft: draft, headStorage: storage, draftHead: draftHead,
+            return try runDeviceAndDrain(
+                hal: hal, draft: draft, storage: storage, draftHead: draftHead,
                 hidden: hidden, kv: kv, pendingToken: pendingToken, drafts: drafts,
-                position: position, cacheRows: cacheRows, mropeDelta: mropeDelta, table: table)
-            defer {
-                if !allDrained {
-                    for sub in cbs { sub.waitUntilCompleted() }
-                    drainColdState(driver: activeDriver)
-                }
-            }
-            for sub in cbs { sub.waitUntilCompleted() }
-            let coldFailure = drainColdState(driver: activeDriver)
-            allDrained = true
-            if let coldFailure {
-                gpuFailure()
-                throw QWEngineDriverError.state("device draft chain cold staging failed: \(coldFailure)")
-            }
-            for sub in cbs {
-                guard sub.status == .completed, sub.error == nil else {
-                    if let activeDriver { activeDriver.commandBufferErrors += 1 }
-                    gpuFailure()
-                    throw QWEngineDriverError.state("device draft chain GPU failure: \(String(describing: sub.error))")
-                }
-                try completed?(sub)
-            }
-            let ids = table.tokens.contents().assumingMemoryBound(to: Int32.self)
-            for row in 0..<drafts {
-                let id = Int(ids[row])
-                guard (0..<vocabulary).contains(id) else {
-                    throw QWEngineDriverError.state("device draft chain invalid token \(id) at row \(row)")
-                }
-                tokens.append(id)
-            }
-            return tokens
+                position: position, cacheRows: cacheRows, mropeDelta: mropeDelta,
+                table: table, stochastic: nil, completed: completed, gpuFailure: gpuFailure)
         }
         let useDeviceEmbedding = deviceEmbedding != nil
         if let table = deviceEmbedding {
@@ -85,7 +55,7 @@ enum QWMTPDraftChain {
                   table.hidden == draft.scratch.embedding.shape.elementCount else {
                 throw QWEngineDriverError.state("device draft embedding geometry/selection mismatch")
             }
-            let selector = draft.scratch.greedySelector
+            let selector = draft.scratch.selector
             selector.token.region.pointer.advanced(by: selector.token.offset)
                 .assumingMemoryBound(to: Int32.self).pointee = Int32(pendingToken)
         }
@@ -130,7 +100,7 @@ enum QWMTPDraftChain {
             let stepCbs: [any MTLCommandBuffer]
             do {
                 if let table = deviceEmbedding {
-                    try table.encode(enc, token: draft.scratch.greedySelector.token,
+                    try table.encode(enc, token: draft.scratch.selector.token,
                                      destination: draft.scratch.embedding)
                 }
                 let prevID = ObjectIdentifier(enc)
@@ -189,13 +159,101 @@ enum QWMTPDraftChain {
                         .advanced(by: draft.scratch.draftLogits.offset).assumingMemoryBound(to: Float.self)
                     token = try QWVerifyWindow.greedyToken(UnsafeBufferPointer(start: scores, count: vocabulary))
                 case .gpuChecked:
-                    token = try draft.scratch.greedySelector.completedToken()
+                    token = try draft.scratch.selector.completedToken()
                 }
             }
             tokens.append(token)
             if let shouldStopAfterDraft, try shouldStopAfterDraft(draft.scratch.draftLogits, tokens.count) {
                 break
             }
+        }
+        return tokens
+    }
+
+    static func runStochastic(
+        hal: QWHal, draft: QWMTPDraftEncoder, headStorage: QWHeadStorage,
+        draftHead: QWMTPTDraftHead? = nil, hidden: QWTensorValue,
+        kv: (k: QWKVLayerView, v: QWKVLayerView), pendingToken: Int,
+        drafts: Int, position: Int, cacheRows: Int, mropeDelta: Int = 0,
+        deviceEmbedding: QWMTPEmbeddingTable, params: QWStochasticSelectionParams,
+        completed: ((any MTLCommandBuffer) throws -> Void)? = nil,
+        gpuFailure: () -> Void
+    ) throws -> (tokens: [Int], proposals: [QWSpeculativeRoundResolver.DraftProposal]) {
+        let tokens = try runDeviceAndDrain(
+            hal: hal, draft: draft, storage: headStorage, draftHead: draftHead,
+            hidden: hidden, kv: kv, pendingToken: pendingToken, drafts: drafts,
+            position: position, cacheRows: cacheRows, mropeDelta: mropeDelta,
+            table: deviceEmbedding, stochastic: params, completed: completed, gpuFailure: gpuFailure)
+        return (tokens, try readSparseProposals(draft: draft, drafts: drafts))
+    }
+
+    static func readSparseProposals(
+        draft: QWMTPDraftEncoder, drafts: Int
+    ) throws -> [QWSpeculativeRoundResolver.DraftProposal] {
+        let vocabulary = draft.scratch.draftLogits.shape.elementCount
+        var proposals: [QWSpeculativeRoundResolver.DraftProposal] = []
+        proposals.reserveCapacity(drafts)
+        for row in 0..<drafts {
+            let buf = try draft.scratch.selector.readSparseProposal(row: row)
+            if buf.isSparse {
+                proposals.append(try QWSpeculativeRoundResolver.DraftProposal.fromSparseBuffer(buf))
+            } else {
+                let rowLogits = try draft.scratch.draftLogitRow(row)
+                let ptr = rowLogits.region.pointer.advanced(by: rowLogits.offset).assumingMemoryBound(to: Float.self)
+                proposals.append(try QWSpeculativeRoundResolver.DraftProposal.fromSparseBuffer(
+                    buf, logits: UnsafeBufferPointer(start: ptr, count: vocabulary)))
+            }
+        }
+        return proposals
+    }
+
+    private static func runDeviceAndDrain(
+        hal: QWHal, draft: QWMTPDraftEncoder, storage: QWHeadStorage,
+        draftHead: QWMTPTDraftHead?, hidden: QWTensorValue,
+        kv: (k: QWKVLayerView, v: QWKVLayerView), pendingToken: Int,
+        drafts: Int, position: Int, cacheRows: Int, mropeDelta: Int,
+        table: QWMTPEmbeddingTable, stochastic: QWStochasticSelectionParams?,
+        completed: ((any MTLCommandBuffer) throws -> Void)?,
+        gpuFailure: () -> Void
+    ) throws -> [Int] {
+        let vocabulary = draft.scratch.draftLogits.shape.elementCount
+        let activeDriver = draft.driver
+        var allDrained = false
+        let cbs = try runDeviceChain(
+            hal: hal, draft: draft, headStorage: storage, draftHead: draftHead,
+            hidden: hidden, kv: kv, pendingToken: pendingToken, drafts: drafts,
+            position: position, cacheRows: cacheRows, mropeDelta: mropeDelta,
+            table: table, stochastic: stochastic)
+        defer {
+            if !allDrained {
+                for sub in cbs { sub.waitUntilCompleted() }
+                drainColdState(driver: activeDriver)
+            }
+        }
+        for sub in cbs { sub.waitUntilCompleted() }
+        let coldFailure = drainColdState(driver: activeDriver)
+        allDrained = true
+        if let coldFailure {
+            gpuFailure()
+            throw QWEngineDriverError.state("device draft chain cold staging failed: \(coldFailure)")
+        }
+        for sub in cbs {
+            guard sub.status == .completed, sub.error == nil else {
+                if let activeDriver { activeDriver.commandBufferErrors += 1 }
+                gpuFailure()
+                throw QWEngineDriverError.state("device draft chain GPU failure: \(String(describing: sub.error))")
+            }
+            try completed?(sub)
+        }
+        let ids = table.tokens.contents().assumingMemoryBound(to: Int32.self)
+        var tokens: [Int] = []
+        tokens.reserveCapacity(drafts)
+        for row in 0..<drafts {
+            let id = Int(ids[row])
+            guard (0..<vocabulary).contains(id) else {
+                throw QWEngineDriverError.state("device draft chain invalid token \(id) at row \(row)")
+            }
+            tokens.append(id)
         }
         return tokens
     }
@@ -222,7 +280,8 @@ enum QWMTPDraftChain {
         draftHead: QWMTPTDraftHead? = nil, hidden: QWTensorValue,
         kv: (k: QWKVLayerView, v: QWKVLayerView), pendingToken: Int,
         drafts: Int, position: Int, cacheRows: Int, mropeDelta: Int = 0,
-        table: QWMTPEmbeddingTable, journalTokenOffset: Int = 0
+        table: QWMTPEmbeddingTable, journalTokenOffset: Int = 0,
+        stochastic: QWStochasticSelectionParams? = nil
     ) throws -> [any MTLCommandBuffer] {
         let vocabulary = draft.scratch.draftLogits.shape.elementCount
         guard (1...15).contains(drafts), (0..<vocabulary).contains(pendingToken),
@@ -237,7 +296,7 @@ enum QWMTPDraftChain {
         if draft.hasColdMoE && activeDriver == nil {
             throw QWEngineDriverError.state("MTP draft MoE cold experts require an attached driver")
         }
-        let selector = draft.scratch.greedySelector
+        let selector = draft.scratch.selector
         selector.token.region.pointer.advanced(by: selector.token.offset)
             .assumingMemoryBound(to: Int32.self).pointee = Int32(pendingToken)
         guard let cb = hal.makeUnretainedCommandBuffer(), var enc = cb.makeComputeCommandEncoder() else {
@@ -255,6 +314,9 @@ enum QWMTPDraftChain {
             activeDriver?.activeCB = nil
             activeDriver?.activeEnc = nil
         }
+        let journalTensor = QWTensorValue(
+            region: QWMRegion(buffer: table.tokens, base: 0, length: table.tokens.length),
+            offset: 0, shape: QWTensorShape([table.tokens.length / 4], .i32))
         do {
             for row in 0..<drafts {
                 try table.encode(enc, token: selector.token, destination: draft.scratch.embedding)
@@ -268,12 +330,24 @@ enum QWMTPDraftChain {
                     hal.touchKeepAlive(enc)
                     boundID = ObjectIdentifier(enc)
                 }
-                try draft.encodeHeadAndSelect(enc, storage: headStorage, draftHead: draftHead, writeLogits: false)
-                enc.memoryBarrier(scope: .buffers)
-                let saved = QWTensorValue(region: QWMRegion(buffer: table.tokens, base: 0, length: table.tokens.length),
-                                          offset: (journalTokenOffset + row) * 4, shape: QWTensorShape([1], .i32))
-                try QWVerifyWindow.encodeCopy(enc, hal: hal, source: selector.token, destination: saved)
-                enc.memoryBarrier(scope: .buffers)
+                if var stepParams = stochastic {
+                    let rowLogits = try draft.scratch.draftLogitRow(row)
+                    try draft.encodeHead(enc, storage: headStorage, draftHead: draftHead, destination: rowLogits)
+                    enc.memoryBarrier(scope: .buffers)
+                    stepParams.philoxOffsetBase &+= UInt64(row)
+                    try selector.encodeStochasticDraft(
+                        enc, hal: hal, logits: rowLogits, params: stepParams, rows: 1,
+                        proposalSlotBase: row, destination: selector.token,
+                        journal: journalTensor, journalOffset: journalTokenOffset + row)
+                } else {
+                    try draft.encodeHeadAndSelect(enc, storage: headStorage, draftHead: draftHead, writeLogits: false)
+                    enc.memoryBarrier(scope: .buffers)
+                    let saved = QWTensorValue(
+                        region: QWMRegion(buffer: table.tokens, base: 0, length: table.tokens.length),
+                        offset: (journalTokenOffset + row) * 4, shape: QWTensorShape([1], .i32))
+                    try QWVerifyWindow.encodeCopy(enc, hal: hal, source: selector.token, destination: saved)
+                }
+                if row + 1 < drafts { enc.memoryBarrier(scope: .buffers) }
             }
             let finalCB = activeDriver?.activeCB ?? cb
             let finalEnc = activeDriver?.activeEnc ?? enc
@@ -308,13 +382,14 @@ enum QWMTPDraftChain {
         draftHead: QWMTPTDraftHead? = nil, hidden: QWTensorValue,
         kv: (k: QWKVLayerView, v: QWKVLayerView), pendingToken: Int,
         drafts: Int, position: Int, cacheRows: Int, mropeDelta: Int = 0,
-        table: QWMTPEmbeddingTable, journalTokenOffset: Int = 0
+        table: QWMTPEmbeddingTable, journalTokenOffset: Int = 0,
+        stochastic: QWStochasticSelectionParams? = nil
     ) throws -> [any MTLCommandBuffer] {
         let cbs = try runDeviceChain(
             hal: hal, draft: draft, headStorage: headStorage, draftHead: draftHead,
             hidden: hidden, kv: kv, pendingToken: pendingToken, drafts: drafts,
             position: position, cacheRows: cacheRows, mropeDelta: mropeDelta, table: table,
-            journalTokenOffset: journalTokenOffset)
+            journalTokenOffset: journalTokenOffset, stochastic: stochastic)
         guard !cbs.isEmpty else {
             throw QWEngineDriverError.state("device draft chain produced no command buffer")
         }

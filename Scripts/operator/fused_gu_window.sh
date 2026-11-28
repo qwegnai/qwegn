@@ -3,7 +3,7 @@
 # ON = default (QW_MLP_FUSED_GU unset), OFF = QW_MLP_FUSED_GU=0. Alternating.
 set -u
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
-PACK="${PACK:-$HOME/.qwg/models/Qwen3.8-27B-hq4g32/model.qwp}"
+PACK="${PACK:-$HOME/.qwg/models/Qwen3.8-27B-QWP_4/model.qwp}"
 BIN="$REPO/.build/release/qwg"
 OUT="${OUT:-/tmp/qw-repro/fusedgu-$(date +%Y%m%d-%H%M%S)}"
 mkdir -p "$OUT"

@@ -96,9 +96,13 @@ final class QWMTPAdaptiveDepthTests: XCTestCase {
             QWMTPAdaptiveDepth.hybridNextNNeuralDepthCap(
                 isStochastic: false, stageProfiling: false, hasDeviceEmbedding: false, numExperts: 0),
             1)
+        XCTAssertEqual(
+            QWMTPAdaptiveDepth.hybridNextNNeuralDepthCap(
+                isStochastic: true, stageProfiling: false, hasDeviceEmbedding: true, numExperts: 288),
+            1)
         XCTAssertNil(
             QWMTPAdaptiveDepth.hybridNextNNeuralDepthCap(
-                isStochastic: true, stageProfiling: false, hasDeviceEmbedding: true, numExperts: 288))
+                isStochastic: true, stageProfiling: false, hasDeviceEmbedding: true, numExperts: 0))
         XCTAssertNil(
             QWMTPAdaptiveDepth.hybridNextNNeuralDepthCap(
                 isStochastic: false, stageProfiling: true, hasDeviceEmbedding: true, numExperts: 288))

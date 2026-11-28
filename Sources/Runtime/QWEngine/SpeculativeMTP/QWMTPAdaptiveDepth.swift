@@ -1,5 +1,6 @@
 import Foundation
 import QWCore
+import QWMTP
 
 enum QWMTPAdaptiveDepth {
     /// Chooses the optimal draft depth `k` in `1...maxDrafts` from model weight bytes and acceptance rate
@@ -12,99 +13,14 @@ enum QWMTPAdaptiveDepth {
         maxDrafts: Int,
         expertOverlap: Double = 0.25
     ) -> Int {
-        let clampedMax = max(1, min(15, maxDrafts))
-        guard clampedMax > 1 else { return 1 }
-        let alpha = min(1.0, max(0.0, acceptRate.isFinite ? acceptRate : 0.0))
-        let h = Double(max(1, geometry.hidden))
-        let tBytesPerElem = Double(max(1, trunkBits)) / 8.0
-        let eBytesPerElem = Double(max(1, expertBits)) / 8.0
-
-        var trunkParams = 0.0
-        var moeLayerCount = 0
-        for layer in geometry.executionPlan {
-            if geometry.isFullAttention(layer) {
-                if geometry.usesAnyMLA {
-                    let ropeDim = geometry.usesNoPEMLA ? 0 : geometry.qkRopeHeadDim
-                    let idxDim = geometry.mlaHasIndexer ? max(32, geometry.indexerHeadDim) : 0
-                    let qInDim = geometry.mlaHasDirectQ ? geometry.hidden : geometry.qLoraRank
-                    let qkvCols = Double((geometry.mlaHasDirectQ ? 0 : geometry.qLoraRank) + geometry.kvLoraRank + ropeDim + idxDim)
-                    let gateCols = geometry.attnOutputGate ? Double(geometry.qHeads * geometry.vHeadDim) : 0.0
-                    let qBCols = Double(geometry.qHeads * (geometry.qkNopeHeadDim + ropeDim)) + gateCols
-                    let kvBCols = Double(geometry.qHeads * (geometry.qkNopeHeadDim + geometry.vHeadDim))
-                    let oCols = Double(geometry.qHeads * geometry.vHeadDim)
-                    trunkParams += qkvCols * h
-                    trunkParams += qBCols * Double(qInDim)
-                    trunkParams += kvBCols * Double(geometry.kvLoraRank)
-                    trunkParams += h * oCols
-                } else {
-                    trunkParams += Double(geometry.attnTotalN) * h
-                    trunkParams += h * Double(geometry.qChannels)
-                }
-            } else if geometry.isCompressedAttention(layer), let hca = geometry.hcaConfig {
-                let inCols = Double(hca.qLoraRank + 3 * hca.headDim)
-                let zCols = Double(max(1, hca.oGroups) * hca.oLoraRank)
-                let qUpCols = Double(hca.qHeads * hca.headDim) + zCols
-                let woAParams = Double(hca.qHeads * hca.headDim * hca.oLoraRank)
-                trunkParams += inCols * h + qUpCols * Double(hca.qLoraRank) + woAParams + h * zCols
-            } else {
-                trunkParams += Double(geometry.gdnTotalN) * h
-                trunkParams += h * Double(geometry.gdnZChannels)
-            }
-            if geometry.isMoELayer(layer) {
-                moeLayerCount += 1
-                let routerRows = Double(geometry.moeSplitFeatureRouting ? 2 * geometry.numExperts : geometry.numExperts)
-                trunkParams += routerRows * h * (2.0 / tBytesPerElem)
-                if let latent = geometry.moeLatentSize, latent > 0 {
-                    trunkParams += 2.0 * h * Double(latent)
-                }
-                if geometry.sharedExpertIntermediate > 0 {
-                    trunkParams += 3.0 * h * Double(geometry.sharedExpertIntermediate)
-                }
-            } else if geometry.intermediate > 0 {
-                trunkParams += 3.0 * h * Double(geometry.intermediate)
-            }
-        }
-        let headBytes = Double(geometry.vocab) * h * tBytesPerElem
-        let bTrunk = trunkParams * tBytesPerElem + headBytes
-
-        let bRoutedSingle: Double
-        if moeLayerCount > 0 && geometry.numExperts > 0 && geometry.expertsPerTok > 0 {
-            let routedDim = Double(geometry.moeRoutedDim)
-            let routedParamsPerTok = Double(moeLayerCount * geometry.expertsPerTok) * 3.0 * routedDim * Double(geometry.moeIntermediate)
-            let coldCount = max(0, geometry.numExperts - geometry.effectiveResidentExperts)
-            let coldFrac = Double(coldCount) / Double(geometry.numExperts)
-            // Effective bandwidth cost multiplier when a fraction of experts stream from SSD (~13 GB/s vs ~450 GB/s RAM).
-            let coldBandwidthPenalty = 1.0 + coldFrac * 34.0
-            bRoutedSingle = routedParamsPerTok * eBytesPerElem * coldBandwidthPenalty
-        } else {
-            bRoutedSingle = 0.0
-        }
-
-        let randomOverlap = geometry.numExperts > 0
-            ? Double(geometry.expertsPerTok) / Double(geometry.numExperts)
-            : 0.0
-        let rho = min(0.95, max(0.0, max(expertOverlap, randomOverlap)))
-
-        let numVirt = Double(max(1, geometry.numVirtualLayers))
-        let bDraftLayer = (trunkParams * tBytesPerElem + bRoutedSingle) / numVirt
-        let bDraft = bDraftLayer + headBytes
-
-        var bestK = 1
-        var bestEfficiency = -Double.infinity
-        var expectedTokens = 1.0 // sum_{j=0..k} alpha^j; starts at j=0
-        var alphaPow = 1.0
-        for k in 1...clampedMax {
-            alphaPow *= alpha
-            expectedTokens += alphaPow
-            let bRoutedUnion = bRoutedSingle * (1.0 + Double(k) * (1.0 - rho))
-            let totalBytes = bTrunk + bRoutedUnion + Double(k) * bDraft
-            let efficiency = expectedTokens / max(1.0, totalBytes)
-            if efficiency > bestEfficiency {
-                bestEfficiency = efficiency
-                bestK = k
-            }
-        }
-        return bestK
+        QWAdaptiveDraftPolicy.optimalDraftCount(
+            geometry: geometry,
+            trunkBits: trunkBits,
+            expertBits: expertBits,
+            acceptRate: acceptRate,
+            maxDrafts: maxDrafts,
+            expertOverlap: expertOverlap
+        )
     }
 
     /// Computes the MoE-Spec (arXiv:2602.16052) unique expert budget across `verifyRows` tokens,
@@ -182,14 +98,19 @@ enum QWMTPAdaptiveDepth {
         return completedDrafts < maximumDrafts && normalizedEntropy >= threshold
     }
 
-    /// Caps greedy `.hybrid` NextN neural chain depth to 1 when host-embedding gather is active
-    /// or on sparse MoE (`numExperts > 0`), where step-1+ routed-expert union outweighs ~50% conditional accept.
+    /// Caps `.hybrid` NextN neural chain depth to 1 when host-embedding gather is active
+    /// or on sparse MoE (`numExperts > 0`), in both greedy and stochastic (`T > 0`) modes.
     static func hybridNextNNeuralDepthCap(
         isStochastic: Bool,
         stageProfiling: Bool,
         hasDeviceEmbedding: Bool,
         numExperts: Int
     ) -> Int? {
-        (!isStochastic && !stageProfiling && (!hasDeviceEmbedding || numExperts > 0)) ? 1 : nil
+        QWAdaptiveDraftPolicy.neuralDepthCap(
+            isStochastic: isStochastic,
+            stageProfiling: stageProfiling,
+            hasDeviceEmbedding: hasDeviceEmbedding,
+            numExperts: numExperts
+        )
     }
 }

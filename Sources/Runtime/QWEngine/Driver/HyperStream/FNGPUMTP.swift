@@ -4,6 +4,7 @@ import QWAlloc
 import QWCore
 import QWGEMM
 import QWHAL
+import QWHead
 import QWQuant
 import QWAttn
 
@@ -145,7 +146,8 @@ public final class FNGPUMTP: @unchecked Sendable {
         preInject: (base: QWTensorValue, src: QWTensorValue, scale: QWTensorValue)? = nil,
         projectRows: Int = 1,
         usePrefillPath: Bool = false,
-        draftTokens: QWTensorValue? = nil
+        draftTokens: QWTensorValue? = nil,
+        stochasticDraft: FNGPUStochasticDraftRequest? = nil
     ) throws {
         let hal = ctx.hal
         if customScratch == nil && T > 1 {
@@ -201,31 +203,35 @@ public final class FNGPUMTP: @unchecked Sendable {
         } else if let draft = draftTokens, T >= 2 && T <= 8 {
             let tailInj = (base: s.h2, src: s.moeOut, scale: s.injB)
             try mtpHead.encode(enc, hal: hal, stream: streamOut, inInject: tailInj, rows: 1,
-                               selectRowFrom: (verified: tokens, draft: draft, totalRows: T))
+                               selectRowFrom: (verified: tokens, draft: draft, totalRows: T),
+                               stochasticDraft: stochasticDraft)
         } else if projectRows == T {
             let tailInj = (base: s.h2, src: s.moeOut, scale: s.injB)
-            try mtpHead.encode(enc, hal: hal, stream: streamOut, inInject: tailInj, rows: T)
+            try mtpHead.encode(enc, hal: hal, stream: streamOut, inInject: tailInj, rows: T,
+                               stochasticDraft: stochasticDraft)
         } else {
             let r = T - 1
             let lastStream = streamOut.slice(byteOffset: r * width * 4, count: width, dtype: .f32)
             let tailInj = (base: s.h2.slice(byteOffset: r * width * 4, count: width, dtype: .f32),
                            src: s.moeOut.slice(byteOffset: r * hidden * 4, count: hidden, dtype: .f32),
                            scale: s.injB.slice(byteOffset: r * hc * 4, count: hc, dtype: .f32))
-            try mtpHead.encode(enc, hal: hal, stream: lastStream, inInject: tailInj, rows: 1)
+            try mtpHead.encode(enc, hal: hal, stream: lastStream, inInject: tailInj, rows: 1,
+                               stochasticDraft: stochasticDraft)
         }
     }
 
     /// The materialized MTP output stream of the row the last verify pass projected.
-    public func lastProjectedStream(verifyRows k: Int) -> QWTensorValue {
+    public func lastProjectedStream(verifyRows k: Int, selectedRow: Int = 0) -> QWTensorValue {
         let s = k == 1 ? scratch1.pleGVN : scratch2.pleGVN
-        return s.slice(byteOffset: 0, count: width, dtype: .f32)
+        return s.slice(byteOffset: selectedRow * width * 4, count: width, dtype: .f32)
     }
 
     /// Chains `passes` single-row MTP passes after a verify round, each feeding the
     /// previous pass's materialized stream and draft token, writing drafts to `chainTokens[1...]`.
     /// `chainTokens[0]` receives the verify pass's own draft first.
     public func encodeChain(_ enc: inout any MTLComputeCommandEncoder, cb: any MTLCommandBuffer,
-                            firstStream: QWTensorValue, startPos: Int, passes: Int) throws {
+                            firstStream: QWTensorValue, startPos: Int, passes: Int,
+                            stochasticParams: [QWStochasticSelectionParams]? = nil) throws {
         let hal = ctx.hal
         let copy = try hal.pipeline("qwg_verify_copy")
         func copyToken(_ targetEnc: any MTLComputeCommandEncoder, to slot: Int) {
@@ -241,10 +247,17 @@ public final class FNGPUMTP: @unchecked Sendable {
         copyToken(enc, to: 0)
         var prev = firstStream
         for p in 0..<passes {
+            let sd: FNGPUStochasticDraftRequest? = stochasticParams.map {
+                FNGPUStochasticDraftRequest(
+                    params: $0[p], proposalSlotBase: p + 1, journal: chainTokens, journalOffset: p + 1
+                )
+            }
             try encode(&enc, cb: cb, streamPrev: prev, tokens: chainTokens.slice(byteOffset: p * 4, count: 1, dtype: .i32),
-                       pos: startPos + p, rows: 1, projectRows: 1)
+                       pos: startPos + p, rows: 1, projectRows: 1, stochasticDraft: sd)
             enc.memoryBarrier(scope: .buffers)
-            copyToken(enc, to: p + 1)
+            if sd == nil {
+                copyToken(enc, to: p + 1)
+            }
             prev = scratch1.pleGVN
         }
     }
@@ -260,6 +273,13 @@ public final class FNGPUMTP: @unchecked Sendable {
 
     public func writeToken(_ token: Int32) {
         arena.cpuPointer(of: tokensBuf).assumingMemoryBound(to: Int32.self).pointee = token
+    }
+
+    public func writeTokens(_ tokens: [Int32]) {
+        let ptr = arena.cpuPointer(of: tokensBuf).assumingMemoryBound(to: Int32.self)
+        for (i, tok) in tokens.enumerated() where i < tokensBuf.shape.elementCount {
+            ptr[i] = tok
+        }
     }
 
     public func writeTokensFromHistory(_ history: [Int64], startPos: Int, rows: Int) {

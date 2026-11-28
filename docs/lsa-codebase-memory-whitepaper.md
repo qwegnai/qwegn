@@ -5,7 +5,7 @@
 **Authors:** Qwegn Systems Architecture Team  
 **Engine Version:** `Qwegn v0.17.1` (Pure Swift 6.2 & Metal 4)  
 **Evaluation Platform:** Apple M5 Max (`Mac17,6`, 18-core CPU, 40-core Apple10 NAX GPU, 128 GB Unified Memory, 585 GB/s DRAM, 950 GB/s SLC, macOS 26+)  
-**Evaluated Models:** `Qwen3.6-35B-A3B-hq4g32` (35B Hybrid GDN + GQA MoE), `Qwen3.8-Flash-Next-hq8g32-hq4g64` (`+ VQ2_G32` PLE, 48L Hybrid QSA + GDN MoE), `Qwen3.8-27B-hq4g32` (64L Dense Hybrid GQA + GDN), & `GLM-5.3-Flash-shvq4g32-shvq2g64-shvq3g64` (321B Hybrid NoPE MLA + KDA MoE, 100.6 GiB UMA)
+**Evaluated Models:** `Qwen3.6-35B-A3B-QWP_4` (35B Hybrid GDN + GQA MoE), `Qwen3.8-Flash-Next-QWP-Mixed` (`+ VQ2_G32` PLE, 48L Hybrid QSA + GDN MoE), `Qwen3.8-27B-QWP_4` (64L Dense Hybrid GQA + GDN), & `GLM-5.3-Flash-QWP-Mixed` (321B Hybrid NoPE MLA + KDA MoE, 100.6 GiB UMA)
 
 ![Two-Tier LSA Codebase Memory Architecture](../assets/qwegn_memory_pack_architecture.svg)
 
@@ -134,7 +134,7 @@ All benchmarks were executed on an idle **Apple M5 Max (`Mac17,6`, 40-core Apple
 
 ### 3.1 Offline Indexing & Memory Footprint
 
-| Metric | `Qwen3.6-35B-A3B-hq4g32` (`kv=q4`) | `Qwen3.8-Flash-Next-hq8g32-hq4g64` (`kv=q4`) | Architectural Property |
+| Metric | `Qwen3.6-35B-A3B-QWP_4` (`kv=q4`) | `Qwen3.8-Flash-Next-QWP-Mixed` (`kv=q4`) | Architectural Property |
 | :--- | :---: | :---: | :--- |
 | **Workspace Coverage** | `100%` (`294` non-test / `506` total files) | `100%` (`294` non-test / `506` total files) | Complete concept map + off-context source vault |
 | **Pinned GPU Cortex Tokens** | `32,742` tokens (`3.1%` of 1M) | `32,711`–`32,742` tokens (`3.1%` of 1M) | Bounded `10,415`-token map + verbatim stable files |
@@ -191,7 +191,7 @@ Across interactive multi-turn CLI/REPL sessions on both models, conversation his
 
 ### 3.5 Experiment 4 — 6-Turn Agentic Tool-Loop, Post-Edit Invariance & `179.2K` Large-Volume Stress
 
-To validate server behavior under realistic autonomous coding workloads and extreme prompt volumes, we executed a 6-turn continuous session on `Qwen3.8-Flash-Next-hq8g32-hq4g64` (`kv=q4`) exercising **Zero-Config Workspace Auto-Discovery**, **User Vault Paging**, **Autonomous Tool-Step (`assistant -> tool`) Vault Paging**, **Live Mid-Session File Modification on Disk**, **Large-Volume (`+130,191` new token) Chunked Prefill**, and **Post-Large-Volume (`179,173` token) Warm-RAM Prefix Reuse**:
+To validate server behavior under realistic autonomous coding workloads and extreme prompt volumes, we executed a 6-turn continuous session on `Qwen3.8-Flash-Next-QWP-Mixed` (`kv=q4`) exercising **Zero-Config Workspace Auto-Discovery**, **User Vault Paging**, **Autonomous Tool-Step (`assistant -> tool`) Vault Paging**, **Live Mid-Session File Modification on Disk**, **Large-Volume (`+130,191` new token) Chunked Prefill**, and **Post-Large-Volume (`179,173` token) Warm-RAM Prefix Reuse**:
 
 | Turn | Workload & Validation Gate | Prompt Tokens | Warm-RAM Hit Tokens | Uncached Suffix | Hit Ratio | TTFT | Effective Prefill (`tok/s`) | Raw Suffix Compute (`tok/s`) | Decode (`tok/s`) | Warm RAM Store |
 | :---: | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -217,22 +217,22 @@ To characterize raw prefill throughput ("performance profile"), decode throughpu
 
 | Model Pack | Context (`tok`) | Without LSA (Prefill / Decode) | LSA `Ward-512` (Prefill / Decode · TTFT) | **LSA + `e-means-4096` (Prefill / Decode · TTFT)** | RSS / Dynamic Arena | 3-Needle Recall (No LSA / Ward / `e-means`) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **`Qwen3.6-35B-A3B-hq4g32`** | `64K` (`63,959`) | `2,538 / 99.2 tok/s` | **`6,141.7`** / `126.18 tok/s` (`10.41 s`) | `5,716.5` / **`136.84 tok/s`** (`11.19 s`) | `23.94 GiB` | `0/3` · **`3/3`** · **`3/3`** |
+| **`Qwen3.6-35B-A3B-QWP_4`** | `64K` (`63,959`) | `2,538 / 99.2 tok/s` | **`6,141.7`** / `126.18 tok/s` (`10.41 s`) | `5,716.5` / **`136.84 tok/s`** (`11.19 s`) | `23.94 GiB` | `0/3` · **`3/3`** · **`3/3`** |
 | *(40L MoE: 10 GQA + 30 GDN,* | `160K` (`159,956`) | `1,128.6 / 67.20 tok/s` | **`4,913.8 / 131.13 tok/s`** (`32.55 s`) | `4,283.0 / 122.52 tok/s` (`37.35 s`) | `24.59 GiB` | `2/3` · **`3/3`** · **`3/3`** |
 | *`d_idx=64`, `mtp=1`)* | `262K` (`257,953`) | `581 / 50.1 tok/s` | **`3,805.2 / 118.26 tok/s`** (`67.79 s`) | `3,526.3 / 102.12 tok/s` (`73.15 s`) | `25.25 GiB` | `0/3` · **`3/3`** · **`3/3`** |
 | | `524K` (`517,944`) | `231 / 23.2 tok/s` | **`3,207.1 / 103.92 tok/s`** (`161.50 s`) | `3,126.1 / 93.44 tok/s` (`165.68 s`) | `26.99 GiB` | `0/3` · **`3/3`** · **`3/3`** |
 | | **`1M` (`1,039,928`)** | — | **`2,317.0 / 105.56 tok/s`** (`448.83 s`) | `2,315.1 / 88.47 tok/s` (`449.20 s`) | **`30.53 GiB`** (`-180 MiB`) | — · **`3/3`** · **`3/3`** |
-| **`Qwen3.8-Flash-Next-hq8g32-hq4g64`** | `64K` (`63,959`) | **`2,279.9 / 72.67 tok/s`** *(QSA)* | `2,155.4 / 56.66 tok/s` (`29.67 s`) | `2,183.8 / 72.45 tok/s` (`29.29 s`) | `109.7 GiB` *(GPU PLE)* | **`3/3` · `3/3` · `3/3`** |
+| **`Qwen3.8-Flash-Next-QWP-Mixed`** | `64K` (`63,959`) | **`2,279.9 / 72.67 tok/s`** *(QSA)* | `2,155.4 / 56.66 tok/s` (`29.67 s`) | `2,183.8 / 72.45 tok/s` (`29.29 s`) | `109.7 GiB` *(GPU PLE)* | **`3/3` · `3/3` · `3/3`** |
 | *(48L MoE: 12 QSA + 36 GDN,* | `160K` (`159,956`) | **`2,157.6`** / `66.78 tok/s` *(QSA)* | `1,741.2 / 40.41 tok/s` (`91.87 s`) | `2,041.0` / **`70.93 tok/s`** (`78.37 s`) | `110.9 GiB` *(GPU PLE)* | **`3/3` · `3/3` · `3/3`** |
 | *`d_idx=128`, `VQ2` PLE)* | `262K` (`257,953`) | `2,051.8` / **`68.57 tok/s`** *(QSA)* | `1,522.1 / 32.38 tok/s` (`169.47 s`) | **`2,057.6`** / `63.54 tok/s` (`125.36 s`) | `112.2 GiB` / `13.8 GiB`† | **`3/3` · `3/3` · `3/3`** |
 | | `524K` (`517,944`†) | `1,721.9 / 54.49 tok/s` *(QSA)* | `976.2 / 18.70 tok/s` (`530.55 s`) | **`1,969.6 / 68.10 tok/s`** (`262.97 s`) | `16.85 GiB`† | **`3/3` · `3/3` · `3/3`** |
 | | **`1M` (`1,039,928`†)** | `1,350.3 / 41.05 tok/s` (`770.1 s`) | — | **`1,887.6 / 63.74 tok/s`** (`550.93 s`) | `23.00 GiB`† | **`3/3`** · — · **`3/3`** |
-| **`Qwen3.8-27B-hq4g32`** | `64K` (`63,959`) | `672 / 42.1 tok/s` | `884.8 / 53.97 tok/s` (`72.28 s`) | **`914.3 / 56.18 tok/s`** (`69.95 s`) | `18.15 GiB` | `3/3` · **`3/3`** · **`3/3`** |
+| **`Qwen3.8-27B-QWP_4`** | `64K` (`63,959`) | `672 / 42.1 tok/s` | `884.8 / 53.97 tok/s` (`72.28 s`) | **`914.3 / 56.18 tok/s`** (`69.95 s`) | `18.15 GiB` | `3/3` · **`3/3`** · **`3/3`** |
 | *(64L Dense Hybrid: 16 GQA +* | `160K` (`159,956`) | `467.4 / 25.91 tok/s` | `831.9` / **`47.11 tok/s`** (`192.28 s`) | **`907.0`** / `40.70 tok/s` (`176.36 s`) | `19.98 GiB` | `3/3` · **`3/3`** · **`3/3`** |
 | *48 GDN, `mtp=3`)* | `262K` (`257,953`) | `351.0 / 25.30 tok/s` | `830.2` / **`43.11 tok/s`** (`310.72 s`) | **`896.5`** / `42.09 tok/s` (`287.72 s`) | `21.82 GiB` | `3/3` · **`3/3`** · **`3/3`** |
 | | `524K` (`517,944`) | — | `831.2` / **`41.07 tok/s`** (`623.13 s`) | **`891.0`** / `36.08 tok/s` (`581.32 s`) | `26.66 GiB` | — · **`3/3`** · **`3/3`** |
 | | **`1M` (`1,039,928`)** | — | `804.6` / **`36.49 tok/s`** (`1,292.5 s`) | **`830.6`** / `35.56 tok/s` (`1,252.0 s`) | **`36.35 GiB`** (`-270 MiB`) | — · **`3/3`** · **`3/3`** |
-| **`GLM-5.3-Flash-shvq4g32-shvq2g64-shvq3g64`** | `15K` (`15,076`) | **`834.2 / 46.54 tok/s`** *(`exactFlat`)* | — | **`834.2 / 46.54 tok/s`** *(`<41K` bypass)* | `101.40 GiB` | **`3/3`** · — · **`3/3`** |
+| **`GLM-5.3-Flash-QWP-Mixed`** | `15K` (`15,076`) | **`834.2 / 46.54 tok/s`** *(`exactFlat`)* | — | **`834.2 / 46.54 tok/s`** *(`<41K` bypass)* | `101.40 GiB` | **`3/3`** · — · **`3/3`** |
 | *(321B SHVQ `100.63 GiB`,* | `60K` (`60,061`) | `706.7 / 32.38 tok/s` *(`exactFlat`)* | — | **`706.7 / 32.38 tok/s`** (`84.99 s`) | `102.30 GiB` | **`3/3`** · — · **`3/3`** |
 | *11 NoPE MLA + 34 KDA)* | `242.5K` (`242,469`) | `721.4 / 44.00 tok/s` *(`exactFlat`)* | — | **`743.0 / 44.98 tok/s`** (`326.3 s`) | `106.54 GiB` | **`3/3`** · — · **`3/3`** |
 | | **`1M` (`1,048,576`)** | `102.27 GiB` plan / `107.18 GiB` RSS | — | **100% UMA resident (`3,696 B/tok` KV)** | `107.18 GiB` | `0` SSD misses · `0` swap |

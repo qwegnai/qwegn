@@ -9,7 +9,7 @@ import flashnext_teacher_kl as kl
 from hq4 import dequant_hq4_g32_m5_rot, quant_hq4_blocks
 from pack_ngram import _encode_q8
 
-PACK = Path("~/.qwg/models/Qwen3.8-Flash-Next-hq4g32/model.qwp").expanduser()
+PACK = Path("~/.qwg/models/Qwen3.8-Flash-Next-QWP_4/model.qwp").expanduser()
 
 
 class TeacherKLTests(unittest.TestCase):

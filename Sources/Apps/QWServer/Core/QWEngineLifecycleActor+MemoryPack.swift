@@ -154,7 +154,7 @@ extension QWEngineLifecycleActor {
         return canonicalStart
     }
 
-    /// Strips `<org>/` prefix and trailing quantization/packaging tags (`-hq8g32-hq4g64`, `-mlx-serve-mixed-4-8bit`, etc.).
+    /// Strips `<org>/` prefix and trailing quantization/packaging tags (`-QWP_4`, `-QWP-Mixed-Fast`, `-hq8g32-hq4g64`, `-mlx-serve-mixed-4-8bit`, etc.).
     public static func canonicalModelFamilyStem(_ raw: String) -> String {
         let leaf = (raw.split(separator: "/").last.map(String.init) ?? raw)
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -164,8 +164,9 @@ extension QWEngineLifecycleActor {
         var end = parts.count
         while end > 1 {
             let p = parts[end - 1]
-            let isQuantTag = p.hasPrefix("hq") || p.hasPrefix("aq")
-                || p == "mlx" || p == "serve" || p == "mixed"
+            let isQuantTag = p.hasPrefix("qwp") || p.hasPrefix("shvq")
+                || p.hasPrefix("hq") || p.hasPrefix("aq")
+                || p == "mlx" || p == "serve" || p == "mixed" || p == "fast"
                 || p == "4bit" || p == "8bit" || p == "fp16" || p == "bf16"
                 || (p.allSatisfy(\.isNumber) && end >= 2 && (parts[end - 2] == "mixed" || parts[end - 2] == "serve"))
             if isQuantTag {

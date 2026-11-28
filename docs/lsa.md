@@ -39,27 +39,27 @@ All runs measured on an idle Apple M5 Max (`Mac17,6`, 128 GB Unified Memory, 40-
 
 | Model | Context | Without LSA (Prefill / Decode) | LSA `Ward-512` (Prefill / Decode) | **LSA + `e-means-4096` (Prefill / Decode)** | Needle (No LSA / Ward / `e-means`) | Headline Gain |
 | :--- | :---: | :---: | :---: | :---: | :---: | :--- |
-| **`Qwen3.6-35B-A3B-hq4g32`** | 64K | `2,538 / 99.2` | **`6,141.7`** / `126.2` | `5,716.5` / **`136.8`** | `0/3` · **`3/3`** · **`3/3`** | **`2.42×` prefill (`Ward`) · `+8.4%` decode (`e-means`)** |
+| **`Qwen3.6-35B-A3B-QWP_4`** | 64K | `2,538 / 99.2` | **`6,141.7`** / `126.2` | `5,716.5` / **`136.8`** | `0/3` · **`3/3`** · **`3/3`** | **`2.42×` prefill (`Ward`) · `+8.4%` decode (`e-means`)** |
 | *(40L MoE: 10 GQA + 30 GDN)* | 160K | `1,128.6 / 67.2` | **`4,913.8 / 131.1`** | `4,283.0 / 122.5` | `2/3` · **`3/3`** · **`3/3`** | **`4.35×` prefill · `1.95×` decode vs Dense** |
 | | 262K | `581 / 50.1` | **`3,805.2 / 118.3`** | `3,526.3 / 102.1` | `0/3` · **`3/3`** · **`3/3`** | **`6.55×` prefill · `2.36×` decode vs Dense** |
 | | 524K | `231 / 23.2` | **`3,207.1 / 103.9`** | `3,126.1 / 93.4` | `0/3` · **`3/3`** · **`3/3`** | **`13.88×` prefill · `4.48×` decode vs Dense** |
 | | **1M** | — | **`2,317.0 / 105.6`** (`448.8 s`) | `2,315.1 / 88.5` (`30.53 GiB`) | — · **`3/3`** · **`3/3`** | **`105.6 tok/s` @1M (`Ward`) · `-180 MiB` (`e-means`)** |
-| **`Apex-35B-V1.0-hq4g32`** | 64K | `3,101.5 / 99.4` | `5,675.4 / 153.4` | **`5,692.3 / 155.4`** | `3/3` · **`3/3`** · **`3/3`** | **`1.84×` prefill · `1.56×` decode (`e-means`)** |
+| **`Apex-35B-V1.0-QWP_4`** | 64K | `3,101.5 / 99.4` | `5,675.4 / 153.4` | **`5,692.3 / 155.4`** | `3/3` · **`3/3`** · **`3/3`** | **`1.84×` prefill · `1.56×` decode (`e-means`)** |
 | *(40L MoE: 10 GQA + 30 GDN)* | 128K | `1,844.2 / 68.4` | **`5,866.4 / 148.9`** | `5,600.1 / 145.0` | `3/3` · **`3/3`** · **`3/3`** | **`3.18×` prefill · `2.18×` decode vs Dense** |
 | | 256K | `583.1 / 42.5` | **`5,710.6 / 134.2`** | `5,488.1 / 114.2` | `3/3` · **`3/3`** · **`3/3`** | **`9.79×` prefill · `3.16×` decode vs Dense** |
 | | 512K | — | `5,205.0` / **`110.3`** | **`5,425.9`** / `96.1` | — · **`3/3`** · **`3/3`** | **`+14.2 tok/s` dec (`Ward`) · `-4.1 s` TTFT (`e-means`)** |
 | | **1M** | — | **`5,491.2 / 100.9`** (`189.4 s`) | `5,325.4 / 89.0` (`28.78 GiB`) | — · **`3/3`** · **`3/3`** | **`5,491 / 100.9 tok/s` @1M (`Ward`) · `28.96 GiB` RSS** |
-| **`Qwen3.8-Flash-Next-hq8g32-hq4g64`** | 64K | **`2,279.9 / 72.7`** *(QSA)* | `2,155.4 / 56.7` | `2,183.8 / 72.5` | **`3/3` · `3/3` · `3/3`** | `+27.9%` decode (`e-means` vs `Ward-512`) |
+| **`Qwen3.8-Flash-Next-QWP-Mixed`** | 64K | **`2,279.9 / 72.7`** *(QSA)* | `2,155.4 / 56.7` | `2,183.8 / 72.5` | **`3/3` · `3/3` · `3/3`** | `+27.9%` decode (`e-means` vs `Ward-512`) |
 | *(48L MoE: 12 QSA + 36 GDN,* | 160K | **`2,157.6`** / `66.8` *(QSA)* | `1,741.2 / 40.4` | `2,041.0` / **`70.9`** | **`3/3` · `3/3` · `3/3`** | **`+6.2%` decode vs Native QSA (`+75.5%` vs `Ward`)** |
 | *`+ VQ2_G32` PLE)* | 262K | `2,051.8` / **`68.6`** *(QSA)* | `1,522.1 / 32.4` | **`2,057.6`** / `63.5` | **`3/3` · `3/3` · `3/3`** | **`1.35×` prefill · `1.96×` decode vs `Ward-512`** |
 | | 524K† | `1,721.9 / 54.5` *(QSA)* | `976.2 / 18.7` | **`1,969.6 / 68.1`** (`263.0 s`) | **`3/3` · `3/3` · `3/3`** | **`+14.4%` pre / `+25.0%` dec vs QSA (`3.64×` vs `Ward`)** |
 | | **1M†** | `1,350.3 / 41.1` (`770.1 s`) | — | **`1,887.6 / 63.7`** (`550.9 s`) | **`3/3`** · — · **`3/3`** | **`+39.8%` prefill (`-3.65m` TTFT) · `+55.3%` decode** |
-| **`Qwen3.8-27B-hq4g32`** | 64K | `672 / 42.1` | `884.8 / 54.0` | **`914.3 / 56.2`** (`70.0 s`) | `3/3` · **`3/3`** · **`3/3`** | **`+3.3%` pre / `+4.1%` dec vs `Ward` (`1.36×` vs Dense)** |
+| **`Qwen3.8-27B-QWP_4`** | 64K | `672 / 42.1` | `884.8 / 54.0` | **`914.3 / 56.2`** (`70.0 s`) | `3/3` · **`3/3`** · **`3/3`** | **`+3.3%` pre / `+4.1%` dec vs `Ward` (`1.36×` vs Dense)** |
 | *(64L Dense Hybrid)* | 160K | `467.4 / 25.9` | `831.9` / **`47.1`** | **`907.0`** / `40.7` (`176.4 s`) | `3/3` · **`3/3`** · **`3/3`** | **`+9.0%` prefill vs `Ward` (`1.94×` vs Dense)** |
 | | 262K | `351.0 / 25.3` | `830.2` / **`43.1`** | **`896.5`** / `42.1` (`287.7 s`) | `3/3` · **`3/3`** · **`3/3`** | **`+8.0%` prefill vs `Ward` (`2.55×` vs Dense)** |
 | | 524K | — | `831.2` / **`41.1`** | **`891.0`** / `36.1` (`581.3 s`) | — · **`3/3`** · **`3/3`** | **`+7.2%` prefill (`-41.8 s` TTFT) vs `Ward-512`** |
 | | **1M** | — | `804.6` / **`36.5`** (`1,292.5 s`) | **`830.6`** / `35.6` (`1,252.0 s`) | — · **`3/3`** · **`3/3`** | **`+3.2%` prefill (`-40.5 s` TTFT) · `-270 MiB` RSS** |
-| **`GLM-5.3-Flash-shvq4g32-shvq2g64-shvq3g64`** | 15K | **`834.2 / 46.54`** *(`exactFlat`)* | — | **`834.2 / 46.54`** *(`<41K` bypass)* | **`3/3`** · — · **`3/3`** | Zero Stage-1 overhead below `41K` tokens |
+| **`GLM-5.3-Flash-QWP-Mixed`** | 15K | **`834.2 / 46.54`** *(`exactFlat`)* | — | **`834.2 / 46.54`** *(`<41K` bypass)* | **`3/3`** · — · **`3/3`** | Zero Stage-1 overhead below `41K` tokens |
 | *(321B SHVQ `100.63 GiB`,* | 60K | `706.7 / 32.38` *(`exactFlat`)* | — | **`706.7 / 32.38`** (`84.99 s`) | **`3/3`** · — · **`3/3`** | Generalized `q4`/`SHVQ` NAX sparse MLA (`4,096` chunk) |
 | *11 NoPE MLA + 34 KDA)* | 242.5K | `721.4 / 44.00` *(`exactFlat`)* | — | **`743.0 / 44.98`** (`326.3 s`) | **`3/3`** · — · **`3/3`** | **`+3.0%` prefill · `+2.2%` decode (`QW_MLA_EMEANS=1`)** |
 | | **1M** | `102.3 GiB` plan / `107.2 GiB` RSS | — | **100% UMA resident (`3,696 B/tok` KV)** | `0` SSD misses · `0` swap | `321B` weights + `1M` KV fit in 128 GB Mac |
@@ -79,11 +79,11 @@ LSA works out of the box on any model pack with `--lsa-mode auto` (uses `<pack>/
 
 ```bash
 # 1. Qwen3.6-35B-A3B at 1M context with LSA Ward-512 (default 512 superblock: 2,317 / 105.6 tok/s)
-.build/release/qwg serve ~/.qwg/models/Qwen3.6-35B-A3B-hq4g32 \
+.build/release/qwg serve ~/.qwg/models/Qwen3.6-35B-A3B-QWP_4 \
   --context-tokens 1048576 --kv-mode q4 --lsa-mode auto --lsa-budget 2048 --lsa-cluster-block 512 --no-lazy
 
 # 2. Qwen3.8-Flash-Next at 1M context with capacity-balanced e-means-4096 (1,888 / 63.7 tok/s, +55.3% decode)
-.build/release/qwg serve ~/.qwg/models/Qwen3.8-Flash-Next-hq8g32-hq4g64 \
+.build/release/qwg serve ~/.qwg/models/Qwen3.8-Flash-Next-QWP-Mixed \
   --context-tokens 1048576 --kv-mode q4 --lsa-mode qsa-cluster --lsa-cluster-block 4096 --stream-ngrams --no-lazy
 ```
 
@@ -102,13 +102,13 @@ To precompute a `model.qlsa` (`QLSA0001`) sidecar for instant load and automatic
 ```bash
 # 1. Training-free Weight-SVD sidecar (fastest, works directly on any .qwp pack or HF directory)
 python3 Scripts/convert_lsa_sidecar.py \
-  --pack ~/.qwg/models/Qwen3.6-35B-A3B-hq4g32 \
+  --pack ~/.qwg/models/Qwen3.6-35B-A3B-QWP_4 \
   --method svd \
   --index-dim 64
 
 # 2. Calibration-set PCA or teacher-student KL distillation (optional)
 python3 Scripts/convert_lsa_sidecar.py \
-  --pack ~/.qwg/models/Qwen3.8-27B-hq4g32 \
+  --pack ~/.qwg/models/Qwen3.8-27B-QWP_4 \
   --method pca \
   --calib-prompts calib.jsonl \
   --index-dim 64
@@ -140,8 +140,8 @@ Paired interleaved A/B measurements on the `qwegine` repository (`12` Tier-0/1 f
 
 | Model Pack | `.qwcache` Artifact | Cold 27.6K TTFT / Prefill | Mounted `.qwcache` TTFT / Effective Prefill | Live `<memory_delta>` TTFT | Decode Speed | Grounded Recall |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **`Qwen3.6-35B-A3B-hq4g32`** (`kv=q4`) | `232.95 MiB` (`6.5 s` build) | `4.42 s` / `6,239.3 tok/s` | **`0.08 s` (`55.2×`)** / **`372,137 tok/s` (`59.6×`)** | **`0.42 s`** (`65,806 tok/s`) | `135.9 tok/s` | **`4/4` (100%)** vs `0/4` cold |
-| **`Qwen3.8-Flash-Next-hq8g32-hq4g64`** (`kv=q8`) | `574.26 MiB` (`15.0 s` build) | `11.22 s` / `2,460.6 tok/s` | **`0.17 s` (`66.0×`)** / **`162,036 tok/s` (`65.9×`)** | **`0.60 s`** (`46,620 tok/s`) | `81.5 tok/s` | **`4/4` (100%)** vs `0/4` cold |
+| **`Qwen3.6-35B-A3B-QWP_4`** (`kv=q4`) | `232.95 MiB` (`6.5 s` build) | `4.42 s` / `6,239.3 tok/s` | **`0.08 s` (`55.2×`)** / **`372,137 tok/s` (`59.6×`)** | **`0.42 s`** (`65,806 tok/s`) | `135.9 tok/s` | **`4/4` (100%)** vs `0/4` cold |
+| **`Qwen3.8-Flash-Next-QWP-Mixed`** (`kv=q8`) | `574.26 MiB` (`15.0 s` build) | `11.22 s` / `2,460.6 tok/s` | **`0.17 s` (`66.0×`)** / **`162,036 tok/s` (`65.9×`)** | **`0.60 s`** (`46,620 tok/s`) | `81.5 tok/s` | **`4/4` (100%)** vs `0/4` cold |
 
 #### Step-by-Step Usage Manual
 
@@ -149,11 +149,11 @@ Paired interleaved A/B measurements on the `qwegine` repository (`12` Tier-0/1 f
 # 1. Build a repository LSA memory pack offline (or auto-delegate to a running `qwg serve` daemon when locked;
 #    automatically reads kvMode from ~/.qwg/profiles/<model>.json, fallback: q4)
 .build/release/qwg index /path/to/repo \
-  --model ~/.qwg/models/Qwen3.8-Flash-Next-hq8g32-hq4g64 \
+  --model ~/.qwg/models/Qwen3.8-Flash-Next-QWP-Mixed \
   --max-tokens 65536
 
 # 2. Interactive REPL inside the repository (auto-discovers .qwg/manifest.json)
-cd /path/to/repo && .build/release/qwg repl --model Qwen3.8-Flash-Next-hq8g32-hq4g64
+cd /path/to/repo && .build/release/qwg repl --model Qwen3.8-Flash-Next-QWP-Mixed
 # Inside REPL:
 #   /memory                 -> inspect mounted repoId, commit, token count, enforced kvMode, and git delta
 #   /memory unmount         -> detach active repository memory pack
@@ -161,12 +161,12 @@ cd /path/to/repo && .build/release/qwg repl --model Qwen3.8-Flash-Next-hq8g32-hq
 #   /cache                  -> inspect warm RAM and cold SSD cache residency
 
 # 3. Single-shot CLI query with mounted repository memory (--no-memory-pack to bypass)
-.build/release/qwg run ~/.qwg/models/Qwen3.6-35B-A3B-hq4g32 \
+.build/release/qwg run ~/.qwg/models/Qwen3.6-35B-A3B-QWP_4 \
   --repo /path/to/repo \
   --prompt "Summarize AGENTS.md Law 20 and QWDashboardBuilder.build."
 
 # 4. Coding-agent HTTP server (auto-discovers <repo>/.qwg/manifest.json from agent system prompts)
-.build/release/qwg serve ~/.qwg/models/Qwen3.8-Flash-Next-hq8g32-hq4g64 --port 8080 --no-lazy
+.build/release/qwg serve ~/.qwg/models/Qwen3.8-Flash-Next-QWP-Mixed --port 8080 --no-lazy
 
 # Explicit REST inspect / live SSE index / mount / unmount for external harnesses:
 curl -X POST http://127.0.0.1:8080/v1/memory/inspect \

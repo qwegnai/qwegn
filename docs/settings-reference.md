@@ -47,10 +47,10 @@ Launch the macOS Menu Bar app (`Qwegn.app`) or start an OpenAI/Anthropic/Ollama-
 
 ```bash
 # Start the HTTP server with adaptive Q4 KV + Auto LSA at 64K context
-qwg serve Qwen3.6-35B-A3B-hq5g64-hq4g64 -c 65536
+qwg serve Qwen3.6-35B-A3B-QWP-Mixed -c 65536
 
 # Or chat directly in your terminal
-qwg repl Qwen3.6-35B-A3B-hq5g64-hq4g64
+qwg repl Qwen3.6-35B-A3B-QWP-Mixed
 ```
 
 ### Scenario 2 — Instant Whole-Repository Coding Agent (`qwg index` + `.qwcache`)
@@ -59,10 +59,10 @@ Pre-index a codebase once into `<repo>/.qwg/` (`32K` resident Cortex + `< 0.5 ms
 
 ```bash
 # 1. Build the repository memory pack once (defaults to q4 KV + auto LSA)
-qwg index /path/to/your/repo --model Qwen3.6-35B-A3B-hq5g64-hq4g64
+qwg index /path/to/your/repo --model Qwen3.6-35B-A3B-QWP-Mixed
 
 # 2. Serve with the memory pack mounted (live git edits inject via <|memory_delta|>)
-qwg serve Qwen3.6-35B-A3B-hq5g64-hq4g64 -c 131072 --repo /path/to/your/repo
+qwg serve Qwen3.6-35B-A3B-QWP-Mixed -c 131072 --repo /path/to/your/repo
 ```
 
 ### Scenario 3 — Peak Lossless Single-Stream Coding (`Qwen3.8-27B` + `DSpine-b16`, `4.19×` Serial)
@@ -70,9 +70,9 @@ qwg serve Qwen3.6-35B-A3B-hq5g64-hq4g64 -c 131072 --repo /path/to/your/repo
 Pair the dense `Qwen3.8-27B` target model with its 5-layer `DSpine` block drafter (`B = 16`, `15` speculative drafts verified in one GPU pass — `100%` bit-exact to greedy serial decode at up to `134.5 tok/s`):
 
 ```bash
-qwg serve Qwen3.8-27B-hq4g32 \
+qwg serve Qwen3.8-27B-QWP_4 \
   -c 65536 \
-  --dflash-draft-pack ~/.qwg/models/Qwen3.8-27B-DSpine-b16-hq4g32 \
+  --dflash-draft-pack ~/.qwg/models/Qwen3.8-27B-DSpine-b16-QWP_4 \
   --dflash-window 16
 ```
 
@@ -82,13 +82,13 @@ Qwegn scales cleanly to **1,048,576 tokens** on a single Mac via automatic YaRN 
 
 ```bash
 # Qwen3.6-35B-A3B at 1M context (2,317 tok/s prefill, 105.6 tok/s decode, ~27.3 GiB Metal)
-qwg serve Qwen3.6-35B-A3B-hq5g64-hq4g64 -c 1048576
+qwg serve Qwen3.6-35B-A3B-QWP-Mixed -c 1048576
 
 # Qwen3.8-Flash-Next at 1M context (auto-engages e-means-4096; stream PLE from SSD to free 27.3 GiB RAM)
-qwg serve Qwen3.8-Flash-Next-hq8g32-hq4g64 -c 1048576 --stream-ngrams
+qwg serve Qwen3.8-Flash-Next-QWP-Mixed -c 1048576 --stream-ngrams
 
 # Qwen3.8-27B at 524K context using e-means-4096 macro-blocks for maximum prefill throughput
-qwg serve Qwen3.8-27B-hq4g32 -c 524288 --lsa-cluster-block 4096
+qwg serve Qwen3.8-27B-QWP_4 -c 524288 --lsa-cluster-block 4096
 ```
 
 ### Scenario 5 — Low-Memory / Desktop Co-Existence Mode (`-28.5 GiB` RAM Saved)
@@ -96,7 +96,7 @@ qwg serve Qwen3.8-27B-hq4g32 -c 524288 --lsa-cluster-block 4096
 When running Xcode, Docker, browsers, or IDEs alongside `Qwen3.8-Flash-Next` (or on `64–96 GB` Macs), use `safe` memory policy (never swaps other apps), stream the PLE table from NVMe (`-27.30 GiB`), omit eager vision (`-1.60 GiB`), and evict prefill scratch after prompt ingestion:
 
 ```bash
-qwg serve Qwen3.8-Flash-Next-hq8g32-hq4g64 \
+qwg serve Qwen3.8-Flash-Next-QWP-Mixed \
   -c 65536 \
   --memory-policy safe \
   --stream-ngrams \
@@ -110,13 +110,13 @@ On a `128 GB` Mac with co-runners closed (`~108 GiB` free unified memory), the `
 
 ```bash
 # 100% UMA-resident 321B reasoning with NextN MTP-1 speculation
-qwg serve GLM-5.3-Flash-shvq4g32-shvq2g64-shvq3g64 \
+qwg serve GLM-5.3-Flash-QWP-Mixed \
   -c 202752 \
   --mtp-backend standard --mtp-drafts 1 \
   --thinking --reasoning-effort medium
 
 # Optional: run a >128 GiB MoE pack alongside desktop apps with zero swap via cold-expert NVMe streaming
-qwg serve GLM-5.3-Flash-shvq4g32-shvq2g64-shvq3g64 \
+qwg serve GLM-5.3-Flash-QWP-Mixed \
   --memory-policy safe --os-reserve 24 --moe-spec-budget 4
 ```
 
@@ -124,10 +124,10 @@ qwg serve GLM-5.3-Flash-shvq4g32-shvq2g64-shvq3g64 \
 
 ```bash
 # One-shot image analysis (loads the ViT vision encoder automatically)
-qwg run Qwen3.8-27B-hq4g32 --image ./diagram.png --prompt "Summarize the architecture in this diagram."
+qwg run Qwen3.8-27B-QWP_4 --image ./diagram.png --prompt "Summarize the architecture in this diagram."
 
 # Interactive multi-turn vision in REPL (use `/image <path>` inside the session)
-qwg repl Qwen3.6-35B-A3B-hq5g64-hq4g64 --load-vision
+qwg repl Qwen3.6-35B-A3B-QWP-Mixed --load-vision
 ```
 
 ### Scenario 8 — Hermetic A/B Benchmarking & Deterministic Evaluation
@@ -135,7 +135,7 @@ qwg repl Qwen3.6-35B-A3B-hq5g64-hq4g64 --load-vision
 When measuring kernel or model changes (see `Scripts/paired_perf.py --strict`), bypass saved profiles, disable stochastic sampling, and fix the seed:
 
 ```bash
-qwg run Qwen3.6-35B-A3B-hq5g64-hq4g64 \
+qwg run Qwen3.6-35B-A3B-QWP-Mixed \
   --no-profile \
   --kv-mode q4 -c 32768 --prefill-chunk-size 4096 \
   --lsa-mode auto --no-load-vision \

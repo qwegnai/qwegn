@@ -59,7 +59,7 @@ OUT = os.path.join(ROOT, "Scripts", "spike", "out")
 # bit-identical to the base — audit maxabs 0.0). QW_PACK points at it;
 # QW_CKPT/QW_VIS_PREFIX stay for pre-pack reproduction (checkpoint ships
 # vision_tower.*; the patch_embed channels_last_3d law holds on both).
-MODEL = os.environ.get("QW_PACK", os.path.expanduser("~/.qwg/models/Qwen3.8-27B-hq4g32"))
+MODEL = os.environ.get("QW_PACK", os.path.expanduser("~/.qwg/models/Qwen3.8-27B-QWP_4"))
 PACK = os.path.join(MODEL, "model.qwp") if os.path.isdir(MODEL) else MODEL
 ASSETS = os.environ.get("QW_ASSETS", os.path.join(MODEL, "assets")
                         if os.path.isdir(MODEL) else MODEL + ".assets")

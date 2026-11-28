@@ -524,11 +524,12 @@ extension QWServerSettings {
         guard let raw = name?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
             return []
         }
-        let ignored: Set<String> = ["dflash", "dflash2", "dspine", "b16", "qwen3", "8"]
+        let ignored: Set<String> = ["dflash", "dflash2", "dspine", "b16", "qwen3", "8", "mixed", "fast"]
         let parts = raw.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init)
         return Set(parts.filter { tok in
             tok.count >= 2
                 && !ignored.contains(tok)
+                && !tok.hasPrefix("qwp")
                 && !tok.hasPrefix("hq")
                 && !tok.hasPrefix("aq")
                 && !tok.hasPrefix("shvq")

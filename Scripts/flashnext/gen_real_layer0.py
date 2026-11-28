@@ -20,7 +20,7 @@ import torch
 from transformers.models.qwen4_exp import modeling_qwen4_exp as M
 from transformers.models.qwen4_exp.configuration_qwen4_exp import Qwen4ExpTextConfig
 
-PACK_DIR = os.path.expanduser("~/.qwg/models/Qwen3.8-Flash-Next-hq4g32")
+PACK_DIR = os.path.expanduser("~/.qwg/models/Qwen3.8-Flash-Next-QWP_4")
 PREFIX = "model.language_model."
 LAYER = 0
 T = 8

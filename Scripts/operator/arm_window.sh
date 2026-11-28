@@ -7,7 +7,7 @@ set -u
 TAG=${1:?tag}
 REPO=$(cd $(dirname $0)/../.. && pwd)
 BIN=${BIN:-$REPO/.build/release/qwg}
-PACK=${PACK:-$HOME/.qwg/models/Qwen3.8-Flash-Next-hq4g32/model.qwp}
+PACK=${PACK:-$HOME/.qwg/models/Qwen3.8-Flash-Next-QWP_4/model.qwp}
 RUN_ARGS=${RUN_ARGS:---max-new 64 --no-thinking --no-stream}
 REPS=${REPS:-3}
 OUT=${OUT:-/tmp/qw-repro/$TAG-$(date +%Y%m%d-%H%M%S)}

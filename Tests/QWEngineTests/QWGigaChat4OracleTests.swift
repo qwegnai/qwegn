@@ -393,12 +393,12 @@ final class QWGigaChat4OracleTests: XCTestCase {
         )
 
         let home = NSHomeDirectory()
-        let prodDrafter = home + "/.qwg/models/GigaChat4-37B-A4B-DFlash2-shvq4g32"
+        let prodDrafter = home + "/.qwg/models/GigaChat4-37B-A4B-DFlash2-QWP_4"
         if FileManager.default.fileExists(atPath: prodDrafter) {
             let resolvedProd = QWDFlashFootprint.resolveDrafterPackPath(
                 targetDescriptor: targetDesc,
                 explicitPath: nil,
-                targetPackPath: home + "/.qwg/models/GigaChat4-37B-A4B-hq4g32",
+                targetPackPath: home + "/.qwg/models/GigaChat4-37B-A4B-QWP-Mixed",
                 environment: [:]
             )
             XCTAssertEqual(

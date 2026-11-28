@@ -206,9 +206,10 @@ extension QWEngineDriver {
                 T: min(8, verifyRows), geometry: geometry, maxSplits: maxDecodeSplits)
         let mtpLongExtra = maxTokens > 262_144
             ? verifyRows * partialsCarveBytes(geometry: geometry, maxTokens: maxTokens) : 0
+        let mtpDraftScratchBytes = QWMTPDraftEncoder.allocationBytes(geometry: geometry)
         let mtpMiscBytes = (16 << 20)
         return max(64 << 20, scBytes + pscFixedTail + verifyBytes + promptEmbedBytes
-            + sharedAttnBytes + mtpLongExtra + mtpMiscBytes)
+            + sharedAttnBytes + mtpLongExtra + mtpDraftScratchBytes + mtpMiscBytes)
     }
 
     /// The KV arena budget law, sized from the model's **own** geometry: the

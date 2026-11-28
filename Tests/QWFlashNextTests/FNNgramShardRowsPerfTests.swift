@@ -23,7 +23,7 @@ final class FNNgramShardRowsRealTableTests: XCTestCase {
               let first = items.sorted().first(where: { !$0.hasPrefix(".") }) else { return nil }
         let snapshot = root.appendingPathComponent(first)
         let sidecar = home.appendingPathComponent(
-            ".qwg/models/Qwen3.8-Flash-Next-hq4g32/assets/ple_ngram_locations.json")
+            ".qwg/models/Qwen3.8-Flash-Next-QWP_4/assets/ple_ngram_locations.json")
         guard FileManager.default.fileExists(atPath: sidecar.path),
               let indexName = try? FileManager.default.contentsOfDirectory(atPath: snapshot.path)
                   .sorted().first(where: { $0.hasSuffix(".index.json") }) else { return nil }

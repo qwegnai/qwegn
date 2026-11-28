@@ -73,7 +73,7 @@ os.makedirs(OUT, exist_ok=True)
 # (inherited from the official base, manifest-hashed in provenance).
 # Host-side math only here; no weights read. (Processor equivalence vs the
 # legacy oQ4e-era config: probe maxd 0.0 on 4 shapes — goldens unchanged.)
-CKPT = os.environ.get("QW_CKPT", os.path.expanduser("~/.qwg/models/Qwen3.8-27B-hq4g32/assets"))
+CKPT = os.environ.get("QW_CKPT", os.path.expanduser("~/.qwg/models/Qwen3.8-27B-QWP_4/assets"))
 
 proc = AutoProcessor.from_pretrained(CKPT)
 IP = proc.image_processor

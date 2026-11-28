@@ -4,7 +4,7 @@
 # Single-instance law + quiet-GPU attestation per qwegine-run-measure.
 set -u
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
-PACK="${PACK:-$HOME/.qwg/models/Qwen3.8-27B-hq4g32/model.qwp}"
+PACK="${PACK:-$HOME/.qwg/models/Qwen3.8-27B-QWP_4/model.qwp}"
 BIN="$REPO/.build/release/qwg"
 OUT="${OUT:-/tmp/qw-repro/rows4-$(date +%Y%m%d-%H%M%S)}"
 mkdir -p "$OUT"

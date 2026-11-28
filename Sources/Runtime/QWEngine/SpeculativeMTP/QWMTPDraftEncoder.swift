@@ -30,6 +30,8 @@ struct QWMTPDraftWeights {
 }
 
 struct QWMTPDraftScratch {
+    static let maxProposalRows = 15
+
     let geometry: QWModelGeometry
     let embedding: QWTensorValue
     let concat: QWTensorValue
@@ -44,15 +46,39 @@ struct QWMTPDraftScratch {
     let mlp32: QWTensorValue, mlpIntermediate: QWTensorValue
     let downOut: QWTensorValue, postNorm: QWTensorValue
     let draftLogits: QWTensorValue
-    let greedySelector: QWMTPGreedySelector
+    let draftLogitHistory: QWTensorValue
+    let selector: QWTokenSelector
     let gsFc: QWTensorValue, gsHidden: QWTensorValue
     let gsAttn: QWTensorValue, gsMLP: QWTensorValue
-    /// L1: the draft head's own group sums (K = hidden, 40 f32). The head
-    /// GEMV reads postNorm — the same input the bf16 head reads — so the
-    /// q4g route needs its own xgroupsum output; it is never shared with
+    /// L1: the draft head's own group sums (K = hidden, 40 f32).
     let gsHead: QWTensorValue
     let partials: QWMRegion
     let moe: QWEngineDriver.MoEScratch?
+
+    static func allocationBytes(geometry: QWModelGeometry, intermediate: Int? = nil, vocabulary: Int? = nil) -> Int {
+        let mtpCfgInter = (geometry.mtpConfig?.isMoE == false) ? (geometry.mtpConfig?.intermediateSize ?? 0) : 0
+        let defaultInter = mtpCfgInter > 0 ? mtpCfgInter
+            : (geometry.intermediate > 0 ? geometry.intermediate : max(128, ((geometry.moeIntermediate + 127) / 128) * 128))
+        let inter = intermediate ?? defaultInter
+        let vocab = vocabulary ?? geometry.vocab
+        let h = geometry.hidden, kv = max(1, geometry.kvHeads * geometry.headDim)
+        let qOut = max(1, geometry.qProjOut), qCols = max(128, geometry.qHeads * geometry.headDim)
+        func aligned(_ n: Int, _ dt: QWDType = .f16) -> Int {
+            let b = Int((Double(max(1, n)) * dt.bytesPerParam).rounded())
+            return ((b + 255) / 256) * 256
+        }
+        let tensors = aligned(h) * 6 + aligned(2 * h) + aligned(h, .f32) + aligned(qOut + 2 * kv, .f32)
+            + aligned(qOut + 2 * kv) + aligned(qOut) + aligned(kv) + aligned(qCols)
+            + aligned(inter, .f32) + aligned(inter) + aligned(vocab, .f32)
+            + aligned(maxProposalRows * vocab, .f32)
+            + aligned(2 * h / 128, .f32) + aligned(h / 128, .f32) * 2
+            + aligned(max(1, qCols / 128), .f32) + aligned(inter / 128, .f32)
+        let sel = QWTokenSelector.allocationBytes(vocabLimit: geometry.vocab, vocabulary: vocab, maxRows: maxProposalRows)
+        let mtpIsMoE = geometry.mtpConfig?.isMoE ?? (geometry.numExperts > 0)
+        let moeB = (mtpIsMoE && geometry.numExperts > 0)
+            ? QWEngineDriver.moeScratchAllocationBytes(rows: 1, geometry: geometry) : 0
+        return tensors + sel + moeB
+    }
 
     init(geometry: QWModelGeometry, allocator: QWSubAllocator, partials: QWMRegion,
          intermediate: Int? = nil, vocabulary: Int? = nil) throws {
@@ -107,7 +133,10 @@ struct QWMTPDraftScratch {
         downOut = try allocate(h)
         postNorm = try allocate(h)
         draftLogits = try allocate(vocabulary, .f32)
-        greedySelector = try QWMTPGreedySelector(geometry: geometry, allocator: allocator, vocabulary: vocabulary)
+        draftLogitHistory = try allocate(Self.maxProposalRows * vocabulary, .f32)
+        selector = try QWTokenSelector(
+            vocabLimit: geometry.vocab, allocator: allocator,
+            vocabulary: vocabulary, maxRows: Self.maxProposalRows)
         gsFc = try allocate(2 * h / 128, .f32)
         gsHidden = try allocate(h / 128, .f32)
         gsAttn = try allocate(max(1, qCols / 128), .f32)
@@ -120,6 +149,17 @@ struct QWMTPDraftScratch {
         } else {
             moe = nil
         }
+    }
+
+    func draftLogitRow(_ row: Int) throws -> QWTensorValue {
+        let vocab = draftLogits.shape.elementCount
+        guard (0..<Self.maxProposalRows).contains(row) else {
+            throw QWEngineDriverError.state("MTP draft logit history row \(row) out of range")
+        }
+        return QWTensorValue(
+            region: draftLogitHistory.region,
+            offset: draftLogitHistory.offset + row * vocab * 4,
+            shape: QWTensorShape([vocab], .f32))
     }
 }
 
@@ -146,6 +186,10 @@ final class QWMTPDraftEncoder {
     var hasColdMoE: Bool { weights.moe?.coldStreamer != nil }
     var nextStepHidden: QWTensorValue {
         (weights.gatedNorms != nil && geometry.useSandwichNorm) ? scratch.fcOut16 : scratch.postNorm
+    }
+
+    static func allocationBytes(geometry: QWModelGeometry, intermediate: Int? = nil, vocabulary: Int? = nil) -> Int {
+        QWMTPDraftScratch.allocationBytes(geometry: geometry, intermediate: intermediate, vocabulary: vocabulary)
     }
 
     init(geometry: QWModelGeometry, hal: QWHal, weights: QWMTPDraftWeights, scratch: QWMTPDraftScratch,
@@ -512,20 +556,23 @@ final class QWMTPDraftEncoder {
     /// A configured q4g sidecar takes precedence; otherwise use the target
     /// head's selected storage, including its q4g route.
     func encodeHead(_ enc: any MTLComputeCommandEncoder, weight: QWTensorValue,
-                    draftHead: QWMTPTDraftHead? = nil) throws {
-        try encodeHead(enc, storage: .f16(weight), draftHead: draftHead)
+                    draftHead: QWMTPTDraftHead? = nil,
+                    destination: QWTensorValue? = nil) throws {
+        try encodeHead(enc, storage: .f16(weight), draftHead: draftHead, destination: destination)
     }
 
     func encodeHead(_ enc: any MTLComputeCommandEncoder, storage: QWHeadStorage,
-                    draftHead: QWMTPTDraftHead? = nil) throws {
+                    draftHead: QWMTPTDraftHead? = nil,
+                    destination: QWTensorValue? = nil) throws {
         let softcap = geometry.finalLogitSoftcapping ?? 0.0
-        let count = scratch.draftLogits.shape.elementCount
+        let logitsOut = destination ?? scratch.draftLogits
+        let count = logitsOut.shape.elementCount
         if let draftHead {
             try draftHead.encode(enc, hal: hal, x: scratch.postNorm,
-                                 gs: scratch.gsHead, y: scratch.draftLogits)
+                                 gs: scratch.gsHead, y: logitsOut)
             if softcap > 0 {
                 enc.memoryBarrier(scope: .buffers)
-                try QWHead.encodeSoftcapF32(enc, hal: hal, logits: scratch.draftLogits,
+                try QWHead.encodeSoftcapF32(enc, hal: hal, logits: logitsOut,
                                             count: count, softcap: softcap)
             }
             return
@@ -539,7 +586,7 @@ final class QWMTPDraftEncoder {
                 enc.memoryBarrier(scope: .buffers)
             }
             try QWHead.encodeF16(enc, hal: hal, w: weight, x: scratch.postNorm,
-                                 y: scratch.draftLogits, geometry: geometry,
+                                 y: logitsOut, geometry: geometry,
                                  N: count, softcap: softcap)
         case .bf16(let weight):
             if unrotateF16 {
@@ -547,11 +594,11 @@ final class QWMTPDraftEncoder {
                 enc.memoryBarrier(scope: .buffers)
             }
             try QWHead.encodeBF16(enc, hal: hal, w: weight, x: scratch.postNorm,
-                                  y: scratch.draftLogits, geometry: geometry,
+                                  y: logitsOut, geometry: geometry,
                                   N: count, softcap: softcap)
         case .q4g(let weight):
             try QWHead.encodeQ4g(enc, hal: hal, weight: weight,
-                x: scratch.postNorm, gs: scratch.gsHead, y: scratch.draftLogits, softcap: softcap)
+                x: scratch.postNorm, gs: scratch.gsHead, y: logitsOut, softcap: softcap)
         }
     }
 
@@ -560,7 +607,7 @@ final class QWMTPDraftEncoder {
                              writeLogits: Bool = true,
                              destination: QWTensorValue? = nil) throws {
         let vocabulary = scratch.draftLogits.shape.elementCount
-        let outToken = destination ?? scratch.greedySelector.token
+        let outToken = destination ?? scratch.selector.token
         let softcap = geometry.finalLogitSoftcapping ?? 0.0
         let q4View: QWWeightView?
         if let draftHead {
@@ -581,7 +628,7 @@ final class QWMTPDraftEncoder {
         guard softcap <= 0, let view = q4View else {
             try encodeHead(enc, storage: storage, draftHead: draftHead)
             enc.memoryBarrier(scope: .buffers)
-            try scratch.greedySelector.encode(enc, hal: hal, logits: scratch.draftLogits,
+            try scratch.selector.encodeGreedy(enc, hal: hal, logits: scratch.draftLogits,
                                               ordering: .numericalDraft, destination: outToken)
             return
         }

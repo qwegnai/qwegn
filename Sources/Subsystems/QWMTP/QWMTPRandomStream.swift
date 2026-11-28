@@ -16,9 +16,29 @@ public final class QWMTPRandomStream {
         public let seed: UInt64
         public let drawsConsumed: UInt64
     }
+    public struct LCRoundWindow: Sendable, Equatable {
+        public let seed: UInt64
+        public let start: UInt64
+        public let drafts: Int
+        public var stride: UInt64 { UInt64(2 * drafts + 1) }
+
+        public func acceptUniform(row: Int) -> Double {
+            Double(QWPhilox.u(start + UInt64(2 * row), seed: seed, version: .upper24))
+        }
+
+        public func residualUniform(row: Int) -> Double {
+            Double(QWPhilox.u(start + UInt64(2 * row + 1), seed: seed, version: .upper24))
+        }
+
+        public var bonusUniform: Double {
+            Double(QWPhilox.u(start + UInt64(2 * drafts), seed: seed, version: .upper24))
+        }
+    }
+
     public let seed: UInt64
     public private(set) var drawsConsumed: UInt64
-    public var isRoundActive: Bool { expectedDrafts != 0 }
+    public var isRoundActive: Bool { expectedDrafts != 0 || gumbelRound != nil || lcRound != nil }
+    public private(set) var lcRound: LCRoundWindow?
     private let owner = UUID()
     private var expectedDrafts = 0
     private var sampled = 0
@@ -48,6 +68,52 @@ public final class QWMTPRandomStream {
             uniform: Double(QWPhilox.u(drawsConsumed, seed: seed, version: .upper24)), version: .upper24)
         drawsConsumed += 1
         return token
+    }
+
+    public func nextUniformUpper24() throws -> Double {
+        guard !isRoundActive, drawsConsumed < UInt64.max else {
+            throw QWMTP.ProtocolError.invalid("uniform draw requires an idle stream with counter capacity")
+        }
+        let u = Double(QWPhilox.u(drawsConsumed, seed: seed, version: .upper24))
+        drawsConsumed += 1
+        return u
+    }
+
+    public func reserveDraws(_ count: UInt64) throws -> UInt64 {
+        guard !isRoundActive, drawsConsumed <= UInt64.max - count else {
+            throw QWMTP.ProtocolError.invalid("draw reservation requires an idle stream with counter capacity")
+        }
+        let base = drawsConsumed
+        drawsConsumed += count
+        return base
+    }
+
+    @discardableResult
+    public func beginLCRound(drafts: Int, maxDrafts: Int = 15) throws -> LCRoundWindow {
+        guard !isRoundActive, maxDrafts >= 1, (1...maxDrafts).contains(drafts) else {
+            throw QWMTP.ProtocolError.invalid("LC round draft count is invalid or round already active")
+        }
+        let stride = UInt64(2 * drafts + 1)
+        guard drawsConsumed <= UInt64.max - stride else {
+            throw QWMTP.ProtocolError.invalid("stream cannot reserve a complete LC round without counter overflow")
+        }
+        let window = LCRoundWindow(seed: seed, start: drawsConsumed, drafts: drafts)
+        drawsConsumed += stride
+        expectedDrafts = drafts
+        sampled = 0
+        lcRound = window
+        return window
+    }
+
+    @discardableResult
+    public func completeLCRound() throws -> LCRoundWindow {
+        guard let window = lcRound else {
+            throw QWMTP.ProtocolError.invalid("no active LC round to complete")
+        }
+        lcRound = nil
+        expectedDrafts = 0
+        sampled = 0
+        return window
     }
 
     public func beginGumbelRound(drafts: Int, vocabulary: Int, maxDrafts: Int = 15) throws {
@@ -139,5 +205,6 @@ public final class QWMTPRandomStream {
         expectedDrafts = 0
         sampled = 0
         gumbelRound = nil
+        lcRound = nil
     }
 }

@@ -201,6 +201,21 @@ the owner's private `docs/agent-retrospective-*.md`.
     `qwg_ask`, `qwg_guard`, `qwg_status`, `qwegn-*` skills) with zero
     legacy third-party decision-daemon prefixes in skills, routes, or docs
     (enforced on skills by `Scripts/lint_skills.py` `S8`).
+35. **`QWP` model quantization naming convention**:
+    Quantized `QWP1` model packs (Hugging Face repo names under `qwegnai/` and
+    local `~/.qwg/models/` directories) use the `QWP` naming convention rather
+    than encoding internal container/group tags in the name:
+    - Uniform single-quantization packs: `<Model>-QWP_{4,8,3,2,15,1}` (e.g.,
+      `Qwen3.8-27B-QWP_4`, `GigaChat4-37B-A4B-QWP_4`).
+    - Mixed-quantization packs: `<Model>-QWP-Mixed` (e.g.,
+      `Edge0-145B-QWP-Mixed`).
+    - Multiple variants for the same model and quant tier: disambiguate by
+      tested profile (e.g., `-Fast` for the faster tested variant, base
+      `-QWP-Mixed` for the higher-precision variant).
+    - Unquantized packs retain their precision suffix (e.g., `d1-2B-bf16`).
+    - Exact quantization details (plane formats, group sizes, head/PLE quant)
+      MUST be documented in the model card (`README.md`), never encoded in the
+      repo or directory name.
 
 Verification footer: when you finish and merge to `master`, do **not** bump the
 version and do **not** touch release artifacts (`QWVersion.swift`, `README.md`

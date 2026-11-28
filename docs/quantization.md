@@ -1,14 +1,23 @@
 # Quantization Formats & Quality Tooling
 
+## Pack naming convention (`QWP`)
+
+Published `qwegnai/*` repositories and local `~/.qwg/models/` directories follow the `QWP` naming convention (`AGENTS.md` Law 35), with exact plane formats and group sizes documented in each model card (`README.md`):
+
+- **Uniform single-quantization packs:** `<Model>-QWP_{4,8,3,2,15,1}` (for example, `Qwen3.8-27B-QWP_4`, `GigaChat4-37B-A4B-QWP_4`).
+- **Mixed-quantization packs:** `<Model>-QWP-Mixed` (for example, `Edge0-145B-QWP-Mixed`, `GLM-5.3-Flash-QWP-Mixed`).
+- **Multi-variant disambiguation:** when multiple packs share the same model and quant tier, suffixes reflect the tested profile (e.g., `-Fast` for the faster tested variant vs base `-QWP-Mixed` for higher precision).
+- **Unquantized packs:** retain their precision suffix (for example, `d1-2B-bf16`).
+
 ## Supported formats
 
 By default `qwg quantize` writes `HQ4_G32_M5`. It applies an orthonormal Walsh–Hadamard rotation to each 32-weight group, then stores 4-bit codes plus a scale and bias (5 effective bits per weight) in a layout the Metal kernels read directly. The engine also supports non-incumbent rotated `HQ{2,3,4,6,8}_G{32,64,128,256}` and standard-basis affine `AQ{2,3,4,6,8}_G{32,64,128,256}` packs, with row-paired batched verify (`M >= 4`), 4-row fused-FWHT gate/up, and batched `lm_head` kernels active across both incumbent `HQ4_G32` and non-incumbent `HQ4_G32` / `AQ4_G32` containers.
 
 The full matrix — Hadamard-rotated `HQ{2,3,4,6,8}_G{32,64,128,256}`, affine `AQ{2,3,4,6,8}_G{32,64,128,256}`, Spherical e-means `SHVQ{1,15,2,3,4}_G{32,64,128,256}`, `QNGRAM v3` (`VQ2_G32` and `VQ4_G32`), `HQ4_G32_M5`, and `BF16` — supports mixed-format packs and external `DFlash 2` / `DSpine` speculative drafters (`Scripts/quantize/pack_dflash.py --quant`), such as:
 
-- `SHVQ4_G32` dense/MLA/MTP trunk + `SHVQ2_G64` routed `gate_up` (`2.25 bpw`) + `SHVQ3_G64` routed `down_proj` (`3.25 bpw`) (`2.69 bits/param`, **`100.63 GiB`** on `GLM-5.3-Flash-shvq4g32-shvq2g64-shvq3g64` — `-33.74 GiB` / `-25.1%` vs `HQ4_G32_M5 + HQ3_G64`, fitting `321B` parameters 100% resident in 128 GB UMA at **`1,006 tok/s` prefill, `46.0–53.6 tok/s` decode, `81/100` HumanEval+MBPP (`92%` HE), and `99.74%` `llmprobe` fidelity**).
-- `HQ8_G32` dense trunk + `HQ4_G64` (`4.5 bits/weight`) routed experts (`4.75 bits/param`, `71.29 GiB` `.qwp` — `5.16 GiB` smaller with `2.62×` lower KLD vs BF16 than uniform `HQ4_G32`) paired with **`QNGRAM v3 VQ2_G32`** (`90 B/row`, **`27.13 GiB`** vs `50.86 GiB` v2 `q8g32`, `-46.7%`) or **`QNGRAM v3 VQ4_G32`** 4D e-means PLE N-gram embeddings (`50 B/row`, **`15.07 GiB`**, saving **`-12.06 GiB`** additional UMA vs `VQ2_G32` at `0.9557` cosine similarity) on `Qwen3.8-Flash-Next-hq8g32-hq4g64`.
-- **`SHVQ4_G32` on sparse-MoE `DFlash 2` drafters (`Qwen3.8-Flash-Next-DFlash2-shvq4g32`, `v0.24.0`):** On the 5-layer `603.1 M`-param `incoai/Qwen3.8-Flash-Next-DFlash2` drafter (`45` `BF16` conv/norm/selector tensors `23.9%` + `36` quantized linear projections `76.1%`), pure `SHVQ4_G32` (`521.51 MiB` / `546,847,090` B, `7.25 bpw`) achieves **59.49% top-16 overlap** (`0.50945` mean KL vs BF16 teacher), beating both `HQ4_G32_M5` (`548.86 MiB`, `7.63 bpw`, `54.24%` top-16) and mixed `SHVQ4_G32 + SHVQ3_G64` (`477.69 MiB`, `6.64 bpw`, `45.09%` top-16) while saving **`-0.80 GiB` UMA** vs `HQ4_G32_M5` (`72.81` vs `73.61 GiB` planned) and **`-0.79 GiB`** vs native MTP-3 (`78.43` vs `79.22 GiB` @4K) with `100%` bit-exact greedy parity (`85.96` vs `82.55 tok/s` `code` @ `98,304` draft vocab cap). Qwegn drafter auto-discovery ranks pure `SHVQ4_G32` ahead of `HQ4_G32_M5` and mixed sub-4-bit packs.
+- `SHVQ4_G32` dense/MLA/MTP trunk + `SHVQ2_G64` routed `gate_up` (`2.25 bpw`) + `SHVQ3_G64` routed `down_proj` (`3.25 bpw`) (`2.69 bits/param`, **`100.63 GiB`** on `GLM-5.3-Flash-QWP-Mixed` — `-33.74 GiB` / `-25.1%` vs `HQ4_G32_M5 + HQ3_G64`, fitting `321B` parameters 100% resident in 128 GB UMA at **`1,006 tok/s` prefill, `46.0–53.6 tok/s` decode, `81/100` HumanEval+MBPP (`92%` HE), and `99.74%` `llmprobe` fidelity**).
+- `HQ8_G32` dense trunk + `HQ4_G64` (`4.5 bits/weight`) routed experts (`4.75 bits/param`, `71.29 GiB` `.qwp` — `5.16 GiB` smaller with `2.62×` lower KLD vs BF16 than uniform `HQ4_G32`) paired with **`QNGRAM v3 VQ2_G32`** (`90 B/row`, **`27.13 GiB`** vs `50.86 GiB` v2 `q8g32`, `-46.7%`) or **`QNGRAM v3 VQ4_G32`** 4D e-means PLE N-gram embeddings (`50 B/row`, **`15.07 GiB`**, saving **`-12.06 GiB`** additional UMA vs `VQ2_G32` at `0.9557` cosine similarity) on `Qwen3.8-Flash-Next-QWP-Mixed`.
+- **`SHVQ4_G32` on sparse-MoE `DFlash 2` drafters (`Qwen3.8-Flash-Next-DFlash2-QWP_4`, `v0.24.0`):** On the 5-layer `603.1 M`-param `incoai/Qwen3.8-Flash-Next-DFlash2` drafter (`45` `BF16` conv/norm/selector tensors `23.9%` + `36` quantized linear projections `76.1%`), pure `SHVQ4_G32` (`521.51 MiB` / `546,847,090` B, `7.25 bpw`) achieves **59.49% top-16 overlap** (`0.50945` mean KL vs BF16 teacher), beating both `HQ4_G32_M5` (`548.86 MiB`, `7.63 bpw`, `54.24%` top-16) and mixed `SHVQ4_G32 + SHVQ3_G64` (`477.69 MiB`, `6.64 bpw`, `45.09%` top-16) while saving **`-0.80 GiB` UMA** vs `HQ4_G32_M5` (`72.81` vs `73.61 GiB` planned) and **`-0.79 GiB`** vs native MTP-3 (`78.43` vs `79.22 GiB` @4K) with `100%` bit-exact greedy parity (`85.96` vs `82.55 tok/s` `code` @ `98,304` draft vocab cap). Qwegn drafter auto-discovery ranks pure `SHVQ4_G32` ahead of `HQ4_G32_M5` and mixed sub-4-bit packs.
 - **`SHVQ15` (`1.5`-bit) and `SHVQ1` (`1.0`-bit) antipodal sub-2-bit spherical VQ:** `SHVQ15_G64` (`14 B/grp`, `1.75 bpw`; `1.625 bpw` at `G128`) packs `1` hemisphere sign bit + `11`-bit (`2048`-centroid) 8D spherical e-means index (`3` bytes per two 8D octets) with a 0-ULP dyadic `stepMap15` (`int8 * 3 * 2^-7`); `SHVQ1_G64` (`10 B/grp`, `1.25 bpw`; `1.125 bpw` at `G128`) packs `1` hemisphere sign bit + `7`-bit (`128`-centroid, `2 KiB` LUT) 8D spherical e-means index (`1` byte per 8D octet). On `Qwen3.8-27B` `DSpine-b16` speculative drafters (`pack_dflash.py --quant shvq15_g64`), `SHVQ15_G64` shrinks the drafter pack by `-42.0%` (`1,595.53 -> 925.22 MiB`, `-0.74 GiB` resident RAM) while delivering `1.229×` serial decode speedup at `B=8` with `100%` bit-exact target token-stream identity (`0.0%` target quality loss).
 
 ## SHVQ lookup, AGX constant-cache isolation, and small-prefill tiles
@@ -93,12 +102,12 @@ disable Flash-Next speculation and change the execution being tested).
 ```bash
 python3 Scripts/probe_quality.py \
   --endpoint http://127.0.0.1:8080/v1/chat/completions \
-  --model Qwen3.8-Flash-Next-hq8g32-hq4g64 --case marker \
+  --model Qwen3.8-Flash-Next-QWP-Mixed --case marker \
   --output /tmp/marker-replay.json
 
 PYTHONPATH=Scripts:Scripts/quantize .venv-oracle/bin/python \
   Scripts/quantize/hq_frontier.py \
-  --pack ~/.qwg/models/Qwen3.8-Flash-Next-hq8g32-hq4g64 \
+  --pack ~/.qwg/models/Qwen3.8-Flash-Next-QWP-Mixed \
   --output /tmp/hq-size-frontier.json
 ```
 

@@ -31,6 +31,7 @@ Follow these five steps when adding support for a new HuggingFace checkpoint arc
 4. **Verify 2-Layer PyTorch-to-Metal Oracle (`max_abs_diff < 5e-3` + Argmax Identity):**
    - Register pure-PyTorch shims into `sys.modules` for unavailable CUDA packages (`fla`, `einops`) with `_attn_implementation = "eager"`, pack a 2-layer synthetic checkpoint (`hq8_g32`), reload exact dequantized QWP1 tensors (re-interleaving MLA `q_proj`; keeping FP32 `gate.weight`/`expert_bias`/`A_log`/`dt_bias`), and assert text + `QWVisualSpan` parity via env-gated `XCTest` (`QW_*_ORACLE_DIR`).
 5. **Pack, Audit & Qualify End-to-End:**
+   - Name quantized packs per `AGENTS.md` Law 35 (`<Model>-QWP_{4,8,3,2,15,1}` or `<Model>-QWP-Mixed[-Fast]`) and document the exact quant recipe in `README.md`.
    - Run `./Scripts/preflight.sh --require-quiet-gpu`, pack + audit (`Scripts/quantize/pack.py` and `Scripts/quantize/audit_release.py`), verify greedy SHA-256 parity (`d=0` vs `d=1 --mtp-backend standard --mtp-relaxed-margin 0 --mtp-draft-strategy neural`) across `f16`/`q8`/`q4` KV, and complete `QWServer` `S1–S9` + vision + `16K+` needle + `llmprobe` + paired A/B vs `master`.
 
 ## Error Recovery

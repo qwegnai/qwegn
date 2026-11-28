@@ -4,6 +4,7 @@ import QWAlloc
 import QWGEMM
 import QWGDN
 import QWHAL
+import QWHead
 import QWMTP
 import QWAttn
 import QWHyperPLE
@@ -104,7 +105,9 @@ public final class FNGPUDecodeStack {
                             relaxedMargin: Float = 0, relaxedRows: Int? = nil,
                             relaxedMinProb: Float = 0,
                             dflash: QWDFlashDrafter? = nil,
-                            preContextUpdate: (slot: QWDFlashSessionSlot, startPosition: Int, totalCount: Int)? = nil) throws -> (stream: [Float], token: Int) {
+                            preContextUpdate: (slot: QWDFlashSessionSlot, startPosition: Int, totalCount: Int)? = nil,
+                            stochasticVerify: FNGPUStochasticVerifyRequest? = nil,
+                            mtpStochasticDraft: FNGPUStochasticDraftRequest? = nil) throws -> (stream: [Float], token: Int) {
         let k = activeRows ?? rows
         precondition(k >= 1 && k <= rows && !history.isEmpty && history.count >= k && embedTable.hc * embedTable.hidden == width)
         precondition(!verifyAllRows || Self.supportsRollbackWindow(k),
@@ -117,7 +120,10 @@ public final class FNGPUDecodeStack {
         return try runRows(history: history, stage: .gatheredPrewritten(embedTable), head: head,
                            readStream: readStream, verifyAllRows: verifyAllRows, mtp: mtp,
                            activeRows: k, relaxedMargin: relaxedMargin, relaxedRows: relaxedRows,
-                           relaxedMinProb: relaxedMinProb, dflash: dflash, preContextUpdate: preContextUpdate)
+                           relaxedMinProb: relaxedMinProb, dflash: dflash,
+                           preContextUpdate: preContextUpdate,
+                           stochasticVerify: stochasticVerify,
+                           mtpStochasticDraft: mtpStochasticDraft)
     }
 
     /// Rolls back `rejectedCount` verify rows (`1 <= rejectedCount < rows`) after draft rejection,
@@ -164,7 +170,9 @@ public final class FNGPUDecodeStack {
                          relaxedMinProb: Float = 0,
                          dflash: QWDFlashDrafter? = nil,
                          dflashSlot: QWDFlashSessionSlot? = nil,
-                         preContextUpdate: (slot: QWDFlashSessionSlot, startPosition: Int, totalCount: Int)? = nil) throws -> (stream: [Float], token: Int) {
+                         preContextUpdate: (slot: QWDFlashSessionSlot, startPosition: Int, totalCount: Int)? = nil,
+                         stochasticVerify: FNGPUStochasticVerifyRequest? = nil,
+                         mtpStochasticDraft: FNGPUStochasticDraftRequest? = nil) throws -> (stream: [Float], token: Int) {
         let k = activeRows ?? rows
         // Rows at or beyond `relaxedRows` verify by exact argmax.
         let relaxedLimit = min(relaxedRows ?? k, k)
@@ -284,11 +292,12 @@ public final class FNGPUDecodeStack {
                                                   totalRows: relaxedLimit, margin: relaxedMargin,
                                                   minLogProb: QWVariationalAcceptance.minLogProb(forMinProbability: relaxedMinProb))
                         : nil
-                    try head.encode(enc, hal: ctx.hal, stream: cur, inInject: tailInj, rows: k, variational: variational)
+                    try head.encode(enc, hal: ctx.hal, stream: cur, inInject: tailInj, rows: k,
+                                    variational: variational, stochasticVerify: stochasticVerify)
                     if let mtp {
                         enc.memoryBarrier(scope: .buffers)
                         try mtp.encode(&enc, cb: cb, streamPrev: cur, tokens: head.token, pos: pos, rows: k,
-                                       projectRows: 1, draftTokens: tokensBuf)
+                                       projectRows: 1, draftTokens: tokensBuf, stochasticDraft: mtpStochasticDraft)
                     }
                 } else {
                     let deferLast = !readStream || k == 1

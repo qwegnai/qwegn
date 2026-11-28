@@ -204,7 +204,7 @@ extension QWEngineDriver {
                                  x: QWTensorValue, wQ4: QWWeightView,
                                  qkv16: QWTensorValue, z16: QWTensorValue, y32: QWTensorValue) {
         guard let pso = psoGemmBatchedH16GdnInProj else {
-            preconditionFailure("GDN in-proj batched GEMM requires Apple9+ or Apple10+ tensor hardware")
+            preconditionFailure("GDN in-proj batched GEMM requires Apple7+ simdgroup or Apple10+ NAX hardware")
         }
         enc.setComputePipelineState(pso)
         enc.bindTensors(wQ4.blocks, x, qkv16, y32, startIndex: 0)

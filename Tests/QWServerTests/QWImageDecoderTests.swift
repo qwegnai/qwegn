@@ -325,10 +325,18 @@ final class QWImageDecoderTests: XCTestCase {
 
     func testCanonicalModelFamilyStemMatchesSiblingQuantizations() {
         let stemHQ = QWEngineLifecycleActor.canonicalModelFamilyStem("Qwen3.8-Flash-Next-hq8g32-hq4g64")
+        let stemQWP4 = QWEngineLifecycleActor.canonicalModelFamilyStem("Qwen3.8-27B-QWP_4")
+        let stemQWPMixed = QWEngineLifecycleActor.canonicalModelFamilyStem("GigaChat4-37B-A4B-QWP-Mixed")
+        let stemQWPMixedFast = QWEngineLifecycleActor.canonicalModelFamilyStem("qwegnai/Inkling-2-Mini-QWP-Mixed-Fast")
+        let stemSHVQ = QWEngineLifecycleActor.canonicalModelFamilyStem("GigaChat4-37B-A4B-shvq4g32")
         let stemMLX = QWEngineLifecycleActor.canonicalModelFamilyStem("ddalcu/Qwen3.8-Flash-Next-MLX-Serve-mixed-4-8bit")
         let stemAlias = QWEngineLifecycleActor.canonicalModelFamilyStem("Qwen3.8-Flash-Next")
         let stemOther = QWEngineLifecycleActor.canonicalModelFamilyStem("Qwen3.6-35B-A3B-hq4g32")
         XCTAssertEqual(stemHQ, "qwen3.8-flash-next")
+        XCTAssertEqual(stemQWP4, "qwen3.8-27b")
+        XCTAssertEqual(stemQWPMixed, "gigachat4-37b-a4b")
+        XCTAssertEqual(stemQWPMixedFast, "inkling-2-mini")
+        XCTAssertEqual(stemSHVQ, "gigachat4-37b-a4b")
         XCTAssertEqual(stemMLX, "qwen3.8-flash-next")
         XCTAssertEqual(stemAlias, "qwen3.8-flash-next")
         XCTAssertEqual(stemOther, "qwen3.6-35b-a3b")

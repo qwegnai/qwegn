@@ -10,7 +10,7 @@
   <img src="https://img.shields.io/badge/Swift-6.2-orange.svg" alt="Swift 6.2">
   <img src="https://img.shields.io/badge/platform-macOS%2026.2%2B%20(Apple%20Silicon)-lightgrey.svg" alt="macOS 26.2+, Apple Silicon">
   <a href="https://github.com/qwegnai/qwegn/actions/workflows/ci.yml"><img src="https://github.com/qwegnai/qwegn/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/Release-v0.44.1-green.svg" alt="Release v0.44.1"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/Release-v0.45.0-green.svg" alt="Release v0.45.0"></a>
   <a href="https://huggingface.co/qwegnai"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-qwegnai-yellow.svg" alt="Hugging Face Models"></a>
 </p>
 
@@ -44,12 +44,12 @@ make ci       # build metallibs and run linters + unit suites
 Pull and run a pre-quantized pack from [`huggingface.co/qwegnai`](https://huggingface.co/qwegnai):
 
 ```bash
-qwg pull qwegnai/Qwen3.8-Flash-Next-hq8g32-hq4g64
-qwg run Qwen3.8-Flash-Next-hq8g32-hq4g64 --prompt "Hello!" --max-tokens 128
+qwg pull qwegnai/Qwen3.8-Flash-Next-QWP-Mixed
+qwg run Qwen3.8-Flash-Next-QWP-Mixed --prompt "Hello!" --max-tokens 128
 
-# New in v0.44.1: GigaChat4-37B-A4B + MLA DFlash 2, M1–M6 unified runtime & Cognitive Vault v2
-qwg pull qwegnai/Ling-3.2-air-hq8g32-shvq3g64
-qwg serve Ling-3.2-air-hq8g32-shvq3g64 --context-tokens 65536 --kv-mode q4
+# New in v0.45.0: Native GPU Stochastic (T > 0) MTP, Apple7–Apple9 LSA Fix & GigaChat4-37B-A4B
+qwg pull qwegnai/GigaChat4-37B-A4B-QWP_4
+qwg serve GigaChat4-37B-A4B-QWP_4 --context-tokens 131072 --kv-mode q4 --mtp-backend dflash2 --mtp-drafts 5
 ```
 
 Quantize any local Hugging Face checkpoint and validate memory fit before generation:
@@ -66,19 +66,19 @@ Official packs are listed with detailed architecture cards and `llmprobe` fideli
 
 | Model Pack (`qwegnai/*`) | Architecture | Quant & Size | Prefill Peak | Speculative Decode | Max Context / 1M | Details |
 | :--- | :--- | :--- | :---: | :---: | :---: | :---: |
-| [`Qwen3.6-35B-A3B-hq4g32`](https://huggingface.co/qwegnai/Qwen3.6-35B-A3B-hq4g32) | 40L MoE (`10` QSA + `30` GDN, `256` exp) | `HQ4_G32` | **6,462 tok/s** | **382.8 tok/s** (`324.3` CLI `d=5`) | `1M` (`2,317 / 105.6 tok/s`) | [Card](docs/models.md#qwen36-35b-a3b) |
-| [`Apex-35B-V1.0-hq4g32`](https://huggingface.co/qwegnai/Apex-35B-V1.0-hq4g32) | 40L MoE (`35.95B`/`3B`, ViT) | `HQ4_G32_M5` (`22.2 GiB`) | **6,416 tok/s** | **261.1 tok/s** (`178.0` srv) | `1M` (**`5,491 / 100.9 tok/s`**) | [Card](docs/models.md#apex-35b-v10) |
-| `Maxwell-V1-Flash-HQ8-SHVQ3D4` | 45L all-MBSA + `4×` mHC (`36.8B`/`3.2B`) | `HQ8 + SHVQ3/4` (`17.2 GiB`) | **5,324 tok/s** | **210.5 tok/s** (`104.0` srv) | `524K` (`1,620 / 20.8` `@64K`) | [Card](docs/models.md#maxwell-v1-flash) |
-| `GigaChat4-37B-A4B-shvq4g32` | 32L MoE (`24` GDN + `8` MLA-DSA, `192` exp) | `SHVQ4_G32` (+ MLA `DF2`) | **4,770 tok/s** | **323.8 tok/s** (`164.4` srv · `137.2` CLI) | `1M` (`3/3` `@300K` · `<27 GiB`) | [Card](docs/models.md#official-native-model-catalog) |
-| [`Inkling-2-Mini-shvq4g32-shvq2g64-shvq3g64`](https://huggingface.co/qwegnai/Inkling-2-Mini-shvq4g32-shvq2g64-shvq3g64) | 48-visit looped MoE + `DSpark` + ViT | `SHVQ4/2/3` (`10.2 GiB`) | **3,638 tok/s** | **99.9 tok/s** `d=3` (`100.6` `B=4`) | `1M` (`2,017 / 33.9` · `512K` `55.0`) | [Card](docs/models.md#inkling-2-mini) |
-| [`Qwen3.8-Flash-Next-hq8g32-hq4g64`](https://huggingface.co/qwegnai/Qwen3.8-Flash-Next-hq8g32-hq4g64) | 48L MoE (`12` QSA + `36` GDN, PLE, ViT) | `HQ8 + HQ4 + VQ2` (`98.4 GiB`) | **3,035 tok/s** | **177.2 tok/s** (`DFlash2`) | `1M` `e-means` (`1,888 / 63.7 tok/s`) | [Card](docs/models.md#qwen38-flash-next) |
-| [`Ling-3.2-air-hq8g32-shvq3g64`](https://huggingface.co/qwegnai/Ling-3.2-air-hq8g32-shvq3g64) | 42L `bailing_moe_v3_vl` (`35` KDA + `7` MLA, ViT) | `HQ8 + SHVQ3` (`52.2 GiB`) | **2,847 tok/s** | **110.5 tok/s** (`103.7` NextN) | `262K` (`3/3` needle `@16.9K`) | [Card](docs/models.md#ling-32-air) |
-| [`Edge0-145B-hq8g32-hq4g64`](https://huggingface.co/qwegnai/Edge0-145B-hq8g32-hq4g64) | 48L `145B` MoE + `VQ2` PLE | `HQ8 + HQ4 + VQ2` (`83.1 GiB`) | **2,572 tok/s** | **135.6 tok/s** (`69.2` CLI `d=1`) | `1M` UMA (`1,886` `@300K` `3/3`) | [Card](docs/models.md#edge0-145b) |
-| [`SenseNova-Loop-9B-hq4g32`](https://huggingface.co/qwegnai/SenseNova-Loop-9B-hq4g32) | 56L `2×` looped `F32` mHC + ViT | `HQ4_G32` (`7.4 GiB`) | **2,045 tok/s** | **165.7 tok/s** (`153.0` `B=4`) | `524K` YaRN (`49.4 tok/s` `@1M`) | [Card](docs/models.md#sensenova-loop-9b) |
-| [`Qwen3.8-27B-hq4g32`](https://huggingface.co/qwegnai/Qwen3.8-27B-hq4g32) | 64L dense (`16` GQA + `48` GDN, ViT) | `HQ4_G32` (+ `DSpine`/`DF2`) | **1,043 tok/s** | **154.2 tok/s** DF2 / **148.0** DSpine | `1M` `e-means` (`831 / 36.5 tok/s`) | [Card](docs/models.md#qwen38-27b) |
-| [`ERNIE-5.5-Flash-Base-hq8g32-shvq15g64-shvq3g64`](https://huggingface.co/qwegnai/ERNIE-5.5-Flash-Base-hq8g32-shvq15g64-shvq3g64) | 43L `280B`/`14B` (`37` HCA + `6` MLA-DSA) | `HQ8 + SHVQ15/3` (`81.6 GiB`) | **1,137 tok/s** | **52.7 tok/s** (`ECHO`) | `1M` UMA (`303 / 16.3` `@300K`) | [Card](docs/models.md#ernie-55-flash-base) |
-| [`ERNIE-5.5-Flash-Preview`](https://huggingface.co/qwegnai/ERNIE-5.5-Flash-Preview-hq4g32m5-hq8head-shvq15g64-shvq3g64) ([`HQ8`](https://huggingface.co/qwegnai/ERNIE-5.5-Flash-Preview-hq8g32-shvq15g64-shvq3g64)) | 43L `280B`/`14B` (`chatv2p3`, `DSpark`, `FlashIndexer`) | `HQ4_G32_M5` / `HQ8` + `SHVQ15/3` (`77.9–81.6 GiB` disk) | **1,545 tok/s** *(Track C)* / `1,051` *(Track A)* | **110.6 tok/s** `DSpark` (`89.5` JSON · `81/100` Track A Code) | `16K` `3/3` needle (`60.9` `@65.6K`) | [Card](docs/models.md#ernie-55-flash-preview) |
-| [`GLM-5.3-Flash-shvq4g32-shvq2g64-shvq3g64`](https://huggingface.co/qwegnai/GLM-5.3-Flash-shvq4g32-shvq2g64-shvq3g64) | 45L `321B`/`18B` (`34` KDA + `11` MLA) | `SHVQ4/2/3` (`100.6 GiB`) | **1,014 tok/s** | **54.7 tok/s** (`NextN`) | `1M` UMA (`743 / 45.0` `@242.5K`) | [Card](docs/models.md#glm-53-flash) |
+| [`Qwen3.6-35B-A3B-QWP_4`](https://huggingface.co/qwegnai/Qwen3.6-35B-A3B-QWP_4) | 40L MoE (`10` QSA + `30` GDN, `256` exp) | `HQ4_G32` | **6,462 tok/s** | **382.8 tok/s** (`324.3` CLI `d=5`) | `1M` (`2,317 / 105.6 tok/s`) | [Card](docs/models.md#qwen36-35b-a3b) |
+| [`Apex-35B-V1.0-QWP_4`](https://huggingface.co/qwegnai/Apex-35B-V1.0-QWP_4) | 40L MoE (`35.95B`/`3B`, ViT) | `HQ4_G32_M5` (`22.2 GiB`) | **6,416 tok/s** | **261.1 tok/s** (`178.0` srv) | `1M` (**`5,491 / 100.9 tok/s`**) | [Card](docs/models.md#apex-35b-v10) |
+| `Maxwell-V1-Flash-QWP-Mixed` | 45L all-MBSA + `4×` mHC (`36.8B`/`3.2B`) | `HQ8 + SHVQ3/4` (`17.2 GiB`) | **5,324 tok/s** | **210.5 tok/s** (`104.0` srv) | `524K` (`1,620 / 20.8` `@64K`) | [Card](docs/models.md#maxwell-v1-flash) |
+| [`GigaChat4-37B-A4B-QWP_4`](https://huggingface.co/qwegnai/GigaChat4-37B-A4B-QWP_4) | 32L MoE (`24` GDN + `8` MLA-DSA, `192` exp) | `SHVQ4_G32` (`20.8 GiB` w/ `DF2`) | **4,770 tok/s** | **323.8 tok/s** (`164.4` srv · `137.2` CLI) | `1M` (`3/3` `@300K` · `<27 GiB`) | [Card](docs/models.md#gigachat4-37b-a4b) |
+| [`Inkling-2-Mini-QWP-Mixed-Fast`](https://huggingface.co/qwegnai/Inkling-2-Mini-QWP-Mixed-Fast) | 48-visit looped MoE + `DSpark` + ViT | `SHVQ4/2/3` (`10.2 GiB`) | **3,638 tok/s** | **99.9 tok/s** `d=3` (`100.6` `B=4`) | `1M` (`2,017 / 33.9` · `512K` `55.0`) | [Card](docs/models.md#inkling-2-mini) |
+| [`Qwen3.8-Flash-Next-QWP-Mixed`](https://huggingface.co/qwegnai/Qwen3.8-Flash-Next-QWP-Mixed) | 48L MoE (`12` QSA + `36` GDN, PLE, ViT) | `HQ8 + HQ4 + VQ2` (`98.4 GiB`) | **3,035 tok/s** | **177.2 tok/s** (`DFlash2`) | `1M` `e-means` (`1,888 / 63.7 tok/s`) | [Card](docs/models.md#qwen38-flash-next) |
+| [`Ling-3.2-air-QWP-Mixed`](https://huggingface.co/qwegnai/Ling-3.2-air-QWP-Mixed) | 42L `bailing_moe_v3_vl` (`35` KDA + `7` MLA, ViT) | `HQ8 + SHVQ3` (`52.2 GiB`) | **2,847 tok/s** | **110.5 tok/s** (`103.7` NextN) | `262K` (`3/3` needle `@16.9K`) | [Card](docs/models.md#ling-32-air) |
+| [`Edge0-145B-QWP-Mixed`](https://huggingface.co/qwegnai/Edge0-145B-QWP-Mixed) | 48L `145B` MoE + `VQ2` PLE | `HQ8 + HQ4 + VQ2` (`83.1 GiB`) | **2,572 tok/s** | **135.6 tok/s** (`69.2` CLI `d=1`) | `1M` UMA (`1,886` `@300K` `3/3`) | [Card](docs/models.md#edge0-145b) |
+| [`SenseNova-Loop-9B-QWP_4`](https://huggingface.co/qwegnai/SenseNova-Loop-9B-QWP_4) | 56L `2×` looped `F32` mHC + ViT | `HQ4_G32` (`7.4 GiB`) | **2,045 tok/s** | **165.7 tok/s** (`153.0` `B=4`) | `524K` YaRN (`49.4 tok/s` `@1M`) | [Card](docs/models.md#sensenova-loop-9b) |
+| [`Qwen3.8-27B-QWP_4`](https://huggingface.co/qwegnai/Qwen3.8-27B-QWP_4) | 64L dense (`16` GQA + `48` GDN, ViT) | `HQ4_G32` (+ `DSpine`/`DF2`) | **1,043 tok/s** | **154.2 tok/s** DF2 / **148.0** DSpine | `1M` `e-means` (`831 / 36.5 tok/s`) | [Card](docs/models.md#qwen38-27b) |
+| [`ERNIE-5.5-Flash-Base-QWP-Mixed`](https://huggingface.co/qwegnai/ERNIE-5.5-Flash-Base-QWP-Mixed) | 43L `280B`/`14B` (`37` HCA + `6` MLA-DSA) | `HQ8 + SHVQ15/3` (`81.6 GiB`) | **1,137 tok/s** | **52.7 tok/s** (`ECHO`) | `1M` UMA (`303 / 16.3` `@300K`) | [Card](docs/models.md#ernie-55-flash-base) |
+| [`ERNIE-5.5-Flash-Preview-QWP-Mixed-Fast`](https://huggingface.co/qwegnai/ERNIE-5.5-Flash-Preview-QWP-Mixed-Fast) ([`QWP-Mixed`](https://huggingface.co/qwegnai/ERNIE-5.5-Flash-Preview-QWP-Mixed)) | 43L `280B`/`14B` (`chatv2p3`, `DSpark`, `FlashIndexer`) | `HQ4_G32_M5` / `HQ8` + `SHVQ15/3` (`77.9–81.6 GiB` disk) | **1,545 tok/s** *(Fast)* / `1,051` *(QWP-Mixed)* | **110.6 tok/s** `DSpark` (`89.5` JSON · `81/100` Code) | `16K` `3/3` needle (`60.9` `@65.6K`) | [Card](docs/models.md#ernie-55-flash-preview) |
+| [`GLM-5.3-Flash-QWP-Mixed`](https://huggingface.co/qwegnai/GLM-5.3-Flash-QWP-Mixed) | 45L `321B`/`18B` (`34` KDA + `11` MLA) | `SHVQ4/2/3` (`100.6 GiB`) | **1,014 tok/s** | **54.7 tok/s** (`NextN`) | `1M` UMA (`743 / 45.0` `@242.5K`) | [Card](docs/models.md#glm-53-flash) |
 
 Standard `llama`, `qwen2`, `qwen3`, `qwen3_moe`, `qwen3_5*`, `mistral`, and MLX-formatted checkpoints are also adopted automatically with per-model profiles stored under `~/.qwg/profiles/`.
 
@@ -97,15 +97,15 @@ See [**`docs/benchmarks.md`**](docs/benchmarks.md) for full `512 → 1M` scaling
 Index any git repository into `<repo>/.qwg/` (`manifest.json` + `.qwcache`) for instant cold-free prefix mounting across `qwg repl`, `qwg run`, and `qwg serve` (**54×–74× faster TTFT**, `96.9%` free 1M window, live `<|memory_delta|>` git diffs):
 
 ```bash
-qwg index /path/to/repo --model ~/.qwg/models/Qwen3.8-Flash-Next-hq8g32-hq4g64
-cd /path/to/repo && qwg repl --model Qwen3.8-Flash-Next-hq8g32-hq4g64
-qwg run ~/.qwg/models/Qwen3.6-35B-A3B-hq4g32 --repo /path/to/repo --prompt "Summarize architecture invariants."
+qwg index /path/to/repo --model ~/.qwg/models/Qwen3.8-Flash-Next-QWP-Mixed
+cd /path/to/repo && qwg repl --model Qwen3.8-Flash-Next-QWP-Mixed
+qwg run ~/.qwg/models/Qwen3.6-35B-A3B-QWP_4 --repo /path/to/repo --prompt "Summarize architecture invariants."
 ```
 
 ## Server & Native Apps
 
 ```bash
-qwg serve ~/.qwg/models/Ling-3.2-air-hq8g32-shvq3g64 \
+qwg serve ~/.qwg/models/Ling-3.2-air-QWP-Mixed \
   --host 127.0.0.1 --port 8080 --kv-mode q4 --context-tokens 65536 --no-lazy
 ```
 
@@ -119,7 +119,7 @@ qwg serve ~/.qwg/models/Ling-3.2-air-hq8g32-shvq3g64 \
 
 <table>
   <tr>
-    <td width="64%"><img src="assets/qwegn_dashboard.png" alt="Qwegn /ui Monitor dashboard showing co-resident Inkling-2-Mini-QWP-Fast, d1-2B-hq8 Decision Sidecar, and unified memory telemetry" width="100%"></td>
+    <td width="64%"><img src="assets/qwegn_dashboard.png" alt="Qwegn /ui Monitor dashboard showing co-resident Inkling-2-Mini-QWP-Mixed-Fast, d1-2B-hq8 Decision Sidecar, and unified memory telemetry" width="100%"></td>
     <td width="36%" align="center"><img src="assets/qwegn_menubar.png" alt="Qwegn.app menu bar control panel showing co-resident primary LLM, Decision Sidecar, and UMA memory" width="100%"></td>
   </tr>
   <tr>
@@ -170,7 +170,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md), [CONTRIBUTORS.md](CONTRIBUTORS.md), and 
 @software{qwegn,
   title   = {Qwegn: a from-scratch LLM/VLM inference engine for Apple Silicon},
   author  = {{QwegnAI}},
-  version = {0.44.1},
+  version = {0.45.0},
   year    = {2026},
   url     = {https://github.com/qwegnai/qwegn}
 }

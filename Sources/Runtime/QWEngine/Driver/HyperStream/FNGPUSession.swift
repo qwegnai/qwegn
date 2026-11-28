@@ -41,7 +41,13 @@ public struct FNGPUSessionData {
     /// The current drafts continue a detected period; they verify by exact argmax.
     var periodicDrafts: Bool = false
     /// Online cost/acceptance model that picks the MTP chain depth each round.
-    var chainPolicy = FNChainPolicy()
+    var chainPolicy = QWAdaptiveDraftPolicy(mode: .autoregressiveChain)
+    /// Persistent random stream state for stochastic native MTP rounds.
+    var mtpStreamState: QWMTPRandomStream.State? = nil
+    /// Cached sparse draft proposals matching `[mtpDraft]` / `mtpChain`.
+    var mtpProposals: [QWSparseProposalBuffer] = []
+    /// Full-vocab draft logits when slot 0 overflowed sparse candidate capacity.
+    var mtpOverflowLogits: [Float]? = nil
     /// Whether the session runs the speculative path.
     public var useSpec: Bool
     /// The first generated token, sampled once and kept. The prefill is
@@ -133,7 +139,7 @@ public struct FNGPUSessionData {
     /// Starting prefill position after prefix-cache restoration so progress excludes reused tokens.
     public var prefillProgressBasePos: Int = 0
     /// Online DFlash adaptive window selector (MoE-calibrated priors).
-    var dflashPolicy = QWDFlashAdaptivePolicy(isSparseMoE: true)
+    var dflashPolicy = QWAdaptiveDraftPolicy(mode: .blockDiffusion(isSparseMoE: true))
     /// Committed token position cached in the DFlash drafter's sliding-window KV.
     public var dflashCacheOffset: Int = 0
     /// Deferred verify-row context update position (`vStack` captured into `targetHidden`).
@@ -174,6 +180,14 @@ public struct FNGPUSessionData {
         return state
     }
 
+    mutating func ensureMTPStreamState() throws -> QWMTPRandomStream.State {
+        if let state = mtpStreamState { return state }
+        let seed = sampler.config.hasExplicitSeed ? sampler.config.seed : UInt64.random(in: 1...UInt64.max)
+        let state = try QWMTPRandomStream(seed: seed, drawIndex: 0).frozenState()
+        mtpStreamState = state
+        return state
+    }
+
     /// Emits incremental prefill progress relative to `prefillProgressBasePos`.
     public func reportPrefillProgress() {
         let total = max(0, history.count - prefillProgressBasePos)
@@ -205,54 +219,6 @@ public struct FNGPUSessionData {
 }
 
 // MARK: - The session's state wipe
-
-/// Picks the MTP chain depth maximising expected committed tokens/ms: E(p) = 1 + a0 + a0·a1 (p ≥ 1) + a0·a1·a2 (p ≥ 2)
-/// over cost(p) = verify(2 + p rows) + p chain passes. `acc[i]`: EMA acceptance of draft i given drafts 0..<i accepted;
-/// `rowMs`: EMA round wall by verify rows. A periodic full-depth round keeps the deeper acceptances fresh.
-struct FNChainPolicy {
-    var acc: [Double] = [0.8, 0.7, 0.7]
-    var rowMs: [Double] = [0, 15, 18, 22, 25, 29, 32, 35, 38]
-    var passMs: Double = 1.3
-    var rounds = 0
-    static let alpha = 0.15
-    static let exploreEvery = 16
-
-    mutating func observeAcceptance(mtpDrafts: Int, accepted: Int) {
-        for i in 0..<min(mtpDrafts, acc.count) where accepted >= i {
-            acc[i] += Self.alpha * ((accepted > i ? 1 : 0) - acc[i])
-        }
-    }
-
-    mutating func observeRound(rows: Int, ms: Double) {
-        guard rows >= 1 && rows < rowMs.count && ms > 0 else { return }
-        rowMs[rows] += Self.alpha * (ms - rowMs[rows])
-    }
-
-    mutating func observeChain(passes: Int, ms: Double) {
-        guard passes > 0 && ms > 0 else { return }
-        passMs += Self.alpha * (ms / Double(passes) - passMs)
-    }
-
-    mutating func passes(maxPasses: Int) -> Int {
-        rounds += 1
-        guard maxPasses > 0 else { return 0 }
-        if rounds % Self.exploreEvery == 0 { return maxPasses }
-        var best = 0, bestRate = 0.0, tokens = 1 + acc[0], reach = acc[0]
-        for p in 0...maxPasses {
-            if p > 0 { reach *= acc[min(p, acc.count - 1)]; tokens += reach }
-            let rows = min(2 + p, rowMs.count - 1)
-            let rate = tokens / (rowMs[rows] + Double(p) * passMs)
-            if rate > bestRate { bestRate = rate; best = p }
-        }
-        return best
-    }
-}
-
-enum FNMTPChain {
-    /// Chained single-row MTP passes after each verify round (d2/d3 drafts); capped by maxDrafts - 1.
-    static let passes = Int(ProcessInfo.processInfo.environment["QWG_MTP_CHAIN"] ?? "") ?? 2
-    static let debug = ProcessInfo.processInfo.environment["QWG_CHAIN_DEBUG"] != nil
-}
 
 extension QWHyperStreamRuntime {
     @inline(__always)
@@ -450,193 +416,5 @@ extension QWHyperStreamRuntime {
             logits: rowBuf,
             repetitionHistory: config.repetitionPenalty == 1.0 ? [] : seenTokenList
         )
-    }
-
-    /// One speculative round: the token is fed, 1..3 drafts are proposed, and the
-    /// model verifies all rows in one pass, accepting the longest matching prefix
-    /// and rolling back any rejected tail in O(1) via 4-slot ring buffer parity subtraction.
-    func speculativeStep(_ session: inout FNGPUSessionData, token: Int,
-                         vStack: FNGPUDecodeStack, mtp: FNGPUMTP) throws -> Int {
-        let prevCount = session.history.count
-        let trackRep = session.sampler.config.repetitionPenalty != 1.0
-        session.history.append(Int64(token))
-        let (drafts, stepMTP) = draftsFor(&session, mtp: mtp)
-        let dCount = drafts.count
-        let activeRows = 1 + dCount
-        for d in drafts { session.history.append(Int64(d)) }
-        if residentKVHistory.count == prevCount {
-            residentKVHistory.append(Int64(token))
-            for d in drafts { residentKVHistory.append(Int64(d)) }
-        }
-        highWaterPos = max(highWaterPos, session.history.count)
-        let isUnconstrained = session.constraint?.isUnconstrainedNow ?? true
-        let canSpecConstrained = session.constraint.map {
-            $0.isUnconstrainedNow || (QWConstrainedSpeculationGate.isEnabled && $0.allowsSpeculation)
-        } ?? true
-        let stepT0 = Date()
-        _ = try vStack.forwardRows(history: session.history, embedTable: embedTable, head: head,
-                                    readStream: false, verifyAllRows: true, mtp: stepMTP,
-                                    activeRows: activeRows,
-                                    relaxedMargin: isUnconstrained ? session.relaxedMargin : 0,
-                                    relaxedRows: session.mtpSourcedDrafts + 1,
-                                    relaxedMinProb: session.relaxedMinProb)
-        let verifyMs = Date().timeIntervalSince(stepT0) * 1000.0
-        if !session.sampler.config.hasExplicitSeed && !session.sampler.config.isGreedy {
-            session.chainPolicy.observeRound(rows: activeRows, ms: verifyMs)
-        }
-        let v = head.argmaxTokens(count: activeRows)
-        let mTok = stepMTP?.mtpHead.argmaxToken() ?? session.mtpDraft
-        session.specProposals += dCount
-        let rowMargin: Float = (!isUnconstrained && !session.periodicDrafts) ? session.relaxedMargin : 0
-        let probeClone = session.constraint?.makeSpeculativeProbe()
-        let roundConstraint = probeClone ?? session.constraint
-        let resolution = try QWSpeculativeTokenResolver.resolveVerifiedRound(
-            drafts: drafts,
-            targetArgmaxes: v,
-            vocabulary: vocab,
-            isGreedy: session.sampler.config.isGreedy,
-            isUnconstrainedNow: { roundConstraint?.isUnconstrainedNow ?? true },
-            boundaryToken: roundConstraint?.speculationBoundaryToken,
-            canSpeculateConstrained: canSpecConstrained,
-            isRepetitionBlocked: { session.seenTokens.contains($0) },
-            acceptConstrained: { try roundConstraint?.accept($0) },
-            sampleRow: { row, argmaxTok in
-                try sampleFromHead(argmaxToken: argmaxTok, seenTokens: session.seenTokens,
-                                   seenTokenList: session.seenTokenList,
-                                   sampler: session.sampler, row: row,
-                                   constraint: roundConstraint,
-                                   draftToken: row < dCount ? drafts[row] : nil,
-                                   relaxedMargin: row < session.mtpSourcedDrafts ? rowMargin : 0,
-                                   relaxedMinProb: session.relaxedMinProb)
-            },
-            onCommittedToken: { committedTok in
-                if trackRep { session.recordSeenToken(committedTok, vocab: vocab) }
-            }
-        )
-        let tok0 = resolution.firstToken
-        if probeClone != nil {
-            try session.constraint?.accept(tok0)
-        }
-        if !resolution.trailingTokens.isEmpty {
-            session.pendingTokens.append(contentsOf: resolution.trailingTokens)
-            if probeClone != nil {
-                session.pendingConstraintAcceptCount += resolution.trailingTokens.count
-            }
-        }
-        let accepted = resolution.acceptedDrafts
-        if resolution.rollbackCount > 0 {
-            let rejected = resolution.rollbackCount
-            session.history.removeLast(rejected)
-            if residentKVHistory.count == prevCount + activeRows {
-                residentKVHistory.removeLast(rejected)
-            }
-            vStack.rollbackVerifyRows(rejectedCount: rejected)
-            session.mtpActive = true
-        }
-        session.specAccepted += accepted
-        session.chainPolicy.observeAcceptance(mtpDrafts: session.mtpSourcedDrafts, accepted: accepted)
-        session.mtpDraft = mTok
-        session.mtpChain = []
-        var chainGPUMs = 0.0
-        var localChainMs = 0.0
-        if let stepMTP {
-            let lastTok = resolution.pendingToken ?? tok0
-            let mtpMax = min(FNGPUSessionData.defaultMTPDrafts, session.maxDrafts)
-            let passes = (FNMTPChain.passes > 0 && mtpMax > 1 && session.mtpActive && !session.periodicDrafts)
-                ? session.chainPolicy.passes(maxPasses: min(FNMTPChain.passes, mtpMax - 1))
-                : 0
-            let needsResync = resolution.needsResync(targetArgmaxes: v)
-            if passes > 0 || needsResync {
-                let chainT0 = Date()
-                guard let pair = ctx.hal.begin(.concurrent) else {
-                    throw FNGPUError.notHQ4("chain command buffer")
-                }
-                let cb = pair.0
-                var enc = pair.1
-                let firstStream: QWTensorValue
-                if !needsResync {
-                    firstStream = stepMTP.lastProjectedStream(verifyRows: activeRows)
-                } else {
-                    stepMTP.writeToken(Int32(lastTok))
-                    let selStream = vStack.lastStreamTensor.slice(
-                        byteOffset: accepted * vStack.width * 4,
-                        count: vStack.width,
-                        dtype: .f32
-                    )
-                    try stepMTP.encode(
-                        &enc,
-                        cb: cb,
-                        streamPrev: selStream,
-                        tokens: stepMTP.tokensBuf.slice(byteOffset: 0, count: 1, dtype: .i32),
-                        pos: prevCount + accepted,
-                        rows: 1,
-                        projectRows: 1
-                    )
-                    enc.memoryBarrier(scope: .buffers)
-                    firstStream = stepMTP.lastProjectedStream(verifyRows: 1)
-                }
-                if passes > 0 {
-                    try stepMTP.encodeChain(&enc, cb: cb, firstStream: firstStream,
-                                            startPos: prevCount + accepted + 1, passes: passes)
-                }
-                ctx.hal.end(cb, enc)
-                cb.waitUntilCompleted()
-                if let err = cb.error { throw err }
-                chainGPUMs = max(0, (cb.gpuEndTime - cb.gpuStartTime) * 1000.0)
-                if passes > 0 {
-                    let chain = stepMTP.readChain(count: passes + 1)
-                    session.mtpDraft = chain[0]
-                    session.mtpChain = chain
-                    session.mtpChainPos = prevCount + accepted + 2
-                } else {
-                    session.mtpDraft = stepMTP.mtpHead.argmaxToken()
-                }
-                let chainMs = Date().timeIntervalSince(chainT0) * 1000
-                if passes > 0 && !session.sampler.config.hasExplicitSeed && !session.sampler.config.isGreedy {
-                    session.chainPolicy.observeChain(passes: passes, ms: chainMs)
-                }
-                localChainMs += chainMs
-            }
-        }
-        session.headToken = -1
-        let roundMs = Date().timeIntervalSince(stepT0) * 1000.0
-        let divisor = Double(1 + session.pendingTokens.count)
-        session.stepMs = roundMs / divisor
-        session.lastStepGPUMillis = (vStack.lastGPUMillis + chainGPUMs) / divisor
-        session.roundTokenCounts.append(1)
-        if FNMTPChain.debug {
-            FileHandle.standardError.write("R rows=\(activeRows) acc=\(accepted) gpu=\(String(format: "%.2f", vStack.lastGPUMillis)) wall=\(String(format: "%.2f", roundMs)) chain=\(String(format: "%.2f", localChainMs))\n".data(using: .utf8)!)
-        }
-        return tok0
-    }
-
-    /// Drafts 1..3 tokens using MTP or the unified context-copy drafter (`QWContextCopyDrafter`).
-    func draftsFor(_ session: inout FNGPUSessionData, mtp: FNGPUMTP) -> ([Int], FNGPUMTP?) {
-        let maxD = min(session.maxDrafts, FNGPUSessionData.draftCapacity)
-        if maxD > 0, QWConstrainedSpeculationGate.isEnabled,
-           let constraint = session.constraint, !constraint.isUnconstrainedNow {
-            let canonical = constraint.proposeCanonicalDrafts(maxCount: maxD)
-            if !canonical.isEmpty {
-                session.mtpSourcedDrafts = 0
-                session.periodicDrafts = true
-                return (canonical, mtp)
-            }
-        }
-        let proposal = QWContextCopyDrafter.proposeDrafts(
-            history: session.history,
-            mode: session.draftMode,
-            maxDrafts: session.maxDrafts,
-            draftCapacity: FNGPUSessionData.draftCapacity,
-            mtpDraft: session.mtpDraft,
-            mtpChain: session.mtpChain,
-            mtpChainPos: session.mtpChainPos,
-            mtpActive: session.mtpActive,
-            relaxedMargin: session.relaxedMargin,
-            quadraticSeeding: session.quadraticSeeding
-        )
-        session.mtpActive = proposal.mtpActive
-        session.mtpSourcedDrafts = proposal.mtpSourcedDrafts
-        session.periodicDrafts = proposal.periodicDrafts
-        return (proposal.drafts, proposal.runMTPOnVerify ? mtp : nil)
     }
 }

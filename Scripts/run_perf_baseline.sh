@@ -9,7 +9,7 @@ CO=2816   # mlx-serve co-runner
 cor() { ps -o rss= -p $CO 2>/dev/null | awk '{printf "%.1f", $1/1048576}'; }
 mem() { memory_pressure 2>/dev/null | grep free | grep -o '[0-9.]*%' | tr -d '%'; }
 
-for M in "Qwen3.8-27B-hq4g32" "Qwen3.8-Flash-Next-hq4g32"; do
+for M in "Qwen3.8-27B-QWP_4" "Qwen3.8-Flash-Next-QWP_4"; do
   TAG="${M//./_}"
   echo "===== $M start $(date +%H:%M:%S) corunner=$(cor)GB freemem=$(mem)%"
   ./Scripts/bench_qwen27b_native_lookup.sh "$HOME/.qwg/models/$M/model.qwp" > "$OUT/$TAG.log" 2>&1

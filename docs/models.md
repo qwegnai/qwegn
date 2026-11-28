@@ -4,8 +4,8 @@ Qwegn drives execution purely through capability descriptors decoded from each m
 
 ```bash
 # Download and run an official QWP1 pack directly
-qwg pull qwegnai/Ling-3.2-air-hq8g32-shvq3g64 --folder ~/.qwg/models
-qwg run ~/.qwg/models/Ling-3.2-air-hq8g32-shvq3g64 --prompt "Hello!" --max-tokens 128
+qwg pull qwegnai/Ling-3.2-air-QWP-Mixed --folder ~/.qwg/models
+qwg run ~/.qwg/models/Ling-3.2-air-QWP-Mixed --prompt "Hello!" --max-tokens 128
 
 # Or quantize a local Hugging Face checkpoint
 qwg quantize ~/.qwg/hf/<model> --out ~/.qwg/models/<pack> --quant q4g
@@ -15,25 +15,25 @@ qwg quantize ~/.qwg/hf/<model> --out ~/.qwg/models/<pack> --quant q4g
 
 | Model | `model_type` | Params (Total / Active) | Pack Format & Disk Size | Prefill Peak | Speculative / Serial Decode | Long Context | Hugging Face |
 | :--- | :--- | :---: | :--- | :---: | :---: | :---: | :--- |
-| **GLM-5.3-Flash** | `glm5_next` | `321B` / `18B` | `SHVQ4_G32 + SHVQ2_G64 + SHVQ3_G64` (`100.63 GiB`) | `1,014 tok/s` | `54.7` NextN / `46.4 tok/s` | `1M` UMA (`743 / 45.0` `@242.5K`) | [`qwegnai/GLM-5.3-Flash-shvq4g32-shvq2g64-shvq3g64`](https://huggingface.co/qwegnai/GLM-5.3-Flash-shvq4g32-shvq2g64-shvq3g64) |
-| **ERNIE-5.5-Flash-Base** | `ernie5_5_moe` | `280B` / `14B` | `HQ8_G32 + SHVQ15_G64 + SHVQ3_G64` (`81.61 GiB`) | `1,137 tok/s` | `52.7` ECHO / `37.2 tok/s` | `1M` UMA (`303 / 16.3` `@300K`) | [`qwegnai/ERNIE-5.5-Flash-Base-hq8g32-shvq15g64-shvq3g64`](https://huggingface.co/qwegnai/ERNIE-5.5-Flash-Base-hq8g32-shvq15g64-shvq3g64) |
-| **ERNIE-5.5-Flash-Preview** | `ernie5_5_moe` | `280B` / `14B` | Track C `HQ4_M5+HQ8+SHVQ15/3` (`77.91 GiB` disk / `76.37 GiB` GPU, `2.36 bpw`) · Track A `HQ8+SHVQ15/3` (`81.57 GiB` disk / `80.02 GiB` GPU, `2.52 bpw`) + `dspark.qwp` (`4.39 GiB`) + `flashindexer.qwp` | `1,545 tok/s` *(C)* / `1,051` *(A)* | `110.6` `DSpark` (`89.5` JSON) / `81/100` *(A Code)* | `16K` `3/3` needle (`1,260 / 37.5`, `60.9` `@65.6K`) | [`qwegnai/ERNIE-5.5-Flash-Preview-hq4g32m5-hq8head-shvq15g64-shvq3g64`](https://huggingface.co/qwegnai/ERNIE-5.5-Flash-Preview-hq4g32m5-hq8head-shvq15g64-shvq3g64) · [`qwegnai/ERNIE-5.5-Flash-Preview-hq8g32-shvq15g64-shvq3g64`](https://huggingface.co/qwegnai/ERNIE-5.5-Flash-Preview-hq8g32-shvq15g64-shvq3g64) |
-| **Edge0-145B** | `qwen4_exp` | `145B` / sparse | `HQ8_G32 + HQ4_G64 + VQ2` PLE (`56.0 + 27.1 GiB`) | `2,572 tok/s` | `135.6` spec / `69.2 tok/s` | `300K` (`1,886 tok/s`, `1M` UMA) | [`qwegnai/Edge0-145B-hq8g32-hq4g64`](https://huggingface.co/qwegnai/Edge0-145B-hq8g32-hq4g64) |
-| **Ling-3.2-air** | `bailing_moe_v3_vl` | `124B` / `5.5B` | `HQ8_G32 + SHVQ3_G64` (`52.23 GiB`, `3.41 bpw`) | `2,847 tok/s` | `110.5` pred / `103.7` NextN / `78.3` | `262K` (`3/3` `@16.9K`) | [`qwegnai/Ling-3.2-air-hq8g32-shvq3g64`](https://huggingface.co/qwegnai/Ling-3.2-air-hq8g32-shvq3g64) |
-| **Qwen3.8-Flash-Next** | `qwen4_exp` | 48L / 512 exp | `HQ8_G32 + HQ4_G64 + VQ2` PLE (`71.3 + 27.1 GiB`) | `3,035 tok/s` | `177.2` `DFlash2` / `81.5 tok/s` | `1M` `e-means` (`1,888 / 63.7 tok/s`) | [`qwegnai/Qwen3.8-Flash-Next-hq8g32-hq4g64`](https://huggingface.co/qwegnai/Qwen3.8-Flash-Next-hq8g32-hq4g64) |
+| **GLM-5.3-Flash** | `glm5_next` | `321B` / `18B` | `SHVQ4_G32 + SHVQ2_G64 + SHVQ3_G64` (`100.63 GiB`) | `1,014 tok/s` | `54.7` NextN / `46.4 tok/s` | `1M` UMA (`743 / 45.0` `@242.5K`) | [`qwegnai/GLM-5.3-Flash-QWP-Mixed`](https://huggingface.co/qwegnai/GLM-5.3-Flash-QWP-Mixed) |
+| **ERNIE-5.5-Flash-Base** | `ernie5_5_moe` | `280B` / `14B` | `HQ8_G32 + SHVQ15_G64 + SHVQ3_G64` (`81.61 GiB`) | `1,137 tok/s` | `52.7` ECHO / `37.2 tok/s` | `1M` UMA (`303 / 16.3` `@300K`) | [`qwegnai/ERNIE-5.5-Flash-Base-QWP-Mixed`](https://huggingface.co/qwegnai/ERNIE-5.5-Flash-Base-QWP-Mixed) |
+| **ERNIE-5.5-Flash-Preview** | `ernie5_5_moe` | `280B` / `14B` | Fast `HQ4_M5+HQ8+SHVQ15/3` (`77.91 GiB` disk / `76.37 GiB` GPU, `2.36 bpw`) · Precision `HQ8+SHVQ15/3` (`81.57 GiB` disk / `80.02 GiB` GPU, `2.52 bpw`) + `dspark.qwp` (`4.39 GiB`) + `flashindexer.qwp` | `1,545 tok/s` *(Fast)* / `1,051` *(Mixed)* | `110.6` `DSpark` (`89.5` JSON) / `81/100` *(Mixed Code)* | `16K` `3/3` needle (`1,260 / 37.5`, `60.9` `@65.6K`) | [`qwegnai/ERNIE-5.5-Flash-Preview-QWP-Mixed-Fast`](https://huggingface.co/qwegnai/ERNIE-5.5-Flash-Preview-QWP-Mixed-Fast) · [`qwegnai/ERNIE-5.5-Flash-Preview-QWP-Mixed`](https://huggingface.co/qwegnai/ERNIE-5.5-Flash-Preview-QWP-Mixed) |
+| **Edge0-145B** | `qwen4_exp` | `145B` / sparse | `HQ8_G32 + HQ4_G64 + VQ2` PLE (`56.0 + 27.1 GiB`) | `2,572 tok/s` | `135.6` spec / `69.2 tok/s` | `300K` (`1,886 tok/s`, `1M` UMA) | [`qwegnai/Edge0-145B-QWP-Mixed`](https://huggingface.co/qwegnai/Edge0-145B-QWP-Mixed) |
+| **Ling-3.2-air** | `bailing_moe_v3_vl` | `124B` / `5.5B` | `HQ8_G32 + SHVQ3_G64` (`52.23 GiB`, `3.41 bpw`) | `2,847 tok/s` | `110.5` pred / `103.7` NextN / `78.3` | `262K` (`3/3` `@16.9K`) | [`qwegnai/Ling-3.2-air-QWP-Mixed`](https://huggingface.co/qwegnai/Ling-3.2-air-QWP-Mixed) |
+| **Qwen3.8-Flash-Next** | `qwen4_exp` | 48L / 512 exp | `HQ8_G32 + HQ4_G64 + VQ2` PLE (`71.3 + 27.1 GiB`) | `3,035 tok/s` | `177.2` `DFlash2` / `81.5 tok/s` | `1M` `e-means` (`1,888 / 63.7 tok/s`) | [`qwegnai/Qwen3.8-Flash-Next-QWP-Mixed`](https://huggingface.co/qwegnai/Qwen3.8-Flash-Next-QWP-Mixed) |
 | **Maxwell-V1-Flash** | `maxwell_moe` | `36.8B` / `~3.2B` | `HQ8_G32 + SHVQ3/4_G64` (`17.18 GiB`, `3.84 bpw`) | `5,324 tok/s` | `210.5` spec / `104.0` srv / `100.4` | `524K` (`1,620 / 20.8` `@64K`) | — |
-| **GigaChat4-37B-A4B** | `gigachat4` | `37B` / `4B` | `SHVQ4_G32` (`21.1 GiB` RAM) + `MLA DFlash2` | `4,770 tok/s` (`4,833` `HQ8`) | `323.8` pred / `164.4` srv / `137.2` CLI | `1M` UMA (`3/3` `@300K`, `24.0 GiB`) | — |
-| **Apex-35B-V1.0** | `qwen3_5_moe` | `35.95B` / `3B` | `HQ4_G32_M5` (`22.18 GiB`) | `6,416 tok/s` | `213.8` pred / `178.0` srv / `148.5` | `1M` `Ward-512` (`5,491 / 100.9 tok/s`) | [`qwegnai/Apex-35B-V1.0-hq4g32`](https://huggingface.co/qwegnai/Apex-35B-V1.0-hq4g32) |
-| **Qwen3.6-35B-A3B** | `qwen3_5_moe` | 40L / 256 exp | `HQ4_G32` | `6,462 tok/s` | `382.8` srv / `324.3` CLI / `155.1` | `1M` `Ward-512` (`2,317 / 105.6 tok/s`) | [`qwegnai/Qwen3.6-35B-A3B-hq4g32`](https://huggingface.co/qwegnai/Qwen3.6-35B-A3B-hq4g32) |
-| **Qwen3.8-27B** | `qwen3_5` | `27B` dense + ViT | `HQ4_G32` (+ `DSpine-b16` / `DFlash2`) | `1,043 tok/s` | `154.2` DF2 / `148.0` DSpine / `32.8` | `1M` `e-means` (`831 / 36.5 tok/s`) | [`qwegnai/Qwen3.8-27B-hq4g32`](https://huggingface.co/qwegnai/Qwen3.8-27B-hq4g32) |
-| **SenseNova-Loop-9B** | `sensenova_loop` | `9B` (32L `2×` loop) | `HQ4_G32` (`7.38 GiB` VL / `4.63 GiB` text) | `2,045 tok/s` | `165.7` pred / `153.0` 4-srv / `58.4` | `524K` YaRN (`1M` `49.4 tok/s`) | [`qwegnai/SenseNova-Loop-9B-hq4g32`](https://huggingface.co/qwegnai/SenseNova-Loop-9B-hq4g32) |
-| **Inkling-2-Mini (Fast)** | `inkling2_loop` | 24L (`48`-visit) MoE | `SHVQ4 + SHVQ2/3` + `DSpark` (`10.20 GiB`) | `3,638 tok/s` | `99.9` `DSpark d=3` / `100.6` `B=4` / `73.2` | `1M` (`2,017 / 33.9`), `512K` `d=3` `55.0` | [`qwegnai/Inkling-2-Mini-shvq4g32-shvq2g64-shvq3g64`](https://huggingface.co/qwegnai/Inkling-2-Mini-shvq4g32-shvq2g64-shvq3g64) |
-| **Inkling-2-Mini (NVFP4)** | `inkling2_loop` | 24L (`48`-visit) MoE | `SHVQ4_G32 + NVFP4` MoE (`15.15 GiB`) | `3,504 tok/s` | `80.1` `d=3` / `66.4 tok/s` | `16K` `3/3` needle (`0.0132` KL) | [`qwegnai/Inkling-2-Mini-shvq4g32-nvfp4`](https://huggingface.co/qwegnai/Inkling-2-Mini-shvq4g32-nvfp4) |
+| **GigaChat4-37B-A4B** | `gigachat4` | `37.6B` / `4B` | `SHVQ4_G32` (`20.34 GiB`) + bundled `MLA DFlash2` (`456 MiB`) | `4,770 tok/s` | `323.8` pred / `164.4` srv / `137.2` CLI | `1M` UMA (`3/3` `@300K`, `<27 GiB`) | [`qwegnai/GigaChat4-37B-A4B-QWP_4`](https://huggingface.co/qwegnai/GigaChat4-37B-A4B-QWP_4) |
+| **Apex-35B-V1.0** | `qwen3_5_moe` | `35.95B` / `3B` | `HQ4_G32_M5` (`22.18 GiB`) | `6,416 tok/s` | `213.8` pred / `178.0` srv / `148.5` | `1M` `Ward-512` (`5,491 / 100.9 tok/s`) | [`qwegnai/Apex-35B-V1.0-QWP_4`](https://huggingface.co/qwegnai/Apex-35B-V1.0-QWP_4) |
+| **Qwen3.6-35B-A3B** | `qwen3_5_moe` | 40L / 256 exp | `HQ4_G32` | `6,462 tok/s` | `382.8` srv / `324.3` CLI / `155.1` | `1M` `Ward-512` (`2,317 / 105.6 tok/s`) | [`qwegnai/Qwen3.6-35B-A3B-QWP_4`](https://huggingface.co/qwegnai/Qwen3.6-35B-A3B-QWP_4) |
+| **Qwen3.8-27B** | `qwen3_5` | `27B` dense + ViT | `HQ4_G32` (+ `DSpine-b16` / `DFlash2`) | `1,043 tok/s` | `154.2` DF2 / `148.0` DSpine / `32.8` | `1M` `e-means` (`831 / 36.5 tok/s`) | [`qwegnai/Qwen3.8-27B-QWP_4`](https://huggingface.co/qwegnai/Qwen3.8-27B-QWP_4) |
+| **SenseNova-Loop-9B** | `sensenova_loop` | `9B` (32L `2×` loop) | `HQ4_G32` (`7.38 GiB` VL / `4.63 GiB` text) | `2,045 tok/s` | `165.7` pred / `153.0` 4-srv / `58.4` | `524K` YaRN (`1M` `49.4 tok/s`) | [`qwegnai/SenseNova-Loop-9B-QWP_4`](https://huggingface.co/qwegnai/SenseNova-Loop-9B-QWP_4) |
+| **Inkling-2-Mini (Fast)** | `inkling2_loop` | 24L (`48`-visit) MoE | `SHVQ4 + SHVQ2/3` + `DSpark` (`10.20 GiB`) | `3,638 tok/s` | `99.9` `DSpark d=3` / `100.6` `B=4` / `73.2` | `1M` (`2,017 / 33.9`), `512K` `d=3` `55.0` | [`qwegnai/Inkling-2-Mini-QWP-Mixed-Fast`](https://huggingface.co/qwegnai/Inkling-2-Mini-QWP-Mixed-Fast) |
+| **Inkling-2-Mini (NVFP4)** | `inkling2_loop` | 24L (`48`-visit) MoE | `SHVQ4_G32 + NVFP4` MoE (`15.15 GiB`) | `3,504 tok/s` | `80.1` `d=3` / `66.4 tok/s` | `16K` `3/3` needle (`0.0132` KL) | [`qwegnai/Inkling-2-Mini-QWP-Mixed`](https://huggingface.co/qwegnai/Inkling-2-Mini-QWP-Mixed) |
 | **Sage-S2.1-Flash** | Hybrid MoE | Hybrid MoE | `HQ8_G32 + SHVQ2_G64 + SHVQ3_G64` | `845.7 tok/s` | `49.6` pred / `42.4 tok/s` | `65K+` (`18 ms` warm, `81/100` Code) | — |
 
 Official speculative drafters on Hugging Face:
-- [`qwegnai/Qwen3.8-27B-DSpine-b16-hq4g32`](https://huggingface.co/qwegnai/Qwen3.8-27B-DSpine-b16-hq4g32) — 5-layer block-causal DSpine drafter (`B=2..16`) for `Qwen3.8-27B`
-- [`qwegnai/Qwen3.8-27B-DFlash2-hq4g32`](https://huggingface.co/qwegnai/Qwen3.8-27B-DFlash2-hq4g32) — 5-layer block-diffusion DFlash 2 drafter (`154.2 tok/s`)
+- [`qwegnai/Qwen3.8-27B-DSpine-b16-QWP_4`](https://huggingface.co/qwegnai/Qwen3.8-27B-DSpine-b16-QWP_4) — 5-layer block-causal DSpine drafter (`B=2..16`) for `Qwen3.8-27B`
+- [`qwegnai/Qwen3.8-27B-DFlash2-QWP_4`](https://huggingface.co/qwegnai/Qwen3.8-27B-DFlash2-QWP_4) — 5-layer block-diffusion DFlash 2 drafter (`154.2 tok/s`)
 
 ---
 
@@ -68,8 +68,8 @@ Official speculative drafters on Hugging Face:
 </p>
 
 43L MoE (`280B` total / `14B` active, quantized from `baidu/ERNIE-5.5-Flash-Preview` MXFP4 `F8_E8M0` experts + FP8 dense blocks into two UMA-resident packs with `model.qlsa`, bundled `dspark.qwp` speculative drafter, and `flashindexer.qwp`), native `chatv2p3` & parallel `<ernie:tool_call>` protocol, `0` steady-state allocations:
-- **Track C ([`ERNIE-5.5-Flash-Preview-hq4g32m5-hq8head-shvq15g64-shvq3g64`](https://huggingface.co/qwegnai/ERNIE-5.5-Flash-Preview-hq4g32m5-hq8head-shvq15g64-shvq3g64), `77.91 GiB` disk / `76.37 GiB` GPU, `2.36 bpw`)**: `HQ4_G32_M5` dense trunk + `HQ8_G32` head + `SHVQ15_G64`/`SHVQ3_G64` experts (`77.11–82.30 GiB` RAM) — **`1,544.9 tok/s`** GPU (`1,540.9` wall) at `4K` prefill, **`43.28–44.78 tok/s`** serial decode, **`59.95–89.48 tok/s`** `DSpark d=7 neural --dspark-confidence-schedule` (JSON `89.48` at `5.77 tok/rnd` with `--moe-spec-budget 36`; Code `63.92`; Prose `62.65`), `16K` `3/3` verbatim needles (`1,259.9 tok/s` `d0` & `1,165.5 tok/s` `d7n_cs`), Law 28 `S1–S9` **`9/9 PASS`** (`0` errors), and active-DSpark `llmprobe`: **`291/291 (100%)`** conformance, **`36/36 (100%)`** fidelity, **`110.6 tok/s`** speculative (`7.11 tok/step`, `3.47×`), **`60.9 tok/s`** at `65.6K` (`3.76 tok/step`), `38×` prefix cache, and **`75/100`** (`--reasoning off`, `HE 44/50`, `MBPP 31/50`) / **`78/100`** (`--reasoning low`, `HE 45/50`, `MBPP 33/50`) `Code-100`.
-- **Track A ([`ERNIE-5.5-Flash-Preview-hq8g32-shvq15g64-shvq3g64`](https://huggingface.co/qwegnai/ERNIE-5.5-Flash-Preview-hq8g32-shvq15g64-shvq3g64), `81.57 GiB` disk / `80.02 GiB` GPU, `2.52 bpw`)**: higher-precision `HQ8_G32` trunk (`80.77–85.82 GiB` RAM) — **`1,051.3 tok/s`** GPU at `4K` (`+19.5%` vs `v0.40.0` `879.6`), **`1,000.0 tok/s`** at `16K` (`+22.9%` vs `813.7`, `3/3` needles bit-exact vs `BASE`), `JSON 128`-tok `32.15 -> 62.78 tok/s` (`+95.3%` under `DSpark` + `--moe-spec-budget 36`), and active-DSpark `llmprobe` `--reasoning off` **`81/100` `Code-100`** (`HE 47/50`, `MBPP 34/50`, `0` errors).
+- **Track C ([`ERNIE-5.5-Flash-Preview-QWP-Mixed-Fast`](https://huggingface.co/qwegnai/ERNIE-5.5-Flash-Preview-QWP-Mixed-Fast), `77.91 GiB` disk / `76.37 GiB` GPU, `2.36 bpw`)**: `HQ4_G32_M5` dense trunk + `HQ8_G32` head + `SHVQ15_G64`/`SHVQ3_G64` experts (`77.11–82.30 GiB` RAM) — **`1,544.9 tok/s`** GPU (`1,540.9` wall) at `4K` prefill, **`43.28–44.78 tok/s`** serial decode, **`59.95–89.48 tok/s`** `DSpark d=7 neural --dspark-confidence-schedule` (JSON `89.48` at `5.77 tok/rnd` with `--moe-spec-budget 36`; Code `63.92`; Prose `62.65`), `16K` `3/3` verbatim needles (`1,259.9 tok/s` `d0` & `1,165.5 tok/s` `d7n_cs`), Law 28 `S1–S9` **`9/9 PASS`** (`0` errors), and active-DSpark `llmprobe`: **`291/291 (100%)`** conformance, **`36/36 (100%)`** fidelity, **`110.6 tok/s`** speculative (`7.11 tok/step`, `3.47×`), **`60.9 tok/s`** at `65.6K` (`3.76 tok/step`), `38×` prefix cache, and **`75/100`** (`--reasoning off`, `HE 44/50`, `MBPP 31/50`) / **`78/100`** (`--reasoning low`, `HE 45/50`, `MBPP 33/50`) `Code-100`.
+- **Track A ([`ERNIE-5.5-Flash-Preview-QWP-Mixed`](https://huggingface.co/qwegnai/ERNIE-5.5-Flash-Preview-QWP-Mixed), `81.57 GiB` disk / `80.02 GiB` GPU, `2.52 bpw`)**: higher-precision `HQ8_G32` trunk (`80.77–85.82 GiB` RAM) — **`1,051.3 tok/s`** GPU at `4K` (`+19.5%` vs `v0.40.0` `879.6`), **`1,000.0 tok/s`** at `16K` (`+22.9%` vs `813.7`, `3/3` needles bit-exact vs `BASE`), `JSON 128`-tok `32.15 -> 62.78 tok/s` (`+95.3%` under `DSpark` + `--moe-spec-budget 36`), and active-DSpark `llmprobe` `--reasoning off` **`81/100` `Code-100`** (`HE 47/50`, `MBPP 34/50`, `0` errors).
 
 ### Ling-3.2-air
 
@@ -110,6 +110,16 @@ Official speculative drafters on Hugging Face:
 </p>
 
 45L all-MBSA (`maxwell_moe`: `1,024+1,024+16×128` tiled-32 NAX/split-K, `32Q/4KV` `head_dim=128` `qk_layernorm`), 4-stream Sinkhorn-20 mHC, 3 dense + 42×256 sigmoid top-12 + shared MoE, dedicated mHC-MTP head (`HQ8_G32 + SHVQ3/4_G64`, `17.18 GiB` `3.84 bpw`, `0.0055` KLD / `100%` top-1 vs BF16 — **`5,324 tok/s`** `@2K–4K`, `100.4` CLI / `104.0` serve / **`210.5 tok/s`** serve spec, `7–15 ms` warm cache `25.8×–47.3×`, **`291/291` API / `100%` cap & fid / `59/100` `Code-100`**, `3/3` needles `@16K`/`64K`).
+
+### GigaChat4-37B-A4B
+
+*37.59B / 4B Active · `20.34 GiB` `SHVQ4_G32` + Bundled `456 MiB` MLA `DFlash 2` · `1M` Context (`< 27 GiB` UMA)*
+
+<p align="center">
+  <img src="../assets/qwegn_model_gigachat4_37b_a4b.svg" alt="GigaChat4-37B-A4B" width="100%">
+</p>
+
+32L Hybrid GDN + Decoupled-RoPE `MLA-DSA` MoE ([`qwegnai/GigaChat4-37B-A4B-QWP_4`](https://huggingface.co/qwegnai/GigaChat4-37B-A4B-QWP_4): `24` `sigmoid(b)*2` GDN + `8` `MLA-DSA` `512D` latent KV `32H` `128D+64D`, `4` dense `8192` + `28 × 192` routed experts sigmoid `top-8` + `1` shared `2048` with `SwiGLU` clamp `10.0`, rank-`16` sandwich `GatedNorm`, `final_logit_softcapping = 30.0`, Layer-32 `NextN` MTP, bundled 5L Matrix-Absorbed MLA `DFlash 2` drafter in `dflash_draft/`, and GCML `<|thought|>` / `<|function call|>` protocol; `20.34 GiB` `4.65 bpw` + `456.1 MiB` drafter — **`4,770 tok/s`** `@4K` / `3,401` `@10.4K` prefill, **`323.8 tok/s`** predictable spec `7.38 tok/step` / **`164.4 tok/s`** SSE / **`137.2 tok/s`** CLI `code128` / **`122.2 tok/s`** forced-192 (`102.3–121.0 tok/s` across `0.5K–65.6K`) / **`126.2 tok/s`** `B=4` serve, `15 ms` `31.3×` warm cache, **`3/3` needles @ `16K`/`128K`/`300K`**, **`1M` native context in `26.99 GiB` RAM**, **`291/291` API / `100%` (`37/37`) cap / `67/88` (`76.1%`) agentic / `100%` fidelity / `70/100` `Code-100` / `45/92` `Core-92` (`68.3K` tok) / `29/50` `Hard-50` / `90.9%` (`85.4%+`) `HumanEval+` / `87.5%` `IFEval` / `50.0%` `GPQA` / `66.7%` `MMLU-Pro` / `20.0%` `AIME25` / `8/8` `Promptfoo`**, `0` steady-state allocations).
 
 ### Qwen3.8-Flash-Next
 
@@ -160,8 +170,8 @@ Official speculative drafters on Hugging Face:
 </p>
 
 24 physical → **48 effective layer visits** (`[6..<18] ×3`, `4` trunk + `12×3` loop + `4` coda), `128` experts (`8/tok`), `24Q/8KV` (`head_dim=128`) Sink+RelBias GQA (`4` full + `20` `SWA-1024`), `AttnRes-6`, `SConv-4`, `23`-layer ViT, `DSpark` Markov+Tree MTP (`--mtp-drafts 0...15`):
-- **`Inkling-2-Mini-shvq4g32-shvq2g64-shvq3g64`** (`10.20 GiB` total / `9.94 GiB` GPU weights — **`3,638 tok/s`** `@8K` / `3,200` `@128K` prefill, **`99.9 tok/s`** `DSpark d=3` / `86.2` `code256` `B=12` / **`100.6 tok/s`** `B=4` HTTP wavefront, `8K–512K` lossless `DSpark d=3` **`84.3 @8K` / `78.9 @32K` / `64.8 @128K` / `60.2 @256K` / `55.0 tok/s @512K`**, `@1M` `q4` LSA `2,017 / 33.9 tok/s`, `3/3 (12/12)` recall `8K–1M`, **`89/89 (100%)` API / `21/25` `Code-25`**).
-- **`Inkling-2-Mini-shvq4g32-nvfp4`** (`15.15 GiB`, lossless `NVFP4` MoE, **`0.0132` mean KL / `97.9%` Top-1**, `3,504` `@8K` prefill, `80.1` `d=3` / `79.9` `var5`, `13/13` HE).
+- **`Inkling-2-Mini-QWP-Mixed-Fast`** (`10.20 GiB` total / `9.94 GiB` GPU weights, `SHVQ4_G32 + SHVQ2_G64 + SHVQ3_G64` — **`3,638 tok/s`** `@8K` / `3,200` `@128K` prefill, **`99.9 tok/s`** `DSpark d=3` / `86.2` `code256` `B=12` / **`100.6 tok/s`** `B=4` HTTP wavefront, `8K–512K` lossless `DSpark d=3` **`84.3 @8K` / `78.9 @32K` / `64.8 @128K` / `60.2 @256K` / `55.0 tok/s @512K`**, `@1M` `q4` LSA `2,017 / 33.9 tok/s`, `3/3 (12/12)` recall `8K–1M`, **`89/89 (100%)` API / `21/25` `Code-25`**).
+- **`Inkling-2-Mini-QWP-Mixed`** (`15.15 GiB`, `SHVQ4_G32 + NVFP4` MoE, **`0.0132` mean KL / `97.9%` Top-1**, `3,504` `@8K` prefill, `80.1` `d=3` / `79.9` `var5`, `13/13` HE).
 
 ### Sage-S2.1-Flash & Codebase Memory (`QWMemoryPack`)
 

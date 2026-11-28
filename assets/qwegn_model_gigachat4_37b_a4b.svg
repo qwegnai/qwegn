@@ -1,0 +1,134 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 990" width="960" height="990">
+  <defs>
+    <radialGradient id="bgGlow" cx="20%" cy="10%" r="90%">
+      <stop offset="0%" stop-color="#17203d"/>
+      <stop offset="55%" stop-color="#0b1020"/>
+      <stop offset="100%" stop-color="#050811"/>
+    </radialGradient>
+    <linearGradient id="cardGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#192136" stop-opacity="0.95"/>
+      <stop offset="100%" stop-color="#0d1220" stop-opacity="0.88"/>
+    </linearGradient>
+    <linearGradient id="cyanGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#38bdf8"/><stop offset="100%" stop-color="#0ea5e9"/>
+    </linearGradient>
+    <linearGradient id="purpleGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#c084fc"/><stop offset="100%" stop-color="#a855f7"/>
+    </linearGradient>
+    <linearGradient id="amberGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#fbbf24"/><stop offset="100%" stop-color="#f59e0b"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#10b981"/>
+    </linearGradient>
+  </defs>
+  <style>
+    svg { text-rendering: geometricPrecision; -webkit-font-smoothing: antialiased; }
+    .title { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif; font-weight: 800; }
+    .subtitle { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif; font-weight: 500; }
+    .sans { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", "Segoe UI", system-ui, sans-serif; }
+    .mono { font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace; font-weight: 600; }
+  </style>
+  <rect width="960" height="990" rx="20" fill="url(#bgGlow)" stroke="#1e293b" stroke-width="2"/>
+  <g opacity="0.04" stroke="#ffffff" stroke-width="1">
+    <line x1="0" y1="150" x2="960" y2="150"/>
+    <line x1="0" y1="438" x2="960" y2="438"/>
+    <line x1="326" y1="0" x2="326" y2="990"/>
+    <line x1="634" y1="0" x2="634" y2="990"/>
+  </g>
+
+  <g transform="translate(28, 24)">
+    <rect x="0.0" y="0.0" width="266" height="28" rx="14.0" fill="#1c1936" stroke="#818cf8" stroke-width="1.2"/>
+    <circle cx="15.0" cy="14.0" r="4.5" fill="#a5b4fc"/>
+    <text x="27.0" y="18.6" class="sans" font-size="12.5" font-weight="700" fill="#c7d2fe" letter-spacing="0.25">QWEGN v0.44.1 · MODEL PROFILE</text>
+    <rect x="276.0" y="0.0" width="424" height="28" rx="14.0" fill="#064e3b" stroke="#10b981" stroke-width="1.2"/>
+    <text x="488.0" y="18.6" text-anchor="middle" class="sans" font-size="12.5" font-weight="700" fill="#6ee7b7" letter-spacing="0.25">37B (4B ACT) · 4,770 PRE · 323.8 DF2</text>
+    <text x="0" y="64" fill="#f8fafc" class="title" font-size="26">GigaChat4-37B-A4B-QWP_4 (+ MLA DFlash 2)</text>
+    <text x="0" y="92" fill="#cbd5e1" class="subtitle" font-size="14.5">32L Hybrid GDN + MLA-DSA MoE (192 Experts · Top-8 + 1 Shared · 24 GDN + 8 MLA-DSA)</text>
+    <text x="0" y="114" fill="#cbd5e1" class="subtitle" font-size="14.5">Sandwich GatedNorm · Layer-32 NextN + 5L MLA DFlash 2 · 20.34 + 0.45 GiB · 1M Context</text>
+  </g>
+
+  <g transform="translate(736, 20)">
+    <rect width="196" height="58" rx="13" fill="#0b1222" stroke="#334155" stroke-width="1.3"/>
+    <rect x="11" y="11" width="36" height="36" rx="9" fill="url(#mark)"/>
+    <text x="29" y="36" text-anchor="middle" class="sans" font-size="21" font-weight="900" fill="#04110c">Q</text>
+    <text x="56" y="29" class="sans" font-size="21" font-weight="800" fill="#f8fafc">Qwegn</text>
+    <text x="56" y="46" class="mono" font-size="11.5" font-weight="700" fill="#94a3b8">SWIFT 6.2 · METAL 4</text>
+  </g>
+
+  <g transform="translate(28, 160)">
+    <rect width="288" height="268" rx="16" fill="url(#cardGrad)" stroke="#2c3563" stroke-width="1.4"/>
+    <rect x="18.0" y="16.0" width="192" height="26" rx="13.0" fill="#0c2a3a" stroke="#0ea5e9" stroke-width="1.2"/>
+    <text x="114.0" y="33.5" text-anchor="middle" class="sans" font-size="13" font-weight="700" fill="#7dd3fc" letter-spacing="0.2">NAX GDN + MLA PREFILL</text>
+    <text x="18" y="90" fill="url(#cyanGrad)" class="title mono" font-size="44">4,770</text>
+    <text x="164.5" y="88" fill="#38bdf8" class="title mono" font-size="17">tok/s</text>
+    <text x="18" y="120" fill="#f8fafc" class="title" font-size="15.5">4,770 @4K · 3,401 @10.4K srv</text>
+    <text x="18" y="144" fill="#cbd5e1" class="subtitle" font-size="13.5">3,116 @16K · 2,847 @32K · 2,681 @65K</text>
+    <text x="18" y="165" fill="#cbd5e1" class="subtitle" font-size="13.5">28.4× warm cache (426 → 15 ms)</text>
+    <line x1="18" y1="196" x2="270" y2="196" stroke="#1e293b" stroke-width="1"/>
+    <text x="18" y="218" fill="#38bdf8" class="mono" font-size="13">76 ms cold TTFT (llmprobe)</text>
+    <text x="18" y="238" fill="#38bdf8" class="mono" font-size="13">2,523 @128K · 1,443 @300K</text>
+  </g>
+
+  <g transform="translate(336, 160)">
+    <rect width="288" height="268" rx="16" fill="url(#cardGrad)" stroke="#2c3563" stroke-width="1.4"/>
+    <rect x="18.0" y="16.0" width="202" height="26" rx="13.0" fill="#281638" stroke="#a855f7" stroke-width="1.2"/>
+    <text x="119.0" y="33.5" text-anchor="middle" class="sans" font-size="13" font-weight="700" fill="#e9d5ff" letter-spacing="0.2">DECODE &amp; 1M UMA (&lt;27G)</text>
+    <text x="18" y="90" fill="url(#purpleGrad)" class="title mono" font-size="44">164.4</text>
+    <text x="164.5" y="88" fill="#c084fc" class="title mono" font-size="17">tok/s</text>
+    <text x="18" y="120" fill="#f8fafc" class="title" font-size="15.5">Serve SSE · 137.2 CLI DF2</text>
+    <text x="18" y="144" fill="#cbd5e1" class="subtitle" font-size="13.5">124.9 @16K · 130.2 @32K · 98.0 @64K</text>
+    <text x="18" y="165" fill="#cbd5e1" class="subtitle" font-size="13.5">126.2 B=4 srv · 21.1–27.0 GiB RAM</text>
+    <line x1="18" y1="196" x2="270" y2="196" stroke="#1e293b" stroke-width="1"/>
+    <text x="18" y="218" fill="#c084fc" class="mono" font-size="13">+0.2% 4m drift · 0 steady allocs</text>
+    <text x="18" y="238" fill="#c084fc" class="mono" font-size="13">5,248 B/tok q4 KV · 1M native</text>
+  </g>
+
+  <g transform="translate(644, 160)">
+    <rect width="288" height="268" rx="16" fill="url(#cardGrad)" stroke="#2c3563" stroke-width="1.4"/>
+    <rect x="18.0" y="16.0" width="212" height="26" rx="13.0" fill="#33230c" stroke="#f59e0b" stroke-width="1.2"/>
+    <text x="124.0" y="33.5" text-anchor="middle" class="sans" font-size="13" font-weight="700" fill="#fde68a" letter-spacing="0.2">MLA DFLASH 2 &amp; QUALITY</text>
+    <text x="18" y="90" fill="url(#amberGrad)" class="title mono" font-size="44">323.8</text>
+    <text x="164.5" y="88" fill="#fbbf24" class="title mono" font-size="17">tok/s</text>
+    <text x="18" y="120" fill="#f8fafc" class="title" font-size="15.5">Predictable · 7.38 tok/step</text>
+    <text x="18" y="144" fill="#cbd5e1" class="subtitle" font-size="13.5">115.8 NextN · 98.8 serial (d=0)</text>
+    <text x="18" y="165" fill="#cbd5e1" class="subtitle" font-size="13.5">100% cap (37/37) · 67/88 agentic</text>
+    <line x1="18" y1="196" x2="270" y2="196" stroke="#1e293b" stroke-width="1"/>
+    <text x="18" y="218" fill="#fbbf24" class="mono" font-size="12.5">291/291 API · 100% fid · 8/8 PFoo</text>
+    <text x="18" y="238" fill="#fbbf24" class="mono" font-size="12.5">90.9% HE (85.4%+) · 50.0% GPQA</text>
+  </g>
+
+  <g transform="translate(28, 446)">
+    <rect width="904" height="214" rx="16" fill="url(#cardGrad)" stroke="#2c3563" stroke-width="1.4"/>
+    <rect x="22.0" y="16.0" width="474" height="26" rx="13.0" fill="#062e22" stroke="#10b981" stroke-width="1.2"/>
+    <text x="259.0" y="33.5" text-anchor="middle" class="sans" font-size="13" font-weight="700" fill="#6ee7b7" letter-spacing="0.25">24 GDN + 8 MLA-DSA + 192-EXP MOE + SANDWICH GATEDNORM</text>
+    <text x="22" y="68" fill="#f8fafc" class="title" font-size="18">gigachat4: Hybrid Linear/Sparse-Latent MoE + 5L Matrix-Absorbed MLA DFlash 2</text>
+    <text x="22" y="98" fill="#38bdf8" class="mono" font-size="14.5">• 24 GDN + 8 MLA-DSA : sigmoid(b)*2 GDN · 512D latent KV · 32H (128D+64D) + oGate</text>
+    <text x="22" y="122" fill="#38bdf8" class="mono" font-size="14.5">• Sparse MoE (E=192) : 4 dense (8192) + 28 × 192 exp (top-8 + 1 shared 2048, clamp 10)</text>
+    <text x="22" y="146" fill="#38bdf8" class="mono" font-size="14.5">• Sandwich GatedNorm : rank-16 SiLU-Sigmoid pre/post norms · softcap 30 · 128,256 vocab</text>
+    <text x="22" y="170" fill="#fbbf24" class="mono" font-size="14.5">• Dual Speculation   : 5L MLA DFlash 2 (456 MiB, taps [1,8,15,22,29]) + NextN L32</text>
+    <text x="22" y="194" fill="#34d399" class="mono" font-size="14.5">• 1M Context &amp; GCML  : YaRN-32× 1,048,576 ctx · 3/3 @ 16K/128K/300K · GCML tools</text>
+  </g>
+
+  <g transform="translate(28, 676)">
+    <rect width="904" height="214" rx="16" fill="url(#cardGrad)" stroke="#2c3563" stroke-width="1.4"/>
+    <rect x="22.0" y="16.0" width="448" height="26" rx="13.0" fill="#1c1936" stroke="#818cf8" stroke-width="1.2"/>
+    <text x="246.0" y="33.5" text-anchor="middle" class="sans" font-size="13" font-weight="700" fill="#c7d2fe" letter-spacing="0.25">SHVQ4_G32 + BUNDLED DFLASH 2 · 4.65 BPW · 100% PARITY</text>
+    <text x="22" y="68" fill="#f8fafc" class="title" font-size="18">20.34 GiB Target (18,793 Tensors) + 456.1 MiB Drafter · M1–M6 Unified Runtime</text>
+    <text x="22" y="98" fill="#34d399" class="mono" font-size="14.5">• Target QWP1 (20.34G): 18,156 SHVQ4_G32 (99.0%) + 519 BF16 GatedNorm/Embed + 118 F32</text>
+    <text x="22" y="122" fill="#34d399" class="mono" font-size="14.5">• Bundled dflash_draft: 456.1 MiB QWP1 (51 SHVQ4_G32 + 119 BF16 conv/norm/selector)</text>
+    <text x="22" y="146" fill="#c084fc" class="mono" font-size="14.5">• Cross-Gen Parity   : &lt; 5e-3 2L PyTorch oracle across Apple10 NAX, Apple9 &amp; Apple8</text>
+    <text x="22" y="170" fill="#fbbf24" class="mono" font-size="14.5">• Deterministic q4 KV: 0.000000000 logprob variance · 5/5 bit-identical CLI SHA-256</text>
+    <text x="22" y="194" fill="#38bdf8" class="mono" font-size="14.5">• Unified Runtime    : Metal 4 NAX (TG16 LMHead) on M5+ · Metal 3.2/MMA on M1–M4</text>
+  </g>
+
+  <g transform="translate(28, 906)">
+    <rect width="904" height="62" rx="11" fill="#0a101f" stroke="#334155" stroke-width="1.2"/>
+    <rect x="14" y="13" width="96" height="36" rx="8" fill="#111c33" stroke="#38bdf8" stroke-opacity="0.45" stroke-width="1"/>
+    <text x="62" y="29" text-anchor="middle" class="mono" font-size="11" font-weight="800" fill="#7dd3fc">M5 MAX</text>
+    <text x="62" y="43" text-anchor="middle" class="mono" font-size="10.5" fill="#94a3b8">128 GB UMA</text>
+    <text x="122" y="27" class="mono" font-size="11.5" font-weight="700" fill="#e2e8f0">Apple M5 Max (Mac17,6) · 18-Core CPU · 40-Core Apple10 NAX GPU · 128 GB Unified Memory</text>
+    <text x="122" y="46" class="mono" font-size="11.5" fill="#94a3b8">585 GB/s DRAM · 950 GB/s SLC · macOS 26.2+ · Qwegn v0.44.1 · q4 KV · Temp 0 · 0 Steady Allocs</text>
+  </g>
+</svg>

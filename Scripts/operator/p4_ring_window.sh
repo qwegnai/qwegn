@@ -3,7 +3,7 @@
 # Two passes per arm: pass 1 warms the page cache, pass 2 is the reading.
 set -u
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
-PACK="${PACK:-$HOME/.qwg/models/Qwen3.8-Flash-Next-hq4g32/model.qwp}"
+PACK="${PACK:-$HOME/.qwg/models/Qwen3.8-Flash-Next-QWP_4/model.qwp}"
 BIN="$REPO/.build/release/qwg"
 OUT="${OUT:-/tmp/qw-repro/p4ring-$(date +%Y%m%d-%H%M%S)}"
 mkdir -p "$OUT"

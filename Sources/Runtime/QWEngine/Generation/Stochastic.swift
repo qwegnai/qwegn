@@ -121,9 +121,25 @@ extension QWEngineDriver {
             let committedRound: ((Int) throws -> QWGreedyRoundDecision)? = speculative ? { remaining in
                 let round = try self.prepareStochasticRound(session, maxNew: remaining,
                                                             stopIDs: stopIds, permit: permit)
-                try self.commitStochasticVerification(session, round: round, permit: permit)
+                try self.commitStochasticVerification(session, round: round, drain: false, permit: permit)
+                if let cb = session.lastCommitCB {
+                    let failed = cb.status == .error || self.syncCommitFailure(for: session, cb: nil)
+                    if failed {
+                        session.lastCommitCB = nil
+                        self.recordCommandBufferError(for: cb)
+                        session.stateFailed = true
+                        throw QWEngineDriverError.state("commit GPU failure during streaming speculative generation")
+                    }
+                }
                 return round.decision
             } : nil
+            defer {
+                if let cb = session.lastCommitCB {
+                    session.lastCommitCB = nil
+                    cb.waitUntilCompleted()
+                    _ = self.syncCommitFailure(for: session, cb: cb)
+                }
+            }
             let output = try QWGreedyGenerationLoop.run(vocab: geometry.vocab, first: first, maxNew: effectiveMaxNew, stopIDs: stopIds,
                 onToken: onToken, ordinary: { token in
                     try self.decodeStochastic(session, token: token, permit: permit)
@@ -133,6 +149,16 @@ extension QWEngineDriver {
                     self.canRunSpeculativeRound(session)
                         && self.canSpeculateActiveConstraint
                 })
+            if let cb = session.lastCommitCB {
+                session.lastCommitCB = nil
+                cb.waitUntilCompleted()
+                _ = syncCommitFailure(for: session, cb: cb)
+            } else {
+                _ = syncCommitFailure(for: session, cb: nil)
+            }
+            guard !session.stateFailed else {
+                throw QWEngineDriverError.state("commit GPU failure during experimental stochastic generation")
+            }
             lastExperimentalGeneration = QWExperimentalGenerationStats(
                 promptTokens: prompt.count, generatedTokens: output.tokens.count,
                 prefillSec: prefillSec, decodeSec: Date().timeIntervalSince(decoding),

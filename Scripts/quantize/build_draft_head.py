@@ -13,7 +13,7 @@ QWQuant.Pack reader validates magic, geometry hash, and layout for free.
 Usage:
   python3 Scripts/quantize/build_draft_head.py \
       --model /path/to/Qwen3.8-27B-snapshot \
-      --out $HOME/.qwg/models/Qwen3.8-27B-hq4g32/lm_head.q4g
+      --out $HOME/.qwg/models/Qwen3.8-27B-QWP_4/lm_head.q4g
   python3 Scripts/quantize/build_draft_head.py --out ... --verify
 """
 from __future__ import annotations

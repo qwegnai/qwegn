@@ -2,6 +2,7 @@
 """Verify compiled metallibs target macOS >= 26.2 and enforce the NAX guard."""
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import sys
@@ -21,13 +22,26 @@ MIN_TARGET = (26, 2)
 M3_MIN_TARGET = (15, 0)
 M3_MAX_TARGET_EXCL = (26, 0)
 NAX_SYMBOL_RE = re.compile(r"__tensorops|BaseNAXFrag|cooperative_tensor")
+BARRIER_CALL_RE = re.compile(r"\b(?:threadgroup_barrier|simdgroup_barrier)\s*\(([^)]*)\)")
+CONST_BARRIER_ARG_RE = re.compile(
+    r"^\s*(?:metal::)?mem_flags::(mem_threadgroup|mem_device|mem_none|mem_texture)"
+    r"(?:\s*\|\s*(?:metal::)?mem_flags::(mem_threadgroup|mem_device|mem_none|mem_texture))*\s*$"
+)
+M3_AGX_ARCHS = ("applegpu_g13g", "applegpu_g14s", "applegpu_g15g")
+LSA_CRITICAL_KERNELS = ("qwg_lsa_select_blocks", "qwg_lsa_select_finalize")
 
 
-def find_metal_tool(name: str) -> list[str]:
-    probe = subprocess.run(["xcrun", "-sdk", "macosx", name, "--version"],
-                           capture_output=True, text=True)
-    if probe.returncode == 0:
-        return ["xcrun", "-sdk", "macosx", name]
+def find_metal_tool(name: str, check_version: bool = True) -> list[str]:
+    if check_version:
+        probe = subprocess.run(["xcrun", "-sdk", "macosx", name, "--version"],
+                               capture_output=True, text=True)
+        if probe.returncode == 0:
+            return ["xcrun", "-sdk", "macosx", name]
+    else:
+        probe = subprocess.run(["xcrun", "-sdk", "macosx", "--find", name],
+                               capture_output=True, text=True)
+        if probe.returncode == 0 and probe.stdout.strip() and Path(probe.stdout.strip()).is_file():
+            return [probe.stdout.strip()]
     cryptex = sorted(Path("/private/var/run/com.apple.security.cryptexd/mnt").glob(
         f"com.apple.MobileAsset.MetalToolchain-*/Metal.xctoolchain/usr/bin/{name}"))
     if cryptex:
@@ -36,6 +50,8 @@ def find_metal_tool(name: str) -> list[str]:
                                  capture_output=True, text=True, check=True).stdout.strip()
             return [str(cryptex[-1]), "-isysroot", sdk]
         return [str(cryptex[-1])]
+    if not check_version:
+        return []
     return ["xcrun", "-sdk", "macosx", name]
 
 
@@ -104,6 +120,57 @@ def check_mpp_source_guards() -> int:
     return checked
 
 
+def strip_metal_comments(text: str) -> str:
+    text = re.sub(r"/\*.*?\*/", lambda m: "\n" * m.group(0).count("\n"), text, flags=re.S)
+    return re.sub(r"//[^\n]*", "", text)
+
+
+def check_constant_barrier_flags() -> int:
+    metal_dir = ROOT / "Sources" / "QWMetal"
+    checked = 0
+    bad: list[str] = []
+    for ext in ("*.metal", "*.metalh", "*.h"):
+        for path in sorted(metal_dir.rglob(ext)):
+            clean = strip_metal_comments(path.read_text(encoding="utf-8", errors="ignore"))
+            for m in BARRIER_CALL_RE.finditer(clean):
+                checked += 1
+                if not CONST_BARRIER_ARG_RE.match(m.group(1)):
+                    line = clean[:m.start()].count("\n") + 1
+                    bad.append(f"{path.relative_to(ROOT)}:{line} -> {m.group(0).strip()}")
+    if bad:
+        raise RuntimeError(
+            "Apple7-Apple9 AGX backends crash MTLCompilerService on non-constant barrier flags:\n  "
+            + "\n  ".join(bad[:10])
+        )
+    return checked
+
+
+def check_m3_agx_backend_codegen(m3_lib: Path) -> str:
+    tt = find_metal_tool("metal-tt", check_version=False)
+    if not tt:
+        return "metal-tt unavailable (skipped)"
+    with tempfile.TemporaryDirectory(prefix="qwg-agx-tt-") as td:
+        tmp = Path(td)
+        cfg = tmp / "lsa_m3.mtlp-json"
+        cfg.write_text(json.dumps({
+            "libraries": {"paths": [{"label": "lib0", "path": str(m3_lib.resolve())}]},
+            "pipelines": {"compute_pipelines": [
+                {"compute_function": f"alias:lib0#{fn}"} for fn in LSA_CRITICAL_KERNELS
+            ]},
+        }), encoding="utf-8")
+        for arch in M3_AGX_ARCHS:
+            out = tmp / f"out_{arch}.bin"
+            r = subprocess.run(
+                [*tt, "-arch", arch, "-macos-version-min", "15.0", str(cfg), "-o", str(out)],
+                capture_output=True, text=True,
+            )
+            if r.returncode != 0:
+                raise RuntimeError(
+                    f"AGX backend codegen failed for {m3_lib.name} on {arch}:\n{r.stderr[:1000]}"
+                )
+    return "AGX M1/M2/M3 LSA codegen verified"
+
+
 def main() -> int:
     readobj = find_metal_tool("metal-readobj")
     metal_cc = find_metal_tool("metal")
@@ -113,7 +180,12 @@ def main() -> int:
         check_m3_nax_free(lib)
     check_negative_compile_guard(metal_cc)
     guarded = check_mpp_source_guards()
-    print(f"metallib target: PASS ({', '.join(summaries)}; 26.0 guard + {guarded} MPP files verified)")
+    barriers = check_constant_barrier_flags()
+    agx_summary = check_m3_agx_backend_codegen(M3_METALLIBS[0])
+    print(
+        f"metallib target: PASS ({', '.join(summaries)}; 26.0 guard + {guarded} MPP files + "
+        f"{barriers} constant barriers; {agx_summary})"
+    )
     return 0
 
 

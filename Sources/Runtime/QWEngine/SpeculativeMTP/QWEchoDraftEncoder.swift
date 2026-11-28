@@ -12,9 +12,12 @@ import QWHAL
 import QWHead
 import QWKV
 import QWMLP
+import QWMTP
 import QWNorm
 
 final class QWEchoDraftEncoder: @unchecked Sendable {
+    static let maxProposalRows = 15
+
     let geometry: QWModelGeometry
     let weights: QWEngineDriver.EchoDraftWeights
     let layer: QWEngineDriver.LayerW
@@ -51,105 +54,78 @@ final class QWEchoDraftEncoder: @unchecked Sendable {
     let postNorm: QWTensorValue
     let gsHead: QWTensorValue
     let draftLogits: QWTensorValue
-    let greedySelector: QWMTPGreedySelector
+    let draftLogitHistory: QWTensorValue
+    let selector: QWTokenSelector
     let partials: QWMRegion
     let moe: QWEngineDriver.MoEScratch?
 
     private let psoEchoStreamInit: any MTLComputePipelineState
 
-    init(geometry: QWModelGeometry,
-         hal: QWHal,
-         weights: QWEngineDriver.EchoDraftWeights,
-         trunkLayer: QWEngineDriver.LayerW,
-         mlaOperator: QWMLAAttnOperator?,
-         mlaLayerIndex: Int,
-         maxSeedRows: Int,
-         kvMode: QWKVMode = .f16) throws {
-        guard let mhcCfg = geometry.mhcConfig,
-              trunkLayer.mhc != nil,
-              let attn = trunkLayer.attn,
-              (mlaOperator == nil || attn.mla != nil) else {
+    static func allocationBytes(
+        geometry: QWModelGeometry,
+        maxSeedRows: Int,
+        streams: Int,
+        vCols: Int,
+        denseInter: Int,
+        hasMLA: Bool,
+        hasMoE: Bool
+    ) -> Int {
+        let rows = max(16, min(512, maxSeedRows))
+        let h = geometry.hidden, vocab = geometry.vocab, c = streams
+        let ctrlWidth = c + c * c
+        let partialBytes = max(4096, 2 * ((vocab + 31) / 32) * 4 + 512)
+        let moeBytes = hasMoE
+            ? QWEngineDriver.moeScratchAllocationBytes(rows: 1, geometry: geometry, useGroupedNAX: false) : 0
+        func align256(_ x: Int) -> Int { (x + 255) & ~255 }
+        let gqaPartialsBytes = !hasMLA
+            ? QWAttnDecode.decodePartialsBytes(geometry: geometry, maxSplits: QWAttnDecode.maxLongContextSplits) : 0
+        let gqaScratchBytes = !hasMLA
+            ? (align256(rows * geometry.attnTotalN * 2) + align256(rows * geometry.qProjOut * 2)
+                + align256(rows * geometry.kvChannels * 2) * 2 + align256(gqaPartialsBytes)) : 0
+        let selectorBytes = QWTokenSelector.allocationBytes(
+            vocabLimit: vocab, vocabulary: vocab, maxRows: maxProposalRows)
+        return align256(rows * h * 2) * 4 + align256(rows * c * h * 4) * 2
+            + align256(rows * c * h * 2) * 3 + align256(c * h * 4) * 2
+            + align256(rows * ctrlWidth * 4) + align256(vCols * 2)
+            + align256(h * 2) * 5 + align256(denseInter * 2) + align256(h * 4) * 2
+            + align256(vocab * 4) + align256(maxProposalRows * vocab * 4)
+            + selectorBytes + partialBytes * 3 + moeBytes + gqaScratchBytes + (2 << 20)
+    }
+
+    init(geometry: QWModelGeometry, hal: QWHal, weights: QWEngineDriver.EchoDraftWeights,
+         trunkLayer: QWEngineDriver.LayerW, mlaOperator: QWMLAAttnOperator?,
+         mlaLayerIndex: Int, maxSeedRows: Int, kvMode: QWKVMode = .f16) throws {
+        guard let mhcCfg = geometry.mhcConfig, trunkLayer.mhc != nil,
+              let attn = trunkLayer.attn, (mlaOperator == nil || attn.mla != nil) else {
             throw QWEngineDriverError.state("ECHO drafter requires mHC + compatible attention on the draft layer")
         }
-        self.geometry = geometry
-        self.weights = weights
-        self.mlaOperator = mlaOperator
+        self.geometry = geometry; self.weights = weights; self.mlaOperator = mlaOperator
         self.mlaLayerIndex = mlaLayerIndex
         self.attnDecode = mlaOperator == nil ? try QWAttnDecode(hal: hal, kvMode: kvMode, geometry: geometry) : nil
-        self.maxSeedRows = max(16, min(512, maxSeedRows))
-        self.streams = mhcCfg.streams
+        self.maxSeedRows = max(16, min(512, maxSeedRows)); self.streams = mhcCfg.streams
 
-        let aliasedMoE: QWEngineDriver.MoEW?
-        if let tMoe = trunkLayer.moe {
-            aliasedMoE = QWEngineDriver.MoEW(
-                router: tMoe.router,
-                gateUp: tMoe.gateUp,
-                down: tMoe.down,
-                numExperts: tMoe.numExperts,
-                expertsPerTok: tMoe.expertsPerTok,
-                sharedGateUp: tMoe.sharedGateUp,
-                sharedDown: tMoe.sharedDown,
-                sharedGateScalar: tMoe.sharedGateScalar,
-                routerBias: weights.routerBias ?? tMoe.routerBias,
-                routedScaleParam: tMoe.routedScaleParam,
-                splitFeatureRouting: tMoe.splitFeatureRouting,
-                latent: tMoe.latent,
-                coldGateUp: tMoe.coldGateUp,
-                coldDown: tMoe.coldDown,
-                coldStreamer: tMoe.coldStreamer
-            )
-        } else {
-            aliasedMoE = nil
+        let aliasedMoE: QWEngineDriver.MoEW? = trunkLayer.moe.map { t in
+            QWEngineDriver.MoEW(
+                router: t.router, gateUp: t.gateUp, down: t.down, numExperts: t.numExperts,
+                expertsPerTok: t.expertsPerTok, sharedGateUp: t.sharedGateUp, sharedDown: t.sharedDown,
+                sharedGateScalar: t.sharedGateScalar, routerBias: weights.routerBias ?? t.routerBias,
+                routedScaleParam: t.routedScaleParam, splitFeatureRouting: t.splitFeatureRouting,
+                latent: t.latent, coldGateUp: t.coldGateUp, coldDown: t.coldDown, coldStreamer: t.coldStreamer)
         }
         self.layer = QWEngineDriver.LayerW(
-            ln1: trunkLayer.ln1,
-            ln2: trunkLayer.ln2,
-            gu: trunkLayer.gu,
-            down: trunkLayer.down,
-            kind: trunkLayer.kind,
-            gdn: nil,
-            attn: attn,
-            moe: aliasedMoE,
-            mhc: trunkLayer.mhc,
-            hca: nil
-        )
+            ln1: trunkLayer.ln1, ln2: trunkLayer.ln2, gu: trunkLayer.gu, down: trunkLayer.down,
+            kind: trunkLayer.kind, gdn: nil, attn: attn, moe: aliasedMoE, mhc: trunkLayer.mhc, hca: nil)
         self.psoEchoStreamInit = try hal.pipeline("qwg_echo_stream_init_f16")
 
-        let h = geometry.hidden
-        let c = self.streams
-        let rows = self.maxSeedRows
-        let vocab = geometry.vocab
-        let ctrlWidth = c + c * c
-        let vCols = max(attn.o.k, geometry.qHeads * geometry.vHeadDim)
+        let rows = self.maxSeedRows, h = geometry.hidden, c = self.streams, vocab = geometry.vocab
+        let ctrlWidth = c + c * c, vCols = max(attn.o.k, geometry.qHeads * geometry.vHeadDim)
         let denseInter = max(128, trunkLayer.down.k)
         let partialBytes = max(4096, 2 * ((vocab + 31) / 32) * 4 + 512)
-        let moeBytes = aliasedMoE != nil
-            ? QWEngineDriver.moeScratchAllocationBytes(rows: 1, geometry: geometry, useGroupedNAX: false)
-            : 0
-        func align256(_ x: Int) -> Int { (x + 255) & ~255 }
         let gqaPartialsBytes = mlaOperator == nil
-            ? QWAttnDecode.decodePartialsBytes(geometry: geometry, maxSplits: QWAttnDecode.maxLongContextSplits)
-            : 0
-        let gqaScratchBytes = mlaOperator == nil
-            ? (align256(rows * geometry.attnTotalN * 2)
-                + align256(rows * geometry.qProjOut * 2)
-                + align256(rows * geometry.kvChannels * 2) * 2
-                + align256(gqaPartialsBytes))
-            : 0
-        let estimatedBytes = align256(rows * h * 2) * 4
-            + align256(rows * c * h * 4) * 2
-            + align256(rows * c * h * 2) * 3
-            + align256(c * h * 4) * 2
-            + align256(rows * ctrlWidth * 4)
-            + align256(vCols * 2)
-            + align256(h * 2) * 5
-            + align256(denseInter * 2)
-            + align256(h * 4) * 2
-            + align256(vocab * 4)
-            + partialBytes * 3
-            + moeBytes
-            + gqaScratchBytes
-            + (2 << 20)
+            ? QWAttnDecode.decodePartialsBytes(geometry: geometry, maxSplits: QWAttnDecode.maxLongContextSplits) : 0
+        let estimatedBytes = Self.allocationBytes(
+            geometry: geometry, maxSeedRows: maxSeedRows, streams: c, vCols: vCols,
+            denseInter: denseInter, hasMLA: mlaOperator != nil, hasMoE: aliasedMoE != nil)
 
         guard let buf = hal.device.makeBuffer(length: estimatedBytes, options: .storageModeShared) else {
             throw QWAllocError.outOfSpace(region: "echo-draft", asked: estimatedBytes, free: 0)
@@ -163,49 +139,41 @@ final class QWEchoDraftEncoder: @unchecked Sendable {
             try sub.allocate(QWTensorShape([max(1, n)], dt))
         }
 
-        self.embedBuf = try tv(rows * h, .f16)
-        self.eNormed16 = try tv(rows * h, .f16)
-        self.eOut16 = try tv(rows * h, .f16)
-        self.prevStreamBuf = try tv(rows * c * h, .f32)
-        self.prev16 = try tv(rows * c * h, .f16)
-        self.hNormed16 = try tv(rows * c * h, .f16)
-        self.hOut16 = try tv(rows * c * h, .f16)
-        self.streamScratch = try tv(rows * c * h, .f32)
-        self.draftPing = try tv(c * h, .f32)
-        self.draftPong = try tv(c * h, .f32)
-        self.controlsScratch = try tv(rows * ctrlWidth, .f32)
-        self.ln1 = try tv(rows * h, .f16)
+        embedBuf = try tv(rows * h); eNormed16 = try tv(rows * h); eOut16 = try tv(rows * h)
+        prevStreamBuf = try tv(rows * c * h, .f32); prev16 = try tv(rows * c * h)
+        hNormed16 = try tv(rows * c * h); hOut16 = try tv(rows * c * h)
+        streamScratch = try tv(rows * c * h, .f32)
+        draftPing = try tv(c * h, .f32); draftPong = try tv(c * h, .f32)
+        controlsScratch = try tv(rows * ctrlWidth, .f32); ln1 = try tv(rows * h)
         if mlaOperator == nil {
-            self.qkvScratch = try tv(rows * geometry.attnTotalN, .f16)
-            self.qRScratch = try tv(rows * geometry.qProjOut, .f16)
-            self.kRScratch = try tv(rows * geometry.kvChannels, .f16)
-            self.vScratch = try tv(rows * geometry.kvChannels, .f16)
+            qkvScratch = try tv(rows * geometry.attnTotalN)
+            qRScratch = try tv(rows * geometry.qProjOut)
+            kRScratch = try tv(rows * geometry.kvChannels); vScratch = try tv(rows * geometry.kvChannels)
             let gpOff = try sub.allocate(bytes: gqaPartialsBytes)
-            self.gqaPartials = QWMRegion(buffer: buf, base: gpOff, length: gqaPartialsBytes)
+            gqaPartials = QWMRegion(buffer: buf, base: gpOff, length: gqaPartialsBytes)
         } else {
-            self.qkvScratch = nil
-            self.qRScratch = nil
-            self.kRScratch = nil
-            self.vScratch = nil
-            self.gqaPartials = nil
+            qkvScratch = nil; qRScratch = nil; kRScratch = nil; vScratch = nil; gqaPartials = nil
         }
-        self.attOut = try tv(vCols, .f16)
-        self.oOut16 = try tv(h, .f16)
-        self.ln2 = try tv(h, .f16)
-        self.mlpInter = try tv(denseInter, .f16)
-        self.dn32 = try tv(h, .f32)
-        self.dn16 = try tv(h, .f16)
-        self.postNorm = try tv(h, .f16)
-        self.gsHead = try tv(max(1, h / 128), .f32)
-        self.draftLogits = try tv(vocab, .f32)
-        self.greedySelector = try QWMTPGreedySelector(geometry: geometry, allocator: sub, vocabulary: vocab)
+        attOut = try tv(vCols); oOut16 = try tv(h); ln2 = try tv(h); mlpInter = try tv(denseInter)
+        dn32 = try tv(h, .f32); dn16 = try tv(h); postNorm = try tv(h)
+        gsHead = try tv(max(1, h / 128), .f32); draftLogits = try tv(vocab, .f32)
+        draftLogitHistory = try tv(Self.maxProposalRows * vocab, .f32)
+        selector = try QWTokenSelector(
+            vocabLimit: vocab, allocator: sub, vocabulary: vocab, maxRows: Self.maxProposalRows)
         let pOff = try sub.allocate(bytes: partialBytes)
-        self.partials = QWMRegion(buffer: buf, base: pOff, length: partialBytes)
-        if aliasedMoE != nil {
-            self.moe = try QWEngineDriver.makeMoEScratch(tv, rows: 1, geometry: geometry, useGroupedNAX: false)
-        } else {
-            self.moe = nil
+        partials = QWMRegion(buffer: buf, base: pOff, length: partialBytes)
+        moe = aliasedMoE != nil ? try QWEngineDriver.makeMoEScratch(tv, rows: 1, geometry: geometry, useGroupedNAX: false) : nil
+    }
+
+    func draftLogitRow(_ row: Int) throws -> QWTensorValue {
+        let vocab = geometry.vocab
+        guard (0..<Self.maxProposalRows).contains(row) else {
+            throw QWEngineDriverError.state("ECHO draft logit history row \(row) out of range")
         }
+        return QWTensorValue(
+            region: draftLogitHistory.region,
+            offset: draftLogitHistory.offset + row * vocab * 4,
+            shape: QWTensorShape([vocab], .f32))
     }
 
     func stageEmbeddings(driver: QWEngineDriver, tokens: ArraySlice<Int>) throws -> QWTensorValue {
@@ -348,7 +316,8 @@ final class QWEchoDraftEncoder: @unchecked Sendable {
                     cacheRows: Int,
                     outStream: QWTensorValue,
                     writeLogits: Bool,
-                    selectGreedy: Bool) throws {
+                    selectGreedy: Bool,
+                    logitsDestination: QWTensorValue? = nil) throws {
         guard let mhcCfg = geometry.mhcConfig,
               let mhc = layer.mhc,
               let attn = layer.attn else {
@@ -440,7 +409,8 @@ final class QWEchoDraftEncoder: @unchecked Sendable {
                                      rows: 1, applyNorm: true)
         enc.memoryBarrier(scope: .buffers)
 
-        let vocab = draftLogits.shape.elementCount
+        let logitsOut = logitsDestination ?? draftLogits
+        let vocab = logitsOut.shape.elementCount
         let needFullLogits = writeLogits || driver.multimaxParams != nil || !selectGreedy
         if !needFullLogits, driver.mtpDraftHead == nil, case .q4g(let headW) = driver.headStorage,
            !headW.view.isIncumbentContainer {
@@ -449,13 +419,13 @@ final class QWEchoDraftEncoder: @unchecked Sendable {
             let keysHi = QWTensorValue(region: partials, offset: 0, shape: QWTensorShape([nTG], .i32))
             let keysLo = QWTensorValue(region: partials, offset: keyBytes, shape: QWTensorShape([nTG], .i32))
             try QWGemmAQ.encodeHeadArgmax(enc, hal: driver.hal, view: headW.view, x: postNorm,
-                                          y: draftLogits, keysHi: keysHi, keysLo: keysLo, writeLogits: false)
+                                          y: logitsOut, keysHi: keysHi, keysLo: keysLo, writeLogits: false)
             var nTG32 = UInt32(nTG)
             enc.memoryBarrier(scope: .buffers)
             enc.setComputePipelineState(try driver.hal.pipeline("qwg_head_argmax_fin"))
             keysHi.bind(enc, index: 0)
             keysLo.bind(enc, index: 1)
-            greedySelector.token.bind(enc, index: 2)
+            selector.token.bind(enc, index: 2)
             enc.setBytes(&nTG32, length: 4, index: 3)
             enc.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
                                      threadsPerThreadgroup: MTLSize(width: 1024, height: 1, depth: 1))
@@ -463,7 +433,7 @@ final class QWEchoDraftEncoder: @unchecked Sendable {
         }
 
         if let draftHead = driver.mtpDraftHead {
-            try draftHead.encode(enc, hal: driver.hal, x: postNorm, gs: gsHead, y: draftLogits)
+            try draftHead.encode(enc, hal: driver.hal, x: postNorm, gs: gsHead, y: logitsOut)
         } else {
             switch driver.headStorage {
             case .f16(let w):
@@ -472,28 +442,51 @@ final class QWEchoDraftEncoder: @unchecked Sendable {
                     enc.memoryBarrier(scope: .buffers)
                 }
                 try QWHead.encodeF16(enc, hal: driver.hal, w: w, x: postNorm,
-                                     y: draftLogits, geometry: geometry, N: vocab)
+                                     y: logitsOut, geometry: geometry, N: vocab)
             case .bf16(let w):
                 if driver.hal.weightBasis.rotatesActivations {
                     try QWGemm.encodeFwht32(enc, hal: driver.hal, x: postNorm)
                     enc.memoryBarrier(scope: .buffers)
                 }
                 try QWHead.encodeBF16(enc, hal: driver.hal, w: w, x: postNorm,
-                                      y: draftLogits, geometry: geometry, N: vocab)
+                                      y: logitsOut, geometry: geometry, N: vocab)
             case .q4g(let w):
                 try QWHead.encodeQ4g(enc, hal: driver.hal, weight: w,
-                                     x: postNorm, gs: gsHead, y: draftLogits)
+                                     x: postNorm, gs: gsHead, y: logitsOut)
             }
         }
         if let mm = driver.multimaxParams {
             enc.memoryBarrier(scope: .buffers)
-            try driver.head.encodeMultiMax(enc, logits: draftLogits, params: mm, count: vocab)
+            try driver.head.encodeMultiMax(enc, logits: logitsOut, params: mm, count: vocab)
         }
         if selectGreedy {
             enc.memoryBarrier(scope: .buffers)
-            try greedySelector.encode(enc, hal: driver.hal, logits: draftLogits,
-                                      ordering: .numericalDraft, destination: greedySelector.token)
+            try selector.encodeGreedy(enc, hal: driver.hal, logits: logitsOut,
+                                      ordering: .numericalDraft, destination: selector.token)
         }
+    }
+
+    private static func drainPendingStepCBs(_ cbs: [any MTLCommandBuffer], driver: QWEngineDriver) {
+        for cb in cbs {
+            cb.waitUntilCompleted()
+            if cb.status != .completed || cb.error != nil { driver.commandBufferErrors += 1 }
+        }
+    }
+
+    @discardableResult
+    private static func drainColdEvents(driver: QWEngineDriver) -> (any Error)? {
+        var coldFailure: (any Error)?
+        if let pipe = driver.coldEvents {
+            pipe.waitUntilIdle()
+            let r = pipe.takeStepResult()
+            pipe.tuneBridge()
+            driver.decodeTel.coldWaitUs += r.waitUs
+            driver.decodeTel.coldIOUs += r.ioUs
+            driver.decodeTel.coldStaged += r.staged
+            coldFailure = r.failure
+        }
+        driver.flushPendingColdUnloads()
+        return coldFailure
     }
 
     func enqueueSingleCB(driver: QWEngineDriver,
@@ -504,12 +497,14 @@ final class QWEchoDraftEncoder: @unchecked Sendable {
                        cacheRows: Int,
                        drafts: Int,
                        writeLogitsOnFinalDraft: Bool = false,
-                       journalTokenOffset: Int = 0) throws -> [any MTLCommandBuffer] {
+                       journalTokenOffset: Int = 0,
+                       stochastic: QWStochasticSelectionParams? = nil) throws -> [any MTLCommandBuffer] {
         let h = geometry.hidden
-        guard drafts >= 1, journalTokenOffset >= 0, (journalTokenOffset + drafts) * 4 <= table.tokens.length else {
+        guard drafts >= 1, stochastic == nil || drafts <= Self.maxProposalRows,
+              journalTokenOffset >= 0, (journalTokenOffset + drafts) * 4 <= table.tokens.length else {
             throw QWEngineDriverError.state("ECHO single-CB journal range is invalid")
         }
-        greedySelector.token.region.pointer.advanced(by: greedySelector.token.offset)
+        selector.token.region.pointer.advanced(by: selector.token.offset)
             .assumingMemoryBound(to: Int32.self).pointee = Int32(pendingToken)
         guard let cb = driver.hal.makeUnretainedCommandBuffer(),
               var enc = cb.makeComputeCommandEncoder() else {
@@ -525,30 +520,40 @@ final class QWEchoDraftEncoder: @unchecked Sendable {
         driver.stepCBs = []
         driver.activeCB = cb
         driver.activeEnc = enc
-        defer {
-            driver.stepCBs = nil
-            driver.activeEnc = nil
-            driver.activeCB = nil
-        }
+        defer { driver.stepCBs = nil; driver.activeEnc = nil; driver.activeCB = nil }
+        let journalTensor = QWTensorValue(
+            region: QWMRegion(buffer: table.tokens, base: 0, length: table.tokens.length),
+            offset: 0, shape: QWTensorShape([table.tokens.length / 4], .i32))
         do {
             for step in 0..<drafts {
                 let embSlice = embedBuf.slice(byteOffset: 0, count: h, dtype: .f16)
-                try table.encode(enc, token: greedySelector.token, destination: embSlice)
+                try table.encode(enc, token: selector.token, destination: embSlice)
                 let inStream = step == 0 ? initialStream : ((step % 2 == 1) ? draftPing : draftPong)
                 let outStream = (step % 2 == 0) ? draftPing : draftPong
                 let isLast = (step + 1 == drafts)
+                let logitsOut = stochastic != nil ? try draftLogitRow(step) : draftLogits
                 try encodeStep(&enc, driver: driver, prevStream: inStream, embedding: embSlice,
                                kv: kv, cacheRows: cacheRows + step, outStream: outStream,
-                               writeLogits: isLast && writeLogitsOnFinalDraft, selectGreedy: true)
+                               writeLogits: (isLast && writeLogitsOnFinalDraft) || stochastic != nil,
+                               selectGreedy: stochastic == nil, logitsDestination: logitsOut)
                 if let active = driver.activeEnc { enc = active }
                 if ObjectIdentifier(enc) != boundEncID {
                     bindEchoResources(enc)
                     boundEncID = ObjectIdentifier(enc)
                 }
-                let saved = QWTensorValue(region: QWMRegion(buffer: table.tokens, base: 0, length: table.tokens.length),
-                                          offset: (journalTokenOffset + step) * 4, shape: QWTensorShape([1], .i32))
                 enc.memoryBarrier(scope: .buffers)
-                try QWVerifyWindow.encodeCopy(enc, hal: driver.hal, source: greedySelector.token, destination: saved)
+                if var stepParams = stochastic {
+                    stepParams.philoxOffsetBase &+= UInt64(step)
+                    try selector.encodeStochasticDraft(
+                        enc, hal: driver.hal, logits: logitsOut, params: stepParams, rows: 1,
+                        proposalSlotBase: step, destination: selector.token,
+                        journal: journalTensor, journalOffset: journalTokenOffset + step)
+                } else {
+                    let saved = QWTensorValue(
+                        region: QWMRegion(buffer: table.tokens, base: 0, length: table.tokens.length),
+                        offset: (journalTokenOffset + step) * 4, shape: QWTensorShape([1], .i32))
+                    try QWVerifyWindow.encodeCopy(enc, hal: driver.hal, source: selector.token, destination: saved)
+                }
                 if !isLast { enc.memoryBarrier(scope: .buffers) }
             }
             let finalEnc = driver.activeEnc ?? enc
@@ -560,27 +565,29 @@ final class QWEchoDraftEncoder: @unchecked Sendable {
             finalCB.commit()
             return extraCBs + [finalCB]
         } catch {
-            if let openEnc = driver.activeEnc {
-                driver.activeEnc = nil
-                openEnc.endEncoding()
-            }
-            for pendingCb in (driver.stepCBs ?? []) {
-                pendingCb.waitUntilCompleted()
-                if pendingCb.status != .completed || pendingCb.error != nil {
-                    driver.commandBufferErrors += 1
-                }
-            }
-            if let pipe = driver.coldEvents {
-                pipe.waitUntilIdle()
-                let r = pipe.takeStepResult()
-                pipe.tuneBridge()
-                driver.decodeTel.coldWaitUs += r.waitUs
-                driver.decodeTel.coldIOUs += r.ioUs
-                driver.decodeTel.coldStaged += r.staged
-            }
-            driver.flushPendingColdUnloads()
+            if let openEnc = driver.activeEnc { driver.activeEnc = nil; openEnc.endEncoding() }
+            Self.drainPendingStepCBs(driver.stepCBs ?? [], driver: driver)
+            _ = Self.drainColdEvents(driver: driver)
             throw error
         }
+    }
+
+    func readSparseProposals(drafts: Int) throws -> [QWSpeculativeRoundResolver.DraftProposal] {
+        var proposals: [QWSpeculativeRoundResolver.DraftProposal] = []
+        proposals.reserveCapacity(drafts)
+        let vocab = geometry.vocab
+        for row in 0..<drafts {
+            let buf = try selector.readSparseProposal(row: row)
+            if buf.isSparse {
+                proposals.append(try QWSpeculativeRoundResolver.DraftProposal.fromSparseBuffer(buf))
+            } else {
+                let rowLogits = try draftLogitRow(row)
+                let ptr = rowLogits.region.pointer.advanced(by: rowLogits.offset).assumingMemoryBound(to: Float.self)
+                proposals.append(try QWSpeculativeRoundResolver.DraftProposal.fromSparseBuffer(
+                    buf, logits: UnsafeBufferPointer(start: ptr, count: vocab)))
+            }
+        }
+        return proposals
     }
 
     private static func waitAndDrainCBs(
@@ -591,46 +598,17 @@ final class QWEchoDraftEncoder: @unchecked Sendable {
         var allDrained = false
         defer {
             if !allDrained {
-                for sub in cbs {
-                    sub.waitUntilCompleted()
-                    if sub.status != .completed || sub.error != nil {
-                        driver.commandBufferErrors += 1
-                    }
-                }
-                if let pipe = driver.coldEvents {
-                    pipe.waitUntilIdle()
-                    let r = pipe.takeStepResult()
-                    pipe.tuneBridge()
-                    driver.decodeTel.coldWaitUs += r.waitUs
-                    driver.decodeTel.coldIOUs += r.ioUs
-                    driver.decodeTel.coldStaged += r.staged
-                }
-                driver.flushPendingColdUnloads()
+                Self.drainPendingStepCBs(cbs, driver: driver)
+                _ = Self.drainColdEvents(driver: driver)
             }
         }
         for sub in cbs { sub.waitUntilCompleted() }
-        var coldFailure: (any Error)?
-        if let pipe = driver.coldEvents {
-            pipe.waitUntilIdle()
-            let r = pipe.takeStepResult()
-            pipe.tuneBridge()
-            driver.decodeTel.coldWaitUs += r.waitUs
-            driver.decodeTel.coldIOUs += r.ioUs
-            driver.decodeTel.coldStaged += r.staged
-            coldFailure = r.failure
-        }
-        driver.flushPendingColdUnloads()
+        let coldFailure = Self.drainColdEvents(driver: driver)
         allDrained = true
-        for sub in cbs where sub.status != .completed || sub.error != nil {
-            driver.commandBufferErrors += 1
-        }
-        if let coldFailure {
-            throw QWEngineDriverError.state("ECHO cold event staging: \(coldFailure)")
-        }
+        for sub in cbs where sub.status != .completed || sub.error != nil { driver.commandBufferErrors += 1 }
+        if let coldFailure { throw QWEngineDriverError.state("ECHO cold event staging: \(coldFailure)") }
         for sub in cbs {
-            if let err = sub.error {
-                throw QWEngineDriverError.state("ECHO draft GPU failure: \(err.localizedDescription)")
-            }
+            if let err = sub.error { throw QWEngineDriverError.state("ECHO draft GPU failure: \(err.localizedDescription)") }
             if sub.status != .completed {
                 throw QWEngineDriverError.state("ECHO draft GPU completion failed (status=\(sub.status.rawValue))")
             }
@@ -638,48 +616,55 @@ final class QWEchoDraftEncoder: @unchecked Sendable {
         }
     }
 
-    private func proposeSingleCB(driver: QWEngineDriver,
-                                 table: QWMTPEmbeddingTable,
-                                 initialStream: QWTensorValue,
-                                 kv: (k: QWKVLayerView, v: QWKVLayerView),
-                                 pendingToken: Int,
-                                 cacheRows: Int,
-                                 drafts: Int,
-                                 writeLogitsOnFinalDraft: Bool,
-                                 completed: ((any MTLCommandBuffer) throws -> Void)?) throws -> [Int] {
+    private func proposeSingleCB(
+        driver: QWEngineDriver, table: QWMTPEmbeddingTable, initialStream: QWTensorValue,
+        kv: (k: QWKVLayerView, v: QWKVLayerView), pendingToken: Int, cacheRows: Int,
+        drafts: Int, writeLogitsOnFinalDraft: Bool,
+        stochastic: QWStochasticSelectionParams? = nil,
+        completed: ((any MTLCommandBuffer) throws -> Void)?
+    ) throws -> [Int] {
         let cbs = try enqueueSingleCB(
             driver: driver, table: table, initialStream: initialStream, kv: kv,
             pendingToken: pendingToken, cacheRows: cacheRows, drafts: drafts,
-            writeLogitsOnFinalDraft: writeLogitsOnFinalDraft)
+            writeLogitsOnFinalDraft: writeLogitsOnFinalDraft, stochastic: stochastic)
         try Self.waitAndDrainCBs(cbs, driver: driver, completed: completed)
         let ids = table.tokens.contents().assumingMemoryBound(to: Int32.self)
-        var proposed: [Int] = []
-        proposed.reserveCapacity(drafts)
-        for step in 0..<drafts {
+        return try (0..<drafts).map { step in
             let id = Int(ids[step])
             guard (0..<geometry.vocab).contains(id) else {
                 throw QWEngineDriverError.state("ECHO single-CB draft invalid token \(id) at step \(step)")
             }
-            proposed.append(id)
+            return id
         }
-        return proposed
     }
 
-    func propose(driver: QWEngineDriver,
-                 initialStream: QWTensorValue,
-                 kv: (k: QWKVLayerView, v: QWKVLayerView),
-                 pendingToken: Int,
-                 cacheRows: Int,
-                 drafts: Int,
-                 sampledToken: ((QWTensorValue) throws -> Int)? = nil,
-                 shouldStopAfterDraft: ((QWTensorValue, Int) throws -> Bool)? = nil,
-                 writeLogitsOnFinalDraft: Bool = false,
-                 completed: ((any MTLCommandBuffer) throws -> Void)? = nil) throws -> [Int] {
+    func proposeStochastic(
+        driver: QWEngineDriver, initialStream: QWTensorValue, kv: (k: QWKVLayerView, v: QWKVLayerView),
+        pendingToken: Int, cacheRows: Int, drafts: Int, params: QWStochasticSelectionParams,
+        writeLogitsOnFinalDraft: Bool = false, completed: ((any MTLCommandBuffer) throws -> Void)? = nil
+    ) throws -> (drafts: [Int], proposals: [QWSpeculativeRoundResolver.DraftProposal]) {
+        guard drafts > 0, drafts <= Self.maxProposalRows, let table = driver.mtpDeviceEmbedding,
+              table.vocabulary == geometry.vocab, table.hidden == geometry.hidden else {
+            throw QWEngineDriverError.state("ECHO stochastic device chain requires compatible device embedding")
+        }
+        let tokens = try proposeSingleCB(
+            driver: driver, table: table, initialStream: initialStream, kv: kv,
+            pendingToken: pendingToken, cacheRows: cacheRows, drafts: drafts,
+            writeLogitsOnFinalDraft: writeLogitsOnFinalDraft, stochastic: params, completed: completed)
+        return (tokens, try readSparseProposals(drafts: drafts))
+    }
+
+    func propose(
+        driver: QWEngineDriver, initialStream: QWTensorValue, kv: (k: QWKVLayerView, v: QWKVLayerView),
+        pendingToken: Int, cacheRows: Int, drafts: Int,
+        sampledToken: ((QWTensorValue) throws -> Int)? = nil,
+        shouldStopAfterDraft: ((QWTensorValue, Int) throws -> Bool)? = nil,
+        writeLogitsOnFinalDraft: Bool = false, completed: ((any MTLCommandBuffer) throws -> Void)? = nil
+    ) throws -> [Int] {
         guard drafts > 0 else { return [] }
         let h = geometry.hidden
         if drafts >= 1, sampledToken == nil, shouldStopAfterDraft == nil, drafts <= 64,
-           let table = driver.mtpDeviceEmbedding,
-           table.vocabulary == geometry.vocab, table.hidden == h {
+           let table = driver.mtpDeviceEmbedding, table.vocabulary == geometry.vocab, table.hidden == h {
             return try proposeSingleCB(
                 driver: driver, table: table, initialStream: initialStream, kv: kv,
                 pendingToken: pendingToken, cacheRows: cacheRows, drafts: drafts,
@@ -688,83 +673,41 @@ final class QWEchoDraftEncoder: @unchecked Sendable {
         var currentToken = pendingToken
         var proposed: [Int] = []
         proposed.reserveCapacity(drafts)
-
         for step in 0..<drafts {
             let embSlice = embedBuf.slice(byteOffset: 0, count: h, dtype: .f16)
             try driver.copyEmbedRow(currentToken, to: embSlice)
             let inStream = step == 0 ? initialStream : ((step % 2 == 1) ? draftPing : draftPong)
             let outStream = (step % 2 == 0) ? draftPing : draftPong
-            let isLast = (step + 1 == drafts)
             let needLogits = (sampledToken != nil) || (shouldStopAfterDraft != nil)
-                || (isLast && writeLogitsOnFinalDraft)
-
+                || (step + 1 == drafts && writeLogitsOnFinalDraft)
             guard let cb = driver.hal.makeUnretainedCommandBuffer(),
                   var enc = cb.makeComputeCommandEncoder() else {
                 throw QWEngineDriverError.state("ECHO draft command buffer creation failed")
             }
             driver.hal.touchKeepAlive(enc)
             enc.useResource(region.buffer, usage: [.read, .write])
-            driver.stepCBs = []
-            driver.activeCB = cb
-            driver.activeEnc = enc
+            driver.stepCBs = []; driver.activeCB = cb; driver.activeEnc = enc
             var stepDrained = false
             defer {
-                if let openEnc = driver.activeEnc {
-                    driver.activeEnc = nil
-                    openEnc.endEncoding()
-                }
+                if let openEnc = driver.activeEnc { driver.activeEnc = nil; openEnc.endEncoding() }
                 if !stepDrained {
-                    for pendingCb in (driver.stepCBs ?? []) {
-                        pendingCb.waitUntilCompleted()
-                        if pendingCb.status != .completed || pendingCb.error != nil {
-                            driver.commandBufferErrors += 1
-                        }
-                    }
-                    if let pipe = driver.coldEvents {
-                        pipe.waitUntilIdle()
-                        let r = pipe.takeStepResult()
-                        pipe.tuneBridge()
-                        driver.decodeTel.coldWaitUs += r.waitUs
-                        driver.decodeTel.coldIOUs += r.ioUs
-                        driver.decodeTel.coldStaged += r.staged
-                    }
-                    driver.flushPendingColdUnloads()
+                    Self.drainPendingStepCBs(driver.stepCBs ?? [], driver: driver)
+                    _ = Self.drainColdEvents(driver: driver)
                 }
-                driver.stepCBs = nil
-                driver.activeEnc = nil
-                driver.activeCB = nil
+                driver.stepCBs = nil; driver.activeEnc = nil; driver.activeCB = nil
             }
-            let stepCbs: [any MTLCommandBuffer]
-            do {
-                try encodeStep(&enc, driver: driver, prevStream: inStream, embedding: embSlice,
-                               kv: kv, cacheRows: cacheRows + step, outStream: outStream,
-                               writeLogits: needLogits, selectGreedy: sampledToken == nil)
-                let finalEnc = driver.activeEnc ?? enc
-                let finalCB = driver.activeCB ?? cb
-                let extraCBs = driver.stepCBs ?? []
-                driver.activeEnc = nil
-                driver.activeCB = nil
-                finalEnc.endEncoding()
-                finalCB.commit()
-                stepCbs = extraCBs + [finalCB]
-            } catch {
-                throw error
-            }
+            try encodeStep(&enc, driver: driver, prevStream: inStream, embedding: embSlice,
+                           kv: kv, cacheRows: cacheRows + step, outStream: outStream,
+                           writeLogits: needLogits, selectGreedy: sampledToken == nil)
+            let finalEnc = driver.activeEnc ?? enc, finalCB = driver.activeCB ?? cb
+            let stepCbs = (driver.stepCBs ?? []) + [finalCB]
+            driver.activeEnc = nil; driver.activeCB = nil
+            finalEnc.endEncoding(); finalCB.commit()
             stepDrained = true
             try Self.waitAndDrainCBs(stepCbs, driver: driver, completed: completed)
-
-            let chosen: Int
-            if let sampledToken {
-                chosen = try sampledToken(draftLogits)
-            } else {
-                chosen = try greedySelector.completedToken()
-            }
-            proposed.append(chosen)
-            currentToken = chosen
-            if let shouldStopAfterDraft,
-               try shouldStopAfterDraft(draftLogits, proposed.count) {
-                break
-            }
+            let chosen = if let sampledToken { try sampledToken(draftLogits) } else { try selector.completedToken() }
+            proposed.append(chosen); currentToken = chosen
+            if let shouldStopAfterDraft, try shouldStopAfterDraft(draftLogits, proposed.count) { break }
         }
         return proposed
     }

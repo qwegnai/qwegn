@@ -8,7 +8,7 @@ set -uo pipefail
 cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 
 MASTER="$HOME/.cache/huggingface/hub/models--Qwen--Qwen3.8-Flash-Next/snapshots/de4b8e4d43b917e7706784d8bb445c9af86a3540"
-REF="$HOME/.qwg/models/Qwen3.8-Flash-Next-hq4g32"
+REF="$HOME/.qwg/models/Qwen3.8-Flash-Next-QWP_4"
 HYB="$HOME/.qwg/models/Qwen3.8-Flash-Next-hq8hyb"
 PY="${PY:-$(cd "$(dirname "$0")/../.." && pwd)/.venv/bin/python}"
 TAG="int8-win-$(date +%Y%m%d-%H%M%S)"
@@ -59,13 +59,13 @@ if [ "$STAGE" = all ] || [ "$STAGE" = accept ]; then
   echo "[accept] MODEL=$MODEL" >> "$OUT/accept.log"
   GREP='decode:|tok/s|prefill|wire|start]|error|Error|Killed|trap'
   QW_FN_PHASES=1 QW_FN_WIRE_SKIP=1 Scripts/phase4/run_flashnext_experiment.sh "$TAG-f0" \
-    env GREP_RE="$GREP" bash -c 'P=$HOME/.qwg/models/Qwen3.8-Flash-Next-hq4g32
+    env GREP_RE="$GREP" bash -c 'P=$HOME/.qwg/models/Qwen3.8-Flash-Next-QWP_4
     echo "=== f0-control"; .build/release/qwg run "$P/model.qwp" --prompt "Explain the difference between TCP and UDP networking protocols in bullet points:" --max-new 128 --no-thinking --no-stream --no-ngram-draft --verbose 2>&1 | grep -E "$GREP_RE"' \
     >> "$OUT/accept.log" 2>&1 || echo "F0 GATE FAILED — inspect before candidate arms" >> "$OUT/accept.log"
   for i in 1 2 3; do
     for arm in ctrl cand; do
       case $arm in
-        ctrl) PACKPATH='$HOME/.qwg/models/Qwen3.8-Flash-Next-hq4g32'; W8ENV="";;
+        ctrl) PACKPATH='$HOME/.qwg/models/Qwen3.8-Flash-Next-QWP_4'; W8ENV="";;
         cand) PACKPATH='$HOME/.qwg/models/Qwen3.8-Flash-Next-hq8hyb'; W8ENV="QW_FN_DENSE_W8=1";;
       esac
       QW_FN_PHASES=1 QW_FN_WIRE_SKIP=1 Scripts/phase4/run_flashnext_experiment.sh "$TAG-$arm-$i" \

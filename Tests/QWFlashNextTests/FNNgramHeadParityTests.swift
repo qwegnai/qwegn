@@ -129,7 +129,7 @@ final class FNNgramHeadParityTests: XCTestCase {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["QW_REAL_PLE_BENCH"] == "1",
                           "real PLE table benchmark is opt-in")
         let url = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".qwg/models/Qwen3.8-Flash-Next-hq4g32/assets/ngram.bin")
+            .appendingPathComponent(".qwg/models/Qwen3.8-Flash-Next-QWP_4/assets/ngram.bin")
         try XCTSkipUnless(FileManager.default.fileExists(atPath: url.path), "native PLE table is absent")
         let rows = try FNNgramBinRows(url: url)
         let mappedRows = try FNNgramBinRows(url: url, mapped: true)

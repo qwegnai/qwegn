@@ -1,0 +1,459 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 1408" width="960" height="1408">
+  <defs>
+    <radialGradient id="bgGlow" cx="20%" cy="10%" r="90%">
+      <stop offset="0%" stop-color="#15203b"/>
+      <stop offset="55%" stop-color="#0a0f1e"/>
+      <stop offset="100%" stop-color="#04070f"/>
+    </radialGradient>
+    <linearGradient id="cardGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#182136" stop-opacity="0.96"/>
+      <stop offset="100%" stop-color="#0c1220" stop-opacity="0.90"/>
+    </linearGradient>
+    <linearGradient id="emeraldGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#34d399"/><stop offset="100%" stop-color="#10b981"/>
+    </linearGradient>
+    <linearGradient id="cyanGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#38bdf8"/><stop offset="100%" stop-color="#0ea5e9"/>
+    </linearGradient>
+    <linearGradient id="purpleGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#c084fc"/><stop offset="100%" stop-color="#a855f7"/>
+    </linearGradient>
+    <linearGradient id="amberGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#fbbf24"/><stop offset="100%" stop-color="#f59e0b"/>
+    </linearGradient>
+    <linearGradient id="roseGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#fb7185"/><stop offset="100%" stop-color="#e11d48"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#10b981"/>
+    </linearGradient>
+  </defs>
+  <style>
+    svg { text-rendering: geometricPrecision; -webkit-font-smoothing: antialiased; }
+    .title { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif; font-weight: 800; }
+    .subtitle { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif; font-weight: 500; }
+    .sans { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", "Segoe UI", system-ui, sans-serif; }
+    .mono { font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace; font-weight: 600; }
+  </style>
+  <rect width="960" height="1408" rx="20" fill="url(#bgGlow)" stroke="#1e293b" stroke-width="2"/>
+  <g opacity="0.04" stroke="#ffffff" stroke-width="1">
+    <line x1="0" y1="150" x2="960" y2="150"/>
+    <line x1="0" y1="406" x2="960" y2="406"/>
+    <line x1="480" y1="0" x2="480" y2="1408"/>
+  </g>
+
+  <!-- Header -->
+  <g transform="translate(28, 24)">
+    <rect x="0" y="0" width="322" height="28" rx="14" fill="#062e22" stroke="#10b981" stroke-width="1.2"/>
+    <circle cx="15" cy="14" r="4.5" fill="#34d399"/>
+    <text x="27" y="18.6" class="sans" font-size="12" font-weight="700" fill="#6ee7b7" letter-spacing="0.25">QWEGN v0.44.1 · 12-SUITE FULL EVALUATION</text>
+    <rect x="332" y="0" width="356" height="28" rx="14" fill="#17253b" stroke="#38bdf8" stroke-width="1.2"/>
+    <text x="510" y="18.6" text-anchor="middle" class="sans" font-size="12" font-weight="700" fill="#7dd3fc" letter-spacing="0.25">LLMPROBE + EVALPLUS + INSPECT + LM-EVAL</text>
+    <text x="0" y="62" fill="#f8fafc" class="title" font-size="25.5">GigaChat4-37B-A4B vs Qwegn 35B-Class Models</text>
+    <text x="0" y="88" fill="#cbd5e1" class="subtitle" font-size="14">Head-to-Head on Apple M5 Max: Throughput, Speculation, API Conformance, Agentic &amp; Multi-Harness Accuracy</text>
+    <text x="0" y="110" fill="#94a3b8" class="mono" font-size="12.3">GigaChat4-37B-A4B (QWP_4 + MLA DF2) · Qwen3.6-35B-A3B · Apex-35B-V1.0 · Maxwell-V1 · Inkling-2-Mini · Qwen3.8-27B</text>
+  </g>
+
+  <!-- Top-Right Qwegn Badge -->
+  <g transform="translate(736, 20)">
+    <rect width="196" height="58" rx="13" fill="#0b1222" stroke="#334155" stroke-width="1.3"/>
+    <rect x="11" y="11" width="36" height="36" rx="9" fill="url(#mark)"/>
+    <text x="29" y="36" text-anchor="middle" class="sans" font-size="21" font-weight="900" fill="#04110c">Q</text>
+    <text x="56" y="29" class="sans" font-size="21" font-weight="800" fill="#f8fafc">Qwegn</text>
+    <text x="56" y="46" class="mono" font-size="11.5" font-weight="700" fill="#94a3b8">SWIFT 6.2 · METAL 4</text>
+  </g>
+
+  <!-- Row 1: 3 Hero Summary Cards -->
+  <g transform="translate(28, 156)">
+    <rect width="288" height="236" rx="16" fill="url(#cardGrad)" stroke="#10b981" stroke-opacity="0.55" stroke-width="1.4"/>
+    <rect x="18" y="15" width="212" height="25" rx="12.5" fill="#062e22" stroke="#10b981" stroke-width="1.2"/>
+    <text x="124" y="32" text-anchor="middle" class="sans" font-size="12" font-weight="700" fill="#6ee7b7" letter-spacing="0.2">MLA DFLASH 2 SPEC PEAK</text>
+    <text x="18" y="84" fill="url(#emeraldGrad)" class="title mono" font-size="42">323.8</text>
+    <text x="160" y="82" fill="#34d399" class="title mono" font-size="16.5">tok/s</text>
+    <text x="18" y="112" fill="#f8fafc" class="title" font-size="15">#1 Speculative Ceiling (7.38/step)</text>
+    <text x="18" y="136" fill="#cbd5e1" class="subtitle" font-size="12.3">• Beats Qwen3.6 (310.9) &amp; Apex (309.2)</text>
+    <text x="18" y="157" fill="#cbd5e1" class="subtitle" font-size="12.3">• 164.4 SSE · 122.2 forced-192 decode</text>
+    <text x="18" y="178" fill="#cbd5e1" class="subtitle" font-size="12.3">• 102.3–121.0 tok/s across 0.5K–65.6K</text>
+    <line x1="18" y1="196" x2="270" y2="196" stroke="#1e293b" stroke-width="1"/>
+    <text x="18" y="217" fill="#6ee7b7" class="mono" font-size="11.8">20.8 GiB pack · &lt;27 GiB @ 1M · 15 ms</text>
+  </g>
+
+  <g transform="translate(336, 156)">
+    <rect width="288" height="236" rx="16" fill="url(#cardGrad)" stroke="#38bdf8" stroke-opacity="0.55" stroke-width="1.4"/>
+    <rect x="18" y="15" width="218" height="25" rx="12.5" fill="#0c2a3a" stroke="#0ea5e9" stroke-width="1.2"/>
+    <text x="127" y="32" text-anchor="middle" class="sans" font-size="12" font-weight="700" fill="#7dd3fc" letter-spacing="0.2">LLMPROBE FULL &amp; AGENTIC</text>
+    <text x="18" y="84" fill="url(#cyanGrad)" class="title mono" font-size="42">100%</text>
+    <text x="148" y="82" fill="#38bdf8" class="title mono" font-size="16.5">37/37 Cap</text>
+    <text x="18" y="112" fill="#f8fafc" class="title" font-size="15">67/88 Agentic (#1 in 35B–37B MoE)</text>
+    <text x="18" y="136" fill="#cbd5e1" class="subtitle" font-size="12.3">• 76.1% Agentic vs 75% Qwen3.6 · 67% Apex</text>
+    <text x="18" y="157" fill="#cbd5e1" class="subtitle" font-size="12.3">• 291/291 API &amp; 100% Fidelity (reason off)</text>
+    <text x="18" y="178" fill="#cbd5e1" class="subtitle" font-size="12.3">• 70/100 Code · 45/92 Core · 29/50 Hard</text>
+    <line x1="18" y1="196" x2="270" y2="196" stroke="#1e293b" stroke-width="1"/>
+    <text x="18" y="217" fill="#7dd3fc" class="mono" font-size="11.8">4.0×–7.1× fewer Core-92 tokens (68K)</text>
+  </g>
+
+  <g transform="translate(644, 156)">
+    <rect width="288" height="236" rx="16" fill="url(#cardGrad)" stroke="#f59e0b" stroke-opacity="0.55" stroke-width="1.4"/>
+    <rect x="18" y="15" width="232" height="25" rx="12.5" fill="#33230c" stroke="#f59e0b" stroke-width="1.2"/>
+    <text x="134" y="32" text-anchor="middle" class="sans" font-size="12" font-weight="700" fill="#fde68a" letter-spacing="0.2">EXTERNAL BENCH HIGHLIGHTS</text>
+    <text x="18" y="84" fill="url(#amberGrad)" class="title mono" font-size="42">50.0%</text>
+    <text x="166" y="82" fill="#fbbf24" class="title mono" font-size="16.5">GPQA-D</text>
+    <text x="18" y="112" fill="#f8fafc" class="title" font-size="15">#1 GPQA &amp; AIME25 · Tied #1 IFEval</text>
+    <text x="18" y="136" fill="#cbd5e1" class="subtitle" font-size="12.3">• GPQA 50.0% vs Apex 40.0% · Qwen 14.2%</text>
+    <text x="18" y="157" fill="#cbd5e1" class="subtitle" font-size="12.3">• AIME25 20.0% (2× Apex · 6× Qwen3.6)</text>
+    <text x="18" y="178" fill="#cbd5e1" class="subtitle" font-size="12.3">• HE+ 85.4% · IFEval 87.5% · PFoo 8/8</text>
+    <line x1="18" y1="196" x2="270" y2="196" stroke="#1e293b" stroke-width="1"/>
+    <text x="18" y="217" fill="#fde68a" class="mono" font-size="11.8">66.7% MMLU-Pro · 86.7% GSM8K · 0 err</text>
+  </g>
+
+  <!-- Row 2 Left: Throughput Comparison -->
+  <g transform="translate(28, 408)">
+    <rect width="442" height="304" rx="16" fill="url(#cardGrad)" stroke="#273252" stroke-width="1.4"/>
+    <text x="20" y="27" class="title" font-size="15.2" fill="#f8fafc">Server Decode &amp; Speculative Throughput (tok/s)</text>
+    <rect x="20" y="38" width="9" height="9" rx="2" fill="#10b981"/>
+    <text x="34" y="46.5" class="sans" font-size="10.5" fill="#cbd5e1">GigaChat4 Spec Peak</text>
+    <rect x="150" y="38" width="9" height="9" rx="2" fill="#f59e0b"/>
+    <text x="164" y="46.5" class="sans" font-size="10.5" fill="#cbd5e1">Peer Spec Peak</text>
+    <rect x="256" y="38" width="9" height="9" rx="2" fill="#38bdf8"/>
+    <text x="270" y="46.5" class="sans" font-size="10.5" fill="#cbd5e1">Forced-192 Decode</text>
+    <text x="122" y="78" text-anchor="end" class="mono" font-size="11.2" font-weight="800" fill="#6ee7b7">GigaChat4-37B</text>
+    <rect x="132.0" y="62" width="248.0" height="11.5" rx="4" fill="#0d1526"/>
+    <rect x="132.0" y="62" width="229.4" height="11.5" rx="4" fill="url(#emeraldGrad)"/>
+    <text x="367.4" y="71.5" text-anchor="start" class="mono" font-size="10.2" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">323.8</text>
+<text x="367.4" y="71.5" text-anchor="start" class="mono" font-size="10.2" font-weight="700" fill="#6ee7b7">323.8</text>
+    <rect x="132.0" y="76.5" width="248.0" height="11.5" rx="4" fill="#0d1526"/>
+    <rect x="132.0" y="76.5" width="86.6" height="11.5" rx="4" fill="#34d399" opacity="0.88"/>
+    <text x="224.6" y="86.0" text-anchor="start" class="mono" font-size="10.2" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">122.2</text>
+<text x="224.6" y="86.0" text-anchor="start" class="mono" font-size="10.2" font-weight="700" fill="#7dd3fc">122.2</text>
+    <text x="122" y="116" text-anchor="end" class="mono" font-size="11.2" font-weight="600" fill="#e2e8f0">Qwen3.6-35B</text>
+    <rect x="132.0" y="100" width="248.0" height="11.5" rx="4" fill="#0d1526"/>
+    <rect x="132.0" y="100" width="220.3" height="11.5" rx="4" fill="#f59e0b"/>
+    <text x="358.3" y="109.5" text-anchor="start" class="mono" font-size="10.2" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">310.9</text>
+<text x="358.3" y="109.5" text-anchor="start" class="mono" font-size="10.2" font-weight="700" fill="#fde68a">310.9</text>
+    <rect x="132.0" y="114.5" width="248.0" height="11.5" rx="4" fill="#0d1526"/>
+    <rect x="132.0" y="114.5" width="138.0" height="11.5" rx="4" fill="#38bdf8" opacity="0.88"/>
+    <text x="276.0" y="124.0" text-anchor="start" class="mono" font-size="10.2" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">194.8</text>
+<text x="276.0" y="124.0" text-anchor="start" class="mono" font-size="10.2" font-weight="700" fill="#7dd3fc">194.8</text>
+    <text x="122" y="154" text-anchor="end" class="mono" font-size="11.2" font-weight="600" fill="#e2e8f0">Apex-35B-V1</text>
+    <rect x="132.0" y="138" width="248.0" height="11.5" rx="4" fill="#0d1526"/>
+    <rect x="132.0" y="138" width="219.1" height="11.5" rx="4" fill="#f59e0b"/>
+    <text x="357.1" y="147.5" text-anchor="start" class="mono" font-size="10.2" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">309.2</text>
+<text x="357.1" y="147.5" text-anchor="start" class="mono" font-size="10.2" font-weight="700" fill="#fde68a">309.2</text>
+    <rect x="132.0" y="152.5" width="248.0" height="11.5" rx="4" fill="#0d1526"/>
+    <rect x="132.0" y="152.5" width="126.0" height="11.5" rx="4" fill="#38bdf8" opacity="0.88"/>
+    <text x="264.0" y="162.0" text-anchor="start" class="mono" font-size="10.2" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">177.8</text>
+<text x="264.0" y="162.0" text-anchor="start" class="mono" font-size="10.2" font-weight="700" fill="#7dd3fc">177.8</text>
+    <text x="122" y="192" text-anchor="end" class="mono" font-size="11.2" font-weight="600" fill="#e2e8f0">Maxwell-37B</text>
+    <rect x="132.0" y="176" width="248.0" height="11.5" rx="4" fill="#0d1526"/>
+    <rect x="132.0" y="176" width="149.2" height="11.5" rx="4" fill="#f59e0b"/>
+    <text x="287.2" y="185.5" text-anchor="start" class="mono" font-size="10.2" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">210.5</text>
+<text x="287.2" y="185.5" text-anchor="start" class="mono" font-size="10.2" font-weight="700" fill="#fde68a">210.5</text>
+    <rect x="132.0" y="190.5" width="248.0" height="11.5" rx="4" fill="#0d1526"/>
+    <rect x="132.0" y="190.5" width="73.7" height="11.5" rx="4" fill="#38bdf8" opacity="0.88"/>
+    <text x="211.7" y="200.0" text-anchor="start" class="mono" font-size="10.2" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">104.0</text>
+<text x="211.7" y="200.0" text-anchor="start" class="mono" font-size="10.2" font-weight="700" fill="#7dd3fc">104.0</text>
+    <text x="122" y="230" text-anchor="end" class="mono" font-size="11.2" font-weight="600" fill="#e2e8f0">Qwen3.8-27B</text>
+    <rect x="132.0" y="214" width="248.0" height="11.5" rx="4" fill="#0d1526"/>
+    <rect x="132.0" y="214" width="109.3" height="11.5" rx="4" fill="#f59e0b"/>
+    <text x="247.3" y="223.5" text-anchor="start" class="mono" font-size="10.2" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">154.2</text>
+<text x="247.3" y="223.5" text-anchor="start" class="mono" font-size="10.2" font-weight="700" fill="#fde68a">154.2</text>
+    <rect x="132.0" y="228.5" width="248.0" height="11.5" rx="4" fill="#0d1526"/>
+    <rect x="132.0" y="228.5" width="50.8" height="11.5" rx="4" fill="#38bdf8" opacity="0.88"/>
+    <text x="188.8" y="238.0" text-anchor="start" class="mono" font-size="10.2" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">71.7</text>
+<text x="188.8" y="238.0" text-anchor="start" class="mono" font-size="10.2" font-weight="700" fill="#7dd3fc">71.7</text>
+    <text x="122" y="268" text-anchor="end" class="mono" font-size="11.2" font-weight="600" fill="#e2e8f0">Inkling-2-Mini</text>
+    <rect x="132.0" y="252" width="248.0" height="11.5" rx="4" fill="#0d1526"/>
+    <rect x="132.0" y="252" width="70.4" height="11.5" rx="4" fill="#f59e0b"/>
+    <text x="208.4" y="261.5" text-anchor="start" class="mono" font-size="10.2" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">99.3</text>
+<text x="208.4" y="261.5" text-anchor="start" class="mono" font-size="10.2" font-weight="700" fill="#fde68a">99.3</text>
+    <rect x="132.0" y="266.5" width="248.0" height="11.5" rx="4" fill="#0d1526"/>
+    <rect x="132.0" y="266.5" width="64.0" height="11.5" rx="4" fill="#38bdf8" opacity="0.88"/>
+    <text x="202.0" y="276.0" text-anchor="start" class="mono" font-size="10.2" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">90.3</text>
+<text x="202.0" y="276.0" text-anchor="start" class="mono" font-size="10.2" font-weight="700" fill="#7dd3fc">90.3</text>
+  </g>
+  <!-- Row 2 Right: llmprobe Suite Comparison -->
+  <g transform="translate(490, 408)">
+    <rect width="442" height="304" rx="16" fill="url(#cardGrad)" stroke="#273252" stroke-width="1.4"/>
+    <text x="20" y="27" class="title" font-size="15.2" fill="#f8fafc">llmprobe Suite Breakdown (% Score)</text>
+    <rect x="20" y="38" width="9" height="9" rx="2" fill="#10b981"/>
+    <text x="33" y="46.5" class="sans" font-size="10.5" fill="#cbd5e1">GigaChat4</text>
+    <rect x="112" y="38" width="9" height="9" rx="2" fill="#38bdf8"/>
+    <text x="125" y="46.5" class="sans" font-size="10.5" fill="#cbd5e1">Qwen3.6</text>
+    <rect x="196" y="38" width="9" height="9" rx="2" fill="#c084fc"/>
+    <text x="209" y="46.5" class="sans" font-size="10.5" fill="#cbd5e1">Apex-35B</text>
+    <rect x="282" y="38" width="9" height="9" rx="2" fill="#fbbf24"/>
+    <text x="295" y="46.5" class="sans" font-size="10.5" fill="#cbd5e1">Inkling-2</text>
+    <rect x="362" y="38" width="9" height="9" rx="2" fill="#fb7185"/>
+    <text x="375" y="46.5" class="sans" font-size="10.5" fill="#cbd5e1">Qwen-27B</text>
+    <line x1="36" y1="264.0" x2="424" y2="264.0" stroke="#334155" stroke-width="1"/>
+    <line x1="36" y1="216.5" x2="424" y2="216.5" stroke="#1e293b" stroke-dasharray="3,3" stroke-width="1"/>
+    <text x="31" y="220.0" text-anchor="end" class="mono" font-size="9.5" fill="#64748b">25</text>
+    <line x1="36" y1="169.0" x2="424" y2="169.0" stroke="#1e293b" stroke-dasharray="3,3" stroke-width="1"/>
+    <text x="31" y="172.5" text-anchor="end" class="mono" font-size="9.5" fill="#64748b">50</text>
+    <line x1="36" y1="121.5" x2="424" y2="121.5" stroke="#1e293b" stroke-dasharray="3,3" stroke-width="1"/>
+    <text x="31" y="125.0" text-anchor="end" class="mono" font-size="9.5" fill="#64748b">75</text>
+    <line x1="36" y1="74.0" x2="424" y2="74.0" stroke="#1e293b" stroke-dasharray="3,3" stroke-width="1"/>
+    <text x="31" y="77.5" text-anchor="end" class="mono" font-size="9.5" fill="#64748b">100</text>
+    <rect x="46.0" y="74.0" width="10.0" height="190.0" rx="2.5" fill="#10b981"/>
+    <text x="51.0" y="70.0" text-anchor="middle" class="mono" font-size="9.0" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">100</text>
+<text x="51.0" y="70.0" text-anchor="middle" class="mono" font-size="9.0" font-weight="700" fill="#6ee7b7">100</text>
+    <rect x="56.8" y="79.1" width="10.0" height="184.9" rx="2.5" fill="#38bdf8"/>
+    <rect x="67.6" y="79.1" width="10.0" height="184.9" rx="2.5" fill="#c084fc"/>
+    <rect x="78.4" y="74.0" width="10.0" height="190.0" rx="2.5" fill="#fbbf24"/>
+    <rect x="89.2" y="74.0" width="10.0" height="190.0" rx="2.5" fill="#fb7185"/>
+    <text x="72.0" y="282.0" text-anchor="middle" class="sans" font-size="10.5" font-weight="600" fill="#e2e8f0">Capability</text>
+    <rect x="109.0" y="74.0" width="10.0" height="190.0" rx="2.5" fill="#10b981"/>
+    <text x="114.0" y="70.0" text-anchor="middle" class="mono" font-size="9.0" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">100</text>
+<text x="114.0" y="70.0" text-anchor="middle" class="mono" font-size="9.0" font-weight="700" fill="#6ee7b7">100</text>
+    <rect x="119.8" y="75.5" width="10.0" height="188.5" rx="2.5" fill="#38bdf8"/>
+    <rect x="130.6" y="74.0" width="10.0" height="190.0" rx="2.5" fill="#c084fc"/>
+    <rect x="141.4" y="74.0" width="10.0" height="190.0" rx="2.5" fill="#fbbf24"/>
+    <rect x="152.2" y="74.0" width="10.0" height="190.0" rx="2.5" fill="#fb7185"/>
+    <text x="135.0" y="282.0" text-anchor="middle" class="sans" font-size="10.5" font-weight="600" fill="#e2e8f0">Fidelity</text>
+    <rect x="172.0" y="119.4" width="10.0" height="144.6" rx="2.5" fill="#10b981"/>
+    <text x="177.0" y="115.4" text-anchor="middle" class="mono" font-size="9.0" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">76</text>
+<text x="177.0" y="115.4" text-anchor="middle" class="mono" font-size="9.0" font-weight="700" fill="#6ee7b7">76</text>
+    <rect x="182.8" y="121.5" width="10.0" height="142.5" rx="2.5" fill="#38bdf8"/>
+    <rect x="193.6" y="136.7" width="10.0" height="127.3" rx="2.5" fill="#c084fc"/>
+    <rect x="204.4" y="112.9" width="10.0" height="151.1" rx="2.5" fill="#fbbf24"/>
+    <rect x="215.2" y="99.8" width="10.0" height="164.2" rx="2.5" fill="#fb7185"/>
+    <text x="198.0" y="282.0" text-anchor="middle" class="sans" font-size="10.5" font-weight="600" fill="#e2e8f0">Agentic 88</text>
+    <rect x="235.0" y="131.0" width="10.0" height="133.0" rx="2.5" fill="#10b981"/>
+    <text x="240.0" y="127.0" text-anchor="middle" class="mono" font-size="9.0" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">70</text>
+<text x="240.0" y="127.0" text-anchor="middle" class="mono" font-size="9.0" font-weight="700" fill="#6ee7b7">70</text>
+    <rect x="245.8" y="110.1" width="10.0" height="153.9" rx="2.5" fill="#38bdf8"/>
+    <rect x="256.6" y="127.2" width="10.0" height="136.8" rx="2.5" fill="#c084fc"/>
+    <rect x="267.4" y="121.5" width="10.0" height="142.5" rx="2.5" fill="#fbbf24"/>
+    <rect x="278.2" y="121.5" width="10.0" height="142.5" rx="2.5" fill="#fb7185"/>
+    <text x="261.0" y="282.0" text-anchor="middle" class="sans" font-size="10.5" font-weight="600" fill="#e2e8f0">Code-100</text>
+    <rect x="298.0" y="171.1" width="10.0" height="92.9" rx="2.5" fill="#10b981"/>
+    <text x="303.0" y="167.1" text-anchor="middle" class="mono" font-size="9.0" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">49</text>
+<text x="303.0" y="167.1" text-anchor="middle" class="mono" font-size="9.0" font-weight="700" fill="#6ee7b7">49</text>
+    <rect x="308.8" y="115.2" width="10.0" height="148.8" rx="2.5" fill="#38bdf8"/>
+    <rect x="319.6" y="171.1" width="10.0" height="92.9" rx="2.5" fill="#c084fc"/>
+    <rect x="330.4" y="173.2" width="10.0" height="90.8" rx="2.5" fill="#fbbf24"/>
+    <text x="324.0" y="282.0" text-anchor="middle" class="sans" font-size="10.5" font-weight="600" fill="#e2e8f0">Core-92</text>
+    <rect x="361.0" y="153.8" width="10.0" height="110.2" rx="2.5" fill="#10b981"/>
+    <text x="366.0" y="149.8" text-anchor="middle" class="mono" font-size="9.0" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">58</text>
+<text x="366.0" y="149.8" text-anchor="middle" class="mono" font-size="9.0" font-weight="700" fill="#6ee7b7">58</text>
+    <rect x="371.8" y="100.6" width="10.0" height="163.4" rx="2.5" fill="#38bdf8"/>
+    <rect x="393.4" y="172.8" width="10.0" height="91.2" rx="2.5" fill="#fbbf24"/>
+    <text x="387.0" y="282.0" text-anchor="middle" class="sans" font-size="10.5" font-weight="600" fill="#e2e8f0">Hard-50</text>
+  </g>
+  <!-- Row 3: External Multi-Harness Comparison -->
+  <g transform="translate(28, 728)">
+    <rect width="904" height="328" rx="16" fill="url(#cardGrad)" stroke="#273252" stroke-width="1.4"/>
+    <text x="22" y="28" class="title" font-size="15.5" fill="#f8fafc">External Multi-Harness Benchmarks (EvalPlus · Inspect AI · lm-eval · Promptfoo · --no-thinking)</text>
+    <rect x="22" y="40" width="10" height="10" rx="2" fill="#10b981"/>
+    <text x="36" y="49" class="sans" font-size="10.5" fill="#cbd5e1">GigaChat4-37B-A4B (QWP_4)</text>
+    <rect x="236" y="40" width="10" height="10" rx="2" fill="#38bdf8"/>
+    <text x="250" y="49" class="sans" font-size="10.5" fill="#cbd5e1">Qwen3.6-35B-A3B (QWP_4)</text>
+    <rect x="436" y="40" width="10" height="10" rx="2" fill="#c084fc"/>
+    <text x="450" y="49" class="sans" font-size="10.5" fill="#cbd5e1">Apex-35B-V1.0 (QWP_4)</text>
+    <rect x="626" y="40" width="10" height="10" rx="2" fill="#fbbf24"/>
+    <text x="640" y="49" class="sans" font-size="10.5" fill="#cbd5e1">Inkling-2-Mini (QWP-Mixed-Fast)</text>
+    <line x1="46" y1="284.0" x2="884" y2="284.0" stroke="#334155" stroke-width="1.2"/>
+    <line x1="46" y1="243.2" x2="884" y2="243.2" stroke="#1e293b" stroke-dasharray="3,3" stroke-width="1"/>
+    <text x="40" y="246.7" text-anchor="end" class="mono" font-size="10" fill="#64748b">20%</text>
+    <line x1="46" y1="202.4" x2="884" y2="202.4" stroke="#1e293b" stroke-dasharray="3,3" stroke-width="1"/>
+    <text x="40" y="205.9" text-anchor="end" class="mono" font-size="10" fill="#64748b">40%</text>
+    <line x1="46" y1="161.6" x2="884" y2="161.6" stroke="#1e293b" stroke-dasharray="3,3" stroke-width="1"/>
+    <text x="40" y="165.1" text-anchor="end" class="mono" font-size="10" fill="#64748b">60%</text>
+    <line x1="46" y1="120.8" x2="884" y2="120.8" stroke="#1e293b" stroke-dasharray="3,3" stroke-width="1"/>
+    <text x="40" y="124.3" text-anchor="end" class="mono" font-size="10" fill="#64748b">80%</text>
+    <line x1="46" y1="80.0" x2="884" y2="80.0" stroke="#1e293b" stroke-dasharray="3,3" stroke-width="1"/>
+    <text x="40" y="83.5" text-anchor="end" class="mono" font-size="10" fill="#64748b">100%</text>
+    <rect x="58.0" y="98.6" width="16.5" height="185.4" rx="3" fill="#10b981"/>
+    <text x="66.2" y="94.6" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">90.9</text>
+<text x="66.2" y="94.6" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="#6ee7b7">90.9</text>
+    <rect x="76.2" y="96.1" width="16.5" height="187.9" rx="3" fill="#38bdf8"/>
+    <text x="84.5" y="83.1" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">92.1</text>
+<text x="84.5" y="83.1" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="#7dd3fc">92.1</text>
+    <rect x="94.4" y="119.8" width="16.5" height="164.2" rx="3" fill="#c084fc"/>
+    <text x="102.7" y="115.8" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">80.5</text>
+<text x="102.7" y="115.8" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="#e9d5ff">80.5</text>
+    <rect x="112.6" y="127.3" width="16.5" height="156.7" rx="3" fill="#fbbf24"/>
+    <text x="120.8" y="114.3" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">76.8</text>
+<text x="120.8" y="114.3" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="#fde68a">76.8</text>
+    <text x="92.5" y="304.0" text-anchor="middle" class="sans" font-size="11" font-weight="700" fill="#e2e8f0">HumanEval</text>
+    <rect x="149.5" y="109.8" width="16.5" height="174.2" rx="3" fill="#10b981"/>
+    <text x="157.8" y="105.8" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">85.4</text>
+<text x="157.8" y="105.8" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="#6ee7b7">85.4</text>
+    <rect x="167.7" y="102.4" width="16.5" height="181.6" rx="3" fill="#38bdf8"/>
+    <text x="175.9" y="89.4" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">89.0</text>
+<text x="175.9" y="89.4" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="#7dd3fc">89.0</text>
+    <rect x="185.9" y="128.6" width="16.5" height="155.4" rx="3" fill="#c084fc"/>
+    <text x="194.2" y="124.6" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">76.2</text>
+<text x="194.2" y="124.6" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="#e9d5ff">76.2</text>
+    <rect x="204.1" y="133.4" width="16.5" height="150.6" rx="3" fill="#fbbf24"/>
+    <text x="212.3" y="120.4" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">73.8</text>
+<text x="212.3" y="120.4" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="#fde68a">73.8</text>
+    <text x="184.0" y="304.0" text-anchor="middle" class="sans" font-size="11" font-weight="700" fill="#e2e8f0">HumanEval+</text>
+    <rect x="241.0" y="147.9" width="16.5" height="136.1" rx="3" fill="#10b981"/>
+    <text x="249.2" y="143.9" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">66.7</text>
+<text x="249.2" y="143.9" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="#6ee7b7">66.7</text>
+    <rect x="259.2" y="131.2" width="16.5" height="152.8" rx="3" fill="#38bdf8"/>
+    <text x="267.4" y="127.2" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">74.9</text>
+<text x="267.4" y="127.2" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="#7dd3fc">74.9</text>
+    <rect x="277.4" y="148.5" width="16.5" height="135.5" rx="3" fill="#c084fc"/>
+    <text x="285.6" y="144.5" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">66.4</text>
+<text x="285.6" y="144.5" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="#e9d5ff">66.4</text>
+    <rect x="295.6" y="138.3" width="16.5" height="145.7" rx="3" fill="#fbbf24"/>
+    <text x="303.9" y="125.3" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">71.4</text>
+<text x="303.9" y="125.3" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="#fde68a">71.4</text>
+    <text x="275.5" y="304.0" text-anchor="middle" class="sans" font-size="11" font-weight="700" fill="#e2e8f0">MBPP+</text>
+    <rect x="332.5" y="105.5" width="16.5" height="178.5" rx="3" fill="#10b981"/>
+    <text x="340.8" y="101.5" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">87.5</text>
+<text x="340.8" y="101.5" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="#6ee7b7">87.5</text>
+    <rect x="350.7" y="105.5" width="16.5" height="178.5" rx="3" fill="#38bdf8"/>
+    <text x="358.9" y="92.5" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">87.5</text>
+<text x="358.9" y="92.5" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="#7dd3fc">87.5</text>
+    <rect x="368.9" y="141.8" width="16.5" height="142.2" rx="3" fill="#c084fc"/>
+    <text x="377.1" y="137.8" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">69.7</text>
+<text x="377.1" y="137.8" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="#e9d5ff">69.7</text>
+    <rect x="387.1" y="149.2" width="16.5" height="134.8" rx="3" fill="#fbbf24"/>
+    <text x="395.4" y="136.2" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">66.1</text>
+<text x="395.4" y="136.2" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="#fde68a">66.1</text>
+    <text x="367.0" y="304.0" text-anchor="middle" class="sans" font-size="11" font-weight="700" fill="#e2e8f0">IFEval Avg</text>
+    <rect x="424.0" y="182.0" width="16.5" height="102.0" rx="3" fill="#10b981"/>
+    <text x="432.2" y="178.0" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">50.0</text>
+<text x="432.2" y="178.0" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="#6ee7b7">50.0</text>
+    <rect x="442.2" y="255.0" width="16.5" height="29.0" rx="3" fill="#38bdf8"/>
+    <text x="450.4" y="251.0" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">14.2</text>
+<text x="450.4" y="251.0" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="#7dd3fc">14.2</text>
+    <rect x="460.4" y="202.4" width="16.5" height="81.6" rx="3" fill="#c084fc"/>
+    <text x="468.6" y="198.4" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">40.0</text>
+<text x="468.6" y="198.4" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="#e9d5ff">40.0</text>
+    <rect x="478.6" y="263.6" width="16.5" height="20.4" rx="3" fill="#fbbf24"/>
+    <text x="486.9" y="259.6" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">10.0</text>
+<text x="486.9" y="259.6" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="#fde68a">10.0</text>
+    <text x="458.5" y="304.0" text-anchor="middle" class="sans" font-size="11" font-weight="700" fill="#e2e8f0">GPQA-D</text>
+    <rect x="515.5" y="147.9" width="16.5" height="136.1" rx="3" fill="#10b981"/>
+    <text x="523.8" y="143.9" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">66.7</text>
+<text x="523.8" y="143.9" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="#6ee7b7">66.7</text>
+    <rect x="533.7" y="161.6" width="16.5" height="122.4" rx="3" fill="#38bdf8"/>
+    <text x="542.0" y="157.6" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">60.0</text>
+<text x="542.0" y="157.6" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="#7dd3fc">60.0</text>
+    <rect x="551.9" y="134.5" width="16.5" height="149.5" rx="3" fill="#c084fc"/>
+    <text x="560.1" y="130.5" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">73.3</text>
+<text x="560.1" y="130.5" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="#e9d5ff">73.3</text>
+    <rect x="570.1" y="216.1" width="16.5" height="67.9" rx="3" fill="#fbbf24"/>
+    <text x="578.4" y="212.1" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">33.3</text>
+<text x="578.4" y="212.1" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="#fde68a">33.3</text>
+    <text x="550.0" y="304.0" text-anchor="middle" class="sans" font-size="11" font-weight="700" fill="#e2e8f0">MMLU-Pro</text>
+    <rect x="607.0" y="243.2" width="16.5" height="40.8" rx="3" fill="#10b981"/>
+    <text x="615.2" y="239.2" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">20.0</text>
+<text x="615.2" y="239.2" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="#6ee7b7">20.0</text>
+    <rect x="625.2" y="277.3" width="16.5" height="6.7" rx="3" fill="#38bdf8"/>
+    <text x="633.5" y="273.3" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">3.3</text>
+<text x="633.5" y="273.3" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="#7dd3fc">3.3</text>
+    <rect x="643.4" y="263.6" width="16.5" height="20.4" rx="3" fill="#c084fc"/>
+    <text x="651.6" y="259.6" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">10.0</text>
+<text x="651.6" y="259.6" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="#e9d5ff">10.0</text>
+    <rect x="661.6" y="277.3" width="16.5" height="6.7" rx="3" fill="#fbbf24"/>
+    <text x="669.9" y="273.3" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">3.3</text>
+<text x="669.9" y="273.3" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="#fde68a">3.3</text>
+    <text x="641.5" y="304.0" text-anchor="middle" class="sans" font-size="11" font-weight="700" fill="#e2e8f0">AIME 2025</text>
+    <rect x="698.5" y="107.1" width="16.5" height="176.9" rx="3" fill="#10b981"/>
+    <text x="706.8" y="103.1" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">86.7</text>
+<text x="706.8" y="103.1" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="#6ee7b7">86.7</text>
+    <rect x="716.7" y="86.7" width="16.5" height="197.3" rx="3" fill="#38bdf8"/>
+    <text x="725.0" y="82.7" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">96.7</text>
+<text x="725.0" y="82.7" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="#7dd3fc">96.7</text>
+    <rect x="734.9" y="114.1" width="16.5" height="169.9" rx="3" fill="#c084fc"/>
+    <text x="743.1" y="110.1" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">83.3</text>
+<text x="743.1" y="110.1" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="#e9d5ff">83.3</text>
+    <rect x="753.1" y="107.1" width="16.5" height="176.9" rx="3" fill="#fbbf24"/>
+    <text x="761.4" y="94.1" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">86.7</text>
+<text x="761.4" y="94.1" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="#fde68a">86.7</text>
+    <text x="733.0" y="304.0" text-anchor="middle" class="sans" font-size="11" font-weight="700" fill="#e2e8f0">GSM8K 5-sh</text>
+    <rect x="790.0" y="80.0" width="16.5" height="204.0" rx="3" fill="#10b981"/>
+    <text x="798.2" y="76.0" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">100</text>
+<text x="798.2" y="76.0" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="#6ee7b7">100</text>
+    <rect x="808.2" y="80.0" width="16.5" height="204.0" rx="3" fill="#38bdf8"/>
+    <text x="816.5" y="67.0" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">100</text>
+<text x="816.5" y="67.0" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="#7dd3fc">100</text>
+    <rect x="826.4" y="156.5" width="16.5" height="127.5" rx="3" fill="#c084fc"/>
+    <text x="834.6" y="152.5" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">62.5</text>
+<text x="834.6" y="152.5" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="#e9d5ff">62.5</text>
+    <rect x="844.6" y="80.0" width="16.5" height="204.0" rx="3" fill="#fbbf24"/>
+    <text x="852.9" y="76.0" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="none" stroke="#0b1120" stroke-width="3.5" stroke-linejoin="round">100</text>
+<text x="852.9" y="76.0" text-anchor="middle" class="mono" font-size="8.6" font-weight="700" fill="#fde68a">100</text>
+    <text x="824.5" y="304.0" text-anchor="middle" class="sans" font-size="11" font-weight="700" fill="#e2e8f0">Promptfoo</text>
+  </g>
+  <!-- Row 4: Consolidated Master Scorecard -->
+  <g transform="translate(28, 1072)">
+    <rect width="904" height="240" rx="16" fill="url(#cardGrad)" stroke="#273252" stroke-width="1.4"/>
+    <text x="20" y="27" class="title" font-size="15.5" fill="#f8fafc">Consolidated Qwegn Fleet Scorecard (35B–37B Class + Reference Anchors)</text>
+    <line x1="18" y1="38" x2="886" y2="38" stroke="#334155" stroke-width="1"/>
+    <text x="20" y="55" text-anchor="start" class="mono" font-size="10" font-weight="700" fill="#94a3b8">Model Pack (Params)</text>
+    <text x="228" y="55" text-anchor="middle" class="mono" font-size="10" font-weight="700" fill="#94a3b8">UMA</text>
+    <text x="304" y="55" text-anchor="middle" class="mono" font-size="10" font-weight="700" fill="#94a3b8">Pre / Spec / Dec</text>
+    <text x="418" y="55" text-anchor="middle" class="mono" font-size="10" font-weight="700" fill="#94a3b8">Cap / Ag / Fid</text>
+    <text x="544" y="55" text-anchor="middle" class="mono" font-size="10" font-weight="700" fill="#94a3b8">Code / Core / Hard</text>
+    <text x="676" y="55" text-anchor="middle" class="mono" font-size="10" font-weight="700" fill="#94a3b8">HE+ / MBPP+</text>
+    <text x="808" y="55" text-anchor="middle" class="mono" font-size="10" font-weight="700" fill="#94a3b8">IFEval / GPQA / MMLU / PF</text>
+    <line x1="18" y1="63" x2="886" y2="63" stroke="#1e293b" stroke-width="1"/>
+    <rect x="14" y="68" width="876" height="20" rx="5" fill="#062e22" fill-opacity="0.65" stroke="#10b981" stroke-opacity="0.45" stroke-width="1"/>
+    <text x="20" y="82" class="mono" font-size="10.5" font-weight="800" fill="#6ee7b7">GigaChat4-37B-A4B (37B/4B)</text>
+    <text x="228" y="82" text-anchor="middle" class="mono" font-size="10.5" fill="#6ee7b7">20.8G</text>
+    <text x="304" y="82" text-anchor="middle" class="mono" font-size="10.5" fill="#6ee7b7">4770 / 323.8 / 122</text>
+    <text x="418" y="82" text-anchor="middle" class="mono" font-size="10.5" fill="#6ee7b7">100% / 67 / 100%</text>
+    <text x="544" y="82" text-anchor="middle" class="mono" font-size="10.5" fill="#6ee7b7">70 / 45 / 29</text>
+    <text x="676" y="82" text-anchor="middle" class="mono" font-size="10.5" fill="#6ee7b7">85.4% / 66.7%</text>
+    <text x="808" y="82" text-anchor="middle" class="mono" font-size="10.5" fill="#6ee7b7">87.5 / 50.0 / 66.7 / 8/8</text>
+    <text x="20" y="104" class="mono" font-size="10.5" font-weight="600" fill="#e2e8f0">Qwen3.6-35B-A3B (35B/3B)</text>
+    <text x="228" y="104" text-anchor="middle" class="mono" font-size="10.5" fill="#e2e8f0">22.2G</text>
+    <text x="304" y="104" text-anchor="middle" class="mono" font-size="10.5" fill="#e2e8f0">6462 / 310.9 / 195</text>
+    <text x="418" y="104" text-anchor="middle" class="mono" font-size="10.5" fill="#e2e8f0">97.3 / 66 / 99.2</text>
+    <text x="544" y="104" text-anchor="middle" class="mono" font-size="10.5" fill="#e2e8f0">81 / 72 / 43</text>
+    <text x="676" y="104" text-anchor="middle" class="mono" font-size="10.5" fill="#e2e8f0">89.0% / 74.9%</text>
+    <text x="808" y="104" text-anchor="middle" class="mono" font-size="10.5" fill="#e2e8f0">87.5 / 14.2 / 60.0 / 8/8</text>
+    <text x="20" y="126" class="mono" font-size="10.5" font-weight="600" fill="#e2e8f0">Apex-35B-V1.0 (36B/3B)</text>
+    <text x="228" y="126" text-anchor="middle" class="mono" font-size="10.5" fill="#e2e8f0">22.2G</text>
+    <text x="304" y="126" text-anchor="middle" class="mono" font-size="10.5" fill="#e2e8f0">6416 / 309.2 / 178</text>
+    <text x="418" y="126" text-anchor="middle" class="mono" font-size="10.5" fill="#e2e8f0">97.3 / 59 / 100%</text>
+    <text x="544" y="126" text-anchor="middle" class="mono" font-size="10.5" fill="#e2e8f0">72 / 45 / 24*</text>
+    <text x="676" y="126" text-anchor="middle" class="mono" font-size="10.5" fill="#e2e8f0">76.2% / 66.4%</text>
+    <text x="808" y="126" text-anchor="middle" class="mono" font-size="10.5" fill="#e2e8f0">69.7 / 40.0 / 73.3 / 5/8</text>
+    <text x="20" y="148" class="mono" font-size="10.5" font-weight="600" fill="#cbd5e1">Maxwell-V1-Flash (37B/3.2B)</text>
+    <text x="228" y="148" text-anchor="middle" class="mono" font-size="10.5" fill="#cbd5e1">17.2G</text>
+    <text x="304" y="148" text-anchor="middle" class="mono" font-size="10.5" fill="#cbd5e1">5324 / 210.5 / 104</text>
+    <text x="418" y="148" text-anchor="middle" class="mono" font-size="10.5" fill="#cbd5e1">100% / 50 / 100%</text>
+    <text x="544" y="148" text-anchor="middle" class="mono" font-size="10.5" fill="#cbd5e1">59 /  — /  —</text>
+    <text x="676" y="148" text-anchor="middle" class="mono" font-size="10.5" fill="#cbd5e1">  —  /   —  </text>
+    <text x="808" y="148" text-anchor="middle" class="mono" font-size="10.5" fill="#cbd5e1"> —  /  —  /  —  /  — </text>
+    <text x="20" y="170" class="mono" font-size="10.5" font-weight="600" fill="#cbd5e1">Inkling-2-Mini (26B Loop)</text>
+    <text x="228" y="170" text-anchor="middle" class="mono" font-size="10.5" fill="#cbd5e1">10.2G</text>
+    <text x="304" y="170" text-anchor="middle" class="mono" font-size="10.5" fill="#cbd5e1">3638 /  99.3 /  90</text>
+    <text x="418" y="170" text-anchor="middle" class="mono" font-size="10.5" fill="#cbd5e1">100% / 70 / 100%</text>
+    <text x="544" y="170" text-anchor="middle" class="mono" font-size="10.5" fill="#cbd5e1">75 / 44 / 24</text>
+    <text x="676" y="170" text-anchor="middle" class="mono" font-size="10.5" fill="#cbd5e1">73.8% / 71.4%</text>
+    <text x="808" y="170" text-anchor="middle" class="mono" font-size="10.5" fill="#cbd5e1">66.1 / 10.0 / 33.3 / 8/8</text>
+    <text x="20" y="192" class="mono" font-size="10.5" font-weight="600" fill="#cbd5e1">Qwen3.8-27B+DF2 (27B Dense)</text>
+    <text x="228" y="192" text-anchor="middle" class="mono" font-size="10.5" fill="#cbd5e1">19.8G</text>
+    <text x="304" y="192" text-anchor="middle" class="mono" font-size="10.5" fill="#cbd5e1">1043 / 154.2 /  72</text>
+    <text x="418" y="192" text-anchor="middle" class="mono" font-size="10.5" fill="#cbd5e1">100% / 76 / 100%</text>
+    <text x="544" y="192" text-anchor="middle" class="mono" font-size="10.5" fill="#cbd5e1">75 / 10* / 4*</text>
+    <text x="676" y="192" text-anchor="middle" class="mono" font-size="10.5" fill="#cbd5e1">86.0% /   —  </text>
+    <text x="808" y="192" text-anchor="middle" class="mono" font-size="10.5" fill="#cbd5e1">75.0 / 14.2 / 43.3 / 8/8</text>
+    <text x="20" y="214" class="mono" font-size="10.5" font-weight="600" fill="#94a3b8">Qwen3.8-Flash-Next (129B/6B)</text>
+    <text x="228" y="214" text-anchor="middle" class="mono" font-size="10.5" fill="#94a3b8">98.4G</text>
+    <text x="304" y="214" text-anchor="middle" class="mono" font-size="10.5" fill="#94a3b8">3035 / 177.2 /  82</text>
+    <text x="418" y="214" text-anchor="middle" class="mono" font-size="10.5" fill="#94a3b8">100% / 75 / 100%</text>
+    <text x="544" y="214" text-anchor="middle" class="mono" font-size="10.5" fill="#94a3b8">79 / 75 / 44</text>
+    <text x="676" y="214" text-anchor="middle" class="mono" font-size="10.5" fill="#94a3b8">92.1% / 77.8%</text>
+    <text x="808" y="214" text-anchor="middle" class="mono" font-size="10.5" fill="#94a3b8">87.8 / 16.7 / 60.0 / 8/8</text>
+    <text x="20" y="231" class="mono" font-size="9.5" fill="#64748b">*Apex Hard-50 shows 24/30 MMLU-Pro before Olympiad 73.5K cap; Qwen-27B shows Core-10 (10/10) &amp; Hard-10 (4/10); Flash-Next 129B included as upper-tier reference.</text>
+  </g>
+  <!-- Footer Machine Spec Card -->
+  <g transform="translate(28, 1326)">
+    <rect width="904" height="62" rx="11" fill="#0a101f" stroke="#334155" stroke-width="1.2"/>
+    <rect x="14" y="13" width="96" height="36" rx="8" fill="#111c33" stroke="#38bdf8" stroke-opacity="0.45" stroke-width="1"/>
+    <text x="62" y="29" text-anchor="middle" class="mono" font-size="11" font-weight="800" fill="#7dd3fc">M5 MAX</text>
+    <text x="62" y="43" text-anchor="middle" class="mono" font-size="10.5" fill="#94a3b8">128 GB UMA</text>
+    <text x="122" y="27" class="mono" font-size="11.5" font-weight="700" fill="#e2e8f0">Apple M5 Max · Mac17,6 · 18-Core CPU · 40-Core Apple10 NAX GPU · 128 GB Unified Memory</text>
+    <text x="122" y="46" class="mono" font-size="11" fill="#94a3b8">585 GB/s DRAM · 950 GB/s SLC · macOS 26.2+ · Qwegn v0.44.1 · q4 KV · Temp 0 · 0 Steady Allocs</text>
+  </g>
+</svg>

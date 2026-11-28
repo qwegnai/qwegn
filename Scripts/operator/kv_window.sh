@@ -12,7 +12,7 @@ set -uo pipefail
 cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 source Scripts/operator/cadence_lib.sh
 
-REF="$HOME/.qwg/models/Qwen3.8-Flash-Next-hq4g32"
+REF="$HOME/.qwg/models/Qwen3.8-Flash-Next-QWP_4"
 TAG="kv-win-$(date +%Y%m%d-%H%M%S)"
 OUT="out/$TAG"; mkdir -p "$OUT"
 STAGE="${1:-all}"   # kvmode | prefix | all

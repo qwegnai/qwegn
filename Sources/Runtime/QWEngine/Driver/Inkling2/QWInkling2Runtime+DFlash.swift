@@ -148,29 +148,12 @@ extension QWInkling2Runtime {
         let logitsPtr = session.logitsF32Buf.contents().assumingMemoryBound(to: Float.self)
         let headTokPtr = session.headTokensBuf.contents().assumingMemoryBound(to: Int32.self)
         let dSlot = dflash.sessionSlots[0]
-        let dflashSeed = sampler.config.hasExplicitSeed
-            ? sampler.config.seed
-            : UInt64.random(in: 0...UInt64.max)
-        let startDraws = sampler.drawsConsumed
+        let dflashSeed: UInt64 = sampler.config.hasExplicitSeed
+            ? (sampler.config.seed ^ 0x4446_4C53_9E37_79B9)
+            : UInt64.random(in: 1...UInt64.max)
         let stream: QWMTPRandomStream? = isGreedy
             ? nil
-            : QWMTPRandomStream(seed: dflashSeed, drawIndex: startDraws)
-        defer {
-            if let stream, stream.drawsConsumed > startDraws {
-                if sampler.config.hasExplicitSeed {
-                    let mixed = QWPhilox.philox4(
-                        (UInt32(truncatingIfNeeded: stream.drawsConsumed),
-                         UInt32(truncatingIfNeeded: stream.drawsConsumed >> 32),
-                         0x4446_4C53, 1),
-                        dflashSeed
-                    )
-                    sampler.config.seed = (UInt64(mixed.0) << 32) | UInt64(mixed.1)
-                } else {
-                    sampler.config.seed = UInt64.random(in: 0...UInt64.max)
-                }
-            }
-        }
-        var allowedScratch: [Int] = []
+            : QWMTPRandomStream(seed: dflashSeed, drawIndex: sampler.drawsConsumed)
 
         var stats = SpeculativeStats(label: "dflash")
         session.tokenRecycler.reset()
@@ -210,8 +193,11 @@ extension QWInkling2Runtime {
                 }
                 return ([], [], false)
             }
-            if let stream {
-                try stream.beginGumbelRound(drafts: cnt, vocabulary: V, maxDrafts: max(7, dflash.config.blockSize - 1))
+            let draftStream: QWMTPRandomStream? = try stream.map { s in
+                let draftBase = try s.reserveDraws(UInt64(cnt + 1) * UInt64(V))
+                let ds = QWMTPRandomStream(seed: s.seed, drawIndex: draftBase)
+                try ds.beginGumbelRound(drafts: cnt, vocabulary: V, maxDrafts: max(7, dflash.config.blockSize - 1))
+                return ds
             }
             do {
                 let preEncodeHook: ((_ enc: any MTLComputeCommandEncoder) throws -> Void)? = pendingIngest.map { pi in
@@ -259,14 +245,14 @@ extension QWInkling2Runtime {
                                 propX: propX32, anchorToken: 0, maskToken: 1, rows: rows
                             )
                         },
-                        stochastic: stream.map { (Float(max(sampler.config.temperature, 1e-6)), $0) },
+                        stochastic: draftStream.map { (Float(max(sampler.config.temperature, 1e-6)), $0) },
                         preEncode: preEncodeHook,
                         preContextUpdate: preCtx
                     )
                 }
                 return (res.drafts, res.proposals, false)
             } catch {
-                stream?.cancelActiveRound()
+                draftStream?.cancelActiveRound()
                 throw error
             }
         }
@@ -299,86 +285,42 @@ extension QWInkling2Runtime {
                 )
             }
 
-            var accepted = 0
-            var emitted = 0
-            var stopped = false
-            var cancelled = false
-
-            if !proposals.isEmpty, let stream {
-                var targets: [QWSamplingDistribution] = []
-                targets.reserveCapacity(B)
-                var penWindow = recentGeneratedForPenalty
-                var activePen = penaltyHistory
-                for r in 0..<B {
-                    let rowPtr = UnsafeBufferPointer(start: logitsPtr.advanced(by: r * V), count: V)
-                    targets.append(try sampler.distribution(logits: rowPtr, repetitionHistory: activePen))
-                    if usePenalty && r < drafts.count {
-                        Self.recordGeneratedTokenForPenalty(
-                            drafts[r], vocab: V, recentGenerated: &penWindow, activeLoopTokens: &activePen
-                        )
-                    }
+            let draftProposals: [QWSpeculativeRoundResolver.DraftProposal] = !proposals.isEmpty
+                ? proposals.map { .distribution(token: $0.token, distribution: $0.distribution) }
+                : drafts.map { .greedyToken($0) }
+            let roundRes = try QWSpeculativeRoundResolver.resolve(
+                draftProposals: draftProposals,
+                stream: stream,
+                isGreedy: isGreedy,
+                maxNew: effectiveMaxNew - generated.count,
+                stopIDs: stopIDs
+            ) { row, draftPrefix, _ in
+                if runGreedyHead {
+                    return try QWSamplingDistribution.sparse(vocabulary: V, ids: [Int(headTokPtr[row])], weights: [1.0])
                 }
-                let res = try stream.resolveGumbelRound(proposals: proposals, targetDistributions: targets)
-                for idx in 0..<res.accepted {
-                    let tok = drafts[idx]
-                    let outcome = try consumeSpeculativeToken(
-                        tok, vocab: V, stopIDs: stopIDs, usePenalty: usePenalty,
-                        recentGeneratedForPenalty: &recentGeneratedForPenalty, penaltyHistory: &penaltyHistory,
-                        history: &history, generated: &generated, stopTokenID: &stopTokenID,
-                        onStopToken: onStopToken, onToken: onToken
+                let rowPtr = UnsafeBufferPointer(start: logitsPtr.advanced(by: row * V), count: V)
+                let rep = usePenalty
+                    ? Self.loopPenaltyHistory(
+                        baseRecent: recentGeneratedForPenalty,
+                        baseActive: penaltyHistory,
+                        draftPrefix: draftPrefix,
+                        vocab: V
                     )
-                    if outcome == .stopped { stopped = true; break }
-                    emitted += 1; accepted += 1
-                    if outcome == .cancelled { cancelled = true; break }
-                    if generated.count >= effectiveMaxNew { break }
+                    : []
+                if isGreedy {
+                    let tok = try sampler.penalisedGreedyToken(logits: rowPtr, repetitionHistory: rep)
+                    return try QWSamplingDistribution.sparse(vocabulary: V, ids: [tok], weights: [1.0])
                 }
-                if !stopped && !cancelled && generated.count < effectiveMaxNew {
-                    let outcome = try consumeSpeculativeToken(
-                        res.finalToken, vocab: V, stopIDs: stopIDs, usePenalty: usePenalty,
-                        recentGeneratedForPenalty: &recentGeneratedForPenalty, penaltyHistory: &penaltyHistory,
-                        history: &history, generated: &generated, stopTokenID: &stopTokenID,
-                        onStopToken: onStopToken, onToken: onToken
-                    )
-                    if outcome == .stopped {
-                        stopped = true
-                    } else {
-                        emitted += 1
-                        if outcome == .cancelled { cancelled = true }
-                    }
-                }
-            } else {
-                for r in 0..<B {
-                    let tok: Int
-                    if runGreedyHead {
-                        tok = Int(headTokPtr[r])
-                    } else if let stream {
-                        let rowPtr = UnsafeBufferPointer(start: logitsPtr.advanced(by: r * V), count: V)
-                        let dist = try sampler.distribution(logits: rowPtr, repetitionHistory: penaltyHistory)
-                        tok = try stream.sampleTarget(dist)
-                    } else {
-                        let rowPtr = UnsafeBufferPointer(start: logitsPtr.advanced(by: r * V), count: V)
-                        tok = try sampleToken(
-                            sampler: sampler, logitsRow: rowPtr, penaltyHistory: penaltyHistory,
-                            constraint: nil, allowedScratch: &allowedScratch
-                        )
-                    }
-                    let outcome = try consumeSpeculativeToken(
-                        tok, vocab: V, stopIDs: stopIDs, usePenalty: usePenalty,
-                        recentGeneratedForPenalty: &recentGeneratedForPenalty, penaltyHistory: &penaltyHistory,
-                        history: &history, generated: &generated, stopTokenID: &stopTokenID,
-                        onStopToken: onStopToken, onToken: onToken
-                    )
-                    if outcome == .stopped { stopped = true; break }
-                    emitted += 1
-                    if outcome == .cancelled { cancelled = true; break }
-                    if r < drafts.count && tok == drafts[r] {
-                        accepted += 1
-                        if generated.count >= effectiveMaxNew { break }
-                    } else {
-                        break
-                    }
-                }
+                return try sampler.distribution(logits: rowPtr, repetitionHistory: rep)
             }
+            let (accepted, emitted, stopped, cancelled) = try consumeResolvedRound(
+                roundRes, vocab: V, effectiveMaxNew: effectiveMaxNew, stopIDs: stopIDs,
+                usePenalty: usePenalty,
+                recentGeneratedForPenalty: &recentGeneratedForPenalty,
+                penaltyHistory: &penaltyHistory,
+                history: &history, generated: &generated, stopTokenID: &stopTokenID,
+                onStopToken: onStopToken, onToken: onToken
+            )
 
             let oldPos = pos
             let kept = 1 + accepted
@@ -430,51 +372,44 @@ extension QWInkling2Runtime {
                 let cTok: Int
                 if stepGreedy {
                     cTok = Int(headTokPtr[0])
-                } else if let stream {
-                    let rowPtr = UnsafeBufferPointer(start: logitsPtr, count: V)
-                    let dist = try sampler.distribution(logits: rowPtr, repetitionHistory: penaltyHistory)
-                    cTok = try stream.sampleTarget(dist)
                 } else {
-                    let rowPtr = UnsafeBufferPointer(start: logitsPtr, count: V)
-                    cTok = try sampleToken(
-                        sampler: sampler, logitsRow: rowPtr, penaltyHistory: penaltyHistory,
-                        constraint: nil, allowedScratch: &allowedScratch
-                    )
+                    let singleRes = try QWSpeculativeRoundResolver.resolve(
+                        draftProposals: [], stream: stream, isGreedy: isGreedy, maxNew: 1, stopIDs: []
+                    ) { _, _, _ in
+                        let rowPtr = UnsafeBufferPointer(start: logitsPtr, count: V)
+                        let rep = usePenalty ? penaltyHistory : []
+                        if isGreedy {
+                            let gTok = try sampler.penalisedGreedyToken(logits: rowPtr, repetitionHistory: rep)
+                            return try QWSamplingDistribution.sparse(vocabulary: V, ids: [gTok], weights: [1.0])
+                        }
+                        return try sampler.distribution(logits: rowPtr, repetitionHistory: rep)
+                    }
+                    cTok = singleRes.firstToken ?? 0
                 }
                 stepMs.append(elapsedSeconds(cStart.duration(to: clock.now)) * 1000.0)
                 let outcome = try consumeSpeculativeToken(
                     cTok, vocab: V, stopIDs: stopIDs, usePenalty: usePenalty,
                     recentGeneratedForPenalty: &recentGeneratedForPenalty, penaltyHistory: &penaltyHistory,
                     history: &history, generated: &generated, stopTokenID: &stopTokenID,
-                    onStopToken: onStopToken, onToken: onToken
-                )
-                if outcome == .stopped {
-                    stepCounts.append(0); return (stats, true)
-                }
+                    onStopToken: onStopToken, onToken: onToken)
+                if outcome == .stopped { stepCounts.append(0); return (stats, true) }
                 stepCounts.append(1)
-                if outcome == .cancelled { return (stats, true) }
+                if outcome == .cancelled || generated.count >= effectiveMaxNew { return (stats, true) }
                 cooldownSteps -= 1
-                if generated.count >= effectiveMaxNew { return (stats, true) }
             }
             if !hasCooldownPLD {
                 let pld = (allowPLD && isGreedy)
                     ? makePLDDrafts(history: history, maxCount: maxVerifyDrafts(cap: pldCap), allowRecyclerFallback: false)
                     : []
                 if !pld.isEmpty {
-                    try flushPendingIngest()
-                    nextProposal = (pld, [], true)
+                    try flushPendingIngest(); nextProposal = (pld, [], true)
                 } else {
-                    let pi = pendingIngest
-                    pendingIngest = nil
+                    let pi = pendingIngest; pendingIngest = nil
                     nextProposal = try proposeNextDrafts(
-                        anchor: generated[generated.count - 1], stream: stream, pendingIngest: pi
-                    )
+                        anchor: generated[generated.count - 1], stream: stream, pendingIngest: pi)
                 }
             }
-            if nextProposal.drafts.isEmpty {
-                try flushPendingIngest()
-                break
-            }
+            if nextProposal.drafts.isEmpty { try flushPendingIngest(); break }
         }
         return (stats, false)
     }

@@ -8,6 +8,18 @@ import QWGDN
 
 /// Driver-wide scratch, owned by a single unresolved verification window.
 struct QWVerifyWindow {
+    struct PendingStochasticVerify {
+        let params: QWStochasticSelectionParams
+        let draftProposals: QWTokenSelector
+        let draftProposalSlotBase: Int
+        let repetitionHistoryByRow: [[Int]]
+        let draftCount: Int
+    }
+
+    final class StochasticVerifyBox: @unchecked Sendable {
+        var pending: PendingStochasticVerify?
+    }
+
     let geometry: QWModelGeometry
     let rows: Int
     let vocabulary: Int
@@ -23,8 +35,9 @@ struct QWVerifyWindow {
     let moeDn32: QWTensorValue?
     let mhcStream: QWTensorValue?
     let mhcControls: QWTensorValue?
-    let targetSelector: QWMTPGreedySelector?
+    let targetSelector: QWTokenSelector?
     let targetTokens: QWTensorValue?
+    let stochasticVerifyBox = StochasticVerifyBox()
 
     static func allocationBytes(geometry: QWModelGeometry, rows: Int, vocabulary: Int? = nil,
                                 layerMajor: Bool = false, gpuTargets: Bool = false,
@@ -48,7 +61,7 @@ struct QWVerifyWindow {
             moeExtra +
             mhcExtra +
             aligned(rows * geometry.hidden / 128 * 4) +
-            (gpuTargets ? QWMTPGreedySelector.allocationBytes(geometry: geometry, vocabulary: vocabulary, maxRows: rows) + 256 : 0) +
+            (gpuTargets ? QWTokenSelector.allocationBytes(vocabLimit: geometry.vocab, vocabulary: vocabulary, maxRows: rows) + 256 : 0) +
             (q4Head ? aligned(rows * geometry.hidden / 128 * 4) : 0)
     }
 
@@ -87,7 +100,9 @@ struct QWVerifyWindow {
         mhcControls = (layerMajor && geometry.mhcConfig != nil)
             ? try allocator.allocate(QWTensorShape([rows * mhcCtrlCount], .f32))
             : nil
-        targetSelector = gpuTargets ? try QWMTPGreedySelector(geometry: geometry, allocator: allocator, vocabulary: vocabulary, maxRows: rows) : nil
+        targetSelector = gpuTargets
+            ? try QWTokenSelector(vocabLimit: geometry.vocab, allocator: allocator, vocabulary: vocabulary, maxRows: rows)
+            : nil
         targetTokens = gpuTargets ? try allocator.allocate(QWTensorShape([rows], .i32)) : nil
     }
 
@@ -217,8 +232,19 @@ struct QWVerifyWindow {
                 shape: QWTensorShape([count * vocabulary], .f32))
             let saved = QWTensorValue(region: journal.region, offset: journal.offset,
                 shape: QWTensorShape([count], .i32))
-            try selector.encodeBatched(enc, hal: hal, logits: activeLogits, rows: count,
-                                       ordering: .shippingTarget, destination: saved)
+            try selector.encodeGreedyBatched(enc, hal: hal, logits: activeLogits, rows: count,
+                                             ordering: .shippingTarget, destination: saved)
+            if let stoch = stochasticVerifyBox.pending, count == stoch.draftCount + 1 {
+                enc.memoryBarrier(scope: .buffers)
+                try selector.encodeStochasticVerifyLC(
+                    enc, hal: hal, logits: activeLogits,
+                    draftProposals: stoch.draftProposals,
+                    draftCount: stoch.draftCount,
+                    params: stoch.params,
+                    draftProposalSlotBase: stoch.draftProposalSlotBase,
+                    repetitionHistoryByRow: stoch.repetitionHistoryByRow
+                )
+            }
         }
     }
 

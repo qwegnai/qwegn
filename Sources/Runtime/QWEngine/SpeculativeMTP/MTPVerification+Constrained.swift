@@ -45,81 +45,58 @@ extension QWEngineDriver {
     }
 
     func resolveConstrainedGreedyRound(
-        window: QWVerifyWindow,
-        session: QWEngineSession,
-        pending: Int,
-        drafts: [Int],
-        maxNew: Int,
-        stopIDs: Set<Int>,
-        active: (constraint: any QWTokenConstraint, sampler: QWSampler),
-        margin: Float,
-        minProb: Float
+        window: QWVerifyWindow, session: QWEngineSession, pending: Int, drafts: [Int],
+        maxNew: Int, stopIDs: Set<Int>, active: (constraint: any QWTokenConstraint, sampler: QWSampler),
+        margin: Float, minProb: Float
     ) throws -> (decision: QWGreedyRoundDecision, targets: [Int]) {
         let count = drafts.count + 1
         guard let probe = active.constraint.makeSpeculativeProbe() else {
             throw QWEngineDriverError.state("constraint does not provide a speculative probe")
         }
         let p = window.logits.region.pointer.advanced(by: window.logits.offset).assumingMemoryBound(to: Float.self)
-        var rawTargets: [Int]
-        if window.targetTokens != nil {
-            rawTargets = try window.completedTargets(activeRows: count)
-        } else {
-            rawTargets = []
-            rawTargets.reserveCapacity(count)
-            for row in 0..<count {
-                rawTargets.append(try QWVerifyWindow.greedyToken(
-                    UnsafeBufferPointer(start: p + row * geometry.vocab, count: geometry.vocab),
-                    ordering: .shippingTarget))
+        var acceptedTargets = window.targetTokens != nil
+            ? try window.completedTargets(activeRows: count)
+            : try (0..<count).map { row in
+                try QWVerifyWindow.greedyToken(
+                    UnsafeBufferPointer(start: p + row * geometry.vocab, count: geometry.vocab), ordering: .shippingTarget)
             }
-        }
-        var acceptedTargets = rawTargets
         let ctx = pendingHistoryContext(session: session, pending: pending)
         let useRepPenalty = active.sampler.config.repetitionPenalty != 1.0
         var extraHistory: [Int] = []
         if useRepPenalty { extraHistory.reserveCapacity(count) }
-
         for row in 0..<count {
             let rowBuf = UnsafeBufferPointer(start: p + row * geometry.vocab, count: geometry.vocab)
-            let repHistory: [Int]
-            if useRepPenalty {
+            let repHistory: [Int] = useRepPenalty ? {
                 extraHistory.removeAll(keepingCapacity: true)
                 if let extra = ctx.extraPending { extraHistory.append(extra) }
                 if row > 0 { extraHistory.append(contentsOf: drafts.prefix(row)) }
-                repHistory = session.activeRepetitionHistory(extraTokens: extraHistory)
-            } else {
-                repHistory = []
-            }
+                return session.activeRepetitionHistory(extraTokens: extraHistory)
+            }() : []
             let hasMask = try probe.writeAllowedTokens(into: &active.sampler.allowedScratch)
             let targetId: Int
             if !hasMask {
-                targetId = repHistory.isEmpty
-                    ? rawTargets[row]
+                targetId = repHistory.isEmpty ? acceptedTargets[row]
                     : try active.sampler.penalisedGreedyToken(logits: rowBuf, repetitionHistory: repHistory)
-            } else if repHistory.isEmpty
-                        && QWTokenMaskScratch.sortedTokens(active.sampler.allowedScratch, contains: rawTargets[row]) {
-                targetId = rawTargets[row]
+            } else if repHistory.isEmpty && QWTokenMaskScratch.sortedTokens(active.sampler.allowedScratch, contains: acceptedTargets[row]) {
+                targetId = acceptedTargets[row]
             } else {
-                targetId = try active.sampler.constrainedTokenFromScratch(
-                    logits: rowBuf, repetitionHistory: repHistory)
+                targetId = try active.sampler.constrainedTokenFromScratch(logits: rowBuf, repetitionHistory: repHistory)
             }
             var chosen = targetId
-            if row < drafts.count {
+            if row < drafts.count, drafts[row] != targetId, margin > 0, (0..<geometry.vocab).contains(drafts[row]) {
                 let draftId = drafts[row]
-                if draftId != targetId && margin > 0 && (0..<geometry.vocab).contains(draftId) {
-                    if !hasMask {
-                        let draftScore = rowBuf[draftId], targetScore = rowBuf[targetId]
-                        if repHistory.isEmpty && draftScore.isFinite && targetScore.isFinite
-                            && draftScore >= targetScore - margin
-                            && QWSpeculativeTokenResolver.clearsProbabilityFloor(
-                                rowBuf, draftScore: draftScore, maxScore: targetScore, minProbability: minProb) {
-                            chosen = draftId
-                        }
-                    } else if active.sampler.clearsConstrainedVariationalGateFromScratch(
-                        logits: rowBuf, draftToken: draftId, targetToken: targetId,
-                        repetitionHistory: repHistory, margin: margin, minProbability: minProb
-                    ) {
+                if !hasMask {
+                    let draftScore = rowBuf[draftId], targetScore = rowBuf[targetId]
+                    if repHistory.isEmpty && draftScore.isFinite && targetScore.isFinite
+                        && draftScore >= targetScore - margin
+                        && QWSpeculativeTokenResolver.clearsProbabilityFloor(
+                            rowBuf, draftScore: draftScore, maxScore: targetScore, minProbability: minProb) {
                         chosen = draftId
                     }
+                } else if active.sampler.clearsConstrainedVariationalGateFromScratch(
+                    logits: rowBuf, draftToken: draftId, targetToken: targetId,
+                    repetitionHistory: repHistory, margin: margin, minProbability: minProb) {
+                    chosen = draftId
                 }
             }
             acceptedTargets[row] = chosen
@@ -128,92 +105,44 @@ extension QWEngineDriver {
                 try probe.accept(chosen)
             }
         }
-        let decision = try QWGreedyRoundDecision.make(
-            geometry: geometry, drafts: drafts, targetTokens: acceptedTargets,
-            maxNew: maxNew, stopIDs: stopIDs)
-        return (decision, acceptedTargets)
+        return (try QWGreedyRoundDecision.make(geometry: geometry, drafts: drafts, targetTokens: acceptedTargets,
+                                              maxNew: maxNew, stopIDs: stopIDs), acceptedTargets)
     }
 
-    func resolveConstrainedStochasticRound(
-        window: QWVerifyWindow,
-        session: QWEngineSession,
-        owner: QWStochasticSession,
-        pending: Int,
-        drafts: [Int],
-        proposals: [QWMTPGumbelProposal],
-        maxNew: Int,
-        stopIDs: Set<Int>,
-        active: (constraint: any QWTokenConstraint, sampler: QWSampler),
-        margin: Float,
-        drawStart: UInt64
-    ) throws -> (decision: QWGreedyRoundDecision, witness: QWStochasticRoundWitness, evidence: QWStochasticRoundEvidence?) {
-        guard let probe = active.constraint.makeSpeculativeProbe() else {
-            throw QWEngineDriverError.state("constraint does not provide a speculative probe")
-        }
-        let count = drafts.count + 1
+    func resolveGumbelRoundDecision(
+        window: QWVerifyWindow, session: QWEngineSession, owner: QWStochasticSession,
+        pending: Int, drafts: [Int], proposals: [QWMTPGumbelProposal], maxNew: Int,
+        stopIDs: Set<Int>, active: (constraint: any QWTokenConstraint, sampler: QWSampler)?,
+        margin: Float, drawStart: UInt64
+    ) throws -> (decision: QWGreedyRoundDecision, witness: QWStochasticRoundWitness, evidence: QWStochasticRoundEvidence) {
+        let count = drafts.count + 1, probe = active?.constraint.makeSpeculativeProbe()
         let p = window.logits.region.pointer.advanced(by: window.logits.offset).assumingMemoryBound(to: Float.self)
         let ctx = pendingHistoryContext(session: session, pending: pending)
-        var extraHistory: [Int] = []
-        extraHistory.reserveCapacity(count)
-
-        func rowDistribution(_ row: Int) throws -> QWSamplingDistribution {
+        var extraHistory: [Int] = []; extraHistory.reserveCapacity(count)
+        var targets: [QWSamplingDistribution] = []; targets.reserveCapacity(count)
+        var probeAlive = true
+        for row in 0..<count {
+            if !probeAlive, let fallback = targets.last { targets.append(fallback); continue }
             extraHistory.removeAll(keepingCapacity: true)
             if let extra = ctx.extraPending { extraHistory.append(extra) }
             if row > 0 { extraHistory.append(contentsOf: drafts.prefix(row)) }
-            let history = session.activeRepetitionHistory(extraTokens: extraHistory)
-            let hasMask = try probe.writeAllowedTokens(into: &active.sampler.allowedScratch)
-            if hasMask {
+            let history = owner.config.repetitionPenalty == 1.0 ? [] : session.activeRepetitionHistory(extraTokens: extraHistory)
+            if let active, let probe, try probe.writeAllowedTokens(into: &active.sampler.allowedScratch) {
                 let rowBuf = UnsafeBufferPointer(start: p + row * geometry.vocab, count: geometry.vocab)
-                return try active.sampler.constrainedDistributionFromScratch(
-                    logits: rowBuf, repetitionHistory: history)
+                targets.append(try active.sampler.constrainedDistributionFromScratch(logits: rowBuf, repetitionHistory: history))
+            } else {
+                targets.append(try owner.distribution(logits: window.logitRow(row), repetitionHistory: history))
             }
-            return try owner.distribution(logits: window.logitRow(row), repetitionHistory: history)
-        }
-
-        if proposals.isEmpty {
-            var targetTokens = [Int](repeating: 0, count: count)
-            for row in 0..<count {
-                let dist = try rowDistribution(row)
-                let sampled = try owner.stream.sampleTarget(dist)
-                targetTokens[row] = sampled
-                if row < drafts.count {
-                    if sampled != drafts[row] || stopIDs.contains(sampled) { break }
-                    try probe.accept(sampled)
-                }
-            }
-            let decision = try QWGreedyRoundDecision.make(
-                geometry: geometry, drafts: drafts, targetTokens: targetTokens,
-                maxNew: maxNew, stopIDs: stopIDs)
-            let witness = QWStochasticRoundWitness(owner: owner, drawEnd: owner.stream.drawsConsumed)
-            return (decision, witness, nil)
-        }
-
-        var targets: [QWSamplingDistribution] = []
-        targets.reserveCapacity(count)
-        var probeAlive = true
-        for row in 0..<count {
-            if probeAlive {
-                let dist = try rowDistribution(row)
-                targets.append(dist)
-                if row < drafts.count, (try? probe.accept(drafts[row])) == nil {
-                    probeAlive = false
-                }
-            } else if let fallback = targets.last {
-                targets.append(fallback)
-            }
+            if let probe, row < drafts.count, (try? probe.accept(drafts[row])) == nil { probeAlive = false }
         }
         let result = margin > 0
-            ? try owner.stream.resolveRelaxedGumbelRound(
-                proposals: proposals, targetDistributions: targets, margin: Double(margin))
-            : try owner.stream.resolveGumbelRound(
-                proposals: proposals, targetDistributions: targets)
+            ? try owner.stream.resolveRelaxedGumbelRound(proposals: proposals, targetDistributions: targets, margin: Double(margin))
+            : try owner.stream.resolveGumbelRound(proposals: proposals, targetDistributions: targets)
         let decision = try QWGreedyRoundDecision.sampled(
-            geometry: geometry, proposals: proposals, result: result,
-            maxNew: maxNew, stopIDs: stopIDs, maxDrafts: 15)
+            geometry: geometry, proposals: proposals, result: result, maxNew: maxNew, stopIDs: stopIDs, maxDrafts: 15)
         let witness = QWStochasticRoundWitness(owner: owner, drawEnd: owner.stream.drawsConsumed)
         let evidence = QWStochasticRoundEvidence(
-            proposals: proposals, targets: targets, result: result,
-            drawStart: drawStart, drawEnd: owner.stream.drawsConsumed)
+            proposals: proposals, targets: targets, result: result, drawStart: drawStart, drawEnd: owner.stream.drawsConsumed)
         return (decision, witness, evidence)
     }
 }

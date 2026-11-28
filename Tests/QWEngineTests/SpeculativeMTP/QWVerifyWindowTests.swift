@@ -56,8 +56,14 @@ final class QWVerifyWindowTests: XCTestCase {
         let weight = try arena.weightsRegion().allocate(QWTensorShape([h * vocabulary], .f16))
         let head = try QWHead(hal: hal, geometry: .qwen38_27b)
         memset(weight.region.pointer.advanced(by: weight.offset), 0, weight.bytes)
-        XCTAssertEqual(QWVerifyWindow.allocationBytes(geometry: QWTestGeometry.g27, rows: 3, gpuTargets: true) -
-            QWVerifyWindow.allocationBytes(geometry: QWTestGeometry.g27, rows: 3), 24_064)
+        let expectedTargetBytes = 256 + QWTokenSelector.allocationBytes(
+            vocabLimit: QWTestGeometry.g27.vocab, vocabulary: QWTestGeometry.g27.vocab, maxRows: 3
+        )
+        XCTAssertEqual(
+            QWVerifyWindow.allocationBytes(geometry: QWTestGeometry.g27, rows: 3, gpuTargets: true) -
+                QWVerifyWindow.allocationBytes(geometry: QWTestGeometry.g27, rows: 3),
+            expectedTargetBytes
+        )
         for rows in [2, 3] {
             let before = arena.activationsRegion().usedBytes
             let window = try QWVerifyWindow(geometry: QWTestGeometry.g27, allocator: arena.activationsRegion(), rows: rows,

@@ -258,7 +258,7 @@ public struct QWDFlashConfig: Sendable, Equatable {
     }
 
     private static func stripQuantSuffixTokens(_ dirName: String) -> String {
-        let quantPrefixes = ["shvq", "hq", "aq", "vq", "q4", "q8", "fp16", "bf16", "mxfp", "mixed", "nvfp"]
+        let quantPrefixes = ["qwp", "fast", "shvq", "hq", "aq", "vq", "q4", "q8", "fp16", "bf16", "mxfp", "mixed", "nvfp"]
         var parts = dirName.split(separator: "-").map(String.init)
         while let last = parts.last?.lowercased(),
               parts.count > 1,

@@ -187,8 +187,8 @@ def build_pack(src_dir: Path, ref_dir: Path, out_dir: Path, max_bytes: int) -> N
 def main() -> None:
     p = argparse.ArgumentParser(description="Pack Edge0-145B-NVFP4 into .qwp (<90 GB)")
     p.add_argument("--src", type=Path, default=Path.home() / ".qwg/cache/Edge0-145B-NVFP4")
-    p.add_argument("--ref", type=Path, default=Path.home() / ".qwg/models/Qwen3.8-Flash-Next-hq8g32-hq4g64")
-    p.add_argument("--out", type=Path, default=Path.home() / ".qwg/models/Edge0-145B-hq8g32-hq4g64")
+    p.add_argument("--ref", type=Path, default=Path.home() / ".qwg/models/Qwen3.8-Flash-Next-QWP-Mixed")
+    p.add_argument("--out", type=Path, default=Path.home() / ".qwg/models/Edge0-145B-QWP-Mixed")
     p.add_argument("--max-bytes", type=int, default=90_000_000_000)
     args = p.parse_args()
     build_pack(args.src, args.ref, args.out, args.max_bytes)

@@ -4,7 +4,7 @@
 set -u
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 BIN="$REPO/.build/release/qwg"
-PACK="${PACK:-$HOME/.qwg/models/Qwen3.8-Flash-Next-hq4g32/model.qwp}"
+PACK="${PACK:-$HOME/.qwg/models/Qwen3.8-Flash-Next-QWP_4/model.qwp}"
 OUT="${OUT:-/tmp/qw-repro/sweeps-$(date +%Y%m%d-%H%M%S)}"
 mkdir -p "$OUT"
 PROMPT="$(python3 -c "print(('A tokenizer converts text into identifiers. It handles unicode, normalization, merging rules and vocabulary lookups. Byte level models keep every character representable. ')*10)")"

@@ -293,7 +293,7 @@ final class QWDFlashMLADrafterTests: XCTestCase {
 
     func testRealGigaChat4DFlash2PackConfigValidationFootprintAndAutoDiscovery() throws {
         let home = NSHomeDirectory()
-        let realPack = home + "/.qwg/models/GigaChat4-37B-A4B-DFlash2-shvq4g32"
+        let realPack = home + "/.qwg/models/GigaChat4-37B-A4B-DFlash2-QWP_4"
         try XCTSkipUnless(FileManager.default.fileExists(atPath: realPack))
 
         let url = URL(fileURLWithPath: realPack)
@@ -353,11 +353,27 @@ final class QWDFlashMLADrafterTests: XCTestCase {
         XCTAssertGreaterThan(wBytes, 450 << 20)
         XCTAssertLessThan(wBytes, 600 << 20)
 
-        let autoSibling = QWDFlashConfig.resolveAutoDrafterPath(
+        let shvqTargetDir = home + "/.qwg/models/GigaChat4-37B-A4B-QWP_4"
+        let bundledDraftDir = shvqTargetDir + "/dflash_draft"
+        let autoResolved = QWDFlashConfig.resolveAutoDrafterPath(
             for: gc4Target,
-            targetPackPath: home + "/.qwg/models/GigaChat4-37B-A4B-shvq4g32"
+            targetPackPath: shvqTargetDir
         )
-        XCTAssertEqual(URL(fileURLWithPath: autoSibling).standardizedFileURL.path, url.standardizedFileURL.path)
+        let expectedAutoPath = FileManager.default.fileExists(atPath: bundledDraftDir) ? bundledDraftDir : url.path
+        XCTAssertEqual(
+            URL(fileURLWithPath: autoResolved).standardizedFileURL.path,
+            URL(fileURLWithPath: expectedAutoPath).standardizedFileURL.path
+        )
+        if FileManager.default.fileExists(atPath: bundledDraftDir) {
+            XCTAssertNoThrow(try QWDFlashConfig.validateDrafter(
+                targetDescriptor: gc4Target, packPath: bundledDraftDir, drafts: 7, selectorTopK: 16
+            ))
+            let autoSiblingFallback = QWDFlashConfig.resolveAutoDrafterPath(
+                for: gc4Target,
+                targetPackPath: home + "/.qwg/models/GigaChat4-37B-A4B-QWP-Mixed"
+            )
+            XCTAssertEqual(URL(fileURLWithPath: autoSiblingFallback).standardizedFileURL.path, url.standardizedFileURL.path)
+        }
 
         let hfSnap = home + "/.cache/huggingface/hub/models--ai-sage--GigaChat4-37B-A4B/snapshots/1bf9a4b2b8d7d0f970e48d6458be77d49e07bcfc"
         if FileManager.default.fileExists(atPath: hfSnap + "/dflash_draft/config.json") {

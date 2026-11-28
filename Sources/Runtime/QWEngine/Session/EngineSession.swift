@@ -35,7 +35,7 @@ public final class QWEngineSession: @unchecked Sendable {
     let trunkHidden: QWTensorValue?
     let dflashSlot: QWDFlashSessionSlot?
     public internal(set) var dflashCacheOffset: Int = 0
-    var dflashPolicy: QWDFlashAdaptivePolicy
+    var dflashPolicy: QWAdaptiveDraftPolicy
     var dflashRoundStartNs: UInt64?
     let dsparkSlot: QWDSparkDrafter.SessionSlot?
     public internal(set) var dsparkCacheOffset: Int = 0
@@ -119,7 +119,7 @@ public final class QWEngineSession: @unchecked Sendable {
         self.trunkHidden = trunkHidden
         self.dflashSlot = dflashSlot
         self.dsparkSlot = dsparkSlot
-        self.dflashPolicy = QWDFlashAdaptivePolicy(isSparseMoE: isSparseMoE)
+        self.dflashPolicy = QWAdaptiveDraftPolicy(mode: .blockDiffusion(isSparseMoE: isSparseMoE))
         self.roundRecord = QWRoundRecord()
     }
 

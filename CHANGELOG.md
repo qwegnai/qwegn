@@ -14,6 +14,30 @@ release-preparation commit, which renames `[Unreleased]` to the new
 
 ## [Unreleased]
 
+## [0.45.0] - 2026-11-28
+
+Ships native GPU stochastic (`T > 0`) speculative MTP verification with batched Leviathan–Chen rejection sampling, fixes the Apple7–Apple9 (`M1`/`M2`/`M3`) LSA `MTLCompilerService` compiler crash and threadgroup WAR barrier races (`#2`), adopts the uniform `QWP` quantization naming convention (`Law 35`), and adds the `GigaChat4-37B-A4B-QWP_4` 12-suite peer evaluation card.
+
+### Performance Improvements
+
+| Workload (Apple M5 Max, 128 GB UMA, `q4` KV, `32K` ctx) | Baseline (`v0.44.1`) | `v0.45.0` | Gain / Impact |
+| :--- | :--- | :--- | :--- |
+| `Qwen3.6-35B-A3B-QWP_4` (`T=0.6`, `top_p=0.95`, `seed=-1`, `3` drafts) | `127.37 tok/s` | **`188.61 tok/s`** (peak `199.96`) | **`+48.3%`** (`1.4829×` paired median, `89.6%` accept, `1.90 tok/rnd`) |
+| `Qwen3.8-Flash-Next-QWP-Mixed` (`T=0.6`, `--stream-ngrams`, `3` drafts) | `76.14 tok/s` | **`81.92 tok/s`** | **`+3.9%` paired median** (`1.0387×`, `79.50 GiB` planned, `0` allocs) |
+| Greedy `T=0` non-regression (`35B-A3B` / `27B+DFlash2` / `Flash-Next`) | `190.34` / `66.18` / `90.89 tok/s` | **`186.95` / `63.93` / `90.93 tok/s`** (`1.0028×` / `1.0073×` / `0.9971×`) | **`5/5` `stdout_sha256` exact match** · **`27/27` Law 28 `QWServer` QA** |
+
+### Added
+- **Native GPU Stochastic (`T > 0`) MTP Speculative Pipeline & Unified Resolution (`QWHead`, `QWMTP`, `QWEngine`, `Flash-Next`)**: Added GPU-filtered `top_k`/`top_p` candidate collection, canonical `Philox-4x32-10` sampling, and batched `B = D+1` Leviathan–Chen (`(p - q)^+`) verification kernels in `qwhead_spec_sample.metal` + `QWTokenSelector` (Metal 3.2+, `0 B` constant LUTs); unified stochastic/constrained round resolution and adaptive draft depth (`QWSpeculativeRoundResolver`, `QWAdaptiveDraftPolicy`, `QWDFlashAdaptivePolicy` compatibility alias) across `QWEngineDriver` (`MTPVerification+*`, `QWMTPDraftEncoder`, `QWEchoDraftEncoder`, `QWMTPAdaptiveDepth`, `DriverConfig.decodeAndMTPScratchBytes`), `QWHyperStreamRuntime` (`Flash-Next`), `QWInkling2Runtime`, and `QWDSparkDrafter`, removing synchronous per-draft waits in `T > 0` speculative rounds and removing obsolete `QWMTPGreedySelector.swift` while preserving bit-exact `T = 0` greedy parity and Law 11 timing guards.
+- **`qwegnai/GigaChat4-37B-A4B-QWP_4` Hugging Face Release, Model Card & 12-Suite Peer Evaluation (`assets/`, `docs/models.md`, `docs/benchmarks.md`, `README.md`)**: Published the performance-winning `GigaChat4-37B-A4B-QWP_4` native `QWP1` pack (`20.34 GiB`, `4.65 bpw`, `SHVQ4_G32`) with its bundled `456.07 MiB` 5-layer Matrix-Absorbed MLA `DFlash 2` drafter (`dflash_draft/`), `assets/qwegn_model_gigachat4_37b_a4b.svg`, `assets/qwegn_eval_35b_class_comparison.svg`, and full 12-suite `llmprobe` (`291/291` API, `100%` `37/37` capability, `67/88` agentic, `70/100` `Code-100`, `45/92` `Core-92` in `68.3K` tokens, `29/50` `Hard-50`) plus external multi-harness (`90.9%` / `85.4%+` `HumanEval+`, `79.4%` / `66.7%+` `MBPP+`, `87.5%` `IFEval`, `50.0%` `GPQA Diamond`, `66.7%` `MMLU-Pro`, `20.0%` `AIME 2025`, `86.7%` `GSM8K`, `8/8` `Promptfoo`) peer comparison against `Qwen3.6-35B-A3B-QWP_4`, `Apex-35B-V1.0-QWP_4`, `Maxwell-V1-Flash`, `Inkling-2-Mini-QWP-Mixed-Fast`, `Qwen3.8-27B-QWP_4`, and `Qwen3.8-Flash-Next-QWP-Mixed`.
+
+### Changed
+- **`QWP` Model Quantization Naming Convention (`AGENTS.md` Law 35, `QWServer`, `QWMTP`, `docs/`, `Scripts/`)**: Standardized `qwegnai/*` Hugging Face repositories and `~/.qwg/models/` packs to `<Model>-QWP_{4,8,3,2,15,1}` for uniform packs and `<Model>-QWP-Mixed[-Fast]` for mixed-precision packs, with exact plane/group recipes documented in each model card; updated `QWEngineLifecycleActor.canonicalModelFamilyStem`, `QWDFlashConfig.stripQuantSuffixTokens`, `QWServerSettings.modelAffinityTokens`, docs, and default script paths.
+- **Apple7+ Diagnostic Messaging (`EncodeKernels.swift`)**: Updated the stale GDN in-proj batched GEMM capability error string to `"GDN in-proj batched GEMM requires Apple7+ simdgroup or Apple10+ NAX hardware"`.
+
+### Fixed
+- **Apple7–Apple9 (`M1`/`M2`/`M3`) LSA Metal Compiler Crash & Threadgroup WAR Races (`#2`, `qwlsa_select.metal`, `check_metallib_target.py`)**: Replaced the runtime ternary `threadgroup_barrier(useSram ? ... : ...)` in `lsa_select_blocks_body` with the compile-time constant `threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup)` to eliminate the `MTLCompilerService` `@llvm.agx2.threadgroup.barrier.with.scope` instruction-selection crash in `qwg_lsa_select_blocks` and `qwg_lsa_select_finalize` on Apple7–Apple9 GPUs, added the missing `threadgroup_barrier(mem_flags::mem_threadgroup)` WAR barriers before `tid == 0` resets `chosenBin = 1u; greaterAccum = 0u;` after radix pass 3 and before `greaterAccum += chunkTies` in `lsa_select_blocks_body` (eliminating intermittent `QWLSASelectParityTests` failures), and added constant-barrier static linting plus offline `metal-tt` (`applegpu_g13g` / `applegpu_g14s` / `applegpu_g15g`) regression gates to `Scripts/check_metallib_target.py`.
+- **Relaxed-Margin Stochastic GPU Verify, Arena Accounting & CDF Tail Guard (`MTPVerification+Pipeline.swift`, `FNGPUSession+Speculative.swift`, `qwhead_spec_sample.metal`)**: Restricted GPU Leviathan–Chen fast verification (`gpuVerifyEligible`) to `effectiveRelaxedMargin == 0` so relaxed/variational rounds preserve `readAsyncDraftProposals`; cleared stale `session.mtpDraft` and `session.mtpActive` on non-sparse resync overflows in `Flash-Next`; guarded `qw_sample_cdf_tg` fallback index via the last positive-probability candidate (`lastPos`); and accounted for `QWMTPDraftEncoder.allocationBytes` inside `DriverConfig.decodeAndMTPScratchBytes`.
+
 ## [0.44.1] - 2026-11-28
 
 Adds end-to-end support for `GigaChat4-37B-A4B` with 5-layer Matrix-Absorbed MLA `DFlash 2` speculation, a unified M1–M6 (`Apple7`–`Apple11`) Metal 3.2/4 runtime, `Inkling-2-Mini` `DFlash 2` drafting, Cognitive Vault v2 with native cross-encoder `/v1/rerank`, and a unified `QWTrunkExecutor` control plane.
