@@ -13,7 +13,10 @@ final class QWAttnPagedPrefillTests: XCTestCase {
     static let layer = 3
 
     override func setUpWithError() throws {
-        try XCTSkipUnless(Self.hal.caps.isMetal4TensorCapable, "Paged NAX prefill requires Metal 4 tensor hardware")
+        try XCTSkipUnless(
+            Self.hal.caps.supportsSimdgroupMMA,
+            "Paged MMA/NAX prefill requires Apple7+ hardware"
+        )
     }
 
     struct SplitMix64 {
@@ -43,42 +46,74 @@ final class QWAttnPagedPrefillTests: XCTestCase {
         var rng = SplitMix64(seed: seed)
         let qHeads = QWModelGeometry.qwen38_27b.qHeads
         let headDim = QWModelGeometry.qwen38_27b.headDim
-        var out = [UInt16](repeating: 0, count: n * qHeads * 2 * headDim)
-        for row in 0..<n {
-            for h in 0..<qHeads {
-                var q = (0..<headDim).map { _ in rng.nextNormalish() }
-                let norm = sqrtf(q.reduce(0) { $0 + $1 * $1 }) + 1e-6
-                for d in 0..<headDim { q[d] /= norm }
-                let base = row * qHeads * 2 * headDim + h * (2 * headDim)
-                for d in 0..<headDim { out[base + d] = f16Bits(q[d]) }
-                for d in 0..<headDim { out[base + headDim + d] = f16Bits(rng.nextNormalish() * 0.5) }
+        let total = n * qHeads * 2 * headDim
+        return [UInt16](unsafeUninitializedCapacity: total) { dst, initialized in
+            guard let out = dst.baseAddress else { initialized = 0; return }
+            withUnsafeTemporaryAllocation(of: Float.self, capacity: headDim) { qTmp in
+                guard let qp = qTmp.baseAddress else { return }
+                var row = 0
+                while row < n {
+                    var h = 0
+                    while h < qHeads {
+                        var sumSq: Float = 0, d = 0
+                        while d < headDim {
+                            let v = rng.nextNormalish()
+                            qp[d] = v; sumSq += v * v; d += 1
+                        }
+                        let norm = sqrtf(sumSq) + 1e-6
+                        let base = row * qHeads * 2 * headDim + h * (2 * headDim)
+                        d = 0
+                        while d < headDim { out[base + d] = f16Bits(qp[d] / norm); d += 1 }
+                        d = 0
+                        while d < headDim { out[base + headDim + d] = f16Bits(rng.nextNormalish() * 0.5); d += 1 }
+                        h += 1
+                    }
+                    row += 1
+                }
             }
+            initialized = total
         }
-        return out
     }
 
     static func synthKV(n: Int, seed: UInt64) -> [UInt16] {
         var rng = SplitMix64(seed: seed)
         let H = QWModelGeometry.qwen38_27b.headDim, KVH = QWModelGeometry.qwen38_27b.kvHeads
-        var out = [UInt16](repeating: 0, count: n * KVH * H)
-        for row in 0..<n {
-            for h in 0..<KVH {
-                var k = (0..<H).map { _ in rng.nextNormalish() }
-                let norm = sqrtf(k.reduce(0) { $0 + $1 * $1 }) + 1e-6
-                for d in 0..<H { k[d] /= norm }
-                let base = row * KVH * H + h * H
-                for d in 0..<H { out[base + d] = f16Bits(k[d]) }
+        let total = n * KVH * H
+        return [UInt16](unsafeUninitializedCapacity: total) { dst, initialized in
+            guard let out = dst.baseAddress else { initialized = 0; return }
+            withUnsafeTemporaryAllocation(of: Float.self, capacity: H) { kTmp in
+                guard let kp = kTmp.baseAddress else { return }
+                var row = 0
+                while row < n {
+                    var h = 0
+                    while h < KVH {
+                        var sumSq: Float = 0, d = 0
+                        while d < H {
+                            let v = rng.nextNormalish()
+                            kp[d] = v; sumSq += v * v; d += 1
+                        }
+                        let norm = sqrtf(sumSq) + 1e-6
+                        let base = row * KVH * H + h * H
+                        d = 0
+                        while d < H { out[base + d] = f16Bits(kp[d] / norm); d += 1 }
+                        h += 1
+                    }
+                    row += 1
+                }
             }
+            initialized = total
         }
-        return out
     }
 
     static func synthV(n: Int, seed: UInt64) -> [UInt16] {
         var rng = SplitMix64(seed: seed)
-        let H = QWModelGeometry.qwen38_27b.headDim, KVH = QWModelGeometry.qwen38_27b.kvHeads
-        var out = [UInt16](repeating: 0, count: n * KVH * H)
-        for i in 0..<out.count { out[i] = f16Bits(rng.nextNormalish() * 0.3) }
-        return out
+        let total = n * QWModelGeometry.qwen38_27b.kvHeads * QWModelGeometry.qwen38_27b.headDim
+        return [UInt16](unsafeUninitializedCapacity: total) { dst, initialized in
+            guard let out = dst.baseAddress else { initialized = 0; return }
+            var i = 0
+            while i < total { out[i] = f16Bits(rng.nextNormalish() * 0.3); i += 1 }
+            initialized = total
+        }
     }
 
     static func buf(_ a: [UInt16]) -> MTLBuffer {

@@ -435,6 +435,41 @@ extension QWEngineLifecycleActor {
         throw QWDecisionError.backendFailed("no decision sidecar or resident primary model available")
     }
 
+    /// Reranks `(query, document)` pairs natively on `.sequencePair` cross-encoders or via `.noul` verbalizer batch.
+    public func rerankDocuments(
+        query: String,
+        documents: [String],
+        preferredModel: String? = nil
+    ) async throws -> (scores: [QWRerankPairScore], modelName: String, backendKind: String, usage: QWDecisionUsage) {
+        if decisionSidecar == nil && !config.decisionModelPackPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let unit = QWDecisionComputeUnit(rawValue: config.decisionComputeUnit.lowercased()) ?? .auto
+            _ = try await loadDecisionSidecar(
+                packPath: config.decisionModelPackPath,
+                computeUnit: unit,
+                loadVision: config.decisionLoadVision
+            )
+        }
+        let requested = preferredModel?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let sidecar = decisionSidecar, Self.matchesSidecar(requested: requested, sidecar: sidecar) {
+            let res = try await sidecar.runner.rerank(query: query, documents: documents)
+            decisionStatusBox.recordSuccess(latencyMs: res.usage.latencyMs, promptTokens: res.usage.promptTokens)
+            return (res.scores, sidecar.modelName, sidecar.backendKind, res.usage)
+        }
+        if case .loaded(let primary) = state,
+           let unified = (primary.modelBackend as? QWUnifiedModelBackend)?.engine as? QWEngine {
+            let adapter = QWEngineDecisionAdapter(
+                engine: unified,
+                decisionConfig: primary.descriptor.decisionConfig,
+                gpuTurnArbitrator: nil,
+                isSidecar: false
+            )
+            let runner = QWDecisionRunner(tokenizer: primary.tokenizer, backend: adapter)
+            let res = try await runner.rerank(query: query, documents: documents)
+            return (res.scores, config.modelName, "metal4_primary_fallback", res.usage)
+        }
+        throw QWDecisionError.backendFailed("no decision sidecar or resident primary model available")
+    }
+
     /// Computes dense embeddings over the loaded embedding-capable sidecar backend.
     public func embedTexts(
         _ inputs: [String],

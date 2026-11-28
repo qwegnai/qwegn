@@ -1,4 +1,4 @@
-// DriverInitPhases+Ernie55.swift — HCA Weight-SVD LSA sidecar loader and unified
+// DriverInitPhases+ResidencyAndLSA.swift — HCA Weight-SVD LSA sidecar loader and unified
 // Metal residency set / resource-binding helpers for QWEngineDriver.
 
 import Foundation
@@ -109,6 +109,7 @@ extension QWEngineDriver {
                 resident.append(buf)
             }
         }
+        appendUnique(hal.gatedNormScratch)
         for buf in arena.allBuffers { appendUnique(buf) }
         if let lsa = lsaOperator { appendUnique(lsa.region.buffer) }
         if let mla = mlaOperator { appendUnique(mla.region.buffer) }
@@ -122,12 +123,13 @@ extension QWEngineDriver {
             appendUnique(ce.residentIds)
         }
         if let sm = spanMapIds { appendUnique(sm) }
-        if mlaOperator == nil, geometry.hcaConfig == nil, geometry.hybridMLAConfig == nil,
-           geometry.blockSparseGQAConfig == nil, let bmlp = try? sharedBatchMLP() {
+        if geometry.hcaConfig == nil, geometry.blockSparseGQAConfig == nil,
+           let bmlp = try? sharedBatchMLP() {
             appendUnique(bmlp.sums.region.buffer)
             appendUnique(bmlp.downRows.region.buffer)
         }
         if let df = dflashDrafter {
+            for b in df.residentBuffers { appendUnique(b) }
             appendUnique(df.targetHidden.region.buffer)
             for slot in df.sessionSlots {
                 appendUnique(slot.kSlab.region.buffer)
@@ -200,6 +202,7 @@ extension QWEngineDriver {
                 enc.useResource(buf, usage: usage)
             }
         }
+        useUnique(hal.gatedNormScratch, usage: [.read, .write])
         for buf in arena.allBuffers { useUnique(buf, usage: [.read, .write]) }
         if let lsa = lsaOperator { useUnique(lsa.region.buffer, usage: [.read, .write]) }
         if let mla = mlaOperator { useUnique(mla.region.buffer, usage: [.read, .write]) }
@@ -213,12 +216,13 @@ extension QWEngineDriver {
             useUnique(ce.residentIds, usage: [.read, .write])
         }
         if let sm = spanMapIds { useUnique(sm, usage: [.read, .write]) }
-        if mlaOperator == nil, geometry.hcaConfig == nil, geometry.hybridMLAConfig == nil,
-           geometry.blockSparseGQAConfig == nil, let bmlp = try? sharedBatchMLP() {
+        if geometry.hcaConfig == nil, geometry.blockSparseGQAConfig == nil,
+           let bmlp = try? sharedBatchMLP() {
             useUnique(bmlp.sums.region.buffer, usage: [.read, .write])
             useUnique(bmlp.downRows.region.buffer, usage: [.read, .write])
         }
         if let df = dflashDrafter {
+            for b in df.residentBuffers { useUnique(b, usage: [.read, .write]) }
             useUnique(df.targetHidden.region.buffer, usage: [.read, .write])
             for slot in df.sessionSlots {
                 useUnique(slot.kSlab.region.buffer, usage: [.read, .write])

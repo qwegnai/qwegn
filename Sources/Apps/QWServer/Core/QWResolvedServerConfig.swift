@@ -11,6 +11,7 @@ public struct QWResolvedServerConfig: Sendable, Equatable {
     public var host: String, port: Int
     public var apiKey: String, corsAllowedOrigins: [String]
     public var allowLocalImagePaths: Bool, allowRemoteImageURLs: Bool
+    public var pinModel: Bool = false
     public var modelPackPath: String, modelName: String, modelAlias: String
     public var maxContext: Int, kvMode: String
     public var ropeScalingType: String, ropeScalingFactor: Double
@@ -45,6 +46,7 @@ public struct QWResolvedServerConfig: Sendable, Equatable {
         host: String = "127.0.0.1", port: Int = 8080,
         apiKey: String = "", corsAllowedOrigins: [String] = [],
         allowLocalImagePaths: Bool = false, allowRemoteImageURLs: Bool = false,
+        pinModel: Bool = false,
         modelPackPath: String = "", modelName: String = "Qwen3.8-27B", modelAlias: String = "",
         maxContext: Int = 4096, kvMode: String = "q4",
         ropeScalingType: String = "none", ropeScalingFactor: Double = 1.0,
@@ -75,6 +77,7 @@ public struct QWResolvedServerConfig: Sendable, Equatable {
         self.host = host; self.port = port
         self.apiKey = apiKey; self.corsAllowedOrigins = corsAllowedOrigins
         self.allowLocalImagePaths = allowLocalImagePaths; self.allowRemoteImageURLs = allowRemoteImageURLs
+        self.pinModel = pinModel
         self.modelPackPath = modelPackPath; self.modelName = modelName; self.modelAlias = modelAlias
         self.maxContext = maxContext; self.kvMode = kvMode
         self.ropeScalingType = ropeScalingType; self.ropeScalingFactor = ropeScalingFactor

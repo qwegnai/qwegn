@@ -476,7 +476,7 @@ final class QWInkling2WavefrontBatchTests: XCTestCase {
                 prefillChunkSize: 64,
                 maxConcurrentSessions: 4
             )
-            let ink = try XCTUnwrap(driver.inkling2Runtime)
+            let ink = try XCTUnwrap(driver.trunkExecutor as? QWInkling2Runtime)
             XCTAssertEqual(ink.maxBatchSlots, 4, "kvMode=\(kvMode)")
             XCTAssertEqual(ink.waveSlots.count, 4, "kvMode=\(kvMode)")
             XCTAssertEqual(driver.maxBatchSlots, 4, "kvMode=\(kvMode)")
@@ -536,7 +536,7 @@ final class QWInkling2WavefrontBatchTests: XCTestCase {
             prefixCacheDirectory: cacheDir,
             maxConcurrentSessions: 4
         )
-        let ink = try XCTUnwrap(driver.inkling2Runtime)
+        let ink = try XCTUnwrap(driver.trunkExecutor as? QWInkling2Runtime)
         let scheduler = QWBatchScheduler(engine: driver)
 
         // 1. Seeded stochastic + repetitionPenalty 0-ULP solo vs B=3 parity.
@@ -707,7 +707,7 @@ final class QWInkling2WavefrontBatchTests: XCTestCase {
             prefillChunkSize: 64,
             maxConcurrentSessions: 1
         )
-        XCTAssertEqual(soloDriver.inkling2Runtime?.maxBatchSlots, 1)
+        XCTAssertEqual(soloDriver.trunkExecutor.maxBatchSlots, 1)
         XCTAssertEqual(soloDriver.maxBatchSlots, 1)
 
         // 5. LSA eligibility gate: requests beyond denseBypassThreshold are requeued/bypassed from wavefront.
@@ -721,7 +721,7 @@ final class QWInkling2WavefrontBatchTests: XCTestCase {
             lsaConfig: lsaCfg,
             maxConcurrentSessions: 3
         )
-        let lsaInk = try XCTUnwrap(lsaDriver.inkling2Runtime)
+        let lsaInk = try XCTUnwrap(lsaDriver.trunkExecutor as? QWInkling2Runtime)
         let threshold = lsaCfg.denseBypassThreshold
         let shortReq1 = QWGenerationRequest(prompt: [1, 2, 3, 4, 5, 6], maxNew: 4, sampling: .greedy)
         let shortReq2 = QWGenerationRequest(prompt: [2, 4, 6, 8, 10, 12], maxNew: 4, sampling: .greedy)

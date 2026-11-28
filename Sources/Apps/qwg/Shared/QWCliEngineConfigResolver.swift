@@ -212,7 +212,15 @@ struct QWResolvedCliEngineConfig {
             && effectivePair.settings.mtpDrafts > 0
             && defaultStrategy.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "ngram"
         var effectiveMtpDrafts = initialMtpDrafts
-        if knobs.mtpDrafts == nil && dflashWindow == nil && resolvedBackend != .dflash2 {
+        if resolvedBackend == .dflash2, knobs.mtpDrafts == nil, dflashWindow == nil {
+            let autoPack = QWDFlashFootprint.resolveDrafterPackPath(
+                targetDescriptor: runtimeAssets.descriptor,
+                explicitPath: knobs.dflashDraftPack
+                    ?? (effectiveMtpBackend?.lowercased() == "dspine" ? QWDFlashConfig.defaultDSpinePackPath : nil),
+                targetPackPath: resolvedPack
+            )
+            effectiveMtpDrafts = QWDFlashConfig.inferBackendAndMaxDrafts(packPath: autoPack).maxDrafts
+        } else if knobs.mtpDrafts == nil && dflashWindow == nil && resolvedBackend != .dflash2 {
             if let dsCfg = runtimeAssets.descriptor.inkling2Config?.dspark, hasDSparkFile {
                 if effectivePair.settings.speculativeDecodingEnabled {
                     let profDrafts = effectivePair.profile?.values["mtpDrafts"]?.intValue ?? 3
@@ -352,7 +360,14 @@ struct QWResolvedCliEngineConfig {
             mtpDraftStrategy: knobs.mtpDraftStrategy ?? effectiveSettings.mtpDraftStrategy,
             mtpQuadraticSeeding: knobs.mtpQuadraticSeeding ?? true,
             dflashDraftPackPath: knobs.dflashDraftPack
-                ?? (effectiveMtpBackend?.lowercased() == "dspine" ? QWDFlashConfig.defaultDSpinePackPath : nil),
+                ?? (effectiveMtpBackend?.lowercased() == "dspine"
+                    ? QWDFlashConfig.defaultDSpinePackPath
+                    : (resolvedBackend == .dflash2
+                        ? QWDFlashFootprint.resolveDrafterPackPath(
+                            targetDescriptor: runtimeAssets.descriptor,
+                            explicitPath: nil,
+                            targetPackPath: resolvedPack)
+                        : nil)),
             dflashSelectorTopK: knobs.dflashTopK,
             dsparkConfidenceSchedule: dsparkConfidenceSchedule,
             gdnPrefill: gdnPrefill,

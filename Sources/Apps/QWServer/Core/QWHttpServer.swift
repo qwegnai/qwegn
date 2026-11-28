@@ -500,7 +500,7 @@ public final class QWHttpServer: @unchecked Sendable {
                     if !body.isEmpty,
                        let payload = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
                        let requestedModel = payload["model"] as? String {
-                        try await self.actor.selectModelIfNeeded(requestedModel)
+                        try await self.actor.selectModelIfNeeded(requestedModel, isExplicitLoadRoute: true)
                     }
                     _ = try await self.actor.loadExplicit()
                     let modelName = self.actor.getModelName()
@@ -563,6 +563,9 @@ public final class QWHttpServer: @unchecked Sendable {
                 case ("POST", "/v1/settings"), ("POST", "/api/settings"):
                     await self.handleSaveSettingsRoute(connection: connection, body: body)
 
+                case ("GET", "/v1/memory/packs"), ("GET", "/api/memory/packs"):
+                    self.handleMemoryPacksListRoute(connection: connection)
+
                 case ("POST", "/v1/memory/inspect"), ("POST", "/api/memory/inspect"):
                     try await self.handleMemoryInspectRoute(connection: connection, body: body)
 
@@ -570,11 +573,13 @@ public final class QWHttpServer: @unchecked Sendable {
                     try await self.handleMemoryIndexRoute(connection: connection, body: body)
 
                 case ("POST", "/v1/memory/mount"), ("POST", "/api/memory/mount"):
-                    try await self.handleMemoryMountRoute(connection: connection, body: body)
+                    try await self.handleMemoryMountV2Route(connection: connection, body: body)
 
                 case ("POST", "/v1/memory/unmount"), ("POST", "/api/memory/unmount"):
-                    await self.actor.unmountMemoryPack()
-                    self.sendJsonResponse(connection, status: 200, object: ["status": "ok"])
+                    await self.handleMemoryUnmountRoute(connection: connection, body: body)
+
+                case ("POST", "/v1/memory/query"), ("POST", "/api/memory/query"):
+                    try await self.handleMemoryQueryRoute(connection: connection, body: body)
 
                 case ("POST", "/v1/settings/reveal"), ("POST", "/api/settings/reveal"):
                     await self.revealDirectoryInFinder(
@@ -652,6 +657,12 @@ public final class QWHttpServer: @unchecked Sendable {
                 case ("POST", "/mcp"):
                     await self.handleMCPRoute(connection: connection, headers: headers, body: body, trace: trace)
 
+                case ("GET", "/mcp"), ("DELETE", "/mcp"):
+                    self.sendRawData(
+                        connection, status: 405, contentType: "application/json",
+                        data: Data(), extraHeaders: ["Allow: POST, OPTIONS"]
+                    )
+
                 case ("GET", "/v1/update"), ("GET", "/api/update"):
                     await self.handleUpdateStatusRoute(connection: connection)
 
@@ -697,6 +708,10 @@ public final class QWHttpServer: @unchecked Sendable {
                 let err = ServerErrorPayload(message: accessErr.message, type: "invalid_request_error", code: 403)
                 self.logger.log(.warn, "HTTP \(method) \(cleanPath) workspace forbidden | \(trace.logTag): \(accessErr.message)")
                 self.sendJsonResponse(connection, status: 403, object: err)
+            } catch let swapErr as QWModelSwapRefusedError {
+                let err = ServerErrorPayload(message: swapErr.description, type: "conflict_error", code: 409)
+                self.logger.log(.warn, "HTTP \(method) \(cleanPath) model swap refused | \(trace.logTag): \(swapErr.description)")
+                self.sendJsonResponse(connection, status: 409, object: err)
             } catch let valErr as QWMetadataValidationError {
                 let err = ServerErrorPayload(message: valErr.description, type: "invalid_request_error", code: 400)
                 self.logger.log(.warn, "HTTP \(method) \(cleanPath) invalid request | \(trace.logTag): \(valErr.description)")

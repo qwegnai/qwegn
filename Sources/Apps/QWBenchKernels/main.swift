@@ -23,13 +23,15 @@ func die(_ message: String, _ code: Int32 = 2) -> Never {
 
 if optFlag("--help") || optFlag("-h") {
     print("""
-    usage: qwg-bench-kernels [--out DIR] [--samples N] [--cols N] [--only-shvq] [--only-ink2-fp]
-      --out DIR      where to write bench_kernels_report.json (default: .)
-      --samples N    timed runs per candidate, median wins (default: 5)
-      --repeats N    dispatches per timed run, to amortise the buffer (default: 1)
-      --cols N       the activation width every candidate reads (default: 4096)
-      --only-shvq    run only the cold-streaming SHVQ vs AQ live kernel suites
-      --only-ink2-fp run only Inkling-2 BF16/NVFP4/MXFP8/Sink-RelBias/Head suites
+    usage: qwg-bench-kernels [--out DIR] [--samples N] [--cols N] [--only-shvq] [--only-ink2-fp] [--only-core-scaling] [--only-apple9-prefill]
+      --out DIR            where to write bench_kernels_report.json (default: .)
+      --samples N          timed runs per candidate, median wins (default: 5)
+      --repeats N          dispatches per timed run, to amortise the buffer (default: 1)
+      --cols N             the activation width every candidate reads (default: 4096)
+      --only-shvq          run only the cold-streaming SHVQ vs AQ live kernel suites
+      --only-ink2-fp       run only Inkling-2 BF16/NVFP4/MXFP8/Sink-RelBias/Head suites
+      --only-core-scaling  run active-TG core-scaling and dispatch/barrier/rotation tax suites
+      --only-apple9-prefill run prefill GEMM, MoE prefill, and Ink2 FP prefill suites for Apple9
     """)
     exit(0)
 }
@@ -41,6 +43,8 @@ let cols = max(BenchRunner.verifyCols,
 let repeats = max(1, Int(optVal("--repeats") ?? "1") ?? 1)
 let onlySHVQ = optFlag("--only-shvq")
 let onlyInk2FP = optFlag("--only-ink2-fp")
+let onlyCoreScaling = optFlag("--only-core-scaling")
+let onlyApple9Prefill = optFlag("--only-apple9-prefill")
 
 /// The candidates the bench races, in the order it reports them.
 var candidates: [BenchCandidate] = []
@@ -52,6 +56,24 @@ do {
     // The bench races the 27B's kernels, so the HAL carries the 27B's
     // function constants — named here, never defaulted.
     let hal = try QWHal(geometry: .qwen38_27b)
+
+    if onlyCoreScaling {
+        let rounds = max(6, samples)
+        let reps = max(8, repeats)
+        print("suite core_scaling (alternating min-of-2, \(rounds) rounds x \(reps) reps/CB)")
+        let report = try CoreScalingSuites.run(hal: hal, samples: rounds, repeats: reps)
+        for r in report.dispatchTax {
+            print(String(format: "  tax %-26@ total=%.4f ms  us/dispatch=%.3f  delta=%+.3f us",
+                         r.mode as NSString, r.totalMs, r.usPerDispatch, r.deltaUsVsSerial))
+        }
+        let dir = URL(fileURLWithPath: outDir, isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let md = CoreScalingSuites.renderMarkdown(report, rounds: rounds, reps: reps)
+        let mdURL = dir.appendingPathComponent("bench_core_scaling_report.md")
+        try md.write(to: mdURL, atomically: true, encoding: .utf8)
+        print("VERDICT: wrote \(mdURL.path) (\(report.scaling.count) scaling points, \(report.dispatchTax.count) tax modes)")
+        exit(0)
+    }
 
     if onlyInk2FP {
         let rounds = max(6, samples)
@@ -71,6 +93,31 @@ do {
         let mdURL = dir.appendingPathComponent("bench_ink2_fp_report.md")
         try md.write(to: mdURL, atomically: true, encoding: .utf8)
         print("VERDICT: wrote \(mdURL.path) (\(inkRows.count) Inkling-2 FP benchmarks)")
+        exit(0)
+    }
+
+    if onlyApple9Prefill {
+        print("suite apple9_prefill (\(samples) samples x \(repeats) reps)")
+        let prefillRows = try PrefillSuites.run(hal: hal, cols: cols, samples: samples, repeats: repeats)
+        for race in prefillRows {
+            let ratio = race.family.milliseconds / race.incumbent.milliseconds
+            print("  prefill_gemm \(race.bits)b_g\(race.group): family "
+                  + String(format: "%.4f", race.family.milliseconds) + " ms (\(race.family.name)), incumbent "
+                  + String(format: "%.4f", race.incumbent.milliseconds) + " ms (\(race.incumbent.name)), ratio "
+                  + String(format: "%.4f", ratio))
+        }
+        let moeRes = try MoESuites.run(hal: hal, suite: .prefill, cols: cols, samples: samples, repeats: repeats)
+        for c in moeRes.candidates {
+            print("  moe_prefill \(c.name): \(String(format: "%.4f", c.median)) ms")
+        }
+        let shvqRows = try SHVQSuites.run(hal: hal, samples: samples, repeats: repeats)
+        for r in shvqRows where r.suite.hasPrefix("prefill") {
+            let ratio = r.shvqMs / max(r.aqMs, 1e-9)
+            print("  \(r.suite) [\(r.shape)] \(r.bits)b_g\(r.group): shvq "
+                  + String(format: "%.4f", r.shvqMs) + " ms vs aq "
+                  + String(format: "%.4f", r.aqMs) + " ms (" + String(format: "%.3fx", ratio) + ")")
+        }
+        print("VERDICT: apple9_prefill completed (\(prefillRows.count) prefill GEMM races, \(moeRes.candidates.count) MoE candidates, \(shvqRows.filter { $0.suite.hasPrefix("prefill") }.count) SHVQ prefill rows)")
         exit(0)
     }
 

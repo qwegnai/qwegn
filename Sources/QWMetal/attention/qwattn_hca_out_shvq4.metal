@@ -1,6 +1,7 @@
 // qwattn_hca_out_shvq4.metal — Isolated SHVQ4 DirectLUT HCA grouped wo_a NAX kernel
 // (BM=16 K-split for T<=16 verify, BM=64 for T>16 prefill; 32 KiB LUT per Law 27).
 
+#if !defined(QW_DISABLE_NAX)
 #if !defined(__ENVIRONMENT_OS_VERSION_MIN_REQUIRED__) || (__ENVIRONMENT_OS_VERSION_MIN_REQUIRED__ < 260200)
 #error "Metal 4 NAX kernels require -mmacosx-version-min=26.2"
 #endif
@@ -209,3 +210,4 @@ kernel void qwg_hca_grouped_wo_a_nax_t16_shvq4(
     threadgroup float os[4][32u * HCA_WOA_SHVQ4_OS];
     qw_hca_wo_a_nax_shvq4_impl<16>(zIn, woABlocks, qUpGate, zGatedOut, p, os, tg, sg, lane);
 }
+#endif // !defined(QW_DISABLE_NAX)

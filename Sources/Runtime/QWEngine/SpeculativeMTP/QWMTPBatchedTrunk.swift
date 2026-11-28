@@ -392,11 +392,11 @@ extension QWEngineDriver {
             }
             var r0 = 0
             while r0 < activeRows {
-                let runSplits = QWAttnDecode.splits(forKeys: keysForRow(r0), kvHeads: geometry.kvHeads)
+                let runSplits = QWAttnDecode.splits(forKeys: keysForRow(r0), kvHeads: geometry.kvHeads, gpuCores: hal.caps.gpuCores)
                 var r1 = r0 + 1
                 while r1 < activeRows,
                       r1 - r0 < 8,
-                      QWAttnDecode.splits(forKeys: keysForRow(r1), kvHeads: geometry.kvHeads) == runSplits {
+                      QWAttnDecode.splits(forKeys: keysForRow(r1), kvHeads: geometry.kvHeads, gpuCores: hal.caps.gpuCores) == runSplits {
                     r1 += 1
                 }
                 let chunk = r1 - r0

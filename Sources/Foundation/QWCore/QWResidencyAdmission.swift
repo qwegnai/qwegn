@@ -63,7 +63,7 @@ public enum QWResidencyAdmission {
         }
     }
 
-    public struct FlashNextAdmission: Sendable, Equatable {
+    public struct HyperStreamAdmission: Sendable, Equatable {
         public let weightsBytes: Int
         public let pleResidentBytes: Int
         public let fixedScratchBytes: Int
@@ -237,9 +237,9 @@ public enum QWResidencyAdmission {
         )
     }
 
-    /// Deduplicates Flash-Next `.qwp` / safetensors weights, GPU `VQ2` PLE, retained prefill scratch,
+    /// Deduplicates HyperStream `.qwp` / safetensors weights, GPU `VQ2` PLE, retained prefill scratch,
     /// LSA clusters, and warm prefix-cache headroom into one deterministic fixed budget.
-    public static func planFlashNext(
+    public static func planHyperStream(
         weightsEstimate: Int,
         packDiskBytes: Int,
         gpuPLEBytes: Int,
@@ -252,7 +252,7 @@ public enum QWResidencyAdmission {
         requestedSessions: Int,
         osReserveGiB: Double? = nil,
         snapshot: QWDeviceMemorySnapshot = QWLiveDeviceMemorySnapshotSource().capture()
-    ) -> FlashNextAdmission {
+    ) -> HyperStreamAdmission {
         let effectiveWeights = max(weightsEstimate, packDiskBytes)
         let pleBytes = gpuPLEBytes > 0 ? gpuPLEBytes : ngramRowCacheBytes
         let fixedScratch = baseScratchBytes + max(0, retainedPrefillBytes) + max(0, lsaClusterBytes)
@@ -266,7 +266,7 @@ public enum QWResidencyAdmission {
             measuredAfterWire: false,
             snapshot: snapshot
         )
-        return FlashNextAdmission(
+        return HyperStreamAdmission(
             weightsBytes: effectiveWeights,
             pleResidentBytes: pleBytes,
             fixedScratchBytes: fixedScratch,
@@ -275,8 +275,8 @@ public enum QWResidencyAdmission {
         )
     }
 
-    /// Inspects on-disk `model.qwp` and `assets/ngram.bin` sizes when estimating Flash-Next context memory.
-    public static func flashNextOnDiskFootprint(packPath: String?, minWeightsBytes: Int) -> (weightsBytes: Int, pleBytes: Int) {
+    /// Inspects on-disk `model.qwp` and `assets/ngram.bin` sizes when estimating HyperStream context memory.
+    public static func hyperStreamOnDiskFootprint(packPath: String?, minWeightsBytes: Int) -> (weightsBytes: Int, pleBytes: Int) {
         guard let rawPath = packPath, !rawPath.isEmpty else { return (minWeightsBytes, 0) }
         let fm = FileManager.default
         let rootURL = URL(fileURLWithPath: (rawPath as NSString).expandingTildeInPath)

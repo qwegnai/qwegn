@@ -90,9 +90,17 @@ final class QWWave6TokenizerPerfTests: XCTestCase {
             var spans: [(Int, Int)] = [(0, bytes.count)]
             for step in tok.preSteps {
                 let re: NSRegularExpression
+                let matchOnly: Bool
                 switch step {
-                case .digits(_, let r): re = r
-                case .splitIsolated(let r): re = r
+                case .digits(_, let r):
+                    re = r
+                    matchOnly = false
+                case .splitIsolated(let r):
+                    re = r
+                    matchOnly = false
+                case .splitRemovedInverted(let r):
+                    re = r
+                    matchOnly = true
                 }
                 var next: [(Int, Int)] = []
                 for (lo, hi) in spans where hi > lo {
@@ -102,11 +110,11 @@ final class QWWave6TokenizerPerfTests: XCTestCase {
                     re.enumerateMatches(in: seg, range: NSRange(location: 0, length: (seg as NSString).length)) { mr, _, _ in
                         guard let r = mr?.range, r.length > 0 else { return }
                         let b0 = u2b[r.location], b1 = u2b[r.location + r.length]
-                        if b0 > cursor { next.append((lo + cursor, lo + b0)) }
+                        if !matchOnly && b0 > cursor { next.append((lo + cursor, lo + b0)) }
                         if b1 > b0 { next.append((lo + b0, lo + b1)) }
                         cursor = max(cursor, b1)
                     }
-                    if cursor < hi - lo { next.append((lo + cursor, hi)) }
+                    if !matchOnly && cursor < hi - lo { next.append((lo + cursor, hi)) }
                 }
                 spans = next
             }

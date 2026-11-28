@@ -246,23 +246,22 @@ final class GDNLayerKernel: DenseLayerKernel, QWLayerKernel, @unchecked Sendable
                     betas: betasRows, glog: glogRows, zOut: zOutRows, rows: B)
             }
             enc.memoryBarrier(scope: .buffers)
-            for b in 0..<B {
-                let qkvRow = driver.stridedRow(psc.qkv16, row: b, cols: qkvC, dt: .f16)
-                let zRow = driver.stridedRow(psc.z16, row: b, cols: zC, dt: .f16)
-                let bRow = driver.stridedRow(psc.betas, row: b, cols: gdnVH, dt: .f32)
-                let gRow = driver.stridedRow(psc.glog, row: b, cols: glogC, dt: .f32)
-                let convRow = driver.stridedRow(psc.convY, row: b, cols: qkvC, dt: .f16)
-                let oRow = driver.stridedRow(psc.oOut, row: b, cols: zC, dt: .f16)
-                let sRow = driver.stridedRow(psc.oScr, row: b, cols: zC, dt: .f32)
-                try driver.gdnConv.encodeT1WithHeadnorm(enc, x: qkvRow, w: w.conv, bias: nil,
-                                                         stIn: sessions[b].ring[gi], y: convRow,
-                                                         stOut: sessions[b].ring[gi])
-                enc.memoryBarrier(scope: .buffers)
-                try driver.gdnDecode.encode(enc, y: convRow, betas: bRow, glog: gRow,
-                                            state: sessions[b].rec[gi], z: zRow, w: w.normW,
-                                            o: oRow, oScratch: sRow, outGroupSum: nil)
-                enc.memoryBarrier(scope: .buffers)
-            }
+            let qkvBatch = driver.prefixRows(psc.qkv16, rows: B, cols: qkvC, dt: .f16)
+            let convBatch = driver.prefixRows(psc.convY, rows: B, cols: qkvC, dt: .f16)
+            let oBatch = driver.prefixRows(psc.oOut, rows: B, cols: zC, dt: .f16)
+            try driver.gdnConv.encodeBatchT1WithHeadnorm(
+                enc, x: qkvBatch, xStride: qkvC, w: w.conv, bias: nil,
+                y: convBatch, yStride: qkvC, rows: B,
+                stateAt: { sessions[$0].ring[gi] })
+            enc.memoryBarrier(scope: .buffers)
+            try driver.gdnDecode.encodeBatch(
+                enc, y: convBatch, yStride: qkvC,
+                betas: betasRows, betasStride: gdnVH,
+                glog: glogRows, glogStride: glogC,
+                z: zOutRows, zStride: zC, w: w.normW,
+                o: oBatch, oStride: zC, rows: B,
+                stateAt: { sessions[$0].rec[gi] })
+            enc.memoryBarrier(scope: .buffers)
         } else {
             let gdnBuf16 = QWTensorValue(region: psc.gdnY.region, offset: psc.gdnY.offset,
                                          shape: QWTensorShape([B * geometry.gdnTotalN], .f16))
@@ -309,27 +308,27 @@ final class GDNLayerKernel: DenseLayerKernel, QWLayerKernel, @unchecked Sendable
                                          threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
             }
             enc.memoryBarrier(scope: .buffers)
-            for b in 0..<B {
-                let qkvRow = QWTensorValue(region: gdnBuf16.region, offset: gdnBuf16.offset + b * geometry.gdnTotalN * 2,
-                                           shape: QWTensorShape([qkvC], .f16))
-                let zRow = QWTensorValue(region: gdnBuf16.region, offset: gdnBuf16.offset + (b * geometry.gdnTotalN + qkvC) * 2,
-                                         shape: QWTensorShape([zC], .f16))
-                let bRow = QWTensorValue(region: controlsBuf.region, offset: controlsBuf.offset + (b * 2 * gdnVH) * 4,
-                                         shape: QWTensorShape([gdnVH], .f32))
-                let gRow = QWTensorValue(region: controlsBuf.region, offset: controlsBuf.offset + (b * 2 * gdnVH + gdnVH) * 4,
-                                         shape: QWTensorShape([glogC], .f32))
-                let convRow = driver.stridedRow(psc.convY, row: b, cols: qkvC, dt: .f16)
-                let oRow = driver.stridedRow(psc.oOut, row: b, cols: zC, dt: .f16)
-                let sRow = driver.stridedRow(psc.oScr, row: b, cols: zC, dt: .f32)
-                try driver.gdnConv.encodeT1WithHeadnorm(enc, x: qkvRow, w: w.conv, bias: nil,
-                                                         stIn: sessions[b].ring[gi], y: convRow,
-                                                         stOut: sessions[b].ring[gi])
-                enc.memoryBarrier(scope: .buffers)
-                try driver.gdnDecode.encode(enc, y: convRow, betas: bRow, glog: gRow,
-                                            state: sessions[b].rec[gi], z: zRow, w: w.normW,
-                                            o: oRow, oScratch: sRow, outGroupSum: nil)
-                enc.memoryBarrier(scope: .buffers)
-            }
+            let gdnStride = geometry.gdnTotalN
+            let baStride = 2 * gdnVH
+            let convBatch = driver.prefixRows(psc.convY, rows: B, cols: qkvC, dt: .f16)
+            let oBatch = driver.prefixRows(psc.oOut, rows: B, cols: zC, dt: .f16)
+            let zBase = QWTensorValue(region: gdnBuf16.region, offset: gdnBuf16.offset + qkvC * 2,
+                                      shape: QWTensorShape([(B - 1) * gdnStride + zC], .f16))
+            let glogBase = QWTensorValue(region: controlsBuf.region, offset: controlsBuf.offset + gdnVH * 4,
+                                         shape: QWTensorShape([(B - 1) * baStride + glogC], .f32))
+            try driver.gdnConv.encodeBatchT1WithHeadnorm(
+                enc, x: gdnBuf16, xStride: gdnStride, w: w.conv, bias: nil,
+                y: convBatch, yStride: qkvC, rows: B,
+                stateAt: { sessions[$0].ring[gi] })
+            enc.memoryBarrier(scope: .buffers)
+            try driver.gdnDecode.encodeBatch(
+                enc, y: convBatch, yStride: qkvC,
+                betas: controlsBuf, betasStride: baStride,
+                glog: glogBase, glogStride: baStride,
+                z: zBase, zStride: gdnStride, w: w.normW,
+                o: oBatch, oStride: zC, rows: B,
+                stateAt: { sessions[$0].rec[gi] })
+            enc.memoryBarrier(scope: .buffers)
         }
         try batchMLP.encodeProjection(
             enc,
@@ -360,8 +359,8 @@ final class FullAttentionLayerKernel: DenseLayerKernel, QWLayerKernel, @unchecke
         let fullAttnIdx = driver.attnIndexMap[l]
         let views = context.session.attnKVViews[fullAttnIdx]
         if let mla = driver.mlaOperator, let mlaW = w.mla {
-            let latRow = driver.prefixRows(mla.mlaLatentScratch, rows: 1, cols: mla.latentStride, dt: .f16)
-            let qFullRow = driver.prefixRows(mla.mlaQFullScratch, rows: 1, cols: mla.qFullStride, dt: .f16)
+            let latRow = driver.prefixRows(mla.mlaLatentScratch, rows: 1, cols: w.qkvProj.n, dt: .f16)
+            let qFullRow = driver.prefixRows(mla.mlaQFullScratch, rows: 1, cols: mlaW.qBProj.n, dt: .f16)
             let mropePos = context.session.mropeSlice(pos: pos, count: 1, mropeLayout: mla.mropeLayout)
             mark("mla.qkv_a_proj")
             try driver.gemvH16T4(enc, n: w.qkvProj.n, k: H, x: sc.ln1, gs: sc.gs, wQ4: w.qkvProj, y16: latRow)
@@ -460,13 +459,13 @@ final class FullAttentionLayerKernel: DenseLayerKernel, QWLayerKernel, @unchecke
                     partials: sc.partials, out: sc.attOut,
                     blockList: lsa.blockList(forFullAttnLayer: fullAttnIdx),
                     blockCount: lsa.blockCount(forFullAttnLayer: fullAttnIdx),
-                    C: pos, splits: QWAttnDecode.splits(forKeys: activeKeys, kvHeads: geometry.kvHeads),
+                    C: pos, splits: QWAttnDecode.splits(forKeys: activeKeys, kvHeads: geometry.kvHeads, gpuCores: driver.hal.caps.gpuCores),
                     listStride: lsa.listStride)
             } else {
                 try attnDecode.encode(enc, qgate: sc.qR, kv: views,
                                       knew: sc.kR, vnew: sc.v16,
                                       partials: sc.partials, out: sc.attOut,
-                                      C: pos, splits: QWAttnDecode.splits(forKeys: pos + 1, kvHeads: geometry.kvHeads),
+                                      C: pos, splits: QWAttnDecode.splits(forKeys: pos + 1, kvHeads: geometry.kvHeads, gpuCores: driver.hal.caps.gpuCores),
                                       slidingWindow: layerSW)
             }
         } else {
@@ -474,7 +473,7 @@ final class FullAttentionLayerKernel: DenseLayerKernel, QWLayerKernel, @unchecke
             try attnDecode.encode(enc, qgate: sc.qR, kv: views,
                                   knew: sc.kR, vnew: sc.v16,
                                   partials: sc.partials, out: sc.attOut,
-                                  C: pos, splits: QWAttnDecode.splits(forKeys: activeKeys, kvHeads: geometry.kvHeads),
+                                  C: pos, splits: QWAttnDecode.splits(forKeys: activeKeys, kvHeads: geometry.kvHeads, gpuCores: driver.hal.caps.gpuCores),
                                   slidingWindow: layerSW)
         }
         // o_proj (K = qHeads·headDim = 6144 — the C08 law, NOT 5120)
@@ -501,8 +500,8 @@ final class FullAttentionLayerKernel: DenseLayerKernel, QWLayerKernel, @unchecke
         if let mla = driver.mlaOperator, let mlaW = w.mla {
             let vCols = w.o.k
             let activeLn1 = driver.prefixRows(psc.ln1, rows: T, cols: H, dt: .f16)
-            let latRows = driver.prefixRows(mla.mlaLatentScratch, rows: T, cols: mla.latentStride, dt: .f16)
-            let qFullRows = driver.prefixRows(mla.mlaQFullScratch, rows: T, cols: mla.qFullStride, dt: .f16)
+            let latRows = driver.prefixRows(mla.mlaLatentScratch, rows: T, cols: w.qkvProj.n, dt: .f16)
+            let qFullRows = driver.prefixRows(mla.mlaQFullScratch, rows: T, cols: mlaW.qBProj.n, dt: .f16)
             let attOutRows = driver.prefixRows(psc.attOut, rows: T, cols: vCols, dt: .f16)
             var enc = enc
             func mark(_ stage: String) -> (any MTLComputeCommandEncoder)? {
@@ -583,11 +582,13 @@ final class FullAttentionLayerKernel: DenseLayerKernel, QWLayerKernel, @unchecke
             }
         }
         let layerSW = geometry.virtualLayerSlidingWindow(l)
+        let useNAX = driver.hal.caps.supportsSimdgroupMMA
+            && driver.geometry.supportsNAXPagedAttnPrefill
         if layerSW == 0, let lsa = driver.lsaOperator {
             let sparseActive = (pos + T) > driver.lsaConfig.denseBypassThreshold
             let qMode: QWLSAOperator.IndexPrepQMode = !sparseActive
                 ? .none
-                : (driver.geometry.supportsNAXPagedAttnPrefill ? .tiled32 : .allRows)
+                : (useNAX ? .tiled32 : .allRows)
             lsa.encodeIndexAndCluster(
                 enc,
                 qgate: driver.prefixRows(psc.attQR16, rows: T, cols: qOut, dt: .f16),
@@ -621,7 +622,6 @@ final class FullAttentionLayerKernel: DenseLayerKernel, QWLayerKernel, @unchecke
                                k: driver.prefixRows(psc.attKR16, rows: T, cols: kvC, dt: .f16),
                                v: driver.prefixRows(psc.attV16, rows: T, cols: kvC, dt: .f16),
                                startPos: pos, t: T)
-            let useNAX = driver.geometry.supportsNAXPagedAttnPrefill
             lsa.encodeSelectBlocks(enc, fullAttnLayer: fullAttnIdx, pos0: pos, rows: T, tiled32: useNAX)
             let blockListTV = lsa.blockList(forFullAttnLayer: fullAttnIdx)
             let blockCountTV = lsa.blockCount(forFullAttnLayer: fullAttnIdx)
@@ -644,7 +644,7 @@ final class FullAttentionLayerKernel: DenseLayerKernel, QWLayerKernel, @unchecke
                     blockCount: blockCountTV,
                     pos: pos, T: T, listStride: lsa.listStride)
             }
-        } else if !driver.geometry.supportsNAXPagedAttnPrefill {
+        } else if !useNAX {
             // General scalar prefill fallback for unsupported attention shapes.
             driver.encodePagedKVWrite(enc, kv: views,
                                k: driver.prefixRows(psc.attKR16, rows: T, cols: kvC, dt: .f16),
@@ -688,73 +688,6 @@ final class FullAttentionLayerKernel: DenseLayerKernel, QWLayerKernel, @unchecke
                 enc, hal: driver.hal,
                 x: driver.prefixRows(psc.o16, rows: T, cols: H, dt: .f16),
                 bias: oBias, rows: T, cols: H)
-        }
-    }
-
-    static func encodeAttentionBatch(
-        driver: QWEngineDriver,
-        enc: any MTLComputeCommandEncoder,
-        sessions: [QWEngineSession],
-        layer l: Int,
-        weights lw: QWEngineDriver.LayerW
-    ) throws {
-        let B = sessions.count
-        let psc = driver.psc
-        let geometry = driver.geometry
-        let w = lw.attn!
-        let H = geometry.hidden
-        let qOut = geometry.qProjOut, qC = geometry.qChannels, kvC = geometry.kvChannels
-        let fullAttnIdx = driver.attnIndexMap[l]
-        guard let attnDecode = driver.attnDecode else {
-            throw QWEngineDriverError.state("batched attention requires attnDecode")
-        }
-        let batchMLP = try driver.sharedBatchMLP()
-        enc.useResource(batchMLP.downRows.region.buffer, usage: [.read, .write])
-        enc.useResource(batchMLP.sums.region.buffer, usage: [.read, .write])
-        try batchMLP.encodeProjection(
-            enc,
-            input: driver.prefixRows(psc.ln1, rows: B, cols: H, dt: .f16),
-            weight: w.qkvProj,
-            output: driver.prefixRows(psc.attnY16, rows: B, cols: geometry.attnTotalN, dt: .f16),
-            activeRows: B)
-        enc.memoryBarrier(scope: .buffers)
-        let layerSW = geometry.virtualLayerSlidingWindow(l)
-        for b in 0..<B {
-            let sess = sessions[b]
-            let pos = sess.position
-            let views = sess.attnKVViews[fullAttnIdx]
-            let yRow = driver.stridedRow(psc.attnY16, row: b, cols: geometry.attnTotalN, dt: .f16)
-            let qRow = driver.stridedRow(psc.attQR16, row: b, cols: qOut, dt: .f16)
-            let kRow = driver.stridedRow(psc.attKR16, row: b, cols: kvC, dt: .f16)
-            let vRow = driver.stridedRow(psc.attV16, row: b, cols: kvC, dt: .f16)
-            let oRow = driver.stridedRow(psc.attOut, row: b, cols: qC, dt: .f16)
-            try driver.ropeApply.encodeExtractQK(
-                enc, hal: driver.hal,
-                attnY: yRow, qOut: qRow, kOut: kRow, vOut: vRow,
-                wq: w.wq, wk: w.wkTiled, qkvBias: w.qkvBias,
-                positionStart: max(0, pos + sess.roundRecord.mropeDelta), count: 1)
-            enc.memoryBarrier(scope: .buffers)
-            let activeKeys = layerSW > 0 ? min(pos + 1, layerSW) : (pos + 1)
-            try attnDecode.encode(
-                enc, qgate: qRow, kv: views, knew: kRow, vnew: vRow,
-                partials: driver.sc.partials, out: oRow,
-                C: pos, splits: QWAttnDecode.splits(forKeys: activeKeys, kvHeads: geometry.kvHeads),
-                slidingWindow: layerSW)
-            enc.memoryBarrier(scope: .buffers)
-        }
-        try batchMLP.encodeProjection(
-            enc,
-            input: driver.prefixRows(psc.attOut, rows: B, cols: qC, dt: .f16),
-            weight: w.o,
-            output: driver.prefixRows(psc.o16, rows: B, cols: H, dt: .f16),
-            activeRows: B)
-        enc.memoryBarrier(scope: .buffers)
-        if let oBias = w.oBias {
-            try QWNorm.encodeAddBiasF16(
-                enc, hal: driver.hal,
-                x: driver.prefixRows(psc.o16, rows: B, cols: H, dt: .f16),
-                bias: oBias, rows: B, cols: H)
-            enc.memoryBarrier(scope: .buffers)
         }
     }
 }

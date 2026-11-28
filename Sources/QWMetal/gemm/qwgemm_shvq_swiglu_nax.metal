@@ -1,4 +1,5 @@
 // qwgemm_shvq_swiglu_nax.metal — Paired-tile NAX gate_up + SwiGLU for SHVQ{1,15,2,3,4}_G{32,64,128,256}.
+#if !defined(QW_DISABLE_NAX)
 #if !defined(__ENVIRONMENT_OS_VERSION_MIN_REQUIRED__) || __ENVIRONMENT_OS_VERSION_MIN_REQUIRED__ < 260200
 #error "Metal 4 NAX kernels require -mmacosx-version-min=26.2"
 #endif
@@ -118,3 +119,4 @@ QW_SHVQ_MOE_SWIGLU_DIRECT(3, 32)
 QW_SHVQ_MOE_SWIGLU_DIRECT(3, 64)
 QW_SHVQ_MOE_SWIGLU_DIRECT(4, 32)
 QW_SHVQ_MOE_SWIGLU_DIRECT(4, 64)
+#endif // !defined(QW_DISABLE_NAX)

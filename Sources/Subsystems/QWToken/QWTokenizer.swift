@@ -16,6 +16,7 @@ public final class QWTokenizer: @unchecked Sendable {
     enum PreTokenStep {
         case digits(individualDigits: Bool, regex: NSRegularExpression)
         case splitIsolated(regex: NSRegularExpression)
+        case splitRemovedInverted(regex: NSRegularExpression)
     }
 
     enum Mode {
@@ -73,6 +74,8 @@ public final class QWTokenizer: @unchecked Sendable {
     let rawAddedFirstByte: [Bool]
     let normAddedPats: [AddedPattern]
     let normAddedFirstByte: [Bool]
+    let postProcessorPrefixIds: [Int]
+    let postProcessorSuffixIds: [Int]
     let storedTokenizerConfigJSON: Data?
     let storedSpecialTokensMapJSON: Data?
     let storedGenerationConfigJSON: Data?
@@ -133,16 +136,17 @@ public final class QWTokenizer: @unchecked Sendable {
                     }
                     compiledSteps.append(.digits(individualDigits: indiv, regex: re))
                 } else if stype == "Split" {
-                    guard (sub["behavior"] as? String) == "Isolated",
-                          ((sub["invert"] as? Bool) ?? false) == false,
-                          let rPat = (sub["pattern"] as? [String: Any])?["Regex"] as? String else {
+                    let behavior = sub["behavior"] as? String
+                    let invert = (sub["invert"] as? Bool) ?? false
+                    guard let rPat = (sub["pattern"] as? [String: Any])?["Regex"] as? String,
+                          (behavior == "Isolated" && !invert) || (behavior == "Removed" && invert) else {
                         throw Error.badJSON("unsupported Split pre_tokenizer configuration")
                     }
                     let icuPat = Self.normalizeOnigStackedExactRepeat(rPat)
                     guard let re = try? NSRegularExpression(pattern: icuPat) else {
                         throw Error.regex("ICU refused \(rPat.prefix(40))…")
                     }
-                    compiledSteps.append(.splitIsolated(regex: re))
+                    compiledSteps.append(invert ? .splitRemovedInverted(regex: re) : .splitIsolated(regex: re))
                 } else {
                     throw Error.badJSON("unsupported Sequence pre_tokenizer stage '\(stype ?? "nil")'")
                 }
@@ -354,6 +358,61 @@ public final class QWTokenizer: @unchecked Sendable {
         self.rawAddedFirstByte = rawFirst
         self.normAddedPats = normPats.sorted(by: sortLongestFirst)
         self.normAddedFirstByte = normFirst
+        let (ppPrefix, ppSuffix) = Self.parseTemplateProcessingSingle(
+            root["post_processor"] as? [String: Any],
+            vocab: vocabObj,
+            added: addedList
+        )
+        self.postProcessorPrefixIds = ppPrefix
+        self.postProcessorSuffixIds = ppSuffix
+    }
+
+    private static func parseTemplateProcessingSingle(
+        _ postObj: [String: Any]?,
+        vocab: [String: Int],
+        added: [(s: String, id: Int)]
+    ) -> (prefix: [Int], suffix: [Int]) {
+        guard let postObj else { return ([], []) }
+        let tplObj: [String: Any]?
+        if (postObj["type"] as? String) == "TemplateProcessing" {
+            tplObj = postObj
+        } else if (postObj["type"] as? String) == "Sequence",
+                  let procs = postObj["processors"] as? [[String: Any]] {
+            tplObj = procs.first(where: { ($0["type"] as? String) == "TemplateProcessing" })
+        } else {
+            tplObj = nil
+        }
+        guard let tpl = tplObj, let single = tpl["single"] as? [[String: Any]] else {
+            return ([], [])
+        }
+        let spMap = tpl["special_tokens"] as? [String: [String: Any]]
+        func resolveSpecialIds(_ name: String) -> [Int] {
+            if let entry = spMap?[name], let rawIds = entry["ids"] as? [Any] {
+                let ids = rawIds.compactMap { ($0 as? NSNumber)?.intValue }
+                if !ids.isEmpty { return ids }
+            }
+            if let tid = vocab[name] ?? added.first(where: { $0.s == name })?.id {
+                return [tid]
+            }
+            return []
+        }
+        var prefix: [Int] = []
+        var suffix: [Int] = []
+        var sawSequenceA = false
+        for item in single {
+            if item["Sequence"] != nil {
+                sawSequenceA = true
+            } else if let sp = item["SpecialToken"] as? [String: Any],
+                      let spId = sp["id"] as? String {
+                let resolved = resolveSpecialIds(spId)
+                if sawSequenceA {
+                    suffix.append(contentsOf: resolved)
+                } else {
+                    prefix.append(contentsOf: resolved)
+                }
+            }
+        }
+        return sawSequenceA ? (prefix, suffix) : ([], [])
     }
 
     /// Onig/fancy-regex (HF `tokenizers`) parses `<atom>{n}+` as `(?:<atom>{n})+`,

@@ -133,6 +133,18 @@ public enum QWCapacityBudget {
         return max(0, (QWAdmission.physicalMemoryBytes() ?? 0) - reserve)
     }
 
+    /// Resolves KV capacity, adding 1,024-token decode headroom for `alignedCap >= 4096` when RAM permits.
+    public static func resolveKVCapacity(
+        alignedCap: Int,
+        fixedBytes: Int,
+        perTokenBytes: Int,
+        availableBytes: Int
+    ) -> Int {
+        let headroomCap = alignedCap + 1024
+        let fitsHeadroom = fixedBytes + headroomCap * perTokenBytes <= availableBytes
+        return (alignedCap >= 4096 && fitsHeadroom) ? headroomCap : alignedCap
+    }
+
     /// Validates both the static physical budget and live reclaimable host RAM before allocating GPU model arenas.
     public static func validateMemoryForEngineLoad(requiredBytes: Int, osReserveGiB: Double? = nil) throws {
         // Skip live host check for tiny synthetic unit-test fixtures (< 1 GiB).

@@ -12,7 +12,6 @@ final class QWConstrainedMTPParityTests: XCTestCase {
     override func setUpWithError() throws {
         try XCTSkipUnless(
             ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] != "true"
-                && QWDeviceCaps.current?.familyApple9 == true
                 && QWDeviceCaps.current?.isMetal4TensorCapable == true,
             "Constrained MTP parity tests require bare-metal Apple Silicon GPU"
         )

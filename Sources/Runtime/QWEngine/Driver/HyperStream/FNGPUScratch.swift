@@ -156,7 +156,9 @@ public final class FNGPUContext {
         self.convKernel = try QWGDNConv(hal: hal, geometry: geometry)
         // A door that does not compile is a door this build cannot
         // dispatch: the engine says so now, not later in a turn.
-        for name in doors { _ = try hal.pipeline(name) }
+        for name in doors where hal.caps.isMetal4TensorCapable || !QWNaxKernelRegistry.names.contains(name) {
+            _ = try hal.pipeline(name)
+        }
         hal.freezePipelines()
     }
 }

@@ -92,15 +92,20 @@ kernel void qwg_gdn_conv(const device half* x     [[buffer(0)]],   // [T][10240]
 // ── qwg_gdn_conv_headnorm_t1 — Fused Conv1D (k=4) + HeadNorm for T=1 decode ─
 // Fuses C11 depthwise conv (10,240 channels) with C23 headnorm (16 Q heads +
 // 16 K heads = 32 heads of 128 channels).
-kernel void qwg_gdn_conv_headnorm_t1(const device half* x    [[buffer(0)]],   // [10240]
-                                    const device half* w    [[buffer(1)]],   // [10240][4]
-                                    const device half* bias [[buffer(2)]],   // [10240]
-                                    const device half* stIn [[buffer(3)]],   // [3][10240]
-                                    device half* y          [[buffer(4)]],   // [10240]
-                                    device half* stOut      [[buffer(5)]],   // [3][10240]
-                                    uint tg                 [[threadgroup_position_in_grid]],
-                                    uint tid                [[thread_index_in_threadgroup]]) {
-    const uint h = tg;
+struct QWConvBatchPtrTable8 {
+    ulong addrs[8];
+};
+
+static inline void qwg_gdn_conv_headnorm_t1_row(
+        const device half* x,
+        const device half* w,
+        const device half* bias,
+        const device half* stIn,
+        device half* y,
+        device half* stOut,
+        threadgroup float* part,
+        uint h,
+        uint tid) {
     const uint totalHeads = 2u * QW_GDN_QK_HEADS + QW_GDN_V_HEADS;
     if (h >= totalHeads) return;
     const uint c = h * 128u + tid;
@@ -129,7 +134,6 @@ kernel void qwg_gdn_conv_headnorm_t1(const device half* x    [[buffer(0)]],   //
         // HeadNorm: match oracle/pipeline rounding law (cast to half then float)
         const float v = float(half(y_silu));
         const float ss = simd_sum(v * v);
-        threadgroup float part[4];
         if ((tid & 31u) == 0u) {
             part[tid >> 5u] = ss;
         }
@@ -140,6 +144,36 @@ kernel void qwg_gdn_conv_headnorm_t1(const device half* x    [[buffer(0)]],   //
     } else {
         y[c] = half(y_silu);
     }
+}
+
+kernel void qwg_gdn_conv_headnorm_t1(const device half* x    [[buffer(0)]],   // [10240]
+                                    const device half* w    [[buffer(1)]],   // [10240][4]
+                                    const device half* bias [[buffer(2)]],   // [10240]
+                                    const device half* stIn [[buffer(3)]],   // [3][10240]
+                                    device half* y          [[buffer(4)]],   // [10240]
+                                    device half* stOut      [[buffer(5)]],   // [3][10240]
+                                    uint tg                 [[threadgroup_position_in_grid]],
+                                    uint tid                [[thread_index_in_threadgroup]]) {
+    threadgroup float part[4];
+    qwg_gdn_conv_headnorm_t1_row(x, w, bias, stIn, y, stOut, part, tg, tid);
+}
+
+kernel void qwg_gdn_conv_headnorm_batch(
+        const device half* x                  [[buffer(0)]],
+        const device half* w                  [[buffer(1)]],
+        const device half* bias               [[buffer(2)]],
+        device half* y                        [[buffer(3)]],
+        constant QWConvBatchPtrTable8& states [[buffer(4)]],
+        constant uint& xStride                [[buffer(5)]],
+        constant uint& yStride                [[buffer(6)]],
+        uint3 tg                              [[threadgroup_position_in_grid]],
+        uint tid                              [[thread_index_in_threadgroup]]) {
+    threadgroup float part[4];
+    const uint b = tg.z;
+    device half* st = (device half*)states.addrs[b];
+    qwg_gdn_conv_headnorm_t1_row(
+        x + (size_t)b * xStride, w, bias, st,
+        y + (size_t)b * yStride, st, part, tg.x, tid);
 }
 
 // ── qwg_gdn_conv_headnorm_rows — Multi-row Conv1D (k=4) + HeadNorm + Capture ─

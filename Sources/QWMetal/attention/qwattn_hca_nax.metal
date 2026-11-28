@@ -1,6 +1,7 @@
 // qwattn_hca_nax.metal — Joint MQA 512D HCA attention on Apple10+ NAX tensor MMA.
 // 1 token x 32 heads (2 x 16-head groups x 4 dim simdgroups) per 256-thread TG;
 // supports unsplit prefill with learned sinks, Split-K decode, and sparse LSA.
+#if !defined(QW_DISABLE_NAX)
 #include <metal_stdlib>
 #include <metal_simdgroup>
 #include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
@@ -282,3 +283,4 @@ kernel void qwg_hca_attn_nax_prefill(
     qw_hca_attn_nax_run(qUpGate, compKV, swaKV, blockList, blockCount, attnSink, outBuf, partML, p,
                         t, tg.x * 32u, 0u, 1u, sg, lane, sPart);
 }
+#endif // !defined(QW_DISABLE_NAX)

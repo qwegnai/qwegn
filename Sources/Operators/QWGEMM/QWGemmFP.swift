@@ -263,13 +263,23 @@ public enum QWGemmFP {
                 "qwg_moe_nax_gemm_mxfp8_g32",
                 "qwg_moe_nax_gemm_mxfp8_g32_swiglu"
             ])
+        } else if hal.caps.supportsSimdgroupMMA {
+            names.append(contentsOf: [
+                "qwg_gemm_bf16_sg_bm32",
+                "qwg_gemm_bf16_sg_bm64",
+                "qwg_moe_gather_x",
+                "qwg_moe_sg_gemm_nvfp4_g16",
+                "qwg_moe_sg_gemm_nvfp4_g16_swiglu",
+                "qwg_moe_sg_gemm_mxfp8_g32",
+                "qwg_moe_sg_gemm_mxfp8_g32_swiglu"
+            ])
         }
         for name in names {
             _ = try hal.pipeline(name)
         }
     }
 
-    /// Auto-selects direct-register NAX (`M > 8` on NAX hardware) or row-paired GEMV.
+    /// Auto-selects direct-register NAX / simdgroup MMA (`M > 8`) or row-paired GEMV.
     public static func encodeBF16(
         _ enc: any MTLComputeCommandEncoder, hal: QWHal,
         weight: BF16Bank, x: QWFPBufferSlice, y: QWFPBufferSlice,
@@ -279,7 +289,7 @@ public enum QWGemmFP {
         minNaxRows: Int = 9
     ) throws {
         guard m > 0, weight.n > 0, weight.k > 0 else { return }
-        if m >= minNaxRows && hal.caps.isMetal4TensorCapable {
+        if m >= minNaxRows && hal.caps.supportsSimdgroupMMA {
             try encodeBF16NAX(enc, hal: hal, weight: weight, x: x, y: y, m: m,
                               inDtype: inDtype, outDtype: outDtype,
                               strideX: strideX, strideY: strideY,
@@ -292,7 +302,7 @@ public enum QWGemmFP {
         }
     }
 
-    /// Encodes direct-register `BF16` NAX GEMM (`BM=32/64, BN=64`).
+    /// Encodes `BF16` GEMM (`BM=32/64, BN=64`) using NAX on Apple10+ or `simdgroup_half8x8` on Apple7+.
     public static func encodeBF16NAX(
         _ enc: any MTLComputeCommandEncoder, hal: QWHal,
         weight: BF16Bank, x: QWFPBufferSlice, y: QWFPBufferSlice,
@@ -300,12 +310,15 @@ public enum QWGemmFP {
         strideX: Int? = nil, strideY: Int? = nil,
         addResidual: Bool = false, softcap: Float = 0
     ) throws {
-        guard hal.caps.isMetal4TensorCapable else {
-            throw QWGemmError.badShape("qwg_gemm_bf16_nax_bm32 requires Metal 4 NAX tensor support")
+        let useNAX = hal.caps.isMetal4TensorCapable
+        guard hal.caps.supportsSimdgroupMMA else {
+            throw QWGemmError.badShape("qwg_gemm_bf16_nax_bm32 requires Apple7+ simdgroup or Metal 4 NAX tensor support")
         }
         guard m > 0, weight.n > 0, weight.k > 0 else { return }
         let useBM64 = (m >= 48)
-        let kName = useBM64 ? "qwg_gemm_bf16_nax_bm64" : "qwg_gemm_bf16_nax_bm32"
+        let kName = useBM64
+            ? (useNAX ? "qwg_gemm_bf16_nax_bm64" : "qwg_gemm_bf16_sg_bm64")
+            : (useNAX ? "qwg_gemm_bf16_nax_bm32" : "qwg_gemm_bf16_sg_bm32")
         let bm = useBM64 ? 64 : 32
         let sx = strideX ?? weight.k
         let sy = strideY ?? weight.n

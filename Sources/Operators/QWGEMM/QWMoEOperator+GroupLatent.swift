@@ -37,8 +37,8 @@ extension QWMoEOperator {
               let xLatent32 = s.xLatent32, let zLatent32 = s.zLatent32 else {
             throw QWGemmError.badShape("group-latent moe requires latentD, latentU, latentLabels, and latent scratch")
         }
-        let useFusedMoE = Self.canFuseMoEGateUpNaxSwiglu(weights: w, intermediate: I)
-        let isGroupedNax = T > 8 && supportsGroupedNaxPrefill && hal.caps.isMetal4TensorCapable
+        let useFusedMoE = Self.canFuseMoEGateUpNaxSwiglu(hal: hal, weights: w, intermediate: I)
+        let isGroupedNax = T > 8 && supportsGroupedNaxPrefill && hal.caps.supportsSimdgroupMMA
             && s.expOff != nil && s.sortedPair != nil && s.sortedTok != nil
             && s.invPerm != nil && s.tileE != nil && s.tileR != nil
             && s.tileCount != nil && (useFusedMoE || s.gu16 != nil)
@@ -86,7 +86,7 @@ extension QWMoEOperator {
             let shAct16 = canAliasShAct16
                 ? naxX16.slice(byteOffset: T * H * 2, count: T * ISh, dtype: .f16)
                 : nil
-            let useFusedSh = Self.canFuseSharedSwiGLUNax(weights: w, shPrecast16: shPrecast16, shAct16: shAct16)
+            let useFusedSh = Self.canFuseSharedSwiGLUNax(hal: hal, weights: w, shPrecast16: shPrecast16, shAct16: shAct16)
             let dnAcc16 = s.dnAcc.slice(byteOffset: 0, count: T * max(K, NG) * H, dtype: .f16)
             try QWGemm.encodeFnRouterGemm(enc, hal: hal, weight: w.router, x: xPlain, y: s.logits,
                                           rows: T, n: routerCols, k: H,

@@ -19,146 +19,48 @@ public enum QWVisionError: Error, CustomStringConvertible, Equatable {
     }
 }
 
-/// Reads ONE safetensors shard for a key prefix, f16/bf16->fp32 on demand.
+/// Safetensors shard adapter backed by `QWSafeTensorsContainer` with `QWVisionError` mapping.
 struct QWSafetensors {
-    enum DType: Sendable, Equatable {
-        case f16, bf16, f32
-        case unsupported(String)
+    private let container: QWSafeTensorsContainer?
+    private let deferredLayoutError: String?
 
-        init(_ raw: String) {
-            switch raw {
-            case "F16": self = .f16
-            case "BF16": self = .bf16
-            case "F32": self = .f32
-            default: self = .unsupported(raw)
-            }
-        }
-
-        var elemBytes: Int {
-            switch self {
-            case .f16, .bf16: return 2
-            case .f32: return 4
-            case .unsupported: return 0
-            }
-        }
-
-        var label: String {
-            switch self {
-            case .f16: return "F16"
-            case .bf16: return "BF16"
-            case .f32: return "F32"
-            case .unsupported(let raw): return raw
-            }
-        }
-    }
-
-    struct Entry: Sendable {
-        let offset: Int
-        let endOffset: Int
-        let shape: [Int]
-        let dtype: DType
-    }
-
-    let data: Data
-    var dataStart = 0
-    let tensors: [String: Entry]
+    var tensors: [String: QWSafeTensorsTensor] { container?.tensors ?? [:] }
 
     init(path: String) throws {
-        let d = try Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe)
-        self.data = d
-        guard d.count > 8 else { throw QWVisionError.badLayout("st too small") }
-        var lenU64: UInt64 = 0
-        d.withUnsafeBytes { (r: UnsafeRawBufferPointer) in
-            for i in 0..<8 { lenU64 |= UInt64(r[i]) << (8 * i) }
+        do {
+            self.container = try QWSafeTensorsContainer(url: URL(fileURLWithPath: path))
+            self.deferredLayoutError = nil
+        } catch QWSafeTensorsError.badHeader(let detail) where detail.hasPrefix("the tensors cover ") {
+            self.container = nil
+            self.deferredLayoutError = detail
+        } catch let err as QWSafeTensorsError {
+            throw QWVisionError.badLayout(err.description)
         }
-        guard lenU64 > 0, lenU64 <= UInt64(d.count - 8) else {
-            throw QWVisionError.badLayout("invalid safetensors header length in \(path)")
-        }
-        let len = Int(lenU64)
-        guard let hdr = try JSONSerialization.jsonObject(with: d.subdata(in: 8..<(8 + len))) as? [String: Any] else {
-            throw QWVisionError.badLayout("invalid safetensors header in \(path)")
-        }
-        // Data offsets are relative to 8 + len (after header JSON).
-        self.dataStart = 8 + len
-        var t: [String: Entry] = [:]
-        for (k, v) in hdr where k != "__metadata__" {
-            guard let m = v as? [String: Any],
-                  let offsets = m["data_offsets"] as? [Int], offsets.count == 2,
-                  let shape = m["shape"] as? [Int],
-                  let dtypeRaw = m["dtype"] as? String else {
-                throw QWVisionError.badLayout("malformed safetensors header entry '\(k)'")
-            }
-            guard offsets[0] >= 0, offsets[1] >= offsets[0], shape.allSatisfy({ $0 >= 0 }) else {
-                throw QWVisionError.badLayout("negative offset or shape in safetensors entry '\(k)'")
-            }
-            t[k] = Entry(offset: offsets[0], endOffset: offsets[1], shape: shape, dtype: DType(dtypeRaw))
-        }
-        self.tensors = t
     }
 
     func f32(_ key: String, want: [Int]?) throws -> [Float] {
-        guard let t = tensors[key] else { throw QWVisionError.missingTensor(key) }
+        if let deferredLayoutError { throw QWVisionError.badLayout(deferredLayoutError) }
+        guard let container, let t = container.tensors[key] else {
+            throw QWVisionError.missingTensor(key)
+        }
         if let w = want, t.shape != w {
             throw QWVisionError.shapeMismatch("\(key): \(t.shape) ≠ \(w)")
         }
-        let elemBytes: Int
-        switch t.dtype {
-        case .f16, .bf16, .f32:
-            elemBytes = t.dtype.elemBytes
-        case .unsupported(let raw):
-            throw QWVisionError.badLayout("QWVision: unsupported dtype \(raw) for '\(key)'")
+        guard t.dtype == .f16 || t.dtype == .bf16 || t.dtype == .f32 else {
+            throw QWVisionError.badLayout("QWVision: unsupported dtype \(t.dtype.rawValue) for '\(key)'")
         }
-        var n = 1
-        for dim in t.shape {
-            guard dim >= 0 else {
-                throw QWVisionError.badLayout("negative dimension in tensor '\(key)'")
-            }
-            let (prod, overflow) = n.multipliedReportingOverflow(by: dim)
-            guard !overflow else {
-                throw QWVisionError.badLayout("element count overflow in tensor '\(key)'")
-            }
-            n = prod
+        do {
+            return try container.readFloats(key, expectedElementCount: t.elementCount)
+        } catch QWSafeTensorsError.missingTensor(let name) {
+            throw QWVisionError.missingTensor(name)
+        } catch let err as QWSafeTensorsError {
+            throw QWVisionError.badLayout(err.description)
         }
-        let (byteCount, bytesOverflow) = n.multipliedReportingOverflow(by: elemBytes)
-        let (absStart, startOverflow) = dataStart.addingReportingOverflow(t.offset)
-        let (absEnd, endOverflow) = absStart.addingReportingOverflow(byteCount)
-        let spanBytes = t.endOffset - t.offset
-        guard t.offset >= 0,
-              !bytesOverflow, !startOverflow, !endOverflow,
-              spanBytes == byteCount,
-              absEnd <= data.count else {
-            throw QWVisionError.badLayout("safetensors data_offsets out of bounds for '\(key)'")
-        }
-        if n == 0 { return [] }
-        var out = [Float](repeating: 0, count: n)
-        data.withUnsafeBytes { (r: UnsafeRawBufferPointer) in
-            out.withUnsafeMutableBufferPointer { ob in
-                guard let rawBase = r.baseAddress, let outBase = ob.baseAddress else { return }
-                let src = rawBase.advanced(by: absStart).assumingMemoryBound(to: UInt8.self)
-                let outU32 = UnsafeMutableRawPointer(outBase).assumingMemoryBound(to: UInt32.self)
-                switch t.dtype {
-                case .f16:
-                    for i in 0..<n {
-                        let lo = UInt16(src[i &* 2]), hi = UInt16(src[i &* 2 &+ 1])
-                        outBase[i] = Float(Float16(bitPattern: lo | (hi << 8)))
-                    }
-                case .bf16:
-                    for i in 0..<n {
-                        let lo = UInt32(src[i &* 2]), hi = UInt32(src[i &* 2 &+ 1])
-                        outU32[i] = (lo | (hi << 8)) << 16
-                    }
-                case .f32:
-                    memcpy(outBase, src, byteCount)
-                case .unsupported:
-                    break
-                }
-            }
-        }
-        return out
     }
 
-    func shape(_ key: String) -> [Int]? { tensors[key]?.shape }
-    func has(_ key: String) -> Bool { tensors[key] != nil }
+    func shape(_ key: String) -> [Int]? { container?.tensors[key]?.shape }
+    func has(_ key: String) -> Bool { container?.tensors[key] != nil }
+    func adviseDontNeed() { container?.adviseDontNeed() }
 }
 
 /// Multi-shard or `.qwp` view over a model's vision tower weights.
@@ -457,6 +359,7 @@ public final class QWVisionCheckpoint: @unchecked Sendable {
 
     func releaseBacking() {
         lock.withLock {
+            for shard in shards.values { shard.adviseDontNeed() }
             shards.removeAll()
             pack?.adviseDontNeed()
             pack = nil

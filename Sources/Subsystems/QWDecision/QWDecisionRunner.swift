@@ -3,6 +3,16 @@ import Foundation
 import QWCore
 import QWToken
 
+public struct QWRerankPairScore: Sendable, Equatable {
+    public let index: Int
+    public let relevanceScore: Double
+
+    public init(index: Int, relevanceScore: Double) {
+        self.index = index
+        self.relevanceScore = relevanceScore
+    }
+}
+
 public final class QWDecisionRunner: Sendable {
     public let tokenizer: QWTokenizer
     public let backend: any QWDecisionExecutionBackend
@@ -133,5 +143,108 @@ public final class QWDecisionRunner: Sendable {
             ))
         }
         return responses
+    }
+
+    public func rerank(
+        query: String,
+        documents: [String],
+        chain: String = "rerank"
+    ) async throws -> (scores: [QWRerankPairScore], usage: QWDecisionUsage) {
+        guard !documents.isEmpty else {
+            return ([], QWDecisionUsage(promptTokens: 0, outputTokens: 0, truncatedTokens: 0, latencyMs: 0))
+        }
+        let cfg = backend.decisionConfig
+        if case .sequencePair = cfg.framing,
+           case .pooledClassifier(_, let numLabels, let id2label) = cfg.head {
+            let built = try QWSequenceFramingEngine.buildNativeRerankBatch(
+                query: query,
+                documents: documents,
+                config: cfg,
+                tokenizer: tokenizer,
+                maxContextLength: backend.maxContextLength
+            )
+            let out = try await backend.evaluate(built.batch)
+            guard out.slotOutputs.count == documents.count else {
+                throw QWDecisionError.backendFailed(
+                    "rerank backend emitted \(out.slotOutputs.count) slot outputs for \(documents.count) documents"
+                )
+            }
+            let temp = QWCalibrationEngine.temperature(
+                profile: calibration, kind: .noul, cardinality: max(2, numLabels), chain: chain
+            )
+            let knots = calibration.tables["rerank"] ?? calibration.tables["noul"]
+            let posIdx = Self.resolvePositiveRerankClassIndex(numLabels: numLabels, id2label: id2label)
+            let scores: [QWRerankPairScore] = out.slotOutputs.enumerated().map { idx, slotOut in
+                let rawProb = Self.decodePooledRelevanceProb(
+                    slotOut: slotOut, numLabels: numLabels, positiveIndex: posIdx, temperature: temp
+                )
+                let cal = min(1.0, max(0.0, QWCalibrationEngine.through(rawProb, knots: knots)))
+                return QWRerankPairScore(index: idx, relevanceScore: QWCalibrationEngine.roundPy(cal))
+            }
+            let usage = QWDecisionUsage(
+                promptTokens: max(built.promptTokens, out.promptTokens),
+                outputTokens: 0,
+                truncatedTokens: built.truncatedTokens,
+                latencyMs: out.latencyMs
+            )
+            return (scores, usage)
+        }
+
+        let requests = documents.map { doc in
+            QWDecisionRequest(
+                state: .text(doc),
+                questions: [
+                    QWDecisionQuestion(
+                        name: "relevant",
+                        kind: .noul,
+                        instructions: "Is this document relevant to the query: \(query)"
+                    ),
+                ],
+                truncation: .autoState,
+                chain: chain
+            )
+        }
+        let responses = try await decideBatch(requests)
+        let totalPrompt = responses.reduce(0) { $0 + $1.usage.promptTokens }
+        let totalTrunc = responses.reduce(0) { $0 + $1.usage.truncatedTokens }
+        let maxLat = responses.map(\.usage.latencyMs).max() ?? 0.0
+        let scores: [QWRerankPairScore] = responses.enumerated().map { idx, resp in
+            let firstAns = resp.answers.first
+            let probs = firstAns?.probs ?? []
+            let fallback: Double = (firstAns?.noul == true) ? (firstAns?.confidence ?? 0.5) : 0.0
+            let pYes = probs.first(where: { $0.key == "yes" })?.value ?? fallback
+            return QWRerankPairScore(index: idx, relevanceScore: pYes)
+        }
+        return (scores, QWDecisionUsage(promptTokens: totalPrompt, outputTokens: 0, truncatedTokens: totalTrunc, latencyMs: maxLat))
+    }
+
+    private static func resolvePositiveRerankClassIndex(numLabels: Int, id2label: [Int: String]) -> Int {
+        guard numLabels >= 2 else { return 0 }
+        let positiveNames: Set<String> = ["entailment", "relevant", "yes", "true", "positive", "1", "label_1"]
+        for (cid, raw) in id2label where cid >= 0 && cid < numLabels {
+            let norm = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if positiveNames.contains(norm) { return cid }
+        }
+        return numLabels == 2 ? 1 : (numLabels - 1)
+    }
+
+    private static func decodePooledRelevanceProb(
+        slotOut: QWDecisionSlotOutput,
+        numLabels: Int,
+        positiveIndex: Int,
+        temperature: Double
+    ) -> Double {
+        let safeTemp = max(1e-4, temperature)
+        guard let pooled = slotOut.pooledLogits, !pooled.isEmpty else {
+            let m = Double(slotOut.markerLogits?.first ?? 0)
+            return 1.0 / (1.0 + exp(-m / safeTemp))
+        }
+        if pooled.count == 1 || numLabels <= 1 {
+            return 1.0 / (1.0 + exp(-Double(pooled[0]) / safeTemp))
+        }
+        let logits = pooled.prefix(max(2, numLabels)).map(Double.init)
+        let probs = QWCalibrationEngine.calibratedSoftmax(logits: logits, temperature: safeTemp)
+        let target = min(max(0, positiveIndex), probs.count - 1)
+        return probs[target]
     }
 }

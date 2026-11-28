@@ -123,22 +123,13 @@ extension QWHttpServer {
                 throw QWDecisionError.invalidQuestion("document at index \(idx) must be a string or {text} object")
             }
 
-            let decReqs = docs.map { doc in
-                QWDecisionRequest(
-                    state: .text(doc),
-                    questions: [
-                        QWDecisionQuestion(
-                            name: "relevant",
-                            kind: .noul,
-                            instructions: "Is this document relevant to the query: \(query)"
-                        ),
-                    ],
-                    truncation: .autoState
-                )
-            }
-            let envelopes = try await actor.decideBatch(decReqs, preferredModel: req.model)
-            let totalPromptTokens = envelopes.reduce(0) { $0 + $1.response.usage.promptTokens }
-            let modelName = envelopes.first?.modelName ?? req.model ?? actor.getModelName()
+            let rerankOut = try await actor.rerankDocuments(
+                query: query,
+                documents: docs,
+                preferredModel: req.model
+            )
+            let totalPromptTokens = rerankOut.usage.promptTokens
+            let modelName = rerankOut.modelName.isEmpty ? (req.model ?? actor.getModelName()) : rerankOut.modelName
             let returnDocs = req.returnDocuments ?? false
 
             struct ScoredDoc {
@@ -146,14 +137,8 @@ extension QWHttpServer {
                 let score: Double
                 let text: String
             }
-            var scored: [ScoredDoc] = []
-            scored.reserveCapacity(docs.count)
-            for (idx, env) in envelopes.enumerated() {
-                let firstAns = env.response.answers.first
-                let probs = firstAns?.probs ?? []
-                let fallbackScore: Double = (firstAns?.noul == true) ? (firstAns?.confidence ?? 0.5) : 0.0
-                let pYes = probs.first(where: { $0.key == "yes" })?.value ?? fallbackScore
-                scored.append(ScoredDoc(index: idx, score: pYes, text: docs[idx]))
+            var scored: [ScoredDoc] = rerankOut.scores.map { pair in
+                ScoredDoc(index: pair.index, score: pair.relevanceScore, text: docs[pair.index])
             }
             scored.sort {
                 if $0.score != $1.score { return $0.score > $1.score }

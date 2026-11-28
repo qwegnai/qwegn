@@ -24,17 +24,34 @@ final class QWErnie55AttnOptPhase5gTests: XCTestCase {
         if let s0 = seed {
             let lut = detRand(4096, seed: s0, scale: scale).map { Float16($0) }
             let dst = buf.contents().assumingMemoryBound(to: Float16.self)
-            for i in 0..<count { dst[i] = lut[i & 4095] }
+            lut.withUnsafeBufferPointer { lBuf in
+                guard let lp = lBuf.baseAddress else { return }
+                var i = 0
+                while i + 4096 <= count {
+                    memcpy(dst + i, lp, 4096 * 2)
+                    i += 4096
+                }
+                while i < count { dst[i] = lp[i & 4095]; i += 1 }
+            }
         }
         return QWTensorValue(region: QWMRegion(buffer: buf, base: 0, length: bytes),
                              offset: 0, shape: QWTensorShape([count], .f16))
     }
 
     private static func maxAbsDiffF16(_ a: QWTensorValue, _ b: QWTensorValue, count: Int) -> Float {
-        let pa = a.region.pointer.advanced(by: a.offset).assumingMemoryBound(to: Float16.self)
-        let pb = b.region.pointer.advanced(by: b.offset).assumingMemoryBound(to: Float16.self)
-        var m: Float = 0
-        for i in 0..<count { m = max(m, abs(Float(pa[i]) - Float(pb[i]))) }
+        let pa = a.region.pointer.advanced(by: a.offset).assumingMemoryBound(to: UInt16.self)
+        let pb = b.region.pointer.advanced(by: b.offset).assumingMemoryBound(to: UInt16.self)
+        var m: Float = 0, i = 0
+        while i < count {
+            let ua = pa[i], ub = pb[i]
+            if ua != ub || (ua & 0x7C00) == 0x7C00 {
+                let fa = Float(Float16(bitPattern: ua)), fb = Float(Float16(bitPattern: ub))
+                if !(fa.isFinite && fb.isFinite) { return .infinity }
+                let d = abs(fa - fb)
+                if d > m { m = d }
+            }
+            i += 1
+        }
         return m
     }
 

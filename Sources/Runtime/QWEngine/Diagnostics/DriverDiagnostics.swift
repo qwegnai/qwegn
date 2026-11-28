@@ -46,9 +46,11 @@ extension QWEngineDriver {
 
     /// Steady-state allocator counters (the soak gate's data feed).
     public var steadyAllocs: Int {
-        if let hyper = hyperRuntime { return hyper.steadyStateAllocations }
-        if let ink = inkling2Runtime { return ink.steadyStateAllocations }
-        return arena.weightsRegion().steadyStateAllocs + arena.activationsRegion().steadyStateAllocs
+        trunkExecutor.steadyStateAllocations
+    }
+
+    var standardSteadyStateAllocations: Int {
+        arena.weightsRegion().steadyStateAllocs + arena.activationsRegion().steadyStateAllocs
             + arena.gdnRegion().steadyStateAllocs
     }
 

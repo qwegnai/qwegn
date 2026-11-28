@@ -135,7 +135,7 @@ extension QWInkling2Forward {
                                                  count: m * view.k, dtype: .f16)
             let yBF16TV = QWTensorValue(region: QWMRegion(buffer: yBuf, base: 0, length: yBuf.length),
                                         offset: yOff, shape: QWTensorShape([m * view.n], .bf16))
-            if m > 16 && hal.caps.isMetal4TensorCapable
+            if m > 16 && hal.caps.supportsSimdgroupMMA
                 && ((view.n % 64) == 0 || !view.isIncumbentContainer) && (view.k % 64) == 0 {
                 try QWGemm.encodeNaxF32(enc, hal: hal, weight: view, x16: x16TV, y16: x16TV, y32: yBF16TV, rows: m)
                 return
@@ -213,7 +213,7 @@ extension QWInkling2Forward {
                                   count: m * view.k, rotate: view.isRotated, outIsF32: false)
             }
             let x16TV = session.qwpF16InTV.slice(byteOffset: 0, count: m * view.k, dtype: .f16)
-            if m > 16 && hal.caps.isMetal4TensorCapable
+            if m > 16 && hal.caps.supportsSimdgroupMMA
                 && ((view.n % 64) == 0 || !view.isIncumbentContainer) && (view.k % 64) == 0 {
                 try QWGemm.encodeNaxF32(enc, hal: hal, weight: view, x16: x16TV, y16: x16TV, y32: yTV, rows: m)
                 return
@@ -248,7 +248,7 @@ extension QWInkling2Forward {
                               count: t * view.k, rotate: view.isRotated)
         }
         let x16 = session.qwpF16InTV.slice(byteOffset: 0, count: t * view.k, dtype: .f16)
-        if t > 16 && hal.caps.isMetal4TensorCapable
+        if t > 16 && hal.caps.supportsSimdgroupMMA
             && ((view.n % 64) == 0 || !view.isIncumbentContainer) && (view.k % 64) == 0 {
             try QWGemm.encodeNaxF32(enc, hal: hal, weight: view, x16: x16, y16: x16, y32: yBF16, rows: t)
             return
@@ -521,11 +521,15 @@ extension QWInkling2Forward {
         var moeEnc = try beginEncoder(.moeExperts)
         let profilerRef = profiler
         let rotateForMoE: (inout any MTLComputeCommandEncoder) throws -> Void = { current in
+            guard let profilerRef else {
+                try self.hal.rotateEncoder(cb, &current)
+                return
+            }
             var tmp: (any MTLComputeCommandEncoder)? = current
-            profilerRef?.endActiveStage(encoder: &tmp)
+            profilerRef.endActiveStage(encoder: &tmp)
             tmp?.endEncoding()
             tmp = nil
-            profilerRef?.beginStage(.moeExperts, on: cb, encoder: &tmp, hal: self.hal)
+            profilerRef.beginStage(.moeExperts, on: cb, encoder: &tmp, hal: self.hal)
             if let existing = tmp {
                 current = existing
             } else {
@@ -538,7 +542,7 @@ extension QWInkling2Forward {
         }
 
         if case .qwp(let gateUp, let down) = lw.experts {
-            if t > 16 {
+            if hal.caps.supportsSimdgroupMMA && t > 16 {
                 encodeRotateToF16(moeEnc, srcBF16: session.normBuf, dst: session.qwpF16InBuf,
                                   count: t * H, rotate: gateUp.isRotated, outIsF32: false)
                 let xInSlice = QWFPBufferSlice(buffer: session.qwpF16InBuf, offset: 0, bytes: t * H * 2)
@@ -624,6 +628,8 @@ extension QWInkling2Forward {
             return moeEnc
         }
 
+        let canGrouped = hal.caps.supportsSimdgroupMMA
+        let useGroupedNax = canGrouped && t > 16
         try QWGemm.encodeMoEBankRoutedCombine(
             &moeEnc, hal: hal,
             x: session.normSlice, xDtype: .bf16, interDtype: .bf16,
@@ -633,15 +639,15 @@ extension QWInkling2Forward {
             out: session.moeOutSlice, outDtype: .bf16,
             expOff: session.moeOffsetsTV, sortedPair: session.moeSortedTV,
             sortedTok: session.moeSortedTokTV, invPerm: session.moeInvPermTV,
-            tileE: (t > 16) ? session.moeTileETV : nil,
-            tileR: (t > 16) ? session.moeTileRTV : nil,
-            tileCount: (t > 16) ? session.moeTileCountTV : nil,
-            activeExperts: (t <= 16) ? session.moeActiveExpertsTV : nil,
-            activeIndirect: (t <= 16) ? session.moeActiveArgsTV : nil,
+            tileE: useGroupedNax ? session.moeTileETV : nil,
+            tileR: useGroupedNax ? session.moeTileRTV : nil,
+            tileCount: useGroupedNax ? session.moeTileCountTV : nil,
+            activeExperts: useGroupedNax ? nil : session.moeActiveExpertsTV,
+            activeIndirect: useGroupedNax ? nil : session.moeActiveArgsTV,
             guBuf: session.moePrefillGUTV, actBuf: session.moeActTV, dnAccBuf: session.moeSlotOutTV,
             hidden: H, experts: nExp, topK: topK, intermediate: moeI, rows: t,
             gateSoftcap: ink.mlpGateSoftcap, upSoftcap: ink.mlpUpSoftcap,
-            supportsGroupedNaxPrefill: true, concurrentBarriers: false,
+            supportsGroupedNaxPrefill: canGrouped, concurrentBarriers: false,
             rotateEncoder: (t > 1) ? rotateForMoE : nil,
             minNaxRows: 17
         )

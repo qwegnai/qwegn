@@ -44,7 +44,7 @@ extension QWInkling2Forward {
             let sparseActive = !forceDenseAttention && (isPrefill
                 ? (kvLen > lsa.config.denseBypassThreshold)
                 : (posOffset >= lsa.config.denseBypassThreshold))
-            let useNaxSparse = isPrefill && hal.caps.isMetal4TensorCapable
+            let useNaxSparse = isPrefill && hal.caps.supportsSimdgroupMMA
                 && cfg.headDim == 128 && (cfg.nH / cfg.nKV) <= 16
             let reuseBlocks = lsa.isSelectionFollower(fullAttnLayer: fullAttnIdx)
             if !reuseBlocks {
@@ -99,7 +99,7 @@ extension QWInkling2Forward {
         }
 
         if t > QWAttnSinkRel.maxDecodeBatchTokens {
-            if hal.caps.isMetal4TensorCapable && cfg.headDim == 128 && (cfg.nH / cfg.nKV) <= 16 {
+            if hal.caps.supportsSimdgroupMMA && cfg.headDim == 128 && (cfg.nH / cfg.nKV) <= 16 {
                 try attnSinkRel.encodePrefill(
                     enc, config: cfg,
                     q: qTV, r: rTV, relProj: lw.relProjTV,

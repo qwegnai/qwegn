@@ -172,118 +172,138 @@ extension QWHyperStreamRuntime {
             }
         }
 
-        var out = Data(count: totalBytes)
-        out.withUnsafeMutableBytes { (rawOut: UnsafeMutableRawBufferPointer) in
-            guard let dstBase = rawOut.baseAddress else { return }
-            var writeOffset = 0
-            func appendRaw(_ src: UnsafeRawPointer, _ count: Int) {
-                guard count > 0 else { return }
-                memcpy(dstBase.advanced(by: writeOffset), src, count)
-                writeOffset += count
+        let headLogitsPtr = UnsafeRawPointer(arena.cpuPointer(of: head.logits))
+        let boundaryPtrs: (h2: UnsafeRawPointer, moe: UnsafeRawPointer, inj: UnsafeRawPointer)?
+        if lastChunkRows == 1, let lastSlot = decodeStack.slots.last {
+            let s = lastSlot.scratch
+            boundaryPtrs = (
+                UnsafeRawPointer(arena.cpuPointer(of: s.h2)),
+                UnsafeRawPointer(arena.cpuPointer(of: s.moeOut)),
+                UnsafeRawPointer(arena.cpuPointer(of: s.injB))
+            )
+        } else if let cached = cachedPrefill, let pArena = prefillArena, let lastSlot = cached.stack.slots.last {
+            let s = lastSlot.scratch
+            let r = max(0, lastChunkRows - 1)
+            boundaryPtrs = (
+                UnsafeRawPointer(pArena.cpuPointer(of: s.h2).advanced(by: r * h2Bytes)),
+                UnsafeRawPointer(pArena.cpuPointer(of: s.moeOut).advanced(by: r * moeBytes)),
+                UnsafeRawPointer(pArena.cpuPointer(of: s.injB).advanced(by: r * injBytes))
+            )
+        } else {
+            boundaryPtrs = nil
+        }
+        let layerChunks: [[(addr: Int, bytes: Int)]] = layerRecords.map { rec in
+            var chunks: [(addr: Int, bytes: Int)] = []
+            if let g = rec.gdn {
+                let s = g.states[g.stateParity & QWFourSlotRollbackRing.ringMask]
+                let cs = g.convState[g.convParity & QWFourSlotRollbackRing.ringMask]
+                chunks.append((Int(bitPattern: arena.cpuPointer(of: s)), s.bytes))
+                chunks.append((Int(bitPattern: arena.cpuPointer(of: cs)), cs.bytes))
             }
-
-            withUnsafeBytes(of: &hdr) { (hdrBuf: UnsafeRawBufferPointer) in
-                if let p = hdrBuf.baseAddress { appendRaw(p, hdrBytes) }
+            if let p = rec.weights.ple {
+                let h = p.history[p.parity & QWFourSlotRollbackRing.ringMask]
+                chunks.append((Int(bitPattern: arena.cpuPointer(of: h)), h.bytes))
             }
-            history.withUnsafeBytes { (histBuf: UnsafeRawBufferPointer) in
-                if let p = histBuf.baseAddress { appendRaw(p, tokBytes) }
+            if !isCompactInPlace, let a = rec.attnState {
+                let cap = max(1, a.capacity)
+                let kvRowBytes = (a.k.bytes / cap) * N
+                let metaRowBytes = (a.kMeta.bytes > 2) ? (a.kMeta.bytes / cap) * N : 0
+                let idxRowBytes = (a.indexK.bytes / cap) * N
+                let poolBlocks = (N + 3) / 4
+                let poolBytes = min(a.pooled.bytes, (a.pooled.bytes / max(1, cap / 4)) * poolBlocks)
+                chunks.append((Int(bitPattern: arena.cpuPointer(of: a.k)), kvRowBytes))
+                chunks.append((Int(bitPattern: arena.cpuPointer(of: a.v)), kvRowBytes))
+                if metaRowBytes > 0 {
+                    chunks.append((Int(bitPattern: arena.cpuPointer(of: a.kMeta)), metaRowBytes))
+                    chunks.append((Int(bitPattern: arena.cpuPointer(of: a.vMeta)), metaRowBytes))
+                }
+                chunks.append((Int(bitPattern: arena.cpuPointer(of: a.indexK)), idxRowBytes))
+                chunks.append((Int(bitPattern: arena.cpuPointer(of: a.pooled)), poolBytes))
             }
-            appendRaw(arena.cpuPointer(of: head.logits), logitBytes)
-
-            if lastChunkRows == 1, let lastSlot = decodeStack.slots.last {
-                let s = lastSlot.scratch
-                appendRaw(arena.cpuPointer(of: s.h2), h2Bytes)
-                appendRaw(arena.cpuPointer(of: s.moeOut), moeBytes)
-                appendRaw(arena.cpuPointer(of: s.injB), injBytes)
-            } else if let cached = cachedPrefill, let pArena = prefillArena, let lastSlot = cached.stack.slots.last {
-                let s = lastSlot.scratch
-                let r = max(0, lastChunkRows - 1)
-                appendRaw(pArena.cpuPointer(of: s.h2).advanced(by: r * h2Bytes), h2Bytes)
-                appendRaw(pArena.cpuPointer(of: s.moeOut).advanced(by: r * moeBytes), moeBytes)
-                appendRaw(pArena.cpuPointer(of: s.injB).advanced(by: r * injBytes), injBytes)
+            return chunks
+        }
+        var mtpChunks: [(ptr: UnsafeRawPointer, bytes: Int)] = []
+        if hasMTP, let mtp = self.mtp {
+            let a = mtp.attnState1
+            let cap = a.capacity
+            let kvRowStride = a.k.bytes / cap
+            let metaRowStride = (a.kMeta.bytes > 2) ? (a.kMeta.bytes / cap) : 0
+            let idxRowStride = a.indexK.bytes / cap
+            let poolBlockStride = a.pooled.bytes / max(1, cap / 4)
+            if isCompactInPlace {
+                let lastRow = max(0, N - 1)
+                let lastBlock = lastRow / 4
+                mtpChunks.append((UnsafeRawPointer(arena.cpuPointer(of: a.k).advanced(by: lastRow * kvRowStride)), kvRowStride))
+                mtpChunks.append((UnsafeRawPointer(arena.cpuPointer(of: a.v).advanced(by: lastRow * kvRowStride)), kvRowStride))
+                if metaRowStride > 0 {
+                    mtpChunks.append((UnsafeRawPointer(arena.cpuPointer(of: a.kMeta).advanced(by: lastRow * metaRowStride)), metaRowStride))
+                    mtpChunks.append((UnsafeRawPointer(arena.cpuPointer(of: a.vMeta).advanced(by: lastRow * metaRowStride)), metaRowStride))
+                }
+                mtpChunks.append((UnsafeRawPointer(arena.cpuPointer(of: a.indexK).advanced(by: lastRow * idxRowStride)), idxRowStride))
+                mtpChunks.append((UnsafeRawPointer(arena.cpuPointer(of: a.pooled).advanced(by: min(lastBlock * poolBlockStride, max(0, a.pooled.bytes - poolBlockStride)))), poolBlockStride))
             } else {
-                memset(dstBase.advanced(by: writeOffset), 0, h2Bytes + moeBytes + injBytes)
-                writeOffset += h2Bytes + moeBytes + injBytes
+                let kvRowBytes = kvRowStride * N
+                let metaRowBytes = metaRowStride * N
+                let idxRowBytes = idxRowStride * N
+                let poolBlocks = (N + 3) / 4
+                let poolBytes = min(a.pooled.bytes, poolBlockStride * poolBlocks)
+                mtpChunks.append((UnsafeRawPointer(arena.cpuPointer(of: a.k)), kvRowBytes))
+                mtpChunks.append((UnsafeRawPointer(arena.cpuPointer(of: a.v)), kvRowBytes))
+                if metaRowBytes > 0 {
+                    mtpChunks.append((UnsafeRawPointer(arena.cpuPointer(of: a.kMeta)), metaRowBytes))
+                    mtpChunks.append((UnsafeRawPointer(arena.cpuPointer(of: a.vMeta)), metaRowBytes))
+                }
+                mtpChunks.append((UnsafeRawPointer(arena.cpuPointer(of: a.indexK)), idxRowBytes))
+                mtpChunks.append((UnsafeRawPointer(arena.cpuPointer(of: a.pooled)), poolBytes))
             }
+        }
 
-            let dstAddr = Int(bitPattern: dstBase)
-            let offsets = layerOffsets
-            DispatchQueue.concurrentPerform(iterations: layerRecords.count) { idx in
-                let rec = layerRecords[idx]
-                var off = offsets[idx]
-                let basePtr = UnsafeMutableRawPointer(bitPattern: dstAddr)!
-                func copyChunk(_ src: UnsafeRawPointer, _ count: Int) {
+        var out = Data(count: totalBytes)
+        withExtendedLifetime((arena, prefillArena)) {
+            out.withUnsafeMutableBytes { (rawOut: UnsafeMutableRawBufferPointer) in
+                guard let dstBase = rawOut.baseAddress else { return }
+                var writeOffset = 0
+                func appendRaw(_ src: UnsafeRawPointer, _ count: Int) {
                     guard count > 0 else { return }
-                    memcpy(basePtr.advanced(by: off), src, count)
-                    off += count
+                    dstBase.advanced(by: writeOffset).copyMemory(from: src, byteCount: count)
+                    writeOffset += count
                 }
-                if let g = rec.gdn {
-                    let s = g.states[g.stateParity & QWFourSlotRollbackRing.ringMask]
-                    let cs = g.convState[g.convParity & QWFourSlotRollbackRing.ringMask]
-                    copyChunk(arena.cpuPointer(of: s), s.bytes)
-                    copyChunk(arena.cpuPointer(of: cs), cs.bytes)
-                }
-                if let p = rec.weights.ple {
-                    let h = p.history[p.parity & QWFourSlotRollbackRing.ringMask]
-                    copyChunk(arena.cpuPointer(of: h), h.bytes)
-                }
-                if !isCompactInPlace, let a = rec.attnState {
-                    let cap = max(1, a.capacity)
-                    let kvRowBytes = (a.k.bytes / cap) * N
-                    let metaRowBytes = (a.kMeta.bytes > 2) ? (a.kMeta.bytes / cap) * N : 0
-                    let idxRowBytes = (a.indexK.bytes / cap) * N
-                    let poolBlocks = (N + 3) / 4
-                    let poolBytes = min(a.pooled.bytes, (a.pooled.bytes / max(1, cap / 4)) * poolBlocks)
 
-                    copyChunk(arena.cpuPointer(of: a.k), kvRowBytes)
-                    copyChunk(arena.cpuPointer(of: a.v), kvRowBytes)
-                    if metaRowBytes > 0 {
-                        copyChunk(arena.cpuPointer(of: a.kMeta), metaRowBytes)
-                        copyChunk(arena.cpuPointer(of: a.vMeta), metaRowBytes)
-                    }
-                    copyChunk(arena.cpuPointer(of: a.indexK), idxRowBytes)
-                    copyChunk(arena.cpuPointer(of: a.pooled), poolBytes)
+                withUnsafeBytes(of: &hdr) { (hdrBuf: UnsafeRawBufferPointer) in
+                    if let p = hdrBuf.baseAddress { appendRaw(p, hdrBytes) }
                 }
-            }
+                history.withUnsafeBytes { (histBuf: UnsafeRawBufferPointer) in
+                    if let p = histBuf.baseAddress { appendRaw(p, tokBytes) }
+                }
+                appendRaw(headLogitsPtr, logitBytes)
 
-            writeOffset = mtpOffset
-            if hasMTP, let mtp = self.mtp {
-                let a = mtp.attnState1
-                let cap = a.capacity
-                let kvRowStride = a.k.bytes / cap
-                let metaRowStride = (a.kMeta.bytes > 2) ? (a.kMeta.bytes / cap) : 0
-                let idxRowStride = a.indexK.bytes / cap
-                let poolBlockStride = a.pooled.bytes / max(1, cap / 4)
-                if isCompactInPlace {
-                    let lastRow = max(0, N - 1)
-                    let lastBlock = lastRow / 4
-                    appendRaw(arena.cpuPointer(of: a.k).advanced(by: lastRow * kvRowStride), kvRowStride)
-                    appendRaw(arena.cpuPointer(of: a.v).advanced(by: lastRow * kvRowStride), kvRowStride)
-                    if metaRowStride > 0 {
-                        appendRaw(arena.cpuPointer(of: a.kMeta).advanced(by: lastRow * metaRowStride), metaRowStride)
-                        appendRaw(arena.cpuPointer(of: a.vMeta).advanced(by: lastRow * metaRowStride), metaRowStride)
-                    }
-                    appendRaw(arena.cpuPointer(of: a.indexK).advanced(by: lastRow * idxRowStride), idxRowStride)
-                    appendRaw(arena.cpuPointer(of: a.pooled).advanced(by: min(lastBlock * poolBlockStride, max(0, a.pooled.bytes - poolBlockStride))), poolBlockStride)
+                if let b = boundaryPtrs {
+                    appendRaw(b.h2, h2Bytes)
+                    appendRaw(b.moe, moeBytes)
+                    appendRaw(b.inj, injBytes)
                 } else {
-                    let kvRowBytes = kvRowStride * N
-                    let metaRowBytes = metaRowStride * N
-                    let idxRowBytes = idxRowStride * N
-                    let poolBlocks = (N + 3) / 4
-                    let poolBytes = min(a.pooled.bytes, poolBlockStride * poolBlocks)
-
-                    appendRaw(arena.cpuPointer(of: a.k), kvRowBytes)
-                    appendRaw(arena.cpuPointer(of: a.v), kvRowBytes)
-                    if metaRowBytes > 0 {
-                        appendRaw(arena.cpuPointer(of: a.kMeta), metaRowBytes)
-                        appendRaw(arena.cpuPointer(of: a.vMeta), metaRowBytes)
-                    }
-                    appendRaw(arena.cpuPointer(of: a.indexK), idxRowBytes)
-                    appendRaw(arena.cpuPointer(of: a.pooled), poolBytes)
+                    memset(dstBase.advanced(by: writeOffset), 0, h2Bytes + moeBytes + injBytes)
+                    writeOffset += h2Bytes + moeBytes + injBytes
                 }
-            }
-            if hasDFlash, let dflash = self.dflash, let marker = dflashPrefixMarker {
-                FNGPUDFlash.appendPrefixPayload(to: dstBase, at: &writeOffset, dflash: dflash, marker: marker, tokenCount: N)
+
+                let dstAddr = Int(bitPattern: dstBase)
+                let offsets = layerOffsets
+                DispatchQueue.concurrentPerform(iterations: layerChunks.count) { idx in
+                    var off = offsets[idx]
+                    let basePtr = UnsafeMutableRawPointer(bitPattern: dstAddr)!
+                    for (srcAddr, count) in layerChunks[idx] where count > 0 {
+                        basePtr.advanced(by: off).copyMemory(from: UnsafeRawPointer(bitPattern: srcAddr)!, byteCount: count)
+                        off += count
+                    }
+                }
+
+                writeOffset = mtpOffset
+                for (src, count) in mtpChunks {
+                    appendRaw(src, count)
+                }
+                if hasDFlash, let dflash = self.dflash, let marker = dflashPrefixMarker {
+                    FNGPUDFlash.appendPrefixPayload(to: dstBase, at: &writeOffset, dflash: dflash, marker: marker, tokenCount: N)
+                }
             }
         }
 
@@ -381,19 +401,21 @@ extension QWHyperStreamRuntime {
         let hdrSize = MemoryLayout<FNPrefixHeader>.size
         guard data.count >= hdrSize else {
             throw NSError(domain: "QWEngine", code: 2,
-                          userInfo: [NSLocalizedDescriptionKey: "invalid FlashNext .qwcache header"])
+                          userInfo: [NSLocalizedDescriptionKey: "invalid HyperStream .qwcache header"])
         }
         var hdr = FNPrefixHeader(magic: 0, version: 0, tokenCount: 0, kvModeCode: 0,
                                  hasMTP: 0, lastArgmax: 0, mtpDraft: 0,
                                  vocabCount: 0, hiddenSize: 0, widthSize: 0, hcSize: 0)
         let copiedHdr = data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Bool in
-            guard let base = raw.baseAddress else { return false }
-            memcpy(&hdr, base, hdrSize)
+            guard let base = raw.baseAddress, raw.count >= hdrSize else { return false }
+            withUnsafeMutableBytes(of: &hdr) { (dst: UnsafeMutableRawBufferPointer) in
+                dst.copyMemory(from: UnsafeRawBufferPointer(start: base, count: hdrSize))
+            }
             return true
         }
         guard copiedHdr else {
             throw NSError(domain: "QWEngine", code: 2,
-                          userInfo: [NSLocalizedDescriptionKey: "empty FlashNext .qwcache payload"])
+                          userInfo: [NSLocalizedDescriptionKey: "empty HyperStream .qwcache payload"])
         }
         let n = Int(hdr.tokenCount)
         guard hdr.magic == FNPrefixHeader.magic, hdr.version == FNPrefixHeader.version,
@@ -402,17 +424,17 @@ extension QWHyperStreamRuntime {
               Int(hdr.widthSize) == width, Int(hdr.hcSize) == hc,
               n > 0, n <= activeCapacity else {
             throw NSError(domain: "QWEngine", code: 3,
-                          userInfo: [NSLocalizedDescriptionKey: "FlashNext .qwcache geometry, capacity, or kvMode mismatch"])
+                          userInfo: [NSLocalizedDescriptionKey: "HyperStream .qwcache geometry, capacity, or kvMode mismatch"])
         }
         let tokBytes = n * MemoryLayout<Int64>.size
         guard data.count >= hdrSize + tokBytes else {
             throw NSError(domain: "QWEngine", code: 3,
-                          userInfo: [NSLocalizedDescriptionKey: "truncated FlashNext .qwcache token table"])
+                          userInfo: [NSLocalizedDescriptionKey: "truncated HyperStream .qwcache token table"])
         }
         let history: [Int64] = try data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
             guard let base = raw.baseAddress else {
                 throw NSError(domain: "QWEngine", code: 2,
-                              userInfo: [NSLocalizedDescriptionKey: "empty FlashNext .qwcache payload"])
+                              userInfo: [NSLocalizedDescriptionKey: "empty HyperStream .qwcache payload"])
             }
             let ptr = base.advanced(by: hdrSize).assumingMemoryBound(to: Int64.self)
             return Array(UnsafeBufferPointer(start: ptr, count: n))
@@ -422,11 +444,11 @@ extension QWHyperStreamRuntime {
         if fileHasDFlash, let dflash = self.dflash, let marker = dflashPrefixMarker {
             guard FNGPUDFlash.validatePrefixBlob(data: data, expectedMarker: marker, expectedTokens: n, config: dflash.config) else {
                 throw NSError(domain: "QWEngine", code: 3,
-                              userInfo: [NSLocalizedDescriptionKey: "FlashNext .qwcache DFlash state or drafter geometry mismatch"])
+                              userInfo: [NSLocalizedDescriptionKey: "HyperStream .qwcache DFlash state or drafter geometry mismatch"])
             }
         } else if !fileHasDFlash, self.dflash != nil {
             throw NSError(domain: "QWEngine", code: 3,
-                          userInfo: [NSLocalizedDescriptionKey: "FlashNext .qwcache lacks DFlash state; rebuild with qwg index --mtp-backend dflash2"])
+                          userInfo: [NSLocalizedDescriptionKey: "HyperStream .qwcache lacks DFlash state; rebuild with qwg index --mtp-backend dflash2"])
         }
         let hash = Self.fnPrefixHash(tokens: history[...], kvMode: kvMode, hasMTP: hasMTP,
                                       dflashMarker: fileHasDFlash ? dflashPrefixMarker : nil)

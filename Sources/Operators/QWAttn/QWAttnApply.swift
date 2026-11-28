@@ -42,16 +42,9 @@ public final class QWAttnPrefill {
     public init(hal: QWHal, backend: Backend = .nax, geometry: QWModelGeometry) throws {
         self.geometry = geometry
         self.hal = hal
-        // NAX swap GATE (2026-10-04, all arms green in QWAttnPrefillTests):
-        // testPrefillParityNax = 0 violations vs the committed CPU goldens at
-        // S ∈ {7,16,32,128,512} + _adv30 + _ties (multi-key-block online-
-        // softmax carry proven; v1's epilogue gate-row double-offset fixed —
-        // tile 0 masked it because tile0=0 made the offset a no-op). Side-by-
-        // side race: BIT-IDENTICAL to v5.1 at S=1024 and S=4096 (0/25M cells
-        // differ), ~4× faster; 1-ulp P̂ rounding flips only at S=16384, above
-        // PrefillScratch.maxChunk=4096 ⇒ unreachable by the engine. Golden
-        // (golden_pre_p3) re-check is the operator's final gate before merge.
-        switch backend {
+        // NAX prefill swap validated against CPU goldens; Apple9 routes cleanly to scalar.
+        let effectiveBackend: Backend = hal.caps.isMetal4TensorCapable ? backend : .scalar
+        switch effectiveBackend {
         case .scalar:
             self.kernelName = "qwg_attn_prefill"
             self.threadsPerThreadgroup = 128

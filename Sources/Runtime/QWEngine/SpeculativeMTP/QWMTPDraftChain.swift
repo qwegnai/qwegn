@@ -135,7 +135,7 @@ enum QWMTPDraftChain {
                 }
                 let prevID = ObjectIdentifier(enc)
                 try draft.encode(&enc, embedding: draft.scratch.embedding,
-                                 hidden: row == 0 ? hidden : draft.scratch.postNorm,
+                                 hidden: row == 0 ? hidden : draft.nextStepHidden,
                                  kv: kv, cacheRows: cacheRows + row, absolutePosition: position + row,
                                  mropeDelta: mropeDelta,
                                  driver: activeDriver, cb: activeDriver?.activeCB ?? cb)
@@ -259,7 +259,7 @@ enum QWMTPDraftChain {
             for row in 0..<drafts {
                 try table.encode(enc, token: selector.token, destination: draft.scratch.embedding)
                 try draft.encode(&enc, embedding: draft.scratch.embedding,
-                                 hidden: row == 0 ? hidden : draft.scratch.postNorm,
+                                 hidden: row == 0 ? hidden : draft.nextStepHidden,
                                  kv: kv, cacheRows: cacheRows + row, absolutePosition: position + row,
                                  mropeDelta: mropeDelta,
                                  driver: activeDriver, cb: activeDriver?.activeCB ?? cb)

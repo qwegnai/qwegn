@@ -10,7 +10,7 @@
   <img src="https://img.shields.io/badge/Swift-6.2-orange.svg" alt="Swift 6.2">
   <img src="https://img.shields.io/badge/platform-macOS%2026.2%2B%20(Apple%20Silicon)-lightgrey.svg" alt="macOS 26.2+, Apple Silicon">
   <a href="https://github.com/qwegnai/qwegn/actions/workflows/ci.yml"><img src="https://github.com/qwegnai/qwegn/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/Release-v0.43.2-green.svg" alt="Release v0.43.2"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/Release-v0.44.0-green.svg" alt="Release v0.44.0"></a>
   <a href="https://huggingface.co/qwegnai"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-qwegnai-yellow.svg" alt="Hugging Face Models"></a>
 </p>
 
@@ -47,7 +47,7 @@ Pull and run a pre-quantized pack from [`huggingface.co/qwegnai`](https://huggin
 qwg pull qwegnai/Qwen3.8-Flash-Next-hq8g32-hq4g64
 qwg run Qwen3.8-Flash-Next-hq8g32-hq4g64 --prompt "Hello!" --max-tokens 128
 
-# New in v0.43.2: /ui layout fix, always-on prefill bar, Qwegn-native /v1/qwegn & /v1/embeddings
+# New in v0.44.0: GigaChat4-37B-A4B + MLA DFlash 2, M1–M6 unified runtime & Cognitive Vault v2
 qwg pull qwegnai/Ling-3.2-air-hq8g32-shvq3g64
 qwg serve Ling-3.2-air-hq8g32-shvq3g64 --context-tokens 65536 --kv-mode q4
 ```
@@ -69,6 +69,7 @@ Official packs are listed with detailed architecture cards and `llmprobe` fideli
 | [`Qwen3.6-35B-A3B-hq4g32`](https://huggingface.co/qwegnai/Qwen3.6-35B-A3B-hq4g32) | 40L MoE (`10` QSA + `30` GDN, `256` exp) | `HQ4_G32` | **6,462 tok/s** | **382.8 tok/s** (`324.3` CLI `d=5`) | `1M` (`2,317 / 105.6 tok/s`) | [Card](docs/models.md#qwen36-35b-a3b) |
 | [`Apex-35B-V1.0-hq4g32`](https://huggingface.co/qwegnai/Apex-35B-V1.0-hq4g32) | 40L MoE (`35.95B`/`3B`, ViT) | `HQ4_G32_M5` (`22.2 GiB`) | **6,416 tok/s** | **261.1 tok/s** (`178.0` srv) | `1M` (**`5,491 / 100.9 tok/s`**) | [Card](docs/models.md#apex-35b-v10) |
 | `Maxwell-V1-Flash-HQ8-SHVQ3D4` | 45L all-MBSA + `4×` mHC (`36.8B`/`3.2B`) | `HQ8 + SHVQ3/4` (`17.2 GiB`) | **5,324 tok/s** | **210.5 tok/s** (`104.0` srv) | `524K` (`1,620 / 20.8` `@64K`) | [Card](docs/models.md#maxwell-v1-flash) |
+| `GigaChat4-37B-A4B-shvq4g32` | 32L MoE (`24` GDN + `8` MLA-DSA, `192` exp) | `SHVQ4_G32` (+ MLA `DF2`) | **4,770 tok/s** | **323.8 tok/s** (`164.4` srv · `137.2` CLI) | `1M` (`3/3` `@300K` · `<27 GiB`) | [Card](docs/models.md#official-native-model-catalog) |
 | [`Inkling-2-Mini-shvq4g32-shvq2g64-shvq3g64`](https://huggingface.co/qwegnai/Inkling-2-Mini-shvq4g32-shvq2g64-shvq3g64) | 48-visit looped MoE + `DSpark` + ViT | `SHVQ4/2/3` (`10.2 GiB`) | **3,638 tok/s** | **99.9 tok/s** `d=3` (`100.6` `B=4`) | `1M` (`2,017 / 33.9` · `512K` `55.0`) | [Card](docs/models.md#inkling-2-mini) |
 | [`Qwen3.8-Flash-Next-hq8g32-hq4g64`](https://huggingface.co/qwegnai/Qwen3.8-Flash-Next-hq8g32-hq4g64) | 48L MoE (`12` QSA + `36` GDN, PLE, ViT) | `HQ8 + HQ4 + VQ2` (`98.4 GiB`) | **3,035 tok/s** | **177.2 tok/s** (`DFlash2`) | `1M` `e-means` (`1,888 / 63.7 tok/s`) | [Card](docs/models.md#qwen38-flash-next) |
 | [`Ling-3.2-air-hq8g32-shvq3g64`](https://huggingface.co/qwegnai/Ling-3.2-air-hq8g32-shvq3g64) | 42L `bailing_moe_v3_vl` (`35` KDA + `7` MLA, ViT) | `HQ8 + SHVQ3` (`52.2 GiB`) | **2,847 tok/s** | **110.5 tok/s** (`103.7` NextN) | `262K` (`3/3` needle `@16.9K`) | [Card](docs/models.md#ling-32-air) |
@@ -169,7 +170,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md), [CONTRIBUTORS.md](CONTRIBUTORS.md), and 
 @software{qwegn,
   title   = {Qwegn: a from-scratch LLM/VLM inference engine for Apple Silicon},
   author  = {{QwegnAI}},
-  version = {0.43.2},
+  version = {0.44.0},
   year    = {2026},
   url     = {https://github.com/qwegnai/qwegn}
 }

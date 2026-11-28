@@ -36,11 +36,7 @@ public final class DenseModule: QWInferenceModule, QWInferenceEngine, @unchecked
         _ requested: QWSpeculativeParameters, descriptor: QWModelDescriptor,
         environment: [String: String], modelSwitch: Bool
     ) throws -> QWResolvedSpeculation {
-        if (descriptor.hcCount ?? 0) > 1 {
-            return try QWHyperStreamRuntime.resolveSpeculation(
-                requested, descriptor: descriptor, environment: environment, modelSwitch: modelSwitch)
-        }
-        return try defaultResolveSpeculation(
+        try defaultResolveSpeculation(
             requested, descriptor: descriptor, environment: environment, modelSwitch: modelSwitch)
     }
 
@@ -239,7 +235,7 @@ extension DenseModule {
         case "regres": engine.gdnPrefillMode = GDNPrefillMode.regres
         default: break
         }
-        if engine.hyperRuntime == nil && engine.inkling2Runtime == nil && cacheConfig.warmByteLimit > 0 {
+        if engine.standardState != nil && cacheConfig.warmByteLimit > 0 {
             try engine.configurePrefixCache(config: cacheConfig)
         }
         return engine

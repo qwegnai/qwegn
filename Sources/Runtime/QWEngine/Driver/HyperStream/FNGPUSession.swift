@@ -10,34 +10,6 @@ import QWHead
 import QWMTP
 import QWAttn
 
-extension QWHyperStreamRuntime {
-    public struct GenerationResult: Sendable {
-        public let tokens: [Int]
-        public let prefillSec: Double?
-        public let prefillGPUSec: Double?
-        public let decodeSec: Double?
-        public let firstTokenSec: Double?
-        public let stepMs: [Double]
-        public let denseNaxLogMessage: String
-        public let prefixCacheHit: Bool
-        public let prefixCacheMatchedTokens: Int
-
-        public init(tokens: [Int], prefillSec: Double?, prefillGPUSec: Double?, decodeSec: Double?,
-                    firstTokenSec: Double?, stepMs: [Double], denseNaxLogMessage: String,
-                    prefixCacheHit: Bool = false, prefixCacheMatchedTokens: Int = 0) {
-            self.tokens = tokens
-            self.prefillSec = prefillSec
-            self.prefillGPUSec = prefillGPUSec
-            self.decodeSec = decodeSec
-            self.firstTokenSec = firstTokenSec
-            self.stepMs = stepMs
-            self.denseNaxLogMessage = denseNaxLogMessage
-            self.prefixCacheHit = prefixCacheHit
-            self.prefixCacheMatchedTokens = prefixCacheMatchedTokens
-        }
-    }
-}
-
 /// A Flash-Next session: the prompt so far, the shared sampler, and the
 /// cursors the prefill walks with.
 public struct FNGPUSessionData {
@@ -122,7 +94,7 @@ public struct FNGPUSessionData {
     /// Tokens committed per speculative verification round in this session.
     public var roundTokenCounts: [Int] = []
     /// Window size (trailing generated tokens) used for repetition-penalty tracking.
-    public static let repetitionPenaltyWindow = 256
+    public static let repetitionPenaltyWindow = QWTrunkRuntimeSupport.repetitionPenaltyWindow
     /// Trailing generated token IDs used to populate `seenTokens` and `seenTokenList`.
     public var recentGeneratedTokens: [Int] = []
     /// Unique valid token IDs seen in recent generated tokens, maintained incrementally
@@ -220,21 +192,13 @@ public struct FNGPUSessionData {
     /// Records a generated token in the trailing `repetitionPenaltyWindow` and refreshes active loop tokens.
     public mutating func recordSeenToken(_ token: Int, vocab: Int) {
         guard token >= 0, token < vocab else { return }
-        if recentGeneratedTokens.capacity < Self.repetitionPenaltyWindow + 1 {
-            recentGeneratedTokens.reserveCapacity(Self.repetitionPenaltyWindow + 1)
-        }
-        recentGeneratedTokens.append(token)
-        if recentGeneratedTokens.count > Self.repetitionPenaltyWindow {
-            let drop = recentGeneratedTokens.count - Self.repetitionPenaltyWindow
-            let keep = recentGeneratedTokens.count - drop
-            recentGeneratedTokens.withUnsafeMutableBufferPointer { buf in
-                if let base = buf.baseAddress, keep > 0 {
-                    memmove(base, base.advanced(by: drop), keep * MemoryLayout<Int>.stride)
-                }
-            }
-            recentGeneratedTokens.removeLast(drop)
-        }
-        QWSampler.loopRepetitionTokens(in: recentGeneratedTokens, into: &seenTokenList)
+        QWTrunkRuntimeSupport.recordGeneratedTokenForPenalty(
+            token,
+            vocab: vocab,
+            window: Self.repetitionPenaltyWindow,
+            recentGenerated: &recentGeneratedTokens,
+            activeLoopTokens: &seenTokenList
+        )
         seenTokens.removeAll(keepingCapacity: true)
         for tok in seenTokenList { seenTokens.insert(tok) }
     }

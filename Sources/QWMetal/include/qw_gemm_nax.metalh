@@ -4,6 +4,9 @@
 #include <metal_stdlib>
 #include <metal_simdgroup>
 #include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
+#if !defined(__ENVIRONMENT_OS_VERSION_MIN_REQUIRED__) || __ENVIRONMENT_OS_VERSION_MIN_REQUIRED__ < 260200
+#error "NAX cooperative_tensor kernels require -mmacosx-version-min=26.2 or newer (Apple MPP operand_index ABI)."
+#endif
 #include "mlx/backend/metal/kernels/utils.h"
 #include "mlx/backend/metal/kernels/steel/gemm/gemm.h"
 #include "mlx/backend/metal/kernels/steel/gemm/nax.h"
@@ -325,7 +328,7 @@ METAL_FUNC void qmm_t_nax_split_impl(
 
     dispatch_bool(sgp_sm == SM, [&](auto kAlignedM) {
         dispatch_bool(AQ_BITS == 0 || tgp_bn == BN, [&](auto kAlignedN) {
-            STEEL_PRAGMA_NO_UNROLL
+            #pragma unroll 4
             for (int g = 0; g < K_g; ++g) {
                 NAXTile<half, TM, TK> Ah, Al;
                 NAXTile<half, TN, TK> Btile;

@@ -393,7 +393,7 @@ final class QWEchoDraftEncoder: @unchecked Sendable {
             try aDec.encode(
                 enc, qgate: qR1, kv: kv, knew: kR1, vnew: v1,
                 partials: gPart, out: attOut, C: cacheRows,
-                splits: QWAttnDecode.splits(forKeys: cacheRows + 1, kvHeads: geometry.kvHeads))
+                splits: QWAttnDecode.splits(forKeys: cacheRows + 1, kvHeads: geometry.kvHeads, gpuCores: driver.hal.caps.gpuCores))
         }
         enc.memoryBarrier(scope: .buffers)
 

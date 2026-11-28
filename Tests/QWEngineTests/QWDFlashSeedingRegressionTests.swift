@@ -285,7 +285,6 @@ final class QWDFlashSeedingRegressionTests: XCTestCase {
     func testDFlashPrefillSeedingAndHasValidMTPCacheGuardsWithoutPromptEmbeddings() throws {
         try XCTSkipUnless(
             ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] != "true"
-                && QWDeviceCaps.current?.familyApple9 == true
                 && QWDeviceCaps.current?.isMetal4TensorCapable == true,
             "Synthetic DFlash2 driver seeding regression test requires bare-metal Apple Silicon GPU"
         )
@@ -363,7 +362,6 @@ final class QWDFlashSeedingRegressionTests: XCTestCase {
     func testDFlashLargeChunkPrefillSliceSeedingAt1024Tokens() throws {
         try XCTSkipUnless(
             ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] != "true"
-                && QWDeviceCaps.current?.familyApple9 == true
                 && QWDeviceCaps.current?.isMetal4TensorCapable == true,
             "Synthetic DFlash2 1024-token slice seeding test requires bare-metal Apple Silicon GPU"
         )
@@ -417,7 +415,6 @@ final class QWDFlashSeedingRegressionTests: XCTestCase {
 
         try XCTSkipUnless(
             ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] != "true"
-                && QWDeviceCaps.current?.familyApple9 == true
                 && QWDeviceCaps.current?.isMetal4TensorCapable == true,
             "Synthetic DFlash2 windowed capture GPU parity test requires bare-metal Apple Silicon GPU"
         )

@@ -453,7 +453,7 @@ final class QWAttnWave2Tests: XCTestCase {
     func testMLALatentPrepZeroVectorQ8AndQ4KVAreFiniteNotNaN() throws {
         try XCTSkipUnless(
             ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] != "true"
-                && QWDeviceCaps.current?.familyApple9 == true,
+                && QWDeviceCaps.current?.supportsSimdgroupMMA == true,
             "MLA GPU test requires bare-metal Apple Silicon"
         )
         let geo = try Self.mlaGeometry()

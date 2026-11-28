@@ -189,6 +189,7 @@ public enum QWChatTurnPreparer {
         var tplOpts = QWChatTemplateOptions()
         tplOpts.addGenerationPrompt = true
         tplOpts.enableThinking = .bool(shouldThink)
+        tplOpts.reasoning = .bool(shouldThink)
         let effort = request.effectiveReasoningEffort(defaultValue: config.reasoningEffort)
         tplOpts.reasoningEffort = .string(effort)
         if hasActiveTools, let tools = request.tools {
@@ -197,11 +198,20 @@ public enum QWChatTurnPreparer {
 
         let grammar = try QWStructuredOutput.grammar(for: request)
         let toolCallEnvelope = chatTemplate.toolCallEnvelope
-        let toolCallTokenId = hasActiveTools
-            ? (tok.tokenId(for: toolCallEnvelope.openTag) ?? tok.tokenId(for: QWToolCallEnvelope.standard.openTag))
-            : nil
+        let toolCallOpenTokens: [Int] = {
+            guard hasActiveTools else { return [] }
+            if let single = tok.tokenId(for: toolCallEnvelope.openTag) ?? tok.tokenId(for: QWToolCallEnvelope.standard.openTag) {
+                return [single]
+            }
+            if (toolCallEnvelope != .standard || chatTemplate.rawSource.contains(toolCallEnvelope.openTag)),
+               let multi = try? tok.encode(toolCallEnvelope.openTag, addSpecialTokens: false),
+               !multi.isEmpty {
+                return multi
+            }
+            return []
+        }()
         let enforceJson = grammar != nil && supportsTokenConstraints
-            && (!hasActiveTools || toolCallTokenId != nil)
+            && (!hasActiveTools || !toolCallOpenTokens.isEmpty)
         if grammar != nil && !enforceJson && QWStructuredOutput.isStrict(request) {
             throw QWJSONSchemaError("strict json_schema needs an engine with constrained decoding")
         }
@@ -257,7 +267,8 @@ public enum QWChatTurnPreparer {
                 ?? endThinkTokenId
             let constraint = QWStructuredOutputConstraint(
                 grammar: grammar, table: table, stopTokens: constraintStops,
-                startsInThinking: shouldThink, endThinkToken: constraintEndThink, toolCallToken: toolCallTokenId)
+                startsInThinking: shouldThink, endThinkToken: constraintEndThink,
+                toolCallOpenTokens: toolCallOpenTokens)
             if isAssistantPrefill, let lastMsg = request.messages.last {
                 try constraint.consumePrefix(lastMsg.extractTextContent())
             }
@@ -266,11 +277,11 @@ public enum QWChatTurnPreparer {
         let jsonConstraint = builtConstraint
         var builtToolConstraint: QWToolCallConstraint?
         if jsonConstraint == nil, hasActiveTools, supportsTokenConstraints,
-           let tools = request.tools, toolCallTokenId != nil {
+           let tools = request.tools, !toolCallOpenTokens.isEmpty {
             let table = QWStructuredOutput.tokenTable(for: tok, vocabulary: vocabularySize)
             builtToolConstraint = QWToolCallConstraint(
                 tools: tools, forcedToolName: request.forcedToolChoiceName,
-                table: table, toolCallToken: toolCallTokenId,
+                table: table, toolCallOpenTokens: toolCallOpenTokens,
                 toolCallEndToken: tok.tokenId(for: toolCallEnvelope.closeTag)
                     ?? tok.tokenId(for: QWToolCallEnvelope.standard.closeTag),
                 toolCallCloseTag: toolCallEnvelope.closeTag,

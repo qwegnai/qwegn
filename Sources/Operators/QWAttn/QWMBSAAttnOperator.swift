@@ -37,6 +37,7 @@ public final class QWMBSAAttnOperator: @unchecked Sendable {
     public let listStride: Int
     public let tileListStride: Int
     public let maxTiles: Int
+    public let gpuCores: Int
     public let supportsNAXPrefill: Bool
     public let supportsSplitKDecode: Bool
     public let layerKCacheElems: Int
@@ -55,9 +56,9 @@ public final class QWMBSAAttnOperator: @unchecked Sendable {
 
     internal let psoIndexPrep: any MTLComputePipelineState
     internal let psoSelectBlocks: any MTLComputePipelineState
-    internal let psoSelectBlocksTiled32: any MTLComputePipelineState
+    internal let psoSelectBlocksTiled32: (any MTLComputePipelineState)?
     internal let psoSparseAttn: any MTLComputePipelineState
-    internal let psoPrefillNAX: any MTLComputePipelineState
+    internal let psoPrefillNAX: (any MTLComputePipelineState)?
     internal let psoDecodeSparse: any MTLComputePipelineState
     internal let psoCombineBatched: any MTLComputePipelineState
 
@@ -133,6 +134,7 @@ public final class QWMBSAAttnOperator: @unchecked Sendable {
         self.listStride = max(1, config.maxSelectedBlocks)
         self.tileListStride = Self.tileListStride(config: config)
         self.maxTiles = (self.maxRows + 31) / 32
+        self.gpuCores = hal.caps.gpuCores
         self.supportsNAXPrefill = hal.caps.isMetal4TensorCapable
             && geometry.supportsNAXPagedAttnPrefill
             && config.blockSize >= 32
@@ -147,7 +149,8 @@ public final class QWMBSAAttnOperator: @unchecked Sendable {
 
         self.psoIndexPrep = try hal.pipeline("qwg_mbsa_index_prep_f16")
         self.psoSelectBlocks = try hal.pipeline("qwg_mbsa_select_blocks")
-        self.psoSelectBlocksTiled32 = try hal.pipeline("qwg_mbsa_select_blocks_tiled32")
+        self.psoSelectBlocksTiled32 = hal.caps.isMetal4TensorCapable
+            ? try hal.pipeline("qwg_mbsa_select_blocks_tiled32") : nil
         let attnKernel: String
         let naxKernel: String
         let decodeKernel: String
@@ -166,7 +169,7 @@ public final class QWMBSAAttnOperator: @unchecked Sendable {
             decodeKernel = "qwg_mbsa_decode_sparse_q4"
         }
         self.psoSparseAttn = try hal.pipeline(attnKernel)
-        self.psoPrefillNAX = try hal.pipeline(naxKernel)
+        self.psoPrefillNAX = hal.caps.isMetal4TensorCapable ? try hal.pipeline(naxKernel) : nil
         self.psoDecodeSparse = try hal.pipeline(decodeKernel)
         self.psoCombineBatched = try hal.pipeline("qwg_attn_decode_combine_batched")
 
@@ -250,7 +253,8 @@ public final class QWMBSAAttnOperator: @unchecked Sendable {
         let qSlice = idxQScratch.slice(byteOffset: 0, count: rows * idxHeads * idxDim, dtype: .f16)
         let kCache = idxKCaches[layerIndex]
         let packedHeads = UInt32(kvHeads & 0xFFFF) | (UInt32(idxHeads & 0xFFFF) << 16)
-        if rows > 8 && supportsNAXPrefill {
+        if rows > 8 && supportsNAXPrefill,
+           let psoSelectBlocksTiled32, let psoPrefillNAX {
             let numTiles = (rows + 31) / 32
             enc.setComputePipelineState(psoSelectBlocksTiled32)
             qSlice.bind(enc, index: 0)
@@ -315,7 +319,7 @@ public final class QWMBSAAttnOperator: @unchecked Sendable {
             let maxPartialRowBytes = qHeads * 64 * (headDim + 2) * 4
             let canSplit = partials.map { $0.length >= rows * maxPartialRowBytes } ?? false
             let maxKeys = config.maxSelectedBlocks * config.blockSize
-            let targetSplits = Self.targetSplits(rows: rows, kvHeads: kvHeads, maxKeys: maxKeys)
+            let targetSplits = Self.targetSplits(rows: rows, kvHeads: kvHeads, maxKeys: maxKeys, gpuCores: self.gpuCores)
             let splits = canSplit ? targetSplits : 1
             enc.setComputePipelineState(psoDecodeSparse)
             qgate.bind(enc, index: 0)
@@ -378,12 +382,16 @@ public final class QWMBSAAttnOperator: @unchecked Sendable {
         guard len > 0 else { return Data() }
         let rowBytes = len * idxDim * 2
         var data = Data(count: layerCount * rowBytes)
-        data.withUnsafeMutableBytes { (raw: UnsafeMutableRawBufferPointer) in
-            guard let dst = raw.baseAddress else { return }
-            for i in 0..<layerCount {
-                let c = idxKCaches[i]
-                let src = c.region.buffer.contents().advanced(by: c.region.base + c.offset)
-                dst.advanced(by: i * rowBytes).copyMemory(from: src, byteCount: rowBytes)
+        let srcs = (0..<layerCount).map { i -> UnsafeRawPointer in
+            let c = idxKCaches[i]
+            return UnsafeRawPointer(c.region.buffer.contents().advanced(by: c.region.base + c.offset))
+        }
+        withExtendedLifetime(idxKCaches) {
+            data.withUnsafeMutableBytes { (raw: UnsafeMutableRawBufferPointer) in
+                guard let dst = raw.baseAddress else { return }
+                for i in 0..<layerCount {
+                    dst.advanced(by: i * rowBytes).copyMemory(from: srcs[i], byteCount: rowBytes)
+                }
             }
         }
         return data
@@ -395,12 +403,16 @@ public final class QWMBSAAttnOperator: @unchecked Sendable {
         let rowBytes = len * idxDim * 2
         guard data.count == layerCount * rowBytes else { return false }
         if rowBytes > 0 {
-            data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-                guard let src = raw.baseAddress else { return }
-                for i in 0..<layerCount {
-                    let c = idxKCaches[i]
-                    let dst = c.region.buffer.contents().advanced(by: c.region.base + c.offset)
-                    dst.copyMemory(from: src.advanced(by: i * rowBytes), byteCount: rowBytes)
+            let dsts = (0..<layerCount).map { i -> UnsafeMutableRawPointer in
+                let c = idxKCaches[i]
+                return c.region.buffer.contents().advanced(by: c.region.base + c.offset)
+            }
+            withExtendedLifetime(idxKCaches) {
+                data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                    guard let src = raw.baseAddress else { return }
+                    for i in 0..<layerCount {
+                        dsts[i].copyMemory(from: src.advanced(by: i * rowBytes), byteCount: rowBytes)
+                    }
                 }
             }
         }

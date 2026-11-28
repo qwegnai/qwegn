@@ -26,7 +26,7 @@ final class QWKDAAndMLAGeneralizationTests: XCTestCase {
     private func requireGPU() throws {
         try XCTSkipUnless(
             ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] != "true"
-                && QWDeviceCaps.current?.familyApple9 == true,
+                && QWDeviceCaps.current?.supportsSimdgroupMMA == true,
             "Requires bare-metal Apple Silicon Metal GPU"
         )
     }
@@ -556,7 +556,7 @@ final class QWKDAAndMLAGeneralizationTests: XCTestCase {
             hal: mbsaHal, geometry: mbsaGeo, attnLayers: [0], kvMode: .f16, maxContext: 512, maxPrefillChunk: 64))
         XCTAssertEqual(mbsa.idxHeads, 2)
         XCTAssertEqual(mbsa.idxDim, 64)
-        XCTAssertTrue(mbsa.supportsNAXPrefill)
+        XCTAssertEqual(mbsa.supportsNAXPrefill, mbsaHal.caps.isMetal4TensorCapable)
 
         let idxD = mbsa.idxDim, idxH = mbsa.idxHeads
         let mbsaW = QWMBSAAttnOperator.LayerWeights(

@@ -316,7 +316,10 @@ public enum QWAQRepacker {
         guard let buf = device.makeBuffer(length: raw.count, options: .storageModeShared) else {
             throw RepackError.deviceUnavailable(reason: "cannot allocate a device buffer")
         }
-        memcpy(buf.contents(), base, raw.count)
+        let dstPtr = buf.contents()
+        withExtendedLifetime(buf) {
+            dstPtr.copyMemory(from: base, byteCount: raw.count)
+        }
         return buf
     }
 

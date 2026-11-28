@@ -1,6 +1,7 @@
 // qwattn_sparse_nax.metal — M5 NAX (tensor-op) sparse gated attention for prefill rows (T >= 4).
 // One threadgroup per (row, kv head) holds all GQA query heads; Q·Kᵀ and P·V run on matmul2d tiles.
 // KV cache modes: f32 (0), f16 (1), q8 (2), q4 (3); dequantised on the fly. Q, gate, out stay f32.
+#if !defined(QW_DISABLE_NAX)
 #include <metal_stdlib>
 #include <metal_simdgroup>
 #include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
@@ -675,3 +676,4 @@ DEFINE_ATTN_SPARSE_GATED_NAX_SPLIT_KERNEL(qwg_attn_sparse_gated_nax_split_f32, 0
 DEFINE_ATTN_SPARSE_GATED_NAX_SPLIT_KERNEL(qwg_attn_sparse_gated_nax_split_f16, 1u)
 DEFINE_ATTN_SPARSE_GATED_NAX_SPLIT_KERNEL(qwg_attn_sparse_gated_nax_split_q8,  2u)
 DEFINE_ATTN_SPARSE_GATED_NAX_SPLIT_KERNEL(qwg_attn_sparse_gated_nax_split_q4,  3u)
+#endif // !defined(QW_DISABLE_NAX)

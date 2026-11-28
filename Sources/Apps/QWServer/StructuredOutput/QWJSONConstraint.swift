@@ -526,7 +526,8 @@ public final class QWStructuredOutputConstraint: QWTokenConstraint, @unchecked S
     let stopTokens: [Int]
     let stopTokenSet: Set<Int>
     let endThinkToken: Int?
-    let toolCallToken: Int?
+    let toolCallOpenTokens: [Int]
+    var toolPrefixMatched: Int = 0
     var phase: Phase
     var state: QWJState
     var style = QWJSONFormattingStyle()
@@ -535,18 +536,20 @@ public final class QWStructuredOutputConstraint: QWTokenConstraint, @unchecked S
 
     public init(grammar: QWJSONGrammar, table: QWJSONTokenTable, stopTokens: Set<Int>,
                 startsInThinking: Bool = false, endThinkToken: Int? = nil,
-                toolCallToken: Int? = nil) {
+                toolCallToken: Int? = nil, toolCallOpenTokens: [Int]? = nil) {
         self.table = table
         let validStops = stopTokens.filter { $0 >= 0 && $0 < table.vocabulary }.sorted()
         self.stopTokens = validStops
         self.stopTokenSet = Set(validStops)
         self.endThinkToken = endThinkToken
-        self.toolCallToken = toolCallToken
+        let resolvedOpen = (toolCallOpenTokens ?? (toolCallToken.map { [$0] } ?? []))
+            .filter { $0 >= 0 && $0 < table.vocabulary }
+        self.toolCallOpenTokens = resolvedOpen
         self.state = QWJState(root: grammar.root)
         if startsInThinking && endThinkToken != nil {
             phase = .thinking
         } else {
-            phase = toolCallToken != nil ? .choosing : .json
+            phase = !resolvedOpen.isEmpty ? .choosing : .json
         }
     }
 
@@ -555,7 +558,8 @@ public final class QWStructuredOutputConstraint: QWTokenConstraint, @unchecked S
         self.stopTokens = other.stopTokens
         self.stopTokenSet = other.stopTokenSet
         self.endThinkToken = other.endThinkToken
-        self.toolCallToken = other.toolCallToken
+        self.toolCallOpenTokens = other.toolCallOpenTokens
+        self.toolPrefixMatched = other.toolPrefixMatched
         self.phase = other.phase
         self.state = other.state
         self.style = other.style
@@ -587,6 +591,9 @@ public final class QWStructuredOutputConstraint: QWTokenConstraint, @unchecked S
         case .thinking, .free:
             return nil
         case .json, .choosing:
+            if phase == .choosing && toolPrefixMatched > 0 && toolPrefixMatched < toolCallOpenTokens.count {
+                return [toolCallOpenTokens[toolPrefixMatched]]
+            }
             if state.isPlainString, case .string(let s) = state.mode, let cache = plainCache,
                cache.frame === state.frames, cache.isKey == s.isKey {
                 return cache.allowed
@@ -595,7 +602,7 @@ public final class QWStructuredOutputConstraint: QWTokenConstraint, @unchecked S
             if state.isPlainString, case .string(let s) = state.mode {
                 plainCache = (state.frames, s.isKey, allowed)
             }
-            if phase == .choosing, let tool = toolCallToken {
+            if phase == .choosing, let tool = toolCallOpenTokens.first {
                 let at = allowed.firstIndex(where: { $0 >= tool }) ?? allowed.count
                 if at == allowed.count || allowed[at] != tool { allowed.insert(tool, at: at) }
             }
@@ -609,12 +616,29 @@ public final class QWStructuredOutputConstraint: QWTokenConstraint, @unchecked S
         case .free:
             return
         case .thinking:
-            if token == endThinkToken { phase = toolCallToken != nil ? .choosing : .json }
+            if token == endThinkToken {
+                toolPrefixMatched = 0
+                phase = !toolCallOpenTokens.isEmpty ? .choosing : .json
+            }
             return
         case .choosing, .json:
-            if phase == .choosing && token == toolCallToken {
-                phase = .free
-                return
+            if phase == .choosing && !toolCallOpenTokens.isEmpty {
+                if toolPrefixMatched > 0 {
+                    guard token == toolCallOpenTokens[toolPrefixMatched] else {
+                        throw QWTokenConstraintError.rejectedToken(token)
+                    }
+                    toolPrefixMatched += 1
+                    if toolPrefixMatched >= toolCallOpenTokens.count { phase = .free }
+                    return
+                }
+                if token == toolCallOpenTokens[0] {
+                    if toolCallOpenTokens.count == 1 {
+                        phase = .free
+                    } else {
+                        toolPrefixMatched = 1
+                    }
+                    return
+                }
             }
             if stopTokens.contains(token) {
                 guard state.canEnd else { throw QWTokenConstraintError.rejectedToken(token) }

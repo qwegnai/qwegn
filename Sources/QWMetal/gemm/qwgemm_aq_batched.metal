@@ -1,5 +1,6 @@
 // qwgemm_aq_batched.metal — NAX prefill GEMM, GDN in-proj, and MoE twins for AQ.
 // Instantiates compile-time <BITS, GROUP> kernels over shared qw_gemm_nax.metalh templates.
+#if !defined(QW_DISABLE_NAX)
 #include <metal_stdlib>
 #include <metal_simdgroup>
 #include "include/qw_moe_tile.metalh"
@@ -115,3 +116,4 @@ QW_AQ_BATCHED_SUITE(8, 32)
 QW_AQ_BATCHED_SUITE(8, 64)
 QW_AQ_BATCHED_SUITE(8, 128)
 QW_AQ_BATCHED_SUITE(8, 256)
+#endif // !defined(QW_DISABLE_NAX)

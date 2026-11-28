@@ -1,7 +1,6 @@
 // QWEngineLifecycleActor+Load.swift — Lifecycle Config and model load/release helpers.
 
 import Foundation
-import Metal
 import QWCli
 import QWCore
 import QWEngine
@@ -36,6 +35,7 @@ extension QWEngineLifecycleActor {
         public var loadVision: Bool
         public var allowLocalImagePaths: Bool = false
         public var allowRemoteImageURLs: Bool = false
+        public var pinModel: Bool = false
         public var decisionModelPackPath: String = ""
         public var decisionComputeUnit: String = "auto"
         public var decisionLoadVision: Bool = true
@@ -70,6 +70,7 @@ extension QWEngineLifecycleActor {
             loadVision: Bool = false,
             allowLocalImagePaths: Bool = false,
             allowRemoteImageURLs: Bool = false,
+            pinModel: Bool = false,
             decisionModelPackPath: String = "",
             decisionComputeUnit: String = "auto",
             decisionLoadVision: Bool = true,
@@ -120,6 +121,7 @@ extension QWEngineLifecycleActor {
             self.loadVision = loadVision
             self.allowLocalImagePaths = allowLocalImagePaths
             self.allowRemoteImageURLs = allowRemoteImageURLs
+            self.pinModel = pinModel
             self.decisionModelPackPath = decisionModelPackPath
             self.decisionComputeUnit = decisionComputeUnit
             self.decisionLoadVision = decisionLoadVision
@@ -203,8 +205,7 @@ extension QWEngineLifecycleActor {
     /// The device memory the engine holds, as Metal accounts it. Zero
     /// means the reading failed, not that the engine holds nothing.
     static func deviceAllocatedBytes() -> UInt64 {
-        guard let device = MTLCreateSystemDefaultDevice() else { return 0 }
-        return UInt64(device.currentAllocatedSize)
+        QWDeviceCaps.systemDeviceAllocatedBytes()
     }
 
     /// What the release gave back, in megabytes: the Metal device's own

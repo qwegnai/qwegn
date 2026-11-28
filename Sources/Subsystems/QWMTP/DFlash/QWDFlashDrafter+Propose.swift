@@ -142,6 +142,104 @@ extension QWDFlashDrafter {
         }
     }
 
+    private struct DFlashTapPackP {
+        var srcPlaneStrideU4: UInt32
+        var srcRowOffset: UInt32
+        var dstRowOffset: UInt32
+        var hiddenU4: UInt32
+        var totalSlots: UInt32
+        var useRowMap: UInt32
+        var rowMap: (
+            UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32,
+            UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32
+        )
+    }
+
+    public func encodePackBF16Taps(
+        _ enc: any MTLComputeCommandEncoder,
+        source: any MTLBuffer,
+        srcOffset: Int = 0,
+        srcPlaneStrideElems: Int,
+        srcRowOffset: Int = 0,
+        dstRowOffset: Int = 0,
+        rows: Int,
+        rowMap: [Int]? = nil
+    ) {
+        let totalSlots = config.targetLayerIds.count
+        guard rows > 0, totalSlots > 0 else { return }
+        if let rowMap {
+            precondition(rows <= 16, "encodePackBF16Taps rowMap supports at most 16 rows, got \(rows)")
+            precondition(rowMap.count == rows, "encodePackBF16Taps rowMap count \(rowMap.count) != rows \(rows)")
+        }
+        let useMap = (rowMap != nil)
+        func rm(_ idx: Int) -> UInt32 {
+            guard useMap, let rowMap, idx < rowMap.count else { return 0 }
+            return UInt32(rowMap[idx])
+        }
+        var p = DFlashTapPackP(
+            srcPlaneStrideU4: UInt32(srcPlaneStrideElems / 8),
+            srcRowOffset: UInt32(srcRowOffset),
+            dstRowOffset: UInt32(dstRowOffset),
+            hiddenU4: UInt32(config.hiddenSize / 8),
+            totalSlots: UInt32(totalSlots),
+            useRowMap: useMap ? 1 : 0,
+            rowMap: (rm(0), rm(1), rm(2), rm(3), rm(4), rm(5), rm(6), rm(7),
+                     rm(8), rm(9), rm(10), rm(11), rm(12), rm(13), rm(14), rm(15))
+        )
+        enc.setComputePipelineState(psoPackBF16Taps)
+        enc.setBuffer(source, offset: srcOffset, index: 0)
+        targetHidden.bind(enc, index: 1)
+        enc.setBytes(&p, length: MemoryLayout<DFlashTapPackP>.stride, index: 2)
+        enc.dispatchThreadgroups(
+            MTLSize(width: rows, height: totalSlots, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1)
+        )
+    }
+
+    func encodeLinearMatmul(
+        _ enc: any MTLComputeCommandEncoder,
+        weight: DFlashLinearWeight,
+        input: QWTensorValue,
+        output: QWTensorValue,
+        rows: Int
+    ) throws {
+        switch weight {
+        case .quant(let w):
+            try encodeQ4Matmul(enc, weight: w, input: input, output: output, rows: rows)
+        case .bf16(let bank):
+            try QWGemmFP.encodeBF16(
+                enc, hal: hal, weight: bank,
+                x: QWFPBufferSlice(input), y: QWFPBufferSlice(output),
+                m: rows, inDtype: .f16, outDtype: .f16
+            )
+        }
+    }
+
+    func encodeLinearGateUpMatmul(
+        _ enc: any MTLComputeCommandEncoder,
+        weight: DFlashLinearWeight,
+        input: QWTensorValue,
+        output: QWTensorValue,
+        rows: Int
+    ) throws {
+        switch weight {
+        case .quant(let w):
+            try encodeGateUpMatmul(enc, weight: w, input: input, output: output, rows: rows)
+        case .bf16(let bank):
+            let guScratch = QWTensorValue(
+                region: draftLogits.region,
+                offset: draftLogits.offset,
+                shape: QWTensorShape([rows * 2 * config.intermediateSize], .f16)
+            )
+            try QWGemmFP.encodeBF16(
+                enc, hal: hal, weight: bank,
+                x: QWFPBufferSlice(input), y: QWFPBufferSlice(guScratch),
+                m: rows, inDtype: .f16, outDtype: .f16
+            )
+            encodeSiluMulF16(enc, gu: guScratch, out: output, rows: rows, i: config.intermediateSize)
+        }
+    }
+
     func encodeQ4Matmul(_ enc: any MTLComputeCommandEncoder,
                         weight: QWWeightView,
                         input: QWTensorValue,
@@ -152,7 +250,8 @@ extension QWDFlashDrafter {
             return
         }
         let n = weight.n, k = weight.k
-        let useNaxSmall = isMetal4TensorCapable && rows >= 9 && n % 64 == 0 && k % 64 == 0
+        let minSimdRows = isMetal4TensorCapable ? 4 : 9
+        let useNaxSmall = supportsSimdgroupGemm && rows >= minSimdRows && n % 64 == 0 && k % 64 == 0
         if rows == 1 {
             enc.setComputePipelineState(psoGemvT4)
             weight.blocks.bind(enc, index: 0)
@@ -180,16 +279,20 @@ extension QWDFlashDrafter {
             let tptg = rowPaired && (isAQ4 ? psoDownRowPairedAQ4[rows] != nil : psoDownRowPaired[rows] != nil) ? 64 : 128
             enc.dispatchThreadgroups(MTLSize(width: (n + 3) / 4, height: 1, depth: 1),
                                      threadsPerThreadgroup: MTLSize(width: tptg, height: 1, depth: 1))
-        } else if !useNaxSmall && (9...16).contains(rows) {
-            let c0 = rows / 2, c1 = rows - c0
-            try encodeQ4Matmul(enc, weight: weight, input: input.slice(byteOffset: 0, count: c0 * k),
-                               output: output.slice(byteOffset: 0, count: c0 * n), rows: c0)
-            try encodeQ4Matmul(enc, weight: weight, input: input.slice(byteOffset: c0 * k * 2, count: c1 * k),
-                               output: output.slice(byteOffset: c0 * n * 2, count: c1 * n), rows: c1)
+        } else if !useNaxSmall {
+            var r0 = 0
+            while r0 < rows {
+                let c = min(8, rows - r0)
+                try encodeQ4Matmul(enc, weight: weight, input: input.slice(byteOffset: r0 * k * 2, count: c * k),
+                                   output: output.slice(byteOffset: r0 * n * 2, count: c * n), rows: c)
+                r0 += c
+            }
         } else if !weight.isIncumbentContainer {
             try encodeAQMatmul(enc, weight: weight, input: input, output: output, rows: rows)
+        } else if let pso = psoGemmBatched {
+            encodeSmallTileNAX(enc, pso: pso, weight: weight, input: input, output: output, rows: rows)
         } else {
-            encodeSmallTileNAX(enc, pso: psoGemmBatched, weight: weight, input: input, output: output, rows: rows)
+            throw QWDFlashError.state("QWDFlashDrafter: missing NAX GEMM pipeline")
         }
     }
 
@@ -227,22 +330,23 @@ extension QWDFlashDrafter {
                                  threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
     }
 
-    private func encodeConvApply(_ enc: any MTLComputeCommandEncoder,
-                                 x: QWTensorValue, dyn: QWTensorValue,
-                                 baseKernel: QWTensorValue, outOrResidual: QWTensorValue,
-                                 rows: Int, mode: UInt32) {
+    func encodeConvApply(_ enc: any MTLComputeCommandEncoder,
+                         x: QWTensorValue, dyn: QWTensorValue,
+                         baseKernel: QWTensorValue, outOrResidual: QWTensorValue,
+                         rows: Int, mode: UInt32) {
         enc.setComputePipelineState(psoConvApply)
         x.bind(enc, index: 0)
         dyn.bind(enc, index: 1)
         baseKernel.bind(enc, index: 2)
         outOrResidual.bind(enc, index: 3)
         var modeU = mode
-        var hiddenU4 = UInt32(config.hiddenSize / 8)
+        let hiddenU4Int = config.hiddenSize / 8
+        var hiddenU4 = UInt32(hiddenU4Int)
         var convGroupsU = UInt32(config.hiddenSize / max(1, config.convGroupSize))
         enc.setBytes(&modeU, length: 4, index: 4)
         enc.setBytes(&hiddenU4, length: 4, index: 5)
         enc.setBytes(&convGroupsU, length: 4, index: 6)
-        enc.dispatchThreadgroups(MTLSize(width: rows, height: 1, depth: 1),
+        enc.dispatchThreadgroups(MTLSize(width: rows, height: max(1, (hiddenU4Int + 31) / 32), depth: 1),
                                  threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1))
     }
 
@@ -263,11 +367,27 @@ extension QWDFlashDrafter {
                                     slot: QWDFlashSessionSlot,
                                     startPosition: Int,
                                     totalCount: Int) throws {
+        if let mla = mlaState {
+            try encodeMLAContextUpdate(enc, slot: slot, startPosition: startPosition, totalCount: totalCount, mla: mla)
+            return
+        }
         let captureRows = min(totalCount, config.maxCacheSize)
         guard captureRows > 0 else { return }
         let posOffset = startPosition + (totalCount - captureRows)
+        let rowDrop = totalCount - captureRows
+        let rowStrideBytes = config.targetLayerIds.count * config.hiddenSize * 2
+        let fcInput: QWTensorValue
+        if rowDrop > 0 && targetHidden.bytes >= totalCount * rowStrideBytes {
+            fcInput = targetHidden.slice(
+                byteOffset: rowDrop * rowStrideBytes,
+                count: captureRows * config.targetLayerIds.count * config.hiddenSize,
+                dtype: .f16
+            )
+        } else {
+            fcInput = targetHidden
+        }
 
-        try encodeQ4Matmul(enc, weight: fc, input: targetHidden, output: hCtx, rows: captureRows)
+        try encodeLinearMatmul(enc, weight: fc, input: fcInput, output: hCtx, rows: captureRows)
         enc.memoryBarrier(scope: .buffers)
         encodeRMSNorm(enc, x: hCtx, gamma: hiddenNorm, y: hCtx, yRot: hCtx, rows: captureRows, mode: 1)
         enc.memoryBarrier(scope: .buffers)
@@ -276,7 +396,7 @@ extension QWDFlashDrafter {
         var maxCacheU = UInt32(config.maxCacheSize), kvHeadsU = UInt32(config.numKeyValueHeads)
         for l in 0..<config.numLayers {
             let lw = layers[l]
-            try encodeQ4Matmul(enc, weight: lw.kvProj, input: hCtx, output: kvCtx, rows: captureRows)
+            try encodeLinearMatmul(enc, weight: lw.kvProj, input: hCtx, output: kvCtx, rows: captureRows)
             enc.memoryBarrier(scope: .buffers)
             enc.setComputePipelineState(psoRopeKVCtx)
             kvCtx.bind(enc, index: 0)
@@ -319,7 +439,7 @@ extension QWDFlashDrafter {
                 hal: hal, slot: slot, cacheOffset: cacheOffset, pendingToken: pendingToken,
                 draftCount: draftCount, draftVocab: draftVocab, headStorage: headStorage,
                 encodeHeadLogits: encodeHeadLogits, encodeAnchorMaskEmbed: anchorEmbed,
-                embedding: nil, stochastic: nil, preContextUpdate: nil,
+                embedding: nil, stochastic: nil, preEncode: nil, preContextUpdate: nil,
                 journalCopy: (journalBuffer, journalByteOffset)
             )
         }
@@ -339,6 +459,7 @@ extension QWDFlashDrafter {
                                  _ anchorToken: Int, _ maskToken: Int, _ rows: Int) throws -> Void)? = nil,
         embedding: ((Int, QWTensorValue) throws -> Void)? = nil,
         stochastic: (temperature: Float, stream: QWMTPRandomStream)? = nil,
+        preEncode: ((_ enc: any MTLComputeCommandEncoder) throws -> Void)? = nil,
         preContextUpdate: (slot: QWDFlashSessionSlot, startPosition: Int, totalCount: Int)? = nil,
         completed: ((any MTLCommandBuffer) throws -> Void)? = nil
     ) throws -> (drafts: [Int], proposals: [QWMTPGumbelProposal]) {
@@ -346,7 +467,8 @@ extension QWDFlashDrafter {
             hal: hal, slot: slot, cacheOffset: cacheOffset, pendingToken: pendingToken,
             draftCount: draftCount, draftVocab: draftVocab, headStorage: headStorage,
             encodeHeadLogits: encodeHeadLogits, encodeAnchorMaskEmbed: encodeAnchorMaskEmbed,
-            embedding: embedding, stochastic: stochastic, preContextUpdate: preContextUpdate,
+            embedding: embedding, stochastic: stochastic, preEncode: preEncode,
+            preContextUpdate: preContextUpdate,
             journalCopy: nil
         )
         cb.waitUntilCompleted()
@@ -359,6 +481,7 @@ extension QWDFlashDrafter {
         let V = config.vocabSize
         let topK = config.selectorTopK
         let safeAnchor = Self.clampToken(pendingToken, vocab: V)
+        let vocabRows = draftVocab.map { min(V, max(1, $0)) } ?? V
         if let stochastic {
             if let bs = dspineScratch {
                 return try selectDSpineStochastic(
@@ -366,13 +489,14 @@ extension QWDFlashDrafter {
                 )
             }
             return try selectStochastic(
-                temperature: stochastic.temperature, stream: stochastic.stream, anchorToken: safeAnchor, draftCount: D, topK: topK
+                temperature: stochastic.temperature, stream: stochastic.stream,
+                anchorToken: safeAnchor, draftCount: D, topK: topK, validVocab: vocabRows
             )
         } else {
             let ptr = draftTokensOut.region.buffer.contents()
                 .advanced(by: draftTokensOut.region.base + draftTokensOut.offset)
                 .assumingMemoryBound(to: Int32.self)
-            let drafts = (0..<D).map { Self.clampToken(Int(ptr[$0]), vocab: V) }
+            let drafts = (0..<D).map { Self.clampToken(Int(ptr[$0]), vocab: vocabRows) }
             return (drafts, [])
         }
     }
@@ -391,6 +515,7 @@ extension QWDFlashDrafter {
                                  _ anchorToken: Int, _ maskToken: Int, _ rows: Int) throws -> Void)?,
         embedding: ((Int, QWTensorValue) throws -> Void)?,
         stochastic: (temperature: Float, stream: QWMTPRandomStream)?,
+        preEncode: ((_ enc: any MTLComputeCommandEncoder) throws -> Void)?,
         preContextUpdate: (slot: QWDFlashSessionSlot, startPosition: Int, totalCount: Int)?,
         journalCopy: (buffer: any MTLBuffer, byteOffset: Int)?
     ) throws -> any MTLCommandBuffer {
@@ -402,13 +527,7 @@ extension QWDFlashDrafter {
         }
         let H = config.hiddenSize
         let V = config.vocabSize
-        let vocabRows: Int
-        if let requestedVocab = draftVocab {
-            let clamped = min(V, max(1, requestedVocab))
-            vocabRows = clamped < V ? min(V, ((clamped + 255) / 256) * 256) : V
-        } else {
-            vocabRows = V
-        }
+        let vocabRows = draftVocab.map { min(V, max(1, $0)) } ?? V
         guard vocabRows <= 393_216 else {
             throw QWDFlashError.state("QWDFlashDrafter: vocabRows \(vocabRows) exceeds 393216 limit")
         }
@@ -439,8 +558,10 @@ extension QWDFlashDrafter {
             }
             if M > 2 {
                 let maskRow32 = UnsafeRawPointer(dst32.advanced(by: H))
-                for m in 2..<M {
-                    memcpy(UnsafeMutableRawPointer(dst32.advanced(by: m * H)), maskRow32, H * 4)
+                withExtendedLifetime(propX.region.buffer) {
+                    for m in 2..<M {
+                        UnsafeMutableRawPointer(dst32.advanced(by: m * H)).copyMemory(from: maskRow32, byteCount: H * 4)
+                    }
                 }
             }
         }
@@ -455,6 +576,10 @@ extension QWDFlashDrafter {
             }
         }
 
+        if let preEncode {
+            try preEncode(enc)
+            enc.memoryBarrier(scope: .buffers)
+        }
         if let pre = preContextUpdate, min(pre.totalCount, config.maxCacheSize) > 0 {
             try encodeContextUpdate(enc, slot: pre.slot, startPosition: pre.startPosition, totalCount: pre.totalCount)
             enc.memoryBarrier(scope: .buffers)
@@ -465,75 +590,105 @@ extension QWDFlashDrafter {
             enc.memoryBarrier(scope: .buffers)
         }
 
-        if config.isDSpine {
-            encodeRMSNorm(enc, x: propX, gamma: layers[0].ln1, y: propNorm, yRot: propRot, rows: M, mode: 2)
-        }
-
-        var maxCacheU = UInt32(config.maxCacheSize)
-        var isCausalU = UInt32(config.draftBlockCausal ? 1 : 0)
-        var qHeadsU = UInt32(config.numAttentionHeads)
-        var kvHeadsU = UInt32(config.numKeyValueHeads)
-
-        for l in 0..<config.numLayers {
-            let lw = layers[l]
-            if !config.isDSpine, let acProj = lw.attnConvProj, let acBase = lw.attnConvBase, let pDyn = propDyn {
-                encodeRMSNorm(enc, x: propX, gamma: lw.ln1, y: propNorm, yRot: propNorm, rows: M, mode: 0)
-                encodeF16GemvBatched(enc, w: acProj, x: propNorm, y: pDyn, n: convProjDim, k: H, m: M)
-                encodeConvApply(enc, x: propNorm, dyn: pDyn, baseKernel: acBase, outOrResidual: propRot, rows: M, mode: 0)
-            }
-            try encodeQ4Matmul(enc, weight: lw.qkvProj, input: propRot, output: qkvProp, rows: M)
-
-            enc.setComputePipelineState(psoRopeQKProp)
-            qkvProp.bind(enc, index: 0)
-            lw.qNorm.bind(enc, index: 1)
-            lw.kNorm.bind(enc, index: 2)
-            invFreq.bind(enc, index: 3)
-            var pOff = UInt32(cacheOffset), eps = config.rmsNormEps
-            enc.setBytes(&pOff, length: 4, index: 4)
-            enc.setBytes(&eps, length: 4, index: 5)
-            enc.setBytes(&qHeadsU, length: 4, index: 6)
-            enc.setBytes(&kvHeadsU, length: 4, index: 7)
-            enc.dispatchThreadgroups(MTLSize(width: M, height: config.numAttentionHeads + config.numKeyValueHeads, depth: 1),
-                                     threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1))
-
-            enc.setComputePipelineState(psoAttn)
-            qkvProp.bind(enc, index: 0)
-            slot.kLayers[l].bind(enc, index: 1)
-            slot.vLayers[l].bind(enc, index: 2)
-            attnOut.bind(enc, index: 3)
-            var nOff = UInt32(cacheOffset), mU = UInt32(M)
-            enc.setBytes(&nOff, length: 4, index: 4)
-            enc.setBytes(&mU, length: 4, index: 5)
-            enc.setBytes(&maxCacheU, length: 4, index: 6)
-            enc.setBytes(&isCausalU, length: 4, index: 7)
-            enc.setBytes(&qHeadsU, length: 4, index: 8)
-            enc.setBytes(&kvHeadsU, length: 4, index: 9)
-            enc.dispatchThreadgroups(MTLSize(width: config.numAttentionHeads, height: M, depth: 1),
-                                     threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1))
-
+        if let mla = mlaState {
+            let draftRowByteOffset = config.shiftLabel ? 0 : (H * 4)
+            let propXDraftSlice = QWTensorValue(
+                region: propX.region, offset: propX.offset + draftRowByteOffset, shape: QWTensorShape([D * H], .f32)
+            )
+            let propNormSlice = QWTensorValue(region: propNorm.region, offset: propNorm.offset,
+                                              shape: QWTensorShape([D * H], .f16))
+            let propRotSlice = QWTensorValue(region: propRot.region, offset: propRot.offset,
+                                             shape: QWTensorShape([D * H], .f16))
+            let propRot32Slice = QWTensorValue(region: propRot32.region, offset: propRot32.offset,
+                                               shape: QWTensorShape([D * H], .f32))
+            try encodeMLAProposeLayersAndFinalNorm(
+                enc, slot: slot, cacheOffset: cacheOffset, rows: M, draftCount: D,
+                propXDraftSlice: propXDraftSlice, propNormSlice: propNormSlice,
+                propRotSlice: propRotSlice, propRot32Slice: propRot32Slice, mla: mla
+            )
+        } else {
             if config.isDSpine {
-                try encodeQ4Matmul(enc, weight: lw.oProj, input: attnOut, output: propDown, rows: M)
-                encodeRMSNorm(enc, x: propX, gamma: lw.ln2, y: propDown, yRot: propRot, rows: M, mode: 3)
-            } else if let acBase = lw.attnConvBase, let mcProj = lw.mlpConvProj,
-                      let mcBase = lw.mlpConvBase, let pDyn = propDyn {
-                try encodeQ4Matmul(enc, weight: lw.oProj, input: attnOut, output: propNorm, rows: M)
-                encodeConvApply(enc, x: propNorm, dyn: pDyn, baseKernel: acBase, outOrResidual: propX, rows: M, mode: 1)
-                encodeRMSNorm(enc, x: propX, gamma: lw.ln2, y: propNorm, yRot: propNorm, rows: M, mode: 0)
-                encodeF16GemvBatched(enc, w: mcProj, x: propNorm, y: pDyn, n: convProjDim, k: H, m: M)
-                encodeConvApply(enc, x: propNorm, dyn: pDyn, baseKernel: mcBase, outOrResidual: propRot, rows: M, mode: 0)
+                encodeRMSNorm(enc, x: propX, gamma: layers[0].ln1, y: propNorm, yRot: propRot, rows: M, mode: 2)
             }
 
-            try encodeGateUpMatmul(enc, weight: lw.gateUpProj, input: propRot, output: mlpInter, rows: M)
-            try encodeQ4Matmul(enc, weight: lw.downProj, input: mlpInter, output: propDown, rows: M)
-            if let bw = dspineBridge, let bs = dspineScratch {
-                encodeDSpineBridgeLayer(enc, layer: l, anchorToken: safeAnchor, rows: M, bw: bw, bs: bs)
-            } else if let mcBase = lw.mlpConvBase, let pDyn = propDyn {
-                encodeConvApply(enc, x: propDown, dyn: pDyn, baseKernel: mcBase, outOrResidual: propX, rows: M, mode: 1)
+            var maxCacheU = UInt32(config.maxCacheSize)
+            var isCausalU = UInt32(config.draftBlockCausal ? 1 : 0)
+            var qHeadsU = UInt32(config.numAttentionHeads)
+            var kvHeadsU = UInt32(config.numKeyValueHeads)
+
+            for l in 0..<config.numLayers {
+                let lw = layers[l]
+                if !config.isDSpine, let acProj = lw.attnConvProj, let acBase = lw.attnConvBase, let pDyn = propDyn {
+                    encodeRMSNorm(enc, x: propX, gamma: lw.ln1, y: propNorm, yRot: propNorm, rows: M, mode: 0)
+                    encodeF16GemvBatched(enc, w: acProj, x: propNorm, y: pDyn, n: convProjDim, k: H, m: M)
+                    encodeConvApply(enc, x: propNorm, dyn: pDyn, baseKernel: acBase, outOrResidual: propRot, rows: M, mode: 0)
+                }
+                try encodeLinearMatmul(enc, weight: lw.qkvProj, input: propRot, output: qkvProp, rows: M)
+
+                enc.setComputePipelineState(psoRopeQKProp)
+                qkvProp.bind(enc, index: 0)
+                lw.qNorm.bind(enc, index: 1)
+                lw.kNorm.bind(enc, index: 2)
+                invFreq.bind(enc, index: 3)
+                var pOff = UInt32(cacheOffset), eps = config.rmsNormEps
+                enc.setBytes(&pOff, length: 4, index: 4)
+                enc.setBytes(&eps, length: 4, index: 5)
+                enc.setBytes(&qHeadsU, length: 4, index: 6)
+                enc.setBytes(&kvHeadsU, length: 4, index: 7)
+                enc.dispatchThreadgroups(MTLSize(width: M, height: config.numAttentionHeads + config.numKeyValueHeads, depth: 1),
+                                         threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1))
+
+                enc.setComputePipelineState(psoAttn)
+                qkvProp.bind(enc, index: 0)
+                slot.kLayers[l].bind(enc, index: 1)
+                slot.vLayers[l].bind(enc, index: 2)
+                attnOut.bind(enc, index: 3)
+                var nOff = UInt32(cacheOffset), mU = UInt32(M)
+                enc.setBytes(&nOff, length: 4, index: 4)
+                enc.setBytes(&mU, length: 4, index: 5)
+                enc.setBytes(&maxCacheU, length: 4, index: 6)
+                enc.setBytes(&isCausalU, length: 4, index: 7)
+                enc.setBytes(&qHeadsU, length: 4, index: 8)
+                enc.setBytes(&kvHeadsU, length: 4, index: 9)
+                enc.dispatchThreadgroups(MTLSize(width: config.numAttentionHeads, height: M, depth: 1),
+                                         threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1))
+
+                if config.isDSpine {
+                    try encodeLinearMatmul(enc, weight: lw.oProj, input: attnOut, output: propDown, rows: M)
+                    encodeRMSNorm(enc, x: propX, gamma: lw.ln2, y: propDown, yRot: propRot, rows: M, mode: 3)
+                } else if let acBase = lw.attnConvBase, let mcProj = lw.mlpConvProj,
+                          let mcBase = lw.mlpConvBase, let pDyn = propDyn {
+                    try encodeLinearMatmul(enc, weight: lw.oProj, input: attnOut, output: propNorm, rows: M)
+                    encodeConvApply(enc, x: propNorm, dyn: pDyn, baseKernel: acBase, outOrResidual: propX, rows: M, mode: 1)
+                    encodeRMSNorm(enc, x: propX, gamma: lw.ln2, y: propNorm, yRot: propNorm, rows: M, mode: 0)
+                    encodeF16GemvBatched(enc, w: mcProj, x: propNorm, y: pDyn, n: convProjDim, k: H, m: M)
+                    encodeConvApply(enc, x: propNorm, dyn: pDyn, baseKernel: mcBase, outOrResidual: propRot, rows: M, mode: 0)
+                }
+
+                try encodeLinearGateUpMatmul(enc, weight: lw.gateUpProj, input: propRot, output: mlpInter, rows: M)
+                try encodeLinearMatmul(enc, weight: lw.downProj, input: mlpInter, output: propDown, rows: M)
+                if let bw = dspineBridge, let bs = dspineScratch {
+                    encodeDSpineBridgeLayer(enc, layer: l, anchorToken: safeAnchor, rows: M, bw: bw, bs: bs)
+                } else if let mcBase = lw.mlpConvBase, let pDyn = propDyn {
+                    encodeConvApply(enc, x: propDown, dyn: pDyn, baseKernel: mcBase, outOrResidual: propX, rows: M, mode: 1)
+                }
             }
+
+            let draftRowByteOffset = config.shiftLabel ? 0 : (H * 4)
+            let propXDraftSlice = dspineScratch?.propXPost4
+                ?? QWTensorValue(
+                    region: propX.region, offset: propX.offset + draftRowByteOffset, shape: QWTensorShape([D * H], .f32)
+                )
+            let propNormSlice = QWTensorValue(region: propNorm.region, offset: propNorm.offset,
+                                              shape: QWTensorShape([D * H], .f16))
+            let propRotSlice = QWTensorValue(region: propRot.region, offset: propRot.offset,
+                                             shape: QWTensorShape([D * H], .f16))
+            let propRot32Slice = QWTensorValue(region: propRot32.region, offset: propRot32.offset,
+                                               shape: QWTensorShape([D * H], .f32))
+            encodeRMSNorm(enc, x: propXDraftSlice, gamma: finalNorm,
+                          y: propNormSlice, yRot: propRotSlice, rows: D, mode: 5, yRot32: propRot32Slice)
         }
 
-        let propXDraftSlice = dspineScratch?.propXPost4
-            ?? QWTensorValue(region: propX.region, offset: propX.offset + H * 4, shape: QWTensorShape([D * H], .f32))
         let propNormSlice = QWTensorValue(region: propNorm.region, offset: propNorm.offset,
                                           shape: QWTensorShape([D * H], .f16))
         let propRotSlice = QWTensorValue(region: propRot.region, offset: propRot.offset,
@@ -542,9 +697,6 @@ extension QWDFlashDrafter {
                                            shape: QWTensorShape([D * H], .f32))
         let logitsSlice = QWTensorValue(region: draftLogits.region, offset: draftLogits.offset,
                                         shape: QWTensorShape([D * vocabRows], .f32))
-
-        encodeRMSNorm(enc, x: propXDraftSlice, gamma: finalNorm,
-                      y: propNormSlice, yRot: propRotSlice, rows: D, mode: 5, yRot32: propRot32Slice)
         if !config.isDSpine, let selProj = selectorHiddenProj, let hProjOut = hiddenProjOut {
             encodeF16GemvBatched(enc, w: selProj, x: propNormSlice, y: hProjOut, n: R, k: H, m: D)
         }
@@ -583,7 +735,10 @@ extension QWDFlashDrafter {
                   let hProjOut = hiddenProjOut,
                   let pBook = predecessorCodebook,
                   let sBook = successorCodebook {
-            var anchorI = Int32(safeAnchor), draftCountU = UInt32(D), selectorVocabU = UInt32(V)
+            var anchorI = Int32(safeAnchor), draftCountU = UInt32(D), selectorVocabU = UInt32(vocabRows)
+            var softcapF = config.finalLogitSoftcapping
+            var softcapModeU = config.selectorSoftcapMode.rawValue
+            var rankU = UInt32(R)
             enc.setComputePipelineState(psoSelectorGreedy)
             hProjOut.bind(enc, index: 0)
             unaryOut.bind(enc, index: 1)
@@ -595,6 +750,9 @@ extension QWDFlashDrafter {
             enc.setBytes(&draftCountU, length: 4, index: 7)
             enc.setBytes(&topKU, length: 4, index: 8)
             enc.setBytes(&selectorVocabU, length: 4, index: 9)
+            enc.setBytes(&softcapF, length: 4, index: 10)
+            enc.setBytes(&softcapModeU, length: 4, index: 11)
+            enc.setBytes(&rankU, length: 4, index: 12)
             enc.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
                                      threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
         }
@@ -620,94 +778,5 @@ extension QWDFlashDrafter {
 
     static func clampToken(_ token: Int, vocab: Int) -> Int {
         (0..<vocab).contains(token) ? token : 0
-    }
-
-    static func buildSparseDistribution(
-        vocab: Int,
-        candidates: [(id: Int, score: Double)],
-        temperature: Float
-    ) throws -> QWSamplingDistribution {
-        let temp = max(Double(temperature), 1e-6)
-        let valid = candidates.compactMap { entry -> (id: Int, score: Double)? in
-            guard (0..<vocab).contains(entry.id), entry.id != 0x7fff_ffff else { return nil }
-            let score = entry.score.isFinite ? max(entry.score, -1e30) : -1e30
-            return (entry.id, score)
-        }
-        guard let maxScore = valid.map(\.score).max() else {
-            return try QWSamplingDistribution.sparse(vocabulary: vocab, ids: [0], weights: [1.0])
-        }
-        var ids: [Int] = []
-        var weights: [Double] = []
-        for entry in valid {
-            let w = exp((entry.score - maxScore) / temp)
-            if w.isFinite && w > 0 {
-                ids.append(entry.id)
-                weights.append(w)
-            }
-        }
-        if ids.isEmpty {
-            ids = [valid[0].id]
-            weights = [1.0]
-        }
-        return try QWSamplingDistribution.sparse(vocabulary: vocab, ids: ids, weights: weights)
-    }
-
-    private func selectStochastic(temperature: Float,
-                                  stream: QWMTPRandomStream,
-                                  anchorToken: Int,
-                                  draftCount: Int,
-                                  topK: Int) throws -> (drafts: [Int], proposals: [QWMTPGumbelProposal]) {
-        guard let hiddenProjOut, let predecessorCodebook, let successorCodebook else {
-            throw QWDFlashError.state("QWDFlashDrafter: missing CandidateSelector buffers")
-        }
-        let R = config.selectorRank
-        let V = config.vocabSize
-        let hPtr = hiddenProjOut.region.buffer.contents()
-            .advanced(by: hiddenProjOut.region.base + hiddenProjOut.offset)
-            .assumingMemoryBound(to: Float.self)
-        let uPtr = unaryOut.region.buffer.contents()
-            .advanced(by: unaryOut.region.base + unaryOut.offset)
-            .assumingMemoryBound(to: Float.self)
-        let cPtr = candidatesOut.region.buffer.contents()
-            .advanced(by: candidatesOut.region.base + candidatesOut.offset)
-            .assumingMemoryBound(to: Int32.self)
-        let pBook = predecessorCodebook.region.buffer.contents()
-            .advanced(by: predecessorCodebook.region.base + predecessorCodebook.offset)
-            .assumingMemoryBound(to: UInt16.self)
-        let sBook = successorCodebook.region.buffer.contents()
-            .advanced(by: successorCodebook.region.base + successorCodebook.offset)
-            .assumingMemoryBound(to: UInt16.self)
-
-        func bf16(_ bits: UInt16) -> Float {
-            Float(bitPattern: UInt32(bits) << 16)
-        }
-
-        var pred = Self.clampToken(anchorToken, vocab: V)
-        var drafts: [Int] = []
-        var proposals: [QWMTPGumbelProposal] = []
-        for pos in 0..<draftCount {
-            var scored: [(id: Int, score: Double)] = []
-            scored.reserveCapacity(topK)
-            let hBase = pos * R
-            let pBase = pred * R
-            for k in 0..<topK {
-                let rawCand = Int(cPtr[pos * 16 + k])
-                guard (0..<V).contains(rawCand), rawCand != 0x7fff_ffff else { continue }
-                let sBase = rawCand * R
-                var edge: Float = 0
-                for r in 0..<R {
-                    edge += bf16(pBook[pBase + r]) * hPtr[hBase + r] * bf16(sBook[sBase + r])
-                }
-                let rawScore = Double(uPtr[pos * 16 + k]) + Double(edge)
-                scored.append((rawCand, rawScore))
-            }
-            let dist = try Self.buildSparseDistribution(vocab: V, candidates: scored, temperature: temperature)
-            let proposal = try stream.sampleGumbelProposal(dist)
-            let tok = Self.clampToken(proposal.token, vocab: V)
-            pred = tok
-            drafts.append(tok)
-            proposals.append(proposal)
-        }
-        return (drafts, proposals)
     }
 }

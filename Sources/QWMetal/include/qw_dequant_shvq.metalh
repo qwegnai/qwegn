@@ -422,32 +422,47 @@ METAL_FUNC float2 qwg_shvq_slice_dot2_acc_tg(device const char* gp, uint byteInG
     return qwg_shvq_slice_dot2_acc_impl<BITS, true>(gp, byteInGroup, lo0, hi0, lo1, hi1, &tgLut, acc);
 }
 
+METAL_FUNC bool qwg_shvq15_oct_f4(uint u12, thread float4 &fLo, thread float4 &fHi) {
+    const uint2 raw64 = ((constant const uint2*)kShvqLut15PackedI8)[u12 & 0x07FFu];
+    fLo = float4(as_type<char4>(raw64.x));
+    fHi = float4(as_type<char4>(raw64.y));
+    return (u12 & 0x0800u) != 0u;
+}
+
 template <int BITS, typename ActT, uint MAX_M>
 METAL_FUNC void qwg_shvq_slice_dot_strided_row(device const char* gp, uint byteInGroup,
                                                device const ActT* xCol, uint K, uint mRows,
                                                threadgroup const ShvqTgLut<BITS> &tgLut,
                                                thread float (&dm)[MAX_M], thread float& scOut) {
-    scOut = float(*(device const half*)gp);
+    scOut = qwg_shvq_eff_scale<BITS>(gp);
     device const uchar* p = (device const uchar*)(gp + 2u + byteInGroup);
     #pragma unroll
     for (uint m = 0u; m < MAX_M; ++m) dm[m] = 0.0f;
+    uint u15[4];
+    if constexpr (BITS == 15) qwg_shvq15_slice_u12x4(p, u15);
     #pragma unroll
     for (uint w = 0u; w < 4u; ++w) {
-        half4 hLo, hHi;
-        qwg_shvq_unpack_oct8_tg<BITS>(p, w, tgLut, hLo, hHi);
-        const float4 fLo = float4(hLo), fHi = float4(hHi);
+        float4 fLo, fHi;
+        bool neg = false;
+        if constexpr (BITS == 15) {
+            neg = qwg_shvq15_oct_f4(u15[w], fLo, fHi);
+        } else {
+            half4 hLo, hHi;
+            qwg_shvq_unpack_oct8_tg<BITS>(p, w, tgLut, hLo, hHi);
+            fLo = float4(hLo); fHi = float4(hHi);
+        }
         #pragma unroll
         for (uint m = 0u; m < MAX_M; ++m) {
             if (m < mRows) {
                 device const ActT* xp = xCol + size_t(m) * K + w * 8u;
+                float d;
                 if constexpr (sizeof(ActT) == 2u) {
-                    const float4 xLo = float4(*(device const half4*)xp);
-                    const float4 xHi = float4(*(device const half4*)(xp + 4u));
-                    dm[m] += dot(fLo, xLo) + dot(fHi, xHi);
+                    d = dot(fLo, float4(*(device const half4*)xp)) + dot(fHi, float4(*(device const half4*)(xp + 4u)));
                 } else {
                     device const float4* pm = (device const float4*)xp;
-                    dm[m] += dot(fLo, pm[0]) + dot(fHi, pm[1]);
+                    d = dot(fLo, pm[0]) + dot(fHi, pm[1]);
                 }
+                dm[m] += neg ? -d : d;
             }
         }
     }
@@ -526,13 +541,17 @@ METAL_FUNC void qwg_gemv_shvq_rows4_m_acc(device const char* blocks,
         const size_t groupOff = size_t(col / uint(GROUP)) * groupBytes;
         const uint byteInGroup = qwg_shvq_byte_in_group<BITS, GROUP>(col);
         if constexpr (MAX_M <= 4u) {
-            float dm[4][MAX_M];
-            float sc[4];
+            float dm[4][MAX_M], sc[4];
+            uint u15[4][4];
             #pragma unroll
             for (uint r = 0u; r < 4u; ++r) {
-                sc[r] = (row0 + r < realN)
-                    ? float(*(device const half*)(rowBase + size_t(r) * rowBytes + groupOff))
-                    : 0.0f;
+                const bool validR = (row0 + r < realN);
+                device const char* gpR = rowBase + size_t(r) * rowBytes + groupOff;
+                sc[r] = validR ? qwg_shvq_eff_scale<BITS>(gpR) : 0.0f;
+                if constexpr (BITS == 15) {
+                    if (validR) qwg_shvq15_slice_u12x4((device const uchar*)(gpR + 2u + byteInGroup), u15[r]);
+                    else { u15[r][0] = 0u; u15[r][1] = 0u; u15[r][2] = 0u; u15[r][3] = 0u; }
+                }
                 #pragma unroll
                 for (uint m = 0u; m < MAX_M; ++m) dm[r][m] = 0.0f;
             }
@@ -542,32 +561,33 @@ METAL_FUNC void qwg_gemv_shvq_rows4_m_acc(device const char* blocks,
                 #pragma unroll
                 for (uint m = 0u; m < MAX_M; ++m) {
                     if (m < mRows) qwg_load_half8(x + size_t(m) * K + col + w * 8u, hxLo[m], hxHi[m]);
+                    else { hxLo[m] = half4(0.0h); hxHi[m] = half4(0.0h); }
                 }
                 #pragma unroll
                 for (uint r = 0u; r < 4u; ++r) {
                     if (row0 + r < realN) {
-                        device const uchar* p = (device const uchar*)(
-                            rowBase + size_t(r) * rowBytes + groupOff + 2u + byteInGroup);
-                        half4 hLo, hHi;
-                        qwg_shvq_unpack_oct8_impl<BITS, true>(p, w, &tgLut, hLo, hHi);
-                        const float4 fLo = float4(hLo), fHi = float4(hHi);
+                        float4 fLo, fHi;
+                        bool neg = false;
+                        if constexpr (BITS == 15) { neg = qwg_shvq15_oct_f4(u15[r][w], fLo, fHi); }
+                        else {
+                            half4 hLo, hHi;
+                            qwg_shvq_unpack_oct8_impl<BITS, true>(
+                                (device const uchar*)(rowBase + size_t(r) * rowBytes + groupOff + 2u + byteInGroup),
+                                w, &tgLut, hLo, hHi);
+                            fLo = float4(hLo); fHi = float4(hHi);
+                        }
                         #pragma unroll
-                        for (uint m = 0u; m < MAX_M; ++m) {
-                            if (m < mRows) {
-                                dm[r][m] += dot(fLo, float4(hxLo[m])) + dot(fHi, float4(hxHi[m]));
-                            }
+                        for (uint m = 0u; m < MAX_M; ++m) if (m < mRows) {
+                            const float d = dot(fLo, float4(hxLo[m])) + dot(fHi, float4(hxHi[m]));
+                            dm[r][m] += neg ? -d : d;
                         }
                     }
                 }
             }
             #pragma unroll
-            for (uint m = 0u; m < MAX_M; ++m) {
-                if (m < mRows) {
-                    if (row0 + 0u < realN) acc[m].x = fma(dm[0][m], sc[0], acc[m].x);
-                    if (row0 + 1u < realN) acc[m].y = fma(dm[1][m], sc[1], acc[m].y);
-                    if (row0 + 2u < realN) acc[m].z = fma(dm[2][m], sc[2], acc[m].z);
-                    if (row0 + 3u < realN) acc[m].w = fma(dm[3][m], sc[3], acc[m].w);
-                }
+            for (uint m = 0u; m < MAX_M; ++m) if (m < mRows) {
+                #pragma unroll
+                for (uint r = 0u; r < 4u; ++r) if (row0 + r < realN) acc[m][r] = fma(dm[r][m], sc[r], acc[m][r]);
             }
         } else {
             #pragma unroll
@@ -580,12 +600,7 @@ METAL_FUNC void qwg_gemv_shvq_rows4_m_acc(device const char* blocks,
                         x + col, K, mRows, tgLut, dm, sc);
                     #pragma unroll
                     for (uint m = 0u; m < MAX_M; ++m) {
-                        if (m < mRows) {
-                            if (r == 0u)      acc[m].x = fma(dm[m], sc, acc[m].x);
-                            else if (r == 1u) acc[m].y = fma(dm[m], sc, acc[m].y);
-                            else if (r == 2u) acc[m].z = fma(dm[m], sc, acc[m].z);
-                            else              acc[m].w = fma(dm[m], sc, acc[m].w);
-                        }
+                        if (m < mRows) acc[m][r] = fma(dm[m], sc, acc[m][r]);
                     }
                 }
             }

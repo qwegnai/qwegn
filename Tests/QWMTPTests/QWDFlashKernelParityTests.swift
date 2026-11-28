@@ -600,7 +600,7 @@ final class QWDFlashKernelParityTests: XCTestCase {
         XCTAssertEqual(policy.selectDraftCount(maxDrafts: 7), 3)
         policy.observeRound(draftCount: 3, accepted: 1, roundMs: 31.0)
         XCTAssertTrue([2, 3, 5, 7].contains(policy.selectDraftCount(maxDrafts: 7)))
-        XCTAssertEqual(QWDFlashDrafter.siluThreadgroups(i: 7680), 15)
+        XCTAssertEqual(QWDFlashDrafter.siluThreadgroups(i: 7680), 8)
         XCTAssertEqual(QWDFlashDrafter.rowPairedMinimumRows, 4)
     }
 
@@ -726,6 +726,7 @@ final class QWDFlashKernelParityTests: XCTestCase {
         let cb = try XCTUnwrap(hal.queue.makeCommandBuffer())
         let enc = try XCTUnwrap(cb.makeComputeCommandEncoder())
         var vocabU = UInt32(vocab), topKU = UInt32(topK), badAnchor: Int32 = -1, draftU = UInt32(D)
+        var softcapF: Float = 0.0, softcapModeU: UInt32 = 0, rankU = UInt32(256)
         enc.setComputePipelineState(psoS1)
         enc.setBuffer(logBuf, offset: 0, index: 0)
         enc.setBuffer(pValBuf, offset: 0, index: 1)
@@ -752,6 +753,9 @@ final class QWDFlashKernelParityTests: XCTestCase {
         enc.setBytes(&draftU, length: 4, index: 7)
         enc.setBytes(&topKU, length: 4, index: 8)
         enc.setBytes(&vocabU, length: 4, index: 9)
+        enc.setBytes(&softcapF, length: 4, index: 10)
+        enc.setBytes(&softcapModeU, length: 4, index: 11)
+        enc.setBytes(&rankU, length: 4, index: 12)
         enc.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1), threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
         enc.endEncoding()
         cb.commit()

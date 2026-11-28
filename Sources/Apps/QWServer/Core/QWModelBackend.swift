@@ -269,11 +269,37 @@ enum QWBackendFacts {
         guard let pack = try? QWQuant.Pack(url: URL(fileURLWithPath: packPath)) else {
             return "pack metadata unreadable"
         }
-        guard let head = try? pack.entry("lm_head.weight") else {
+        let headNames = [
+            "lm_head.weight",
+            "model.language_model.lm_head.weight",
+            "model.lm_head.weight",
+        ]
+        guard let head = headNames.lazy.compactMap({ try? pack.entry($0) }).first else {
             return "not found in the pack"
         }
-        if head.rawOff != nil { return "BF16 (verbatim)" }
-        if head.hq4Off != nil { return "HQ4_G32_M5" }
+        return entryStorageLabel(head)
+    }
+
+    private static func entryStorageLabel(_ head: QWQTensorEntry) -> String {
+        if head.rawOff != nil {
+            switch head.kind?.lowercased() {
+            case "f32": return "F32 (verbatim)"
+            case "f16": return "F16 (verbatim)"
+            default: return "BF16 (verbatim)"
+            }
+        }
+        if head.hq4Off != nil {
+            if head.isSHVQ {
+                return QWSHVQBlock.formatName(bits: head.hqBits, group: head.hqGroup)
+            }
+            if head.hq?.vq == "aq" {
+                return QWAQBlock.formatName(bits: head.hqBits, group: head.hqGroup)
+            }
+            if head.isIncumbentHQ4 {
+                return "HQ4_G32_M5"
+            }
+            return "HQ\(head.hqBits)_G\(head.hqGroup)"
+        }
         if head.hq8Off != nil { return "HQ8_G32_M5" }
         return "unknown layout"
     }

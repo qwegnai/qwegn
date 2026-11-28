@@ -93,14 +93,14 @@ final class QWModelDescriptorV3Tests: XCTestCase {
             let cfgURL = FileManager.default.fileExists(atPath: assetsCfg.path) ? assetsCfg : rootCfg
             guard FileManager.default.fileExists(atPath: cfgURL.path) else { continue }
             let data = try Data(contentsOf: cfgURL)
+            // Skip packs from unmerged feature branches whose model_type is not in this build's registry.
+            if Self.hasUnregisteredModelType(in: data) { continue }
             let name = dir.lastPathComponent.lowercased()
             if name.contains("dflash") || name.contains("dspine") {
                 let d = try QWModelDescriptor.decodeDrafter(configJSON: data)
                 XCTAssertEqual(d.role, .speculativeDrafter, dir.lastPathComponent)
                 XCTAssertEqual(d.verifyInternalConsistency(), [], dir.lastPathComponent)
             } else {
-                // Skip packs from unmerged feature branches whose model_type is not in this build's registry.
-                if Self.hasUnregisteredModelType(in: data) { continue }
                 let d = try QWModelDescriptor.decode(configJSON: data)
                 XCTAssertNotEqual(d.role, .speculativeDrafter, dir.lastPathComponent)
                 XCTAssertEqual(d.verifyInternalConsistency(), [], dir.lastPathComponent)

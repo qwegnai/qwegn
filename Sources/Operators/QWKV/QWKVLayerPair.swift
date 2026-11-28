@@ -54,19 +54,20 @@ enum QWKVHostCodec {
         src: [UInt16]
     ) throws {
         let base0 = positions.lowerBound
+        let arenaBase = pageArena.region.buffer.contents().advanced(by: pageArena.region.base)
         switch mode {
         case .f16:
-            try src.withUnsafeBufferPointer { s in
-                guard let base = s.baseAddress else { return }
-                for tok in positions {
-                    let pg = tok / QWKVCache.pageTokens
-                    let off = tok % QWKVCache.pageTokens
-                    let pageID = Int(table[pg])
-                    guard pageID >= 0 else { throw QWKVError.badArgument("unallocated KV page \(pg)") }
-                    let dst = pageArena.region.buffer.contents()
-                        .advanced(by: pageArena.region.base + pageID * bytesPerPage)
-                        .assumingMemoryBound(to: UInt16.self) + off * rowElems
-                    memcpy(dst, base + (tok - base0) * rowElems, rowElems * 2)
+            try withExtendedLifetime(pageArena.region.buffer) {
+                try src.withUnsafeBufferPointer { s in
+                    guard let base = s.baseAddress else { return }
+                    for tok in positions {
+                        let pg = tok / QWKVCache.pageTokens
+                        let off = tok % QWKVCache.pageTokens
+                        let pageID = Int(table[pg])
+                        guard pageID >= 0 else { throw QWKVError.badArgument("unallocated KV page \(pg)") }
+                        let dst = arenaBase.advanced(by: pageID * bytesPerPage + off * rowElems * 2)
+                        dst.copyMemory(from: base + (tok - base0) * rowElems, byteCount: rowElems * 2)
+                    }
                 }
             }
         case .q8:
@@ -76,28 +77,34 @@ enum QWKVHostCodec {
             var frow = [Float](repeating: 0, count: rowElems)
             var qrow = [Int8](repeating: 0, count: rowElems)
             var srow = [Float16](repeating: 0, count: effHeads)
-            try src.withUnsafeBufferPointer { s in
-                guard let base = s.baseAddress else { return }
-                for tok in positions {
-                    let pg = tok / QWKVCache.pageTokens
-                    let off = tok % QWKVCache.pageTokens
-                    let pageID = Int(table[pg])
-                    guard pageID >= 0 else { throw QWKVError.badArgument("unallocated KV page \(pg)") }
-                    let pageBase = pageArena.region.buffer.contents()
-                        .advanced(by: pageArena.region.base + pageID * bytesPerPage)
-                    let srcRow = base + (tok - base0) * rowElems
-                    for i in 0..<rowElems {
-                        frow[i] = Float(Float16(bitPattern: srcRow[i]))
-                    }
-                    try QWKVCompressedLayout.quantizeQ8(
-                        input: frow, qOut: &qrow, scalesOut: &srow,
-                        kvHeads: effHeads, headDim: effHeadDim)
-                    _ = qrow.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-                        memcpy(pageBase.advanced(by: off * rowElems), raw.baseAddress!, rowElems)
-                    }
-                    let scaleBase = pageBase.advanced(by: layout.dataBytesPerPage + off * (effHeads * 2))
-                    _ = srow.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-                        memcpy(scaleBase, raw.baseAddress!, effHeads * 2)
+            try withExtendedLifetime(pageArena.region.buffer) {
+                try src.withUnsafeBufferPointer { s in
+                    guard let base = s.baseAddress else { return }
+                    for tok in positions {
+                        let pg = tok / QWKVCache.pageTokens
+                        let off = tok % QWKVCache.pageTokens
+                        let pageID = Int(table[pg])
+                        guard pageID >= 0 else { throw QWKVError.badArgument("unallocated KV page \(pg)") }
+                        let pageBase = arenaBase.advanced(by: pageID * bytesPerPage)
+                        let srcRow = base + (tok - base0) * rowElems
+                        for i in 0..<rowElems {
+                            frow[i] = Float(Float16(bitPattern: srcRow[i]))
+                        }
+                        try QWKVCompressedLayout.quantizeQ8(
+                            input: frow, qOut: &qrow, scalesOut: &srow,
+                            kvHeads: effHeads, headDim: effHeadDim)
+                        let qDst = pageBase.advanced(by: off * rowElems)
+                        qrow.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                            if let qSrc = raw.baseAddress {
+                                qDst.copyMemory(from: qSrc, byteCount: rowElems)
+                            }
+                        }
+                        let scaleBase = pageBase.advanced(by: layout.dataBytesPerPage + off * (effHeads * 2))
+                        srow.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                            if let sSrc = raw.baseAddress {
+                                scaleBase.copyMemory(from: sSrc, byteCount: effHeads * 2)
+                            }
+                        }
                     }
                 }
             }
@@ -111,29 +118,33 @@ enum QWKVHostCodec {
             var qrow = [UInt8](repeating: 0, count: rowElems / 2)
             var sc = [Float16](repeating: 0, count: totalGroups)
             var mn = [Float16](repeating: 0, count: totalGroups)
-            try src.withUnsafeBufferPointer { s in
-                guard let base = s.baseAddress else { return }
-                for tok in positions {
-                    let pg = tok / QWKVCache.pageTokens
-                    let off = tok % QWKVCache.pageTokens
-                    let pageID = Int(table[pg])
-                    guard pageID >= 0 else { throw QWKVError.badArgument("unallocated KV page \(pg)") }
-                    let pageBase = pageArena.region.buffer.contents()
-                        .advanced(by: pageArena.region.base + pageID * bytesPerPage)
-                    let srcRow = base + (tok - base0) * rowElems
-                    for i in 0..<rowElems {
-                        frow[i] = Float(Float16(bitPattern: srcRow[i]))
-                    }
-                    try QWKVCompressedLayout.quantizeQ4(
-                        input: frow, qOut: &qrow, scalesOut: &sc, minsOut: &mn,
-                        kvHeads: effHeads, headDim: effHeadDim)
-                    _ = qrow.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-                        memcpy(pageBase.advanced(by: off * (rowElems / 2)), raw.baseAddress!, rowElems / 2)
-                    }
-                    let hBase = pageBase.advanced(by: layout.dataBytesPerPage + off * (totalGroups * 4))
-                    for g in 0..<totalGroups {
-                        hBase.assumingMemoryBound(to: Float16.self)[2 * g] = sc[g]
-                        hBase.assumingMemoryBound(to: Float16.self)[2 * g + 1] = mn[g]
+            try withExtendedLifetime(pageArena.region.buffer) {
+                try src.withUnsafeBufferPointer { s in
+                    guard let base = s.baseAddress else { return }
+                    for tok in positions {
+                        let pg = tok / QWKVCache.pageTokens
+                        let off = tok % QWKVCache.pageTokens
+                        let pageID = Int(table[pg])
+                        guard pageID >= 0 else { throw QWKVError.badArgument("unallocated KV page \(pg)") }
+                        let pageBase = arenaBase.advanced(by: pageID * bytesPerPage)
+                        let srcRow = base + (tok - base0) * rowElems
+                        for i in 0..<rowElems {
+                            frow[i] = Float(Float16(bitPattern: srcRow[i]))
+                        }
+                        try QWKVCompressedLayout.quantizeQ4(
+                            input: frow, qOut: &qrow, scalesOut: &sc, minsOut: &mn,
+                            kvHeads: effHeads, headDim: effHeadDim)
+                        let qDst = pageBase.advanced(by: off * (rowElems / 2))
+                        qrow.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                            if let qSrc = raw.baseAddress {
+                                qDst.copyMemory(from: qSrc, byteCount: rowElems / 2)
+                            }
+                        }
+                        let hBase = pageBase.advanced(by: layout.dataBytesPerPage + off * (totalGroups * 4))
+                        for g in 0..<totalGroups {
+                            hBase.assumingMemoryBound(to: Float16.self)[2 * g] = sc[g]
+                            hBase.assumingMemoryBound(to: Float16.self)[2 * g + 1] = mn[g]
+                        }
                     }
                 }
             }

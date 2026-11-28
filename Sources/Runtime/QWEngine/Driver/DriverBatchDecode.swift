@@ -93,7 +93,7 @@ extension QWEngineDriver {
     nonisolated(unsafe) private static var batchMLPAssocKey: UInt8 = 0
 
     var canRunBatchedDecode: Bool {
-        mlaOperator == nil && hcaOperator == nil && echoDrafter == nil && mbsaOperator == nil
+        hcaOperator == nil && echoDrafter == nil && mbsaOperator == nil
             && psc.maxChunk >= QWBatchHeadScratch.maxBatchRows
             && geometry.vocab > 0
             && (geometry.mhcConfig == nil || (psc.mhcStream != nil && psc.mhcControls != nil))
@@ -182,6 +182,7 @@ extension QWEngineDriver {
         }
         let scratch = try headScratch ?? sharedBatchHeadScratch()
         try prepareLSASessionsForBatchStep(sessions)
+        try prepareMLASessionsForBatchStep(sessions)
         try copyEmbedRows(tokens, start: 0, count: B, to: prefixRows(psc.x, rows: B, cols: geometry.hidden, dt: .f16))
         if geometry.sharedExpertIntermediate > 0 && !geometry.sharedExpertHasGate, let s = psc.moe {
             let gPtr = s.gate.region.pointer.advanced(by: s.gate.offset).assumingMemoryBound(to: Float.self)
@@ -273,18 +274,19 @@ extension QWEngineDriver {
             encodeFwht32Fast(enc, x: xBatch)
             enc.memoryBarrier(scope: .buffers)
         }
+        let softcap = geometry.finalLogitSoftcapping ?? 0.0
         if greedyOnly && multimaxParams == nil {
             try head.encodeBatchedGreedyArgmax(
                 enc, storage: headStorage, x: xBatch,
                 keysHi: scratch.keysHiView(rows: B),
                 keysLo: scratch.keysLoView(rows: B),
                 tokens: scratch.tokensView(rows: B),
-                M: B, N: geometry.vocab
+                M: B, N: geometry.vocab, softcap: softcap
             )
             return
         }
         let logitsBatch = scratch.logitsView(rows: B)
-        try head.encode(enc, storage: headStorage, x: xBatch, gs: nil, y: logitsBatch, M: B)
+        try head.encode(enc, storage: headStorage, x: xBatch, gs: nil, y: logitsBatch, M: B, softcap: softcap)
         if let mm = multimaxParams {
             enc.memoryBarrier(scope: .buffers)
             try head.encodeMultiMax(enc, logits: logitsBatch, params: mm, count: B * geometry.vocab)
@@ -492,18 +494,23 @@ extension QWEngineDriver {
 
     func runScheduledBatch(
         initialJobs: [QWBatchScheduledJob],
+        headScratch _: QWBatchHeadScratch? = nil,
+        pollPending: (_ freeSlots: Int) -> [QWBatchScheduledJob],
+        requeueDelayed: ([QWBatchScheduledJob]) -> Void
+    ) {
+        trunkExecutor.runScheduledBatch(
+            initialJobs: initialJobs,
+            pollPending: pollPending,
+            requeueDelayed: requeueDelayed
+        )
+    }
+
+    func runStandardScheduledBatch(
+        initialJobs: [QWBatchScheduledJob],
         headScratch: QWBatchHeadScratch? = nil,
         pollPending: (_ freeSlots: Int) -> [QWBatchScheduledJob],
         requeueDelayed: ([QWBatchScheduledJob]) -> Void
     ) {
-        if let ink = inkling2Runtime {
-            ink.runScheduledBatch(
-                initialJobs: initialJobs,
-                pollPending: pollPending,
-                requeueDelayed: requeueDelayed
-            )
-            return
-        }
         withDriverGenerateLock {
             let permit: QWGenerationPermit
             do { permit = try acquireRequest() } catch {

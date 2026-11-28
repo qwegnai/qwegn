@@ -10,40 +10,16 @@ import QWHAL
 import QWLoad
 import QWQuant
 
-enum QWDecisionLinearW: @unchecked Sendable {
-    case bf16(QWGemmFP.BF16Bank)
-    case quant(QWWeightView)
-
-    var needsRotation: Bool {
-        if case .quant(let v) = self { return v.containerKind.isRotated }
-        return false
-    }
-
-    var n: Int {
-        switch self {
-        case .bf16(let b): return b.n
-        case .quant(let v): return v.n
-        }
-    }
-
-    var k: Int {
-        switch self {
-        case .bf16(let b): return b.k
-        case .quant(let v): return v.k
-        }
-    }
-}
-
 struct QWDecisionNormTensor: @unchecked Sendable {
     let weight: QWTensorValue
     let bias: QWTensorValue?
 }
 
 struct QWDecisionConvWeights: @unchecked Sendable {
-    let inProj: QWDecisionLinearW?
+    let inProj: QWLinearWeight?
     let convW: QWTensorValue
     let convB: QWTensorValue?
-    let outProj: QWDecisionLinearW
+    let outProj: QWLinearWeight
     let kernelSize: Int
     let channels: Int
     let isCentered: Bool
@@ -51,17 +27,17 @@ struct QWDecisionConvWeights: @unchecked Sendable {
 }
 
 struct QWDecisionAttnLayerWeights: @unchecked Sendable {
-    let qProj: QWDecisionLinearW
-    let kProj: QWDecisionLinearW
-    let vProj: QWDecisionLinearW
-    let oProj: QWDecisionLinearW
+    let qProj: QWLinearWeight
+    let kProj: QWLinearWeight
+    let vProj: QWLinearWeight
+    let oProj: QWLinearWeight
     let qBias: QWTensorValue?
     let kBias: QWTensorValue?
     let vBias: QWTensorValue?
     let oBias: QWTensorValue?
     let qNorm: QWTensorValue?
     let kNorm: QWTensorValue?
-    let gateProj: QWDecisionLinearW?
+    let gateProj: QWLinearWeight?
     let isSliding: Bool
     let isBidirectional: Bool
     let slidingWindow: Int
@@ -79,11 +55,11 @@ struct QWDecisionLoadedLayer: @unchecked Sendable {
     let op: QWDecisionLayerOperatorWeights
     let preFFNNorm: QWDecisionNormTensor?
     let postFFNNorm: QWDecisionNormTensor?
-    let w13: QWDecisionLinearW?
-    let w1: QWDecisionLinearW?
-    let w3: QWDecisionLinearW?
+    let w13: QWLinearWeight?
+    let w1: QWLinearWeight?
+    let w3: QWLinearWeight?
     let ffnUpBias: QWTensorValue?
-    let w2: QWDecisionLinearW
+    let w2: QWLinearWeight
     let ffnDownBias: QWTensorValue?
 }
 
@@ -121,7 +97,7 @@ enum QWDecisionWeightLoader {
     static func probeRotatedBasis(root: QWModelRoot, descriptor: QWModelDescriptor) throws -> Bool {
         guard root.kind == .qwp1 else { return false }
         let pack = try QWQuant.Pack(url: root.weights, descriptor: descriptor)
-        for (_, entry) in pack.tensors where entry.rawOff == nil && entry.hq4Off != nil {
+        for (_, entry) in pack.tensors where PlaneLayout.resolve(entry) == .hq4 {
             if entry.hq?.vq != "aq" { return true }
         }
         return false
@@ -216,7 +192,7 @@ enum QWDecisionWeightLoader {
                 let kernel = descriptor.shortConvConfig?.kernelSize ?? 7
                 let isCentered = (lKind == "centered_conv") || (descriptor.shortConvConfig?.isCentered == true)
                 let inName = resolveName(source, [lp + "conv.in_proj.weight", lp + "short_conv.in_proj.weight"])
-                let inProj: QWDecisionLinearW? = try inName.map { name in
+                let inProj: QWLinearWeight? = try inName.map { name in
                     let cols = tensorShape(name: name, source: source)?[0] ?? (3 * hidden)
                     return try loadLinear(name: name, n: cols, k: hidden, source: source, hal: hal, buffers: &buffers)
                 }
@@ -373,7 +349,7 @@ enum QWDecisionWeightLoader {
         source: QWDecisionWeightSource,
         hal: QWHal,
         buffers: inout [any MTLBuffer]
-    ) throws -> (w13: QWDecisionLinearW?, w1: QWDecisionLinearW?, w3: QWDecisionLinearW?) {
+    ) throws -> (w13: QWLinearWeight?, w1: QWLinearWeight?, w3: QWLinearWeight?) {
         guard let w3Name else {
             let w1 = try loadLinear(name: w1Name, n: nEach, k: k, source: source, hal: hal, buffers: &buffers)
             return (nil, w1, nil)
@@ -403,7 +379,7 @@ enum QWDecisionWeightLoader {
     private static func tryLoadFusedQWPOrST(
         w1Name: String, w3Name: String, nEach: Int, k: Int,
         source: QWDecisionWeightSource, hal: QWHal, buffers: inout [any MTLBuffer]
-    ) throws -> QWDecisionLinearW? {
+    ) throws -> QWLinearWeight? {
         switch source {
         case .safetensors(let st):
             guard let t1 = st.tensor(w1Name), let t3 = st.tensor(w3Name),
@@ -457,11 +433,12 @@ enum QWDecisionWeightLoader {
 
     static func loadLinear(
         name: String, n: Int, k: Int, source: QWDecisionWeightSource, hal: QWHal, buffers: inout [any MTLBuffer]
-    ) throws -> QWDecisionLinearW {
+    ) throws -> QWLinearWeight {
         if case .qwp(let pack) = source {
             let e = try pack.entry(name)
-            if e.rawOff == nil, let kind = containerKind(from: e),
-               let layout = PlaneLayout.resolve(e), let off = layout.offset(e), let bytes = layout.byteCount(e) {
+            if let layout = PlaneLayout.resolve(e), layout == .hq4,
+               let kind = containerKind(from: e),
+               let off = layout.offset(e), let bytes = layout.byteCount(e) {
                 let buf = try allocSharedBuffer(bytes: bytes, hal: hal, buffers: &buffers)
                 let dst = buf.contents()
                 try withExtendedLifetime(buf) {
@@ -501,7 +478,7 @@ enum QWDecisionWeightLoader {
             guard let layout = PlaneLayout.resolve(e), let off = layout.offset(e), let bytes = layout.byteCount(e) else {
                 throw QWDecisionError.backendFailed("invalid QWP1 layout for \(name)")
             }
-            if e.rawOff != nil {
+            if layout == .raw {
                 try withExtendedLifetime(buf) {
                     try pack.withRawPointer(at: off, byteCount: bytes) { (src: UnsafeRawPointer) in
                         convertToBF16(src: src, srcDtype: e.kind ?? "bf16", count: count, expectedSrcBytes: bytes, dst: dst)
@@ -532,9 +509,11 @@ enum QWDecisionWeightLoader {
             }
         case .qwp(let pack):
             let e = try pack.entry(name)
-            guard let off = e.rawOff else { throw QWDecisionError.backendFailed("expected raw norm/conv tensor for \(name)") }
-            let elemBytes = (e.kind == "f32") ? 4 : 2
-            let byteCount = count * elemBytes
+            guard let layout = PlaneLayout.resolve(e), layout == .raw,
+                  let off = layout.offset(e) else {
+                throw QWDecisionError.backendFailed("expected raw norm/conv tensor for \(name)")
+            }
+            let byteCount = count * e.rawElemBytes
             try withExtendedLifetime(buf) {
                 try pack.withRawPointer(at: off, byteCount: byteCount) { (src: UnsafeRawPointer) in
                     convertToF16(src: src, srcDtype: e.kind ?? "bf16", count: count, expectedSrcBytes: byteCount, dst: dst)
@@ -545,7 +524,7 @@ enum QWDecisionWeightLoader {
     }
 
     private static func containerKind(from e: QWQTensorEntry) -> QWWeightView.ContainerKind? {
-        guard e.rawOff == nil, e.hq4Off != nil else { return nil }
+        guard PlaneLayout.resolve(e) == .hq4 else { return nil }
         let rotated = e.hq?.vq != "aq"
         if e.isSHVQ { return rotated ? .shvq(bits: e.hqBits, group: e.hqGroup) : nil }
         if e.isIncumbentHQ4 { return .incumbentHQ4G32 }

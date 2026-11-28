@@ -89,25 +89,27 @@ final class QWAQGDNTwinTests: XCTestCase {
                          bank: Data, x: [Float]) -> (value: Float, magnitude: Float) {
         let groups = k / group
         let bytesPerGroup = QWAQBlock.bytes(bits: bits, group: group)
-        var value: Float = 0
-        var magnitude: Float = 0
-        for g in 0..<groups {
-            let offset = (row * groups + g) * bytesPerGroup
-            let slice = bank.subdata(in: offset..<(offset + bytesPerGroup))
-            let xs = (0..<group).map { Float(Float16(x[g * group + $0])) }
-            value += slice.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in QWAQBlock.dot(group: raw, bits: bits, group: group, x: xs) }
-            magnitude += slice.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Float in
-                let (scale, bias) = QWAQBlock.header(raw)
-                let payload = UnsafeRawBufferPointer(rebasing: raw.dropFirst(4))
-                var m: Float = 0
-                for i in 0..<group {
+        return bank.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> (Float, Float) in
+            guard let base = raw.baseAddress else { return (0, 0) }
+            var value: Float = 0, magnitude: Float = 0, g = 0
+            while g < groups {
+                let offset = (row * groups + g) * bytesPerGroup
+                let grpRaw = UnsafeRawBufferPointer(start: base.advanced(by: offset), count: bytesPerGroup)
+                let xs = (0..<group).map { Float(Float16(x[g * group + $0])) }
+                value += QWAQBlock.dot(group: grpRaw, bits: bits, group: group, x: xs)
+                let (scale, bias) = QWAQBlock.header(grpRaw)
+                let payload = UnsafeRawBufferPointer(start: base.advanced(by: offset + 4), count: bytesPerGroup - 4)
+                var m: Float = 0, i = 0
+                while i < group {
                     let code = Float(QWAQBlock.readBits(payload, bits: bits, index: i))
                     m += abs((code * scale + bias) * xs[i])
+                    i += 1
                 }
-                return m
+                magnitude += m
+                g += 1
             }
+            return (value, magnitude)
         }
-        return (value, magnitude)
     }
 
     /// The same row the way the PREFILL computes it: the weight narrowed to
@@ -117,21 +119,28 @@ final class QWAQGDNTwinTests: XCTestCase {
                                   bank: Data, x: [Float]) -> Float {
         let groups = k / group
         let bytesPerGroup = QWAQBlock.bytes(bits: bits, group: group)
-        var acc: Float = 0
-        for g in 0..<groups {
-            let offset = (row * groups + g) * bytesPerGroup
-            let slice = bank.subdata(in: offset..<(offset + bytesPerGroup))
-            slice.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-                let (scale, bias) = QWAQBlock.header(raw)
-                let payload = UnsafeRawBufferPointer(rebasing: raw.dropFirst(4))
-                for i in 0..<group {
-                    let code = Float(QWAQBlock.readBits(payload, bits: bits, index: i))
-                    let w = Float(Float16(code * scale + bias))
-                    acc += w * Float(Float16(x[g * group + i]))
+        return bank.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Float in
+            guard let base = raw.baseAddress else { return 0 }
+            return x.withUnsafeBufferPointer { xBuf -> Float in
+                guard let xp = xBuf.baseAddress else { return 0 }
+                var acc: Float = 0, g = 0
+                while g < groups {
+                    let offset = (row * groups + g) * bytesPerGroup
+                    let grpRaw = UnsafeRawBufferPointer(start: base.advanced(by: offset), count: bytesPerGroup)
+                    let (scale, bias) = QWAQBlock.header(grpRaw)
+                    let payload = UnsafeRawBufferPointer(start: base.advanced(by: offset + 4), count: bytesPerGroup - 4)
+                    var i = 0
+                    while i < group {
+                        let code = Float(QWAQBlock.readBits(payload, bits: bits, index: i))
+                        let w = Float(Float16(code * scale + bias))
+                        acc += w * Float(Float16(xp[g * group + i]))
+                        i += 1
+                    }
+                    g += 1
                 }
+                return acc
             }
         }
-        return acc
     }
 
     /// The family's gate: the relative error, normalised by the result's own

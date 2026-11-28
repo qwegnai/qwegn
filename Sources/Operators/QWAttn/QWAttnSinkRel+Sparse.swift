@@ -154,7 +154,7 @@ extension QWAttnSinkRel {
         let approxKeys = min(resolvedKVLen, listStride * 4 + (posOffset & 3) + T)
         let resolvedSplits = splits ?? Self.splits(
             forKeys: approxKeys, kvHeads: config.nKV, batchTokens: T,
-            slidingWindow: config.slidingWindow, gqa: gqa
+            slidingWindow: config.slidingWindow, gpuCores: hal.caps.gpuCores, gqa: gqa
         )
         guard (1...Self.maxSplits).contains(resolvedSplits) else {
             throw QWAttnSinkRelError.badShape("splits \(resolvedSplits) out of range 1...\(Self.maxSplits)")

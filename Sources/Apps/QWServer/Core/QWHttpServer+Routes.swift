@@ -6,7 +6,6 @@ import QWCore
 import QWEngine
 import QWHAL
 import QWVision
-import Metal
 
 extension QWHttpServer {
     func handleEngineInfoRoute(connection: NWConnection) {
@@ -17,15 +16,21 @@ extension QWHttpServer {
         let isLoaded = engineState.isLoaded
         let params = self.actor.getLoadedParamsInfo()
 
-        let metalDevName = caps?.name ?? MTLCreateSystemDefaultDevice()?.name
+        let metalDevName = caps?.name
         let isTensor = caps?.isMetal4TensorCapable ?? false
         // The Metal family the device really supports, from
         // the probes the HAL made. A device that supports
         // none of them has no version to report.
-        let metalVer: String? = if caps?.familyApple11 == true || caps?.familyApple10 == true {
+        let metalVer: String? = if caps?.familyApple11 == true {
+            "Metal 4 (Apple11)"
+        } else if caps?.familyApple10 == true {
             "Metal 4"
         } else if caps?.familyApple9 == true {
-            "Metal 3"
+            "Metal 4 (Apple9)"
+        } else if caps?.familyApple8 == true {
+            "Metal 3.2 (Apple8)"
+        } else if caps?.familyApple7 == true {
+            "Metal 3.2 (Apple7)"
         } else {
             nil
         }
@@ -109,10 +114,12 @@ extension QWHttpServer {
                 "decisions_unload": "POST /v1/decisions/model/unload",
                 "decisions_status": "GET /v1/decisions/status",
                 "mcp": "POST /mcp",
+                "memory_packs": "GET /v1/memory/packs",
                 "memory_inspect": "POST /v1/memory/inspect",
                 "memory_index": "POST /v1/memory/index",
                 "memory_mount": "POST /v1/memory/mount",
                 "memory_unmount": "POST /v1/memory/unmount",
+                "memory_query": "POST /v1/memory/query",
                 "restart": "POST /v1/engine/restart",
                 "screen_capture": "POST /v1/vision/screen-capture",
                 "update": "GET /v1/update",
@@ -154,10 +161,16 @@ extension QWHttpServer {
         let config = self.actor.getConfig()
         let caps = QWDeviceCaps.current
         let hw = QWMachineHardwareInfo.current()
-        let metalFamily: String? = if caps?.familyApple11 == true || caps?.familyApple10 == true {
+        let metalFamily: String? = if caps?.familyApple11 == true {
+            "Metal 4 (Apple11)"
+        } else if caps?.familyApple10 == true {
             "Metal 4"
         } else if caps?.familyApple9 == true {
-            "Metal 3"
+            "Metal 4 (Apple9)"
+        } else if caps?.familyApple8 == true {
+            "Metal 3.2 (Apple8)"
+        } else if caps?.familyApple7 == true {
+            "Metal 3.2 (Apple7)"
         } else {
             nil
         }
@@ -168,7 +181,7 @@ extension QWHttpServer {
             quantization: params?.headStorage,
             hostLogicalCores: hw.logicalCores,
             gdnPrefillMode: config.gdnPrefill,
-            gpuName: caps?.name ?? MTLCreateSystemDefaultDevice()?.name,
+            gpuName: caps?.name,
             metalFamily: metalFamily,
             physicalMemoryGB: hw.physicalMemoryBytes > 0 ? hw.physicalMemoryGB : nil,
             lsaMode: config.lsaConfig.mode.rawValue,
@@ -218,6 +231,8 @@ extension QWHttpServer {
         let reasonPhrase: String = switch status {
         case 200: "OK"
         case 202: "Accepted"
+        case 405: "Method Not Allowed"
+        case 409: "Conflict"
         default: "Error"
         }
         var header = "HTTP/1.1 \(status) \(reasonPhrase)\r\n"
@@ -277,6 +292,7 @@ extension QWHttpServer {
         "/v1/memory/inspect", "/api/memory/inspect",
         "/v1/memory/index", "/api/memory/index",
         "/v1/memory/mount", "/api/memory/mount",
+        "/v1/memory/query", "/api/memory/query",
         "/v1/update/skip", "/api/update/skip",
         "/v1/decisions", "/v1/decisions/batch",
         "/v1/systemone", "/v1/systemone/batch",

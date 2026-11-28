@@ -106,11 +106,17 @@ extension QWModelDescriptor {
             var layer_group_size: Int? = nil
             var compress_ratios: [Int]? = nil
             var full_attention_interval: Int? = nil
+            var full_attention_layers: [Int]? = nil
+            var dense_attention_layers: [Int]? = nil
             var rms_norm_eps: Double? = nil
             var norm_eps: Double? = nil
             var layer_norm_eps: Double? = nil
             var block_norm_eps: Double? = nil
             var norm_bias: Bool? = nil
+            var norm_type: String? = nil
+            var indexer_norm_type: String? = nil
+            var layernorm_type: String? = nil
+            var layernorm_gating_weight: Float? = nil
             var use_sandwich_norm: Bool? = nil
             var conv_L_cache: Int? = nil
             var conv_bias: Bool? = nil
@@ -176,7 +182,9 @@ extension QWModelDescriptor {
             let output_gate_type: String?
             var attn_output_gate: Bool? = nil
             var use_gated_attn: Bool? = nil
+            var gated_attention: Bool? = nil
             var gated_attention_proj_granularity_type: String? = nil
+            var use_mla_scaling_factor: Bool? = nil
             var use_attn_merger: Bool? = nil
             var use_vha_attention: Bool? = nil
             var add_full_attention_sink_bias: Bool? = nil
@@ -195,6 +203,10 @@ extension QWModelDescriptor {
             let linear_num_value_heads: Int?
             let linear_value_head_dim: Int?
             let linear_conv_kernel_dim: Int?
+            var linear_attention_type: String? = nil
+            var linear_gating_type: String? = nil
+            var linear_sigmoid_gate_scale: Float? = nil
+            var linear_attn_o_norm_eps: Double? = nil
             var num_kv_heads_for_linear_attn: Int? = nil
             var short_conv_kernel_size: Int? = nil
             var no_kda_lora: Bool? = nil
@@ -215,6 +227,7 @@ extension QWModelDescriptor {
             var num_shared_experts: Int? = nil
             var moe_shared_expert_gate: Bool? = nil
             var use_shared_expert_gate: Bool? = nil
+            var use_shared_expert_sigmoid: Bool? = nil
             var moe_split_feature_routing: Bool? = nil
             var moe_router_enable_expert_bias: Bool? = nil
             var n_group: Int? = nil
@@ -270,8 +283,11 @@ extension QWModelDescriptor {
             let mtp_num_hidden_layers: Int?
             var num_nextn_predict_layers: Int? = nil
             var mtp_num_layers: Int? = nil
+            var nextn_is_sparse: Bool? = nil
+            var nextn_is_linear: Bool? = nil
             let mtp_use_dedicated_embeddings: Bool?
             var mtp_shared_last_layer: Bool? = nil
+            var final_logit_softcapping: Float? = nil
             var dspark_block_size: Int? = nil
             var dspark_markov_rank: Int? = nil
             var dspark_noise_token_id: Int? = nil

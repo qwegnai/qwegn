@@ -365,8 +365,10 @@ extension QWEngineDriver.WeightLoader {
             var ws: [LayerW] = []
             for l in 0..<geometry.numLayers {
                 let blk = "\(QWEngineDriver.P)layers.\(l)."
-                let ln1 = try f16wNorm(blk + "input_layernorm.weight", geometry.hidden)
-                let ln2 = try f16wNorm(blk + "post_attention_layernorm.weight", geometry.hidden)
+                let norms = try loadLayerNorms(blk, geometry: geometry)
+                let ln1 = norms.ln1
+                let ln2 = norms.ln2
+                let gatedNorms = norms.gated
                 let (gu, down, moe) = try loadLayerMLP(blk, isMoE: geometry.isMoELayer(l), geometry: geometry, layer: l)
                 if geometry.isCompressedAttention(l) {
                     ws.append(try loadHCAAttnLayer(
@@ -384,19 +386,21 @@ extension QWEngineDriver.WeightLoader {
                     if geometry.usesDecoupledRopeMLA {
                         ws.append(try loadDecoupledMLAAttnLayer(
                             blk: blk, layer: l, ln1: ln1, ln2: ln2,
-                            gu: gu, down: down, moe: moe, geometry: geometry))
+                            gu: gu, down: down, moe: moe, geometry: geometry,
+                            gatedNorms: gatedNorms))
                         continue
                     }
                     let attn = try loadGQAAttn(blk, geometry: geometry, includeMBSA: true)
                     let mhcW: MHCLayerWeights?
                     if let mhc = geometry.mhcConfig, l >= mhc.start, l < mhc.end {
-                        mhcW = try loadMHCOrErnieHC(blk, mhc: mhc)
+                        mhcW = try loadMHCOrContractedHC(blk, mhc: mhc)
                     } else {
                         mhcW = nil
                     }
                     ws.append(LayerW(ln1: ln1, ln2: ln2, gu: gu, down: down,
                                      kind: moe == nil ? .fullAttention : .moe,
-                                     gdn: nil, attn: attn, moe: moe, mhc: mhcW))
+                                     gdn: nil, attn: attn, moe: moe, mhc: mhcW,
+                                     gatedNorms: gatedNorms))
                 } else {
                     if geometry.gdnVectorDecay {
                         ws.append(try loadKDALayer(
@@ -429,7 +433,8 @@ extension QWEngineDriver.WeightLoader {
                                      kind: moe == nil ? .gdn : .gdnMoe,
                                      gdn: GdnW(inProj: inProj, qkv: qkv, z: z, a: a, b: b, conv: conv, normW: gnw,
                                                aLog: aLog, dtBias: dtB, out: out),
-                                     attn: nil, moe: moe, mhc: mhcW))
+                                     attn: nil, moe: moe, mhc: mhcW,
+                                     gatedNorms: gatedNorms))
                 }
             }
             return ws

@@ -20,6 +20,7 @@ public final class QWGDNDecode {
 
     private let hal: QWHal
     private let psoRec: any MTLComputePipelineState
+    private let psoRecBatch: any MTLComputePipelineState
     private let psoRecRows: any MTLComputePipelineState
     private let psoRollbackRows: any MTLComputePipelineState
     private var cachedKDAGates: (any MTLComputePipelineState)?
@@ -54,10 +55,11 @@ public final class QWGDNDecode {
     private var instZCh: Int { max(1, hal.geometry.gdnZChannels) }
     private var instGlogCh: Int { max(1, hal.geometry.gdnGlogChannels) }
 
-    public init(hal: QWHal) throws {
+    public init(hal: QWHal, normSigmoid: Bool? = nil, gateScale: Float? = nil) throws {
         self.hal = hal
-        self.psoRec = try hal.pipeline("qwg_gdn_recurrent")
-        self.psoRecRows = try hal.pipeline("qwg_gdn_recurrent_rows")
+        self.psoRec = try hal.pipeline("qwg_gdn_recurrent", gdnNormSigmoid: normSigmoid, gdnGateScale: gateScale)
+        self.psoRecBatch = try hal.pipeline("qwg_gdn_recurrent_batch", gdnNormSigmoid: normSigmoid, gdnGateScale: gateScale)
+        self.psoRecRows = try hal.pipeline("qwg_gdn_recurrent_rows", gdnNormSigmoid: normSigmoid, gdnGateScale: gateScale)
         self.psoRollbackRows = try hal.pipeline("qwg_gdn_rollback_rows")
         if hal.geometry.gdnVectorDecay {
             if hal.geometry.kdaConfig?.isFullRank == true {
@@ -187,6 +189,83 @@ public final class QWGDNDecode {
         }
         enc.dispatchThreadgroups(MTLSize(width: vh, height: 1, depth: 1),
                                  threadsPerThreadgroup: MTLSize(width: hd * 8, height: 1, depth: 1))
+    }
+
+    private struct BatchStrides {
+        var yStride: UInt32
+        var betasStride: UInt32
+        var glogStride: UInt32
+        var zStride: UInt32
+        var oStride: UInt32
+        var oRawStride: UInt32
+    }
+
+    /// Encode B independent T=1 recurrent steps in one `grid.z = rows` launch (0-ULP vs serial).
+    public func encodeBatch(_ enc: any MTLComputeCommandEncoder,
+                            y: QWTensorValue, yStride: Int,
+                            betas: QWTensorValue, betasStride: Int,
+                            glog: QWTensorValue, glogStride: Int,
+                            z: QWTensorValue, zStride: Int,
+                            w: QWTensorValue,
+                            o: QWTensorValue, oStride: Int,
+                            oScratch: QWTensorValue? = nil, oScratchStride: Int = 0,
+                            rows: Int,
+                            stateAt: (Int) -> QWTensorValue) throws {
+        let vh = instVHeads, hd = instHeadDim, qkv = instQKVCh, zCh = instZCh, gCh = instGlogCh
+        guard (1...8).contains(rows), hd == 128,
+              yStride >= qkv, betasStride >= vh, glogStride >= gCh, zStride >= zCh, oStride >= zCh,
+              y.shape.dtype == .f16, y.shape.elementCount >= (rows - 1) * yStride + qkv,
+              betas.shape.dtype == .f32, betas.shape.elementCount >= (rows - 1) * betasStride + vh,
+              glog.shape.dtype == .f32, glog.shape.elementCount >= (rows - 1) * glogStride + gCh,
+              z.shape.dtype == .f16, z.shape.elementCount >= (rows - 1) * zStride + zCh,
+              w.shape.dtype == .f16, w.shape.elementCount == hd,
+              o.shape.dtype == .f16, o.shape.elementCount >= (rows - 1) * oStride + zCh else {
+            throw QWGDNDecodeError.badShape("batch recurrent shape or stride mismatch (rows=\(rows))")
+        }
+        if let oScratch {
+            guard oScratchStride >= zCh, oScratch.shape.dtype == .f32,
+                  oScratch.shape.elementCount >= (rows - 1) * oScratchStride + zCh else {
+                throw QWGDNDecodeError.badShape("batch oScratch shape or stride mismatch")
+            }
+        }
+        var ptrs = try qwGDNPackBatchStateAddresses(
+            enc, rows: rows, expectedElements: vh * hd * hd, dtype: .f32, alignment: 4,
+            stateAt: stateAt, badShapeError: { QWGDNDecodeError.badShape($0) })
+        var strides = BatchStrides(
+            yStride: UInt32(yStride), betasStride: UInt32(betasStride),
+            glogStride: UInt32(glogStride), zStride: UInt32(zStride),
+            oStride: UInt32(oStride), oRawStride: UInt32(max(0, oScratchStride)))
+        enc.setComputePipelineState(psoRecBatch)
+        y.bind(enc, index: 0)
+        betas.bind(enc, index: 1)
+        glog.bind(enc, index: 2)
+        z.bind(enc, index: 3)
+        w.bind(enc, index: 4)
+        o.bind(enc, index: 5)
+        if let oScratch {
+            oScratch.bind(enc, index: 6)
+        } else {
+            enc.setBuffer(nil, offset: 0, index: 6)
+        }
+        enc.setBytes(&ptrs, length: MemoryLayout<QWGDNBatchPtrTable8>.stride, index: 7)
+        enc.setBytes(&strides, length: MemoryLayout<BatchStrides>.stride, index: 8)
+        enc.dispatchThreadgroups(MTLSize(width: vh, height: 1, depth: rows),
+                                 threadsPerThreadgroup: MTLSize(width: hd * 8, height: 1, depth: 1))
+    }
+
+    public func encodeBatch(_ enc: any MTLComputeCommandEncoder,
+                            y: QWTensorValue, yStride: Int,
+                            betas: QWTensorValue, betasStride: Int,
+                            glog: QWTensorValue, glogStride: Int,
+                            states: [QWTensorValue],
+                            z: QWTensorValue, zStride: Int,
+                            w: QWTensorValue,
+                            o: QWTensorValue, oStride: Int,
+                            oScratch: QWTensorValue? = nil, oScratchStride: Int = 0) throws {
+        try encodeBatch(enc, y: y, yStride: yStride, betas: betas, betasStride: betasStride,
+                        glog: glog, glogStride: glogStride, z: z, zStride: zStride, w: w,
+                        o: o, oStride: oStride, oScratch: oScratch, oScratchStride: oScratchStride,
+                        rows: states.count, stateAt: { states[$0] })
     }
 
     /// Replays the shipping recurrence without readout or gated normalization.

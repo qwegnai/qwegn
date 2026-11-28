@@ -78,7 +78,12 @@ struct Run: ParsableCommand {
     @Flag(name: .customLong("verbose"), help: "Print a performance statistics block after the output (load, prefill/decode tok/s, TTFT, p50/p95 step latency, arena).") var verbose: Bool = false
     @Option(name: .customLong("dflash-window"), help: "DFlash 2 / DSpine window B in 2...16 (auto-detects dflash2 vs dspine from drafter pack and sets --mtp-drafts B-1).") var dflashWindow: Int? = nil
     @Flag(name: .customLong("dspark-confidence-schedule"), inversion: .prefixedNo, help: "Enable adaptive confidence-head verification budget for DSpark.") var dsparkConfidenceSchedule: Bool?
-    @Option(name: .customLong("repo"), help: "Repository or knowledge directory root containing .qwg/manifest.json to mount as LSA memory.") var repo: String? = nil
+    @Option(name: .customLong("repo"), help: "Repository or knowledge directory root containing .qwg/manifest.json to mount as LSA memory (repeatable).") var repos: [String] = []
+    @Option(name: .customLong("docs"), help: "Documentation or PDF directory root to mount into Cognitive Vault v2 (repeatable).") var docs: [String] = []
+    var repo: String? {
+        get { repos.first }
+        set { repos = newValue.map { [$0] } ?? [] }
+    }
     @Flag(name: [.customLong("no-memory-pack"), .customLong("no-memory")], help: "Disable automatic mounting of .qwg/manifest.json memory pack.") var noMemory: Bool = false
     @Flag(name: .customLong("no-profile"), help: "Bypass ~/.qwg/settings.json and per-model knob profiles (hermetic benchmark mode).") var noProfile: Bool = false
 
@@ -117,7 +122,8 @@ struct Run: ParsableCommand {
             replCmd.stream = stream
             replCmd.color = color
             replCmd.dflashWindow = dflashWindow
-            replCmd.repo = repo
+            replCmd.repos = repos
+            replCmd.docs = docs
             replCmd.noMemory = noMemory
             replCmd.noProfile = noProfile
             // The window already decided the drafts and the backend, so the

@@ -67,33 +67,57 @@ final class QWGDNPrefillNaxTests: XCTestCase {
         cb.commit(); cb.waitUntilCompleted()
         let po = ob.contents().assumingMemoryBound(to: UInt16.self)
         let ps = stBuf.contents().assumingMemoryBound(to: Float.self)
-        return ((0..<(T * 6144)).map { po[$0] }, (0..<(48 * 128 * 128)).map { ps[$0] })
+        return (
+            Array(UnsafeBufferPointer(start: po, count: T * 6144)),
+            Array(UnsafeBufferPointer(start: ps, count: 48 * 128 * 128))
+        )
     }
 
     /// o adjacency (f16 1-ulp spacing law — shipping store class).
     static func violO(_ got: [UInt16], _ ref: [UInt16]) -> (Int, Double, Int) {
-        var v = 0, worst = 0.0, wi = -1
-        for i in 0..<got.count {
-            let g = Double(f16(got[i])), r = Double(f16(ref[i]))
-            let d = abs(g - r)
-            if d > worst { worst = d; wi = i }
-            if !(g.isFinite && r.isFinite) { v += 1; continue }
-            let sp = max(abs(g), abs(r)) * (1.0 / 1024.0)   // f16 1-ulp (signed law)
-            if d > max(1e-3, sp) { v += 1 }
+        got.withUnsafeBufferPointer { gBuf in
+            ref.withUnsafeBufferPointer { rBuf in
+                guard let gp = gBuf.baseAddress, let rp = rBuf.baseAddress else { return (0, 0.0, -1) }
+                let n = gBuf.count
+                var v = 0, worst = 0.0, wi = -1, i = 0
+                while i < n {
+                    let gb = gp[i], rb = rp[i]
+                    if gb == rb && (gb & 0x7C00) != 0x7C00 {
+                        i += 1
+                        continue
+                    }
+                    let g = Double(Float(Float16(bitPattern: gb)))
+                    let r = Double(Float(Float16(bitPattern: rb)))
+                    let d = abs(g - r)
+                    if d > worst { worst = d; wi = i }
+                    if !(g.isFinite && r.isFinite) { v += 1; i += 1; continue }
+                    let sp = max(abs(g), abs(r)) * (1.0 / 1024.0)
+                    if d > max(1e-3, sp) { v += 1 }
+                    i += 1
+                }
+                return (v, worst, wi)
+            }
         }
-        return (v, worst, wi)
     }
     /// state adjacency (strict fp32 relative law, 1e-4 rung).
     static func violS(_ got: [Float], _ ref: [Float]) -> (Int, Double, Int) {
-        var v = 0, worst = 0.0, wi = -1
-        for i in 0..<got.count {
-            let d = abs(Double(got[i]) - Double(ref[i]))
-            if d > worst { worst = d; wi = i }
-            guard got[i].isFinite && ref[i].isFinite else { v += 1; continue }
-            let sp = max(abs(Double(got[i])), abs(Double(ref[i]))) * Double.ulpOfOne
-            if d > max(1e-4, sp) { v += 1 }
+        got.withUnsafeBufferPointer { gBuf in
+            ref.withUnsafeBufferPointer { rBuf in
+                guard let gp = gBuf.baseAddress, let rp = rBuf.baseAddress else { return (0, 0.0, -1) }
+                let n = gBuf.count
+                var v = 0, worst = 0.0, wi = -1, i = 0
+                while i < n {
+                    let gv = gp[i], rv = rp[i]
+                    let d = abs(Double(gv) - Double(rv))
+                    if d > worst { worst = d; wi = i }
+                    if !(gv.isFinite && rv.isFinite) { v += 1; i += 1; continue }
+                    let sp = max(abs(Double(gv)), abs(Double(rv))) * Double.ulpOfOne
+                    if d > max(1e-4, sp) { v += 1 }
+                    i += 1
+                }
+                return (v, worst, wi)
+            }
         }
-        return (v, worst, wi)
     }
 
     /// Wall ms of ONE full prefill (warmup 1, then timed run), for both arms.
@@ -131,7 +155,16 @@ final class QWGDNPrefillNaxTests: XCTestCase {
             // o vs shipping (all rows, full width)
             let vo = Self.violO(oNax, oShip)
             XCTAssertEqual(vo.0, 0, "\(tag): nax-vs-ship o parity (worst \(vo.1) @\(vo.2))")
-            XCTAssertEqual(stNax.filter { !$0.isFinite }.count, 0, "\(tag): nax state non-finite")
+            let nonFiniteCount = stNax.withUnsafeBufferPointer { buf -> Int in
+                guard let p = buf.baseAddress else { return 0 }
+                var bad = 0, idx = 0
+                while idx < buf.count {
+                    if !p[idx].isFinite { bad += 1 }
+                    idx += 1
+                }
+                return bad
+            }
+            XCTAssertEqual(nonFiniteCount, 0, "\(tag): nax state non-finite")
             // state vs the FIXTURE golden (1e-4 rung) + vs shipping arm
             let stRef = try Self.load("gdn_pre_state_\(tag).bin").withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
                 Array(raw.bindMemory(to: Float.self))
@@ -142,15 +175,15 @@ final class QWGDNPrefillNaxTests: XCTestCase {
             XCTAssertEqual(vs.0, 0, "\(tag): nax state vs shipping arm (worst \(vs.1) @\(vs.2))")
             print("parity \(tag): o worst \(vo.1) (\(vo.0) viol), state vs golden worst \(vg.1) (\(vg.0) viol)")
         }
-        // honest timing, min-of-5, T=1024 (both arms)
+        // honest timing, min-of-2, T=1024 (both arms)
         let y = try Self.load("gdn_pre_y_k.bin"), z = try Self.load("gdn_pre_z_k.bin")
         let beta = try Self.load("gdn_pre_beta_k.bin"), glog = try Self.load("gdn_pre_g_k.bin")
         let state0 = try Self.load("gdn_pre_state0_k.bin"), w = try Self.load("gdn_pre_w_k.bin")
         let tShip = try Self.timePrefill(scanName: shipName, y: y, beta: beta, glog: glog, z: z,
-                                    w: w, state0: state0, T: 1024, L: 64, reps: 5)
+                                    w: w, state0: state0, T: 1024, L: 64, reps: 2)
         let tNax = try Self.timePrefill(scanName: naxName, y: y, beta: beta, glog: glog, z: z,
-                                   w: w, state0: state0, T: 1024, L: 64, reps: 5)
-        print(String(format: "TIMING @T=1024 min-of-5: ship %.3f ms | nax %.3f ms (ratio %.2fx)",
+                                   w: w, state0: state0, T: 1024, L: 64, reps: 2)
+        print(String(format: "TIMING @T=1024 min-of-2: ship %.3f ms | nax %.3f ms (ratio %.2fx)",
                      tShip, tNax, tShip / tNax))
     }
 }

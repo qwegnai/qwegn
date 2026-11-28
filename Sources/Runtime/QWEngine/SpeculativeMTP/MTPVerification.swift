@@ -126,6 +126,8 @@ extension QWEngineDriver {
                                     activeRows: rowCount,
                                     unrotateForF16Head: hal.weightBasis.rotatesActivations,
                                     multimaxParams: multimaxParams,
+                                    headInput: hasSandwichGatedNorm ? verifyWindow.normalized : nil,
+                                    softcap: geometry.finalLogitSoftcapping ?? 0.0,
                                     outOfPlaceGDN: gdnReplayCheckpoint.layers > 0,
                                     windowEncoder: {
                                         try self.encodeLayerMajorVerification(
@@ -298,7 +300,15 @@ extension QWEngineDriver {
             needsEntryBarrier = true
         }
         if let firstP = plan.first, layersW[firstP].mhc == nil || geometry.mhcConfig == nil {
-            try encodeRMSNormFast(enc, x: window.hidden, gamma: layersW[firstP].ln1, out: normalized, rows: activeRows)
+            if let gn = layersW[firstP].gatedNorms, geometry.useSandwichNorm {
+                try QWNorm.encodeGatedRMSNorm(
+                    enc, hal: hal,
+                    x: prefixRows(window.hidden, rows: activeRows, cols: h, dt: .f16),
+                    weights: gn.input,
+                    out: prefixRows(normalized, rows: activeRows, cols: h, dt: .f16))
+            } else {
+                try encodeRMSNormFast(enc, x: window.hidden, gamma: layersW[firstP].ln1, out: normalized, rows: activeRows)
+            }
             needsEntryBarrier = true
         }
         if needsEntryBarrier {
@@ -368,6 +378,7 @@ extension QWEngineDriver {
                     bias: oBias, rows: activeRows, cols: h)
                 enc.memoryBarrier(scope: .buffers)
             }
+            try beginStage(.norm)
             let moeBridge = canFusePreMoENorm(weights: weights, rows: activeRows) ? window.moeScratch.map {
                 (xRot32: prefixRows($0.xRot32, rows: activeRows, cols: h, dt: .f32),
                  xPlain32: prefixRows($0.xPlain32, rows: activeRows, cols: h, dt: .f32),
@@ -381,6 +392,16 @@ extension QWEngineDriver {
                                         rows: activeRows,
                                         mergeBranchOut: prefixRows(mtpBatchedMLP.downRows, rows: activeRows, cols: h, dt: .f16),
                                         moeBridge: moeBridge)
+                enc.memoryBarrier(scope: .buffers)
+            } else if let gn = weights.gatedNorms, geometry.useSandwichNorm {
+                try QWNorm.encodeGatedSandwichResidual(
+                    enc, hal: hal,
+                    branchOut: prefixRows(mtpBatchedMLP.downRows, rows: activeRows, cols: h, dt: .f16),
+                    residual: prefixRows(window.hidden, rows: activeRows, cols: h, dt: .f16),
+                    postWeights: gn.postSelfAttn, nextPreWeights: gn.postAttn,
+                    out: prefixRows(normalized, rows: activeRows, cols: h, dt: .f16),
+                    xRot32: moeBridge?.xRot32, xPlain32: moeBridge?.xPlain32,
+                    skipRot32: moeBridge?.skipRot32 ?? false)
                 enc.memoryBarrier(scope: .buffers)
             } else {
                 try encodeRMSNormResidualFast(enc, x: mtpBatchedMLP.downRows, gamma: weights.ln2,
@@ -456,6 +477,15 @@ extension QWEngineDriver {
                     }
                     enc.memoryBarrier(scope: .buffers)
                 }
+            } else if let gn = weights.gatedNorms, geometry.useSandwichNorm {
+                let nextGated = nextP.flatMap { layersW[$0].gatedNorms?.input } ?? finalGatedNorm
+                try QWNorm.encodeGatedSandwichResidual(
+                    enc, hal: hal,
+                    branchOut: prefixRows(mtpBatchedMLP.downRows, rows: activeRows, cols: h, dt: .f16),
+                    residual: prefixRows(window.hidden, rows: activeRows, cols: h, dt: .f16),
+                    postWeights: gn.postFFN, nextPreWeights: nextGated,
+                    out: prefixRows(normalized, rows: activeRows, cols: h, dt: .f16))
+                enc.memoryBarrier(scope: .buffers)
             } else {
                 try encodeRMSNormResidualFast(enc, x: mtpBatchedMLP.downRows, gamma: gamma,
                     out: normalized, residual: window.hidden, rows: activeRows)
@@ -493,10 +523,12 @@ extension QWEngineDriver {
                 }
             }
         }
-        try QWVerifyWindow.encodeCopy(enc, hal: hal,
-            source: prefixRows(normalized, rows: activeRows, cols: h, dt: .f16),
-            destination: prefixRows(window.hidden, rows: activeRows, cols: h, dt: .f16))
-        enc.memoryBarrier(scope: .buffers)
+        if !hasSandwichGatedNorm {
+            try QWVerifyWindow.encodeCopy(enc, hal: hal,
+                source: prefixRows(normalized, rows: activeRows, cols: h, dt: .f16),
+                destination: prefixRows(window.hidden, rows: activeRows, cols: h, dt: .f16))
+            enc.memoryBarrier(scope: .buffers)
+        }
     }
 
 }

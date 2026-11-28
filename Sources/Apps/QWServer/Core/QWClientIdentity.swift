@@ -87,6 +87,7 @@ public enum QWClientIdentity {
         (["claude-cli", "claude-code", "claude code"], "claude-code"),
         (["codex_cli_rs", "openai/codex", "codex-cli"], "codex"),
         (["opencode"], "opencode"),
+        (["omp/", "omp-", "oh-my-pi", "pi-coding-agent"], "omp"),
         (["hermes"], "hermes"),
         (["llmprobe"], "llmprobe"),
         (["qwg-cli", "qwegine", "qwg/"], "qwg-cli"),
@@ -273,7 +274,10 @@ public enum QWClientIdentity {
         stainlessLang: String?,
         anthropicVersion: String?
     ) -> String? {
-        let lower = ua.lowercased()
+        let lower = ua.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        if lower == "omp" || lower.hasPrefix("omp ") {
+            return "omp"
+        }
         for matcher in knownAgentMatchers where matcher.needles.contains(where: { lower.contains($0) }) {
             return matcher.label
         }

@@ -82,7 +82,8 @@ extension QWHttpServer {
             ))
         }
 
-        if sidecar.loaded, let sidecarName = sidecar.modelName {
+        let pinActiveCatalog = config.pinModel && !activePackPath.isEmpty
+        if !pinActiveCatalog, sidecar.loaded, let sidecarName = sidecar.modelName {
             let scPath = sidecar.packPath
             let scDisc = findDiscovered(name: sidecarName, path: scPath)
             appendIfNew(
@@ -123,6 +124,9 @@ extension QWHttpServer {
         for disc in scanned where !disc.packPath.isEmpty && (disc.supported || disc.isDecisionCapable) {
             let isPrimary = disc.name == modelName
             let isSidecar = sidecar.loaded && disc.name == sidecar.modelName
+            if pinActiveCatalog && !isPrimary {
+                continue
+            }
             let loadedHere = (isLoaded && isPrimary) || isSidecar
             let alias = settings.alias(for: disc.name)
             if !alias.isEmpty {

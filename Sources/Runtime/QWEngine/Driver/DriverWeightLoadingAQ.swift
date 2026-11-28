@@ -32,7 +32,11 @@ extension QWEngineDriver.WeightLoader {
         switch key {
         case \QWQTensorEntry.hq4Off, \QWQTensorEntry.q4gOff:
             if let pk {
-                elems = try packPlaneHalfCount(name, entry: try pk.entry(name),
+                let entry = try pk.entry(name)
+                guard let layout = PlaneLayout.resolve(entry), layout == .hq4 else {
+                    throw QWEngineDriverError.weightMissing(name, "needs hq4_off plane")
+                }
+                elems = try packPlaneHalfCount(name, entry: entry, layout: layout,
                                                n: n, k: k, residentExperts: residentExperts)
             } else {
                 let rowBytes = residentExperts != nil
@@ -57,13 +61,12 @@ extension QWEngineDriver.WeightLoader {
     }
 
     private func packPlaneHalfCount(
-        _ name: String, entry: QWQTensorEntry, n: Int, k: Int, residentExperts: Int?
+        _ name: String, entry: QWQTensorEntry, layout: PlaneLayout,
+        n: Int, k: Int, residentExperts: Int?
     ) throws -> Int {
-        let grp = entry.hqGroup
-        guard grp > 0, k > 0, k % grp == 0 else {
-            throw QWEngineDriverError.weightMissing(name, "plane k=\(k) incompatible with group \(grp)")
+        guard layout == .hq4, let totalBytes = layout.byteCount(entry) else {
+            throw QWEngineDriverError.weightMissing(name, "plane layout byteCount invalid")
         }
-        let rowBytes = (k / grp) * entry.hqBlockBytes
         let isFused3D = entry.shape.count == 3 || (entry.experts != nil && entry.eHq4 != nil)
         if isFused3D {
             guard let expCount = entry.experts ?? (entry.shape.count == 3 ? entry.shape[0] : nil),
@@ -77,18 +80,19 @@ extension QWEngineDriver.WeightLoader {
                     throw QWEngineDriverError.weightMissing(
                         name, "3D expert tensor k=\(entry.shape[2]) != expected \(k)")
                 }
-            } else if entry.shape.count == 2, entry.shape[0] % expCount == 0 {
+            } else if entry.shape.count == 2, entry.shape[0] % expCount == 0, entry.shape[1] == k {
                 rowsPerExpert = entry.shape[0] / expCount
             } else {
                 throw QWEngineDriverError.weightMissing(name, "3D expert tensor shape invalid: \(entry.shape)")
             }
-            guard rowsPerExpert > 0 else {
-                throw QWEngineDriverError.weightMissing(name, "3D expert tensor has zero rows per expert")
+            guard rowsPerExpert > 0, totalBytes % expCount == 0 else {
+                throw QWEngineDriverError.weightMissing(name, "3D expert tensor has invalid per-expert bytes")
             }
-            let expectedPerExpert = rowsPerExpert * rowBytes
-            let per = entry.eHq4 ?? expectedPerExpert
-            guard per == expectedPerExpert else {
-                throw QWEngineDriverError.weightMissing(name, "3D expert e_hq4 \(per) != expected \(expectedPerExpert)")
+            let per = totalBytes / expCount
+            if let explicitPer = entry.eHq4 {
+                guard per == explicitPer else {
+                    throw QWEngineDriverError.weightMissing(name, "3D expert e_hq4 \(explicitPer) != expected \(per)")
+                }
             }
             let sliceExperts = residentExperts ?? (n / rowsPerExpert)
             let (expectedRows, ovRows) = sliceExperts.multipliedReportingOverflow(by: rowsPerExpert)
@@ -102,8 +106,14 @@ extension QWEngineDriver.WeightLoader {
             }
             return sliceBytes / 2
         }
+        guard entry.shape.count == 2, entry.shape[0] > 0, entry.shape[1] == k,
+              n >= 0, n <= entry.shape[0], totalBytes % entry.shape[0] == 0 else {
+            throw QWEngineDriverError.weightMissing(
+                name, "2D plane shape \(entry.shape) incompatible with [\(n), \(k)]")
+        }
+        let rowBytes = totalBytes / entry.shape[0]
         let (byteCount, ovBytes) = n.multipliedReportingOverflow(by: rowBytes)
-        guard n >= 0, !ovBytes, byteCount % 2 == 0 else {
+        guard !ovBytes, byteCount % 2 == 0 else {
             throw QWEngineDriverError.weightMissing(name, "2D plane byte count invalid")
         }
         return byteCount / 2

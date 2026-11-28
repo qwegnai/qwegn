@@ -20,12 +20,15 @@ enum PrefillCandidate {
 
     /// The kernel, as the metallib spells it. The family's names mirror
     /// `QWGemmAQ.gemmKernelName`, which is what the engine resolves them by.
-    var name: String {
+    func kernelName(useNAX: Bool) -> String {
+        let sfx = useNAX ? "h16" : "sg"
         switch self {
-        case .family(let bits, let group): return "qwg_gemm_aq\(bits)_g\(group)_h16"
-        case .incumbent: return "qwg_gemm_q4g_h16"
+        case .family(let bits, let group): return "qwg_gemm_aq\(bits)_g\(group)_\(sfx)"
+        case .incumbent: return "qwg_gemm_q4g_\(sfx)"
         }
     }
+
+    var name: String { kernelName(useNAX: true) }
 
     /// The tokens one tile holds: both kernels are raced at BM=64.
     static let bm = 64
@@ -79,6 +82,7 @@ enum PrefillSuites {
     /// Races the incumbent against every pair of the family.
     static func run(hal: QWHal, cols: Int, samples: Int, repeats: Int) throws -> [Race] {
         var races: [Race] = []
+        let useNAX = hal.caps.isMetal4TensorCapable
         // The incumbent's bank is the same for every pair: it is built once.
         let incumbent = try makeWork(hal: hal, candidate: .incumbent, cols: cols)
         let incumbentError = try verify(hal: hal, work: incumbent, candidate: .incumbent)
@@ -97,11 +101,13 @@ enum PrefillSuites {
                                                candidate: .incumbent, repeats: repeats))
             }
             races.append(Race(bits: bits, group: group,
-                              family: Point(name: familyCandidate.name, bits: bits, group: group,
+                              family: Point(name: familyCandidate.kernelName(useNAX: useNAX),
+                                            bits: bits, group: group,
                                             milliseconds: BenchRunner.median(familyTimes),
                                             error: familyError, isFamily: true),
-                              incumbent: Point(name: PrefillCandidate.incumbent.name, bits: 4,
-                                               group: 32, milliseconds: BenchRunner.median(incumbentTimes),
+                              incumbent: Point(name: PrefillCandidate.incumbent.kernelName(useNAX: useNAX),
+                                               bits: 4, group: 32,
+                                               milliseconds: BenchRunner.median(incumbentTimes),
                                                error: incumbentError, isFamily: false)))
         }
         return races
@@ -140,9 +146,12 @@ enum PrefillSuites {
         enc.setBuffer(work.y, offset: 0, index: 2)
         enc.setBuffer(work.y, offset: 0, index: 3)
         var m32 = UInt32(work.m), n32 = UInt32(work.n), k32 = UInt32(work.k)
+        var xs32 = UInt32(work.k), ys32 = UInt32(work.n)
         enc.setBytes(&m32, length: 4, index: 4)
         enc.setBytes(&n32, length: 4, index: 5)
         enc.setBytes(&k32, length: 4, index: 6)
+        enc.setBytes(&xs32, length: 4, index: 9)
+        enc.setBytes(&ys32, length: 4, index: 10)
         enc.dispatchThreadgroups(MTLSize(width: (work.n + 63) / 64,
                                          height: (work.m + PrefillCandidate.bm - 1)
                                             / PrefillCandidate.bm, depth: 1),
@@ -152,13 +161,14 @@ enum PrefillSuites {
     /// Checks the candidate's output against the host, at the timed shape.
     static func verify(hal: QWHal, work: PrefillWork,
                        candidate: PrefillCandidate) throws -> Double {
-        guard let (cb, enc) = hal.begin() else { throw BenchError.noTiming(candidate.name) }
-        let pso = try hal.pipeline(candidate.name)
+        let kName = candidate.kernelName(useNAX: hal.caps.isMetal4TensorCapable)
+        guard let (cb, enc) = hal.begin() else { throw BenchError.noTiming(kName) }
+        let pso = try hal.pipeline(kName)
         encode(enc, pso: pso, work: work)
         hal.end(cb, enc)
         cb.waitUntilCompleted()
         if let error = cb.error {
-            throw BenchError.kernelFailed(candidate.name, String(describing: error))
+            throw BenchError.kernelFailed(kName, String(describing: error))
         }
         let got = work.y.contents().bindMemory(to: UInt16.self, capacity: work.m * work.n)
         var worst = 0.0
@@ -171,7 +181,7 @@ enum PrefillSuites {
             }
         }
         guard worst <= 1e-3 else {
-            throw BenchError.verificationFailed(candidate.name, worst)
+            throw BenchError.verificationFailed(kName, worst)
         }
         return worst
     }
@@ -179,8 +189,9 @@ enum PrefillSuites {
     /// Times one candidate's dispatches, on the bench's own protocol.
     static func time(hal: QWHal, work: PrefillWork, candidate: PrefillCandidate,
                      repeats: Int) throws -> Double {
-        let pso = try hal.pipeline(candidate.name)
-        return try BenchRunner.time(hal: hal, name: candidate.name,
+        let kName = candidate.kernelName(useNAX: hal.caps.isMetal4TensorCapable)
+        let pso = try hal.pipeline(kName)
+        return try BenchRunner.time(hal: hal, name: kName,
                                      warm: { enc in encode(enc, pso: pso, work: work) },
                                      timed: { enc in encode(enc, pso: pso, work: work) },
                                      repeats: repeats)

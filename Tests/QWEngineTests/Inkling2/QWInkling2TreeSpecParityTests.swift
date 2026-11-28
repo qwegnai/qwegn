@@ -2,6 +2,7 @@
 import Foundation
 import Metal
 import XCTest
+import QWAlloc
 @testable import QWCore
 @testable import QWEngine
 import QWGEMM
@@ -14,7 +15,7 @@ final class QWInkling2TreeSpecParityTests: XCTestCase {
     private func requireApple9Metal() throws -> QWHal {
         try XCTSkipIf(
             ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] == "true"
-                || QWDeviceCaps.current?.familyApple9 != true,
+                || QWDeviceCaps.current?.supportsSimdgroupMMA != true,
             "requires bare-metal Apple Silicon GPU"
         )
         return try QWHal(geometry: .qwen38_27b)
@@ -192,12 +193,15 @@ final class QWInkling2TreeSpecParityTests: XCTestCase {
         let H = desc.hidden, V = desc.vocab, nH = desc.qHeads, nKV = desc.kvHeads, hd = desc.headDim
         let qDim = nH * hd, kvDim = nKV * hd, rDim = nH * ink2.dRel
         let nExp = desc.numExperts!, moeI = desc.moeIntermediate!
-        let bump = try Ink2BumpAllocator(device: hal.device, capacity: 8 << 20)
+        let bump = try QWSubAllocator.makeWeightAllocator(device: hal.device, capacity: 8 << 20)
 
         func putData(_ d: Data, _ label: String) throws -> Ink2Slice {
-            let sl = try bump.allocateBytes(d.count, alignment: 256, label: label)
-            d.withUnsafeBytes { raw in
-                if let p = raw.baseAddress { _ = memcpy(sl.buffer.contents().advanced(by: sl.offset), p, d.count) }
+            let sl = try bump.allocateBytes(d.count, label: label)
+            let dst = sl.buffer.contents().advanced(by: sl.offset)
+            withExtendedLifetime(sl.buffer) {
+                d.withUnsafeBytes { raw in
+                    if let p = raw.baseAddress, !d.isEmpty { dst.copyMemory(from: p, byteCount: d.count) }
+                }
             }
             return sl
         }
@@ -286,7 +290,7 @@ final class QWInkling2TreeSpecParityTests: XCTestCase {
             embedTokens: embedTokens, embedNorm: embedNorm,
             lmHeadSlice: lmHeadSl, lmHeadTV: lmHeadTV, lmHeadBank: nil, lmHeadStorage: .q4g(lmHeadW),
             finalNorm: finalNorm, finalInputQuery: finalQ, messageQueries: msgQ,
-            layers: layers, residentBuffers: [bump.buffer], hasVisionWeights: false,
+            layers: layers, residentBuffers: [bump.slabBuffer], hasVisionWeights: false,
             weightBasis: .rotated, isQuantizedQWP: true
         )
     }

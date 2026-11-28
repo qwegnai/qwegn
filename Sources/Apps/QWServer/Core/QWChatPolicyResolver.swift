@@ -160,10 +160,11 @@ public enum QWChatPolicyResolver {
 
     public static func effectiveEnableThinking(for request: ChatCompletionRequest, defaultValue: Bool) -> Bool {
         if request.isAssistantPrefill { return false }
+        let kwargThinking = request.chatTemplateKwargs?.enableThinking ?? request.chatTemplateKwargs?.reasoning
         if let fmtType = request.responseFormatType, (fmtType == "json_object" || fmtType == "json_schema") {
-            return request.enableThinking ?? request.chatTemplateKwargs?.enableThinking ?? request.reasoning?.enabled ?? false
+            return request.enableThinking ?? kwargThinking ?? request.reasoning?.enabled ?? false
         }
-        if let explicit = request.enableThinking ?? request.chatTemplateKwargs?.enableThinking ?? request.reasoning?.enabled {
+        if let explicit = request.enableThinking ?? kwargThinking ?? request.reasoning?.enabled {
             return explicit
         }
         if let effort = request.rawReasoningEffort?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),

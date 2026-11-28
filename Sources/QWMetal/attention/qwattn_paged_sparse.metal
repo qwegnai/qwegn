@@ -3,17 +3,24 @@
 // unaligned tail `[4 * ((pos + 1) / 4) .. pos]`, supporting f16, q8, and q4 KV pools.
 #include <metal_stdlib>
 #include <metal_simdgroup>
+#include "include/qw_attn_sparse_decode.metalh"
+
+using namespace metal;
+
+#if !defined(QW_DISABLE_NAX)
 #include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
+#if !defined(__ENVIRONMENT_OS_VERSION_MIN_REQUIRED__) || __ENVIRONMENT_OS_VERSION_MIN_REQUIRED__ < 260200
+#error "NAX cooperative_tensor kernels require -mmacosx-version-min=26.2 or newer (Apple MPP operand_index ABI)."
+#endif
 #include "mlx/backend/metal/kernels/steel/defines.h"
 #include "mlx/backend/metal/kernels/steel/utils/integral_constant.h"
 #include "mlx/backend/metal/kernels/steel/gemm/nax.h"
-#include "include/qw_attn_sparse_decode.metalh"
 #include "include/qw_attn_sparse_prefill_i8.metalh"
 
-using namespace metal;
 using namespace mlx::steel;
 
 #define QW_LSA_NAX_HDIM     256u
+#endif // !defined(QW_DISABLE_NAX)
 
 // 1. Sparse Split-K Decode & Batched Decode over Paged KV Pool (f16, q8, q4)
 #define QW_DECODE_SPARSE_ENTRY(SFX, MODE) \
@@ -165,6 +172,7 @@ kernel void qwg_attn_prefill_paged_general_sparse(
     }
 }
 
+#if !defined(QW_DISABLE_NAX)
 // 3. M5 NAX Cooperative Tensor Sparse Paged Prefill (f16, q8, q4)
 // Uses the tile's last query row `qRef = min(tile0 + 31, T - 1)` block list on 16x32 NAX MMA tiles.
 template <uint MODE, uint STAGE_HDIM = QW_LSA_NAX_HDIM>
@@ -450,3 +458,4 @@ QW_NAX_SPARSE_PREFILL_ENTRY(_hd128, 0u, 128u)
 QW_NAX_SPARSE_PREFILL_ENTRY(_hd128_q8, 1u, 128u)
 QW_NAX_SPARSE_PREFILL_ENTRY(_hd128_q4, 2u, 128u)
 #undef QW_NAX_SPARSE_PREFILL_ENTRY
+#endif // !defined(QW_DISABLE_NAX)

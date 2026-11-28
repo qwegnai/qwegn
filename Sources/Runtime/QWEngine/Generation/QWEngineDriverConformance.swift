@@ -17,10 +17,7 @@ extension QWEngineDriver {
         try generateLock.withLock(body)
     }
 
-    var maxBatchSlots: Int {
-        if let ink = inkling2Runtime { return ink.maxBatchSlots }
-        return admission.totalSlots > 0 ? admission.totalSlots : Self.gdnSlotCount()
-    }
+    var maxBatchSlots: Int { trunkExecutor.maxBatchSlots }
 }
 
 extension QWEngineDriver: QWSessionInferenceEngine {
@@ -28,12 +25,12 @@ extension QWEngineDriver: QWSessionInferenceEngine {
     public var prefixCacheEntries: Int { prefixStore?.count ?? 0 }
     public var ssdCacheChargedBytes: Int { cacheDiskManager?.chargedBytes ?? 0 }
     public var ssdCacheEntries: Int { cacheDiskManager?.entryCount ?? 0 }
-    public var hasPrefixCache: Bool {
-        if let hyper = hyperRuntime { return hyper.hasPrefixCacheTier }
-        if let ink = inkling2Runtime { return ink.hasPrefixCacheTier }
-        return prefixStore != nil
-    }
+    public var hasPrefixCache: Bool { trunkExecutor.hasPrefixCacheTier }
     public func hasCachedPrefix(tokens: [Int], cacheSalt: String?) -> Bool {
+        trunkExecutor.hasCachedPrefix(tokens: tokens, cacheSalt: cacheSalt)
+    }
+
+    func hasStandardCachedPrefix(tokens: [Int], cacheSalt: String?) -> Bool {
         guard let store = prefixStore, !tokens.isEmpty else { return false }
         for mode in GDNPrefillMode.allCases {
             let key = Self.prefixPolicyKey(backend: mtpBackend, drafts: mtpDrafts, mode: mode, cacheSalt: cacheSalt)
@@ -43,31 +40,16 @@ extension QWEngineDriver: QWSessionInferenceEngine {
         }
         return false
     }
-    public var arenaBytes: Int {
-        if let hyper = hyperRuntime { return hyper.arenaBytes }
-        if let ink = inkling2Runtime { return ink.arenaBytes }
-        return arena.committedBytes
-    }
-    public var weightReservedBytes: Int {
-        if let hyper = hyperRuntime { return hyper.weightReservedBytes }
-        if let ink = inkling2Runtime { return ink.weightReservedBytes }
-        return arena.regionSizes.weights
-    }
-    public var weightUsedBytes: Int {
-        if let hyper = hyperRuntime { return hyper.weightUsedBytes }
-        if let ink = inkling2Runtime { return ink.weightUsedBytes }
-        return arena.weightsSub.usedBytes
-    }
-    public var freeKVPages: Int {
-        if let hyper = hyperRuntime { return hyper.activeCapacity }
-        if let ink = inkling2Runtime { return ink.activeCapacity }
-        return kvCache.freePageCount
-    }
+
+    public var arenaBytes: Int { trunkExecutor.arenaBytes }
+    public var weightReservedBytes: Int { trunkExecutor.weightReservedBytes }
+    public var weightUsedBytes: Int { trunkExecutor.weightUsedBytes }
+    public var freeKVPages: Int { trunkExecutor.activeCapacity }
     /// Derives engine capabilities from geometry, weight format, and attached vision weights.
-    public var capabilities: Set<QWKnobCapability> {
-        if let hyper = hyperRuntime { return hyper.buildCapabilities() }
-        if let ink = inkling2Runtime { return ink.buildCapabilities() }
-        return QWModelCapabilities.resolve(
+    public var capabilities: Set<QWKnobCapability> { trunkExecutor.buildCapabilities() }
+
+    func buildStandardCapabilities() -> Set<QWKnobCapability> {
+        QWModelCapabilities.resolve(
             descriptor: geometry.descriptor,
             weightFormat: weightFormat,
             hasVisionWeights: hasVisionWeights
@@ -77,10 +59,10 @@ extension QWEngineDriver: QWSessionInferenceEngine {
 
     /// The cache the engine holds. The bytes are what the cache says it
     /// charged; an engine with no cache reports no cache at all.
-    public var prefixCache: QWPrefixCacheState {
-        if let hyper = hyperRuntime { return hyper.prefixCacheState }
-        if let ink = inkling2Runtime { return ink.prefixCacheState }
-        guard hasPrefixCache else { return QWPrefixCacheState(isConfigured: false) }
+    public var prefixCache: QWPrefixCacheState { trunkExecutor.prefixCacheState }
+
+    var standardPrefixCacheState: QWPrefixCacheState {
+        guard prefixStore != nil else { return QWPrefixCacheState(isConfigured: false) }
         return QWPrefixCacheState(
             isConfigured: true,
             warmBytes: prefixCacheChargedBytes,
@@ -92,9 +74,9 @@ extension QWEngineDriver: QWSessionInferenceEngine {
     }
 
     /// The last turn's measurements, in the shape every family reports.
-    public var lastTurn: QWGenerationResult? {
-        if let hyper = hyperRuntime { return hyper.lastResult }
-        if let ink = inkling2Runtime { return ink.lastResult }
+    public var lastTurn: QWGenerationResult? { trunkExecutor.lastResult }
+
+    var standardLastTurn: QWGenerationResult? {
         // The cache's answer belongs to the turn: the consumer that
         // asks afterwards gets the answer this turn got.
         let cache = lastPrefixCacheStats.map { stats in
@@ -122,15 +104,15 @@ extension QWEngineDriver: QWSessionInferenceEngine {
     /// A multi-turn conversation over this engine. The dense engine
     /// drives its own steps, so it has one.
     public func makeConversation() -> QWConversation? {
-        if hyperRuntime != nil || inkling2Runtime != nil { return nil }
+        guard standardState != nil else { return nil }
         return QWConversation(engine: self)
     }
 
     /// What the engine says about itself. The frame belongs to the
     /// consumer; these lines are the engine's own story.
-    public var report: QWEngineReport {
-        if let hyper = hyperRuntime { return hyper.buildReport() }
-        if let ink = inkling2Runtime { return ink.buildReport() }
+    public var report: QWEngineReport { trunkExecutor.buildReport() }
+
+    func buildStandardReport() -> QWEngineReport {
         var lines = ""
         if lastExperimentalGeneration != nil {
             let isDSpine = dflashDrafter?.config.isDSpine == true
@@ -183,23 +165,18 @@ extension QWEngineDriver: QWSessionInferenceEngine {
         request: QWGenerationRequest,
         onToken: ((Int) -> Bool)?
     ) throws -> QWGenerationResult {
-        if let hyper = hyperRuntime {
-            if request.usePrefixCache && !hyper.hasPrefixCacheTier {
-                throw QWEngineDriverError.state("the request wants a prefix cache this engine does not have")
-            }
-            return try hyper.runGeneration(request: request, onToken: onToken, onStopToken: nil)
+        if request.usePrefixCache && !trunkExecutor.hasPrefixCacheTier {
+            throw QWEngineDriverError.state("the request wants a prefix cache this engine does not have")
         }
-        if let ink = inkling2Runtime {
-            if request.usePrefixCache && !ink.hasPrefixCacheTier {
-                throw QWEngineDriverError.state("the request wants a prefix cache this engine does not have")
-            }
-            return try ink.runGeneration(request: request, onToken: onToken, onStopToken: nil)
-        }
-        return try withDriverGenerateLock {
-            if request.usePrefixCache && !hasPrefixCache {
-                throw QWEngineDriverError.state("the request wants a prefix cache this engine does not have")
-            }
-            return try generateLocked(request: request, onToken: onToken)
+        return try trunkExecutor.runGeneration(request: request, onToken: onToken, onStopToken: nil)
+    }
+
+    func runStandardGeneration(
+        request: QWGenerationRequest,
+        onToken: ((Int) -> Bool)?
+    ) throws -> QWGenerationResult {
+        try withDriverGenerateLock {
+            try generateLocked(request: request, onToken: onToken)
         }
     }
 
@@ -355,9 +332,7 @@ extension QWEngineDriver: QWSessionInferenceEngine {
         }
         var specSummary: String? = nil
         if useSpeculative, let g = experimental, !g.roundTokenCounts.isEmpty {
-            let totalTokens = g.roundTokenCounts.reduce(0, +)
-            let rounds = g.roundTokenCounts.count
-            specSummary = String(format: "rounds=%d, mean=%.2f tok/rnd", rounds, Double(totalTokens) / Double(rounds))
+            specSummary = QWTrunkRuntimeSupport.formatRoundsSummary(stepTokenCounts: g.roundTokenCounts)
         } else if useSpeculative {
             specSummary = String(format: "mtp=%d/%d", mtpDraftAccepted, mtpDraftProposals)
         }

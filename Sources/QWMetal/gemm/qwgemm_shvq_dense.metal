@@ -145,6 +145,108 @@ static inline void qwg_head_gemv_shvq_argmax_m16_body(
     }
 }
 
+template <int BITS, int GROUP, typename OutT = float, uint MAX_M = 8u>
+METAL_FUNC void qwg_gemv_shvq_rows2_m(device const char* blocks,
+                                      device const half* x,
+                                      device OutT* y,
+                                      uint row0,
+                                      uint realN,
+                                      uint K,
+                                      uint mRows,
+                                      uint lane,
+                                      threadgroup const ShvqTgLut<BITS> &tgLut) {
+    const uint nBlocks = K >> 5u;
+    constexpr uint groupBytes = qwg_shvq_group_bytes(BITS, GROUP);
+    const uint rowBytes = (K / uint(GROUP)) * groupBytes;
+    device const char* rowBase = blocks + (size_t)row0 * rowBytes;
+    const bool hasR1 = (row0 + 1u < realN);
+    float2 acc[MAX_M];
+    #pragma unroll
+    for (uint m = 0u; m < MAX_M; ++m) acc[m] = float2(0.0f);
+    for (uint g = lane; g < nBlocks; g += 32u) {
+        const uint col = g << 5u;
+        const size_t groupOff = size_t(col / uint(GROUP)) * groupBytes;
+        const uint byteInGroup = qwg_shvq_byte_in_group<BITS, GROUP>(col);
+        const float sc0 = qwg_shvq_eff_scale<BITS>(rowBase + groupOff);
+        const float sc1 = hasR1 ? qwg_shvq_eff_scale<BITS>(rowBase + rowBytes + groupOff) : 0.0f;
+        float dm0[MAX_M], dm1[MAX_M];
+        #pragma unroll
+        for (uint m = 0u; m < MAX_M; ++m) { dm0[m] = 0.0f; dm1[m] = 0.0f; }
+        uint u0[4], u1[4];
+        if constexpr (BITS == 15) {
+            qwg_shvq15_slice_u12x4((device const uchar*)(rowBase + groupOff + 2u + byteInGroup), u0);
+            if (hasR1) {
+                qwg_shvq15_slice_u12x4((device const uchar*)(rowBase + rowBytes + groupOff + 2u + byteInGroup), u1);
+            }
+        }
+        #pragma unroll
+        for (uint w = 0u; w < 4u; ++w) {
+            half4 hxLo[MAX_M], hxHi[MAX_M];
+            #pragma unroll
+            for (uint m = 0u; m < MAX_M; ++m) {
+                if (m < mRows) qwg_load_half8(x + size_t(m) * K + col + w * 8u, hxLo[m], hxHi[m]);
+            }
+            float4 fLo0, fHi0;
+            bool neg0 = false;
+            if constexpr (BITS == 15) {
+                neg0 = qwg_shvq15_oct_f4(u0[w], fLo0, fHi0);
+            } else {
+                half4 hLo0, hHi0;
+                qwg_shvq_unpack_oct8_impl<BITS, true>(
+                    (device const uchar*)(rowBase + groupOff + 2u + byteInGroup), w, &tgLut, hLo0, hHi0);
+                fLo0 = float4(hLo0); fHi0 = float4(hHi0);
+            }
+            #pragma unroll
+            for (uint m = 0u; m < MAX_M; ++m) {
+                if (m < mRows) {
+                    const float d0 = dot(fLo0, float4(hxLo[m])) + dot(fHi0, float4(hxHi[m]));
+                    dm0[m] += neg0 ? -d0 : d0;
+                }
+            }
+            if (hasR1) {
+                float4 fLo1, fHi1;
+                bool neg1 = false;
+                if constexpr (BITS == 15) {
+                    neg1 = qwg_shvq15_oct_f4(u1[w], fLo1, fHi1);
+                } else {
+                    half4 hLo1, hHi1;
+                    qwg_shvq_unpack_oct8_impl<BITS, true>(
+                        (device const uchar*)(rowBase + rowBytes + groupOff + 2u + byteInGroup), w, &tgLut, hLo1, hHi1);
+                    fLo1 = float4(hLo1); fHi1 = float4(hHi1);
+                }
+                #pragma unroll
+                for (uint m = 0u; m < MAX_M; ++m) {
+                    if (m < mRows) {
+                        const float d1 = dot(fLo1, float4(hxLo[m])) + dot(fHi1, float4(hxHi[m]));
+                        dm1[m] += neg1 ? -d1 : d1;
+                    }
+                }
+            }
+        }
+        #pragma unroll
+        for (uint m = 0u; m < MAX_M; ++m) {
+            if (m < mRows) {
+                acc[m].x = fma(dm0[m], sc0, acc[m].x);
+                if (hasR1) acc[m].y = fma(dm1[m], sc1, acc[m].y);
+            }
+        }
+    }
+    #pragma unroll
+    for (uint m = 0u; m < MAX_M; ++m) {
+        if (m < mRows) acc[m] = qwg_simd_reduce_down<32u>(acc[m]);
+    }
+    if (lane == 0u) {
+        #pragma unroll
+        for (uint m = 0u; m < MAX_M; ++m) {
+            if (m < mRows) {
+                device OutT* ym = y + (size_t)m * realN;
+                ym[row0] = OutT(acc[m].x);
+                if (hasR1) ym[row0 + 1u] = OutT(acc[m].y);
+            }
+        }
+    }
+}
+
 #define QW_SHVQ_DENSE_KERNELS(BITS, GROUP)                                              \
     kernel void qwg_gemv_shvq##BITS##_g##GROUP##_dx_h16_t4(                             \
         device const char* blocks [[buffer(0)]],                                        \
@@ -167,7 +269,20 @@ static inline void qwg_head_gemv_shvq_argmax_m16_body(
             const bool twoRows = (N & 0x80000000u) != 0u;                               \
             const uint mRows = (N >> 24u) & 0x1Fu;                                      \
             const uint realN = N & 0x00FFFFFFu;                                         \
-            if (mRows >= 2u) {                                                          \
+            if (mRows >= 2u && twoRows) {                                              \
+                const uint simdPerTG = max(1u, tptg >> 5u);                             \
+                const uint row0 = (tg * simdPerTG + (ti >> 5u)) * 2u;                   \
+                if (row0 < realN) {                                                     \
+                    if (outBF16) {                                                      \
+                        qwg_gemv_shvq_rows2_m<BITS, GROUP, bfloat, 8u>(                 \
+                            blocks, x, (device bfloat*)y16, row0, realN, K, mRows,      \
+                            ti & 31u, tgLut);                                           \
+                    } else {                                                            \
+                        qwg_gemv_shvq_rows2_m<BITS, GROUP, half, 8u>(                   \
+                            blocks, x, y16, row0, realN, K, mRows, ti & 31u, tgLut);    \
+                    }                                                                   \
+                }                                                                       \
+            } else if (mRows >= 2u) {                                                   \
                 const uint simdPerTG = max(1u, tptg >> 5u);                             \
                 const uint row0 = (tg * simdPerTG + (ti >> 5u)) * 4u;                   \
                 if (row0 < realN) {                                                     \
@@ -251,8 +366,13 @@ static inline void qwg_head_gemv_shvq_argmax_m16_body(
             const uint realN = N & 0x00FFFFFFu;                                         \
             const uint row0 = (tg * simdPerTG + simdId) * 4u;                           \
             if (row0 >= realN) return;                                                  \
-            qwg_gemv_shvq_rows4_m<BITS, GROUP, float, 8u>(                              \
-                blocks, x, y, row0, realN, K, mRows, lane, tgLut);                      \
+            if (mRows <= 4u) {                                                          \
+                qwg_gemv_shvq_rows4_m<BITS, GROUP, float, 4u>(                          \
+                    blocks, x, y, row0, realN, K, mRows, lane, tgLut);                  \
+            } else {                                                                    \
+                qwg_gemv_shvq_rows4_m<BITS, GROUP, float, 8u>(                          \
+                    blocks, x, y, row0, realN, K, mRows, lane, tgLut);                  \
+            }                                                                           \
         } else if ((N & 0x40000000u) != 0u) {                                           \
             const uint realN = N & 0x3FFFFFFFu;                                         \
             const uint row0 = (tg * simdPerTG + simdId) * 4u;                           \

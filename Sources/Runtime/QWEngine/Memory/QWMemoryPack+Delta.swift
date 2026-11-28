@@ -18,10 +18,13 @@ extension QWMemoryPack {
         for entry in manifest.files {
             if excludingPaths.contains(entry.relativePath) { continue }
             let fileURL = rootURL.appendingPathComponent(entry.relativePath, isDirectory: false)
-            guard fileManager.fileExists(atPath: fileURL.path),
-                  let attrs = try? fileManager.attributesOfItem(atPath: fileURL.path) else {
+            guard fileManager.fileExists(atPath: fileURL.path) else {
                 deleted.append(entry.relativePath)
                 sections.append("[DELETED FILE: \(entry.relativePath)]")
+                continue
+            }
+            guard let containedURL = QWDocumentIngestor.validateContainedURL(fileURL, inside: rootURL, fileManager: fileManager),
+                  let attrs = try? fileManager.attributesOfItem(atPath: containedURL.path) else {
                 continue
             }
             let diskMtime = Int64((attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0)
@@ -29,11 +32,11 @@ extension QWMemoryPack {
             if diskMtime == entry.mtimeEpochSec && diskSize == entry.byteCount {
                 continue
             }
-            guard let data = try? Data(contentsOf: fileURL) else { continue }
+            guard let data = try? Data(contentsOf: containedURL) else { continue }
             let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
             if digest == entry.sha256 { continue }
             modified.append(entry.relativePath)
-            if let text = String(data: data, encoding: .utf8) {
+            if let text = QWDocumentIngestor.readFormattedText(for: entry, rootURL: rootURL, fileManager: fileManager) {
                 let normalized = text.hasSuffix("\n") ? text : (text + "\n")
                 sections.append("[UPDATED FILE: \(entry.relativePath)]\n" + normalized)
             }
@@ -279,7 +282,7 @@ extension QWMemoryPack {
         return String(parts.first ?? "root")
     }
 
-    static func shouldIgnore(relativePath: String, ignoreMatcher: QWMemoryIgnoreMatcher) -> Bool {
+    static func shouldIgnore(relativePath: String, ignoreMatcher: QWMemoryIgnoreMatcher, includePDFs: Bool = true) -> Bool {
         let parts = relativePath.split(separator: "/").map(String.init)
         for part in parts.dropLast() where excludedDirectories.contains(part) || part.hasPrefix(".") {
             return true
@@ -288,7 +291,7 @@ extension QWMemoryPack {
         let lowerName = fileName.lowercased()
         if excludedFileNames.contains(lowerName) || lowerName.hasPrefix(".") { return true }
         let ext = (lowerName as NSString).pathExtension
-        if !ext.isEmpty && excludedExtensions.contains(ext) { return true }
+        if !ext.isEmpty && excludedExtensions.contains(ext) && !(includePDFs && ext == "pdf") { return true }
         if ignoreMatcher.isIgnored(relativePath: relativePath, isDirectory: false) {
             return true
         }

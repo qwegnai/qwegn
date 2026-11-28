@@ -175,6 +175,9 @@ public final class QWAttnSinkRel: @unchecked Sendable {
     private let psoDecodeBatchF16: any MTLComputePipelineState
     private let psoDecodeBatchQ8: any MTLComputePipelineState
     private let psoDecodeBatchQ4: any MTLComputePipelineState
+    private let psoDecodeBatch8F16: any MTLComputePipelineState
+    private let psoDecodeBatch8Q8: any MTLComputePipelineState
+    private let psoDecodeBatch8Q4: any MTLComputePipelineState
     private let psoDecodeBatch4F16: any MTLComputePipelineState
     private let psoDecodeBatch4Q8: any MTLComputePipelineState
     private let psoDecodeBatch4Q4: any MTLComputePipelineState
@@ -197,6 +200,9 @@ public final class QWAttnSinkRel: @unchecked Sendable {
         self.psoDecodeBatchF16 = try hal.pipeline(Self.decodeBatchKernelName(.f16))
         self.psoDecodeBatchQ8 = try hal.pipeline(Self.decodeBatchKernelName(.q8))
         self.psoDecodeBatchQ4 = try hal.pipeline(Self.decodeBatchKernelName(.q4))
+        self.psoDecodeBatch8F16 = try hal.pipeline(Self.decodeBatch8KernelName(.f16))
+        self.psoDecodeBatch8Q8 = try hal.pipeline(Self.decodeBatch8KernelName(.q8))
+        self.psoDecodeBatch8Q4 = try hal.pipeline(Self.decodeBatch8KernelName(.q4))
         self.psoDecodeBatch4F16 = try hal.pipeline(Self.decodeBatch4KernelName(.f16))
         self.psoDecodeBatch4Q8 = try hal.pipeline(Self.decodeBatch4KernelName(.q8))
         self.psoDecodeBatch4Q4 = try hal.pipeline(Self.decodeBatch4KernelName(.q4))
@@ -205,13 +211,14 @@ public final class QWAttnSinkRel: @unchecked Sendable {
         self.psoDecodeSparseQ4 = try hal.pipeline(Self.decodeSparseKernelName(.q4))
         self.psoCombine = try hal.pipeline(Self.combineKernelName)
 
-        if hal.caps.isMetal4TensorCapable {
-            self.psoPrefillF16 = try hal.pipeline(Self.prefillKernelName(.f16))
-            self.psoPrefillQ8 = try hal.pipeline(Self.prefillKernelName(.q8))
-            self.psoPrefillQ4 = try hal.pipeline(Self.prefillKernelName(.q4))
-            self.psoPrefillSparseF16 = try hal.pipeline(Self.prefillSparseKernelName(.f16))
-            self.psoPrefillSparseQ8 = try hal.pipeline(Self.prefillSparseKernelName(.q8))
-            self.psoPrefillSparseQ4 = try hal.pipeline(Self.prefillSparseKernelName(.q4))
+        let useNAX = hal.caps.isMetal4TensorCapable
+        if useNAX || hal.caps.supportsSimdgroupMMA {
+            self.psoPrefillF16 = try hal.pipeline(Self.prefillKernelName(.f16, useNAX: useNAX))
+            self.psoPrefillQ8 = try hal.pipeline(Self.prefillKernelName(.q8, useNAX: useNAX))
+            self.psoPrefillQ4 = try hal.pipeline(Self.prefillKernelName(.q4, useNAX: useNAX))
+            self.psoPrefillSparseF16 = try hal.pipeline(Self.prefillSparseKernelName(.f16, useNAX: useNAX))
+            self.psoPrefillSparseQ8 = try hal.pipeline(Self.prefillSparseKernelName(.q8, useNAX: useNAX))
+            self.psoPrefillSparseQ4 = try hal.pipeline(Self.prefillSparseKernelName(.q4, useNAX: useNAX))
         } else {
             self.psoPrefillF16 = nil
             self.psoPrefillQ8 = nil
@@ -222,11 +229,12 @@ public final class QWAttnSinkRel: @unchecked Sendable {
         }
     }
 
-    static func prefillKernelName(_ mode: QWKVMode) -> String {
+    static func prefillKernelName(_ mode: QWKVMode, useNAX: Bool = true) -> String {
+        let kind = useNAX ? "nax" : "mma"
         switch mode {
-        case .f16: return "qwg_attn_prefill_sink_rel_nax_f16"
-        case .q8:  return "qwg_attn_prefill_sink_rel_nax_q8"
-        case .q4:  return "qwg_attn_prefill_sink_rel_nax_q4"
+        case .f16: return "qwg_attn_prefill_sink_rel_\(kind)_f16"
+        case .q8:  return "qwg_attn_prefill_sink_rel_\(kind)_q8"
+        case .q4:  return "qwg_attn_prefill_sink_rel_\(kind)_q4"
         }
     }
 
@@ -246,6 +254,14 @@ public final class QWAttnSinkRel: @unchecked Sendable {
         }
     }
 
+    static func decodeBatch8KernelName(_ mode: QWKVMode) -> String {
+        switch mode {
+        case .f16: return "qwg_attn_decode_sink_rel_gqa_batch8_f16"
+        case .q8:  return "qwg_attn_decode_sink_rel_gqa_batch8_q8"
+        case .q4:  return "qwg_attn_decode_sink_rel_gqa_batch8_q4"
+        }
+    }
+
     static func decodeBatch4KernelName(_ mode: QWKVMode) -> String {
         switch mode {
         case .f16: return "qwg_attn_decode_sink_rel_gqa_batch4_f16"
@@ -254,11 +270,12 @@ public final class QWAttnSinkRel: @unchecked Sendable {
         }
     }
 
-    static func prefillSparseKernelName(_ mode: QWKVMode) -> String {
+    static func prefillSparseKernelName(_ mode: QWKVMode, useNAX: Bool = true) -> String {
+        let kind = useNAX ? "nax" : "mma"
         switch mode {
-        case .f16: return "qwg_attn_prefill_sink_rel_sparse_nax_f16"
-        case .q8:  return "qwg_attn_prefill_sink_rel_sparse_nax_q8"
-        case .q4:  return "qwg_attn_prefill_sink_rel_sparse_nax_q4"
+        case .f16: return "qwg_attn_prefill_sink_rel_sparse_\(kind)_f16"
+        case .q8:  return "qwg_attn_prefill_sink_rel_sparse_\(kind)_q8"
+        case .q4:  return "qwg_attn_prefill_sink_rel_sparse_\(kind)_q4"
         }
     }
 
@@ -301,15 +318,16 @@ public final class QWAttnSinkRel: @unchecked Sendable {
         return max(1, x)
     }
 
-    /// Fixed power-of-256 key-block span keeping Split-KV reduction order identical across T=1 and T=2...16.
+    /// Fixed key-block span (128 sliding / 256 global) keeping Split-KV reduction order identical across T=1 and T=2...16.
     public static func splitSpan(ringCap: Int, slidingWindow: Int, maxSplits: Int = maxSplits) -> Int {
         let spanCap = slidingWindow > 0 ? (slidingWindow + maxDecodeBatchTokens) : max(1, ringCap)
         let denom = slidingWindow > 0 ? max(1, maxSplits - 1) : max(1, maxSplits)
         let minSpan = (spanCap + denom - 1) / denom
+        if slidingWindow > 0 { return max(128, ((minSpan + 127) / 128) * 128) }
         return max(256, ((minSpan + 255) / 256) * 256)
     }
 
-    /// Wave-aligned Split-KV count across both global and sliding windows when `activeKeys > 256`.
+    /// Wave-aligned Split-KV count across sliding (> 128) and global (> 256) windows.
     public static func splits(
         forKeys keys: Int,
         kvHeads: Int,
@@ -322,7 +340,8 @@ public final class QWAttnSinkRel: @unchecked Sendable {
     ) -> Int {
         guard keys > 0 else { return 1 }
         let activeKeys = slidingWindow > 0 ? min(keys, slidingWindow) : keys
-        if activeKeys <= 256 { return 1 }
+        let minActive = slidingWindow > 0 ? 128 : 256
+        if activeKeys <= minActive { return 1 }
         let tgZ = (batchTokens >= 2) ? ((batchTokens + 15) / 16) : max(1, batchTokens)
         let gChunks = (batchTokens >= 2) ? max(1, ((gqa ?? 4) + 3) / 4) : 1
         let groups = max(1, kvHeads * tgZ * gChunks)
@@ -344,7 +363,7 @@ public final class QWAttnSinkRel: @unchecked Sendable {
         case .q4:  psoPrefillQ4
         }
         guard let pso else {
-            throw QWAttnSinkRelError.unsupportedHardware("NAX sink/rel prefill requires Apple10 Metal 4 hardware")
+            throw QWAttnSinkRelError.unsupportedHardware("Sink/rel prefill requires Apple7+ simdgroup or Apple10+ NAX hardware")
         }
         return pso
     }
@@ -362,6 +381,14 @@ public final class QWAttnSinkRel: @unchecked Sendable {
         case .f16: return psoDecodeBatchF16
         case .q8:  return psoDecodeBatchQ8
         case .q4:  return psoDecodeBatchQ4
+        }
+    }
+
+    private func decodeBatch8Pipeline(_ mode: QWKVMode) -> any MTLComputePipelineState {
+        switch mode {
+        case .f16: return psoDecodeBatch8F16
+        case .q8:  return psoDecodeBatch8Q8
+        case .q4:  return psoDecodeBatch8Q4
         }
     }
 
@@ -622,6 +649,7 @@ public final class QWAttnSinkRel: @unchecked Sendable {
         )
         let useBatch = (T >= 2 || treeMeta != nil)
         let useBatch4 = useBatch && T <= 4
+        let useBatch8 = useBatch && !useBatch4 && T <= 8
         let gqa = config.nH / config.nKV
         let span = Self.splitSpan(ringCap: kv.ringCap, slidingWindow: config.slidingWindow)
         let globalMin = (config.slidingWindow > 0 && posOffset + 1 > config.slidingWindow)
@@ -670,7 +698,9 @@ public final class QWAttnSinkRel: @unchecked Sendable {
         )
         let decodePSO = useBatch4
             ? decodeBatch4Pipeline(config.kvMode)
-            : (useBatch ? decodeBatchPipeline(config.kvMode) : decodePipeline(config.kvMode))
+            : (useBatch8
+                ? decodeBatch8Pipeline(config.kvMode)
+                : (useBatch ? decodeBatchPipeline(config.kvMode) : decodePipeline(config.kvMode)))
         enc.setComputePipelineState(decodePSO)
         q.bind(enc, index: 0)
         bindOptionalTensor(r, active: config.hasRelBias, enc: enc, index: 1)
@@ -690,7 +720,7 @@ public final class QWAttnSinkRel: @unchecked Sendable {
             var tm = Self.packTreeMeta(treeMeta)
             enc.setBytes(&tm, length: MemoryLayout<MetalTreeMeta>.stride, index: 13)
             enc.dispatchThreadgroups(
-                MTLSize(width: resolvedSplits, height: config.nKV * gChunks, depth: useBatch4 ? 1 : (T + 15) / 16),
+                MTLSize(width: resolvedSplits, height: config.nKV * gChunks, depth: (useBatch4 || useBatch8) ? 1 : (T + 15) / 16),
                 threadsPerThreadgroup: MTLSize(width: useBatch4 ? 128 : 256, height: 1, depth: 1)
             )
         } else {

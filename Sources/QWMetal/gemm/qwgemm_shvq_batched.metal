@@ -1,5 +1,6 @@
 // qwgemm_shvq_batched.metal — NAX/MPP prefill GEMM, GDN in-projection GEMM,
 // and grouped MoE NAX twins for SHVQ{1,15,2,3,4}_G{32,64,128,256}.
+#if !defined(QW_DISABLE_NAX)
 #define QW_SHVQ_ROUTED_DIRECT_LUT 1
 #include <metal_stdlib>
 #include <metal_simdgroup>
@@ -133,3 +134,4 @@ QW_SHVQ_BATCHED_KERNELS_DIRECT(4, 32)
 QW_SHVQ_BATCHED_KERNELS_DIRECT(4, 64)
 QW_SHVQ_BATCHED_KERNELS_DIRECT(4, 128)
 QW_SHVQ_BATCHED_KERNELS_DIRECT(4, 256)
+#endif // !defined(QW_DISABLE_NAX)

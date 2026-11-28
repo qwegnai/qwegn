@@ -52,7 +52,8 @@ public final class QWGDNPrefill {
         return p
     }
 
-    public init(hal: QWHal, scanBackend: ScanBackend = .hybrid, solveBackend: SolveBackend = .scalar) throws {
+    public init(hal: QWHal, scanBackend: ScanBackend = .hybrid, solveBackend: SolveBackend = .scalar,
+                normSigmoid: Bool? = nil, gateScale: Float? = nil) throws {
         self.hal = hal
         self.solveBackend = solveBackend
         switch scanBackend {
@@ -69,7 +70,7 @@ public final class QWGDNPrefill {
         self.kernelNameSolve = solveBackend.rawValue
         self.psoSolve = try hal.pipeline(self.kernelNameSolve)
         self.psoScan = try hal.pipeline(self.kernelNameScan)
-        self.psoNorm = try hal.pipeline("qwg_gdn_prefill_norm")
+        self.psoNorm = try hal.pipeline("qwg_gdn_prefill_norm", gdnNormSigmoid: normSigmoid, gdnGateScale: gateScale)
     }
 
     private var instVHeads: Int { max(1, hal.geometry.gdnVHeads) }

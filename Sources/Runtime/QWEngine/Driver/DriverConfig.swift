@@ -467,13 +467,16 @@ extension QWEngineDriver {
         let nopeDim = geometry.qkNopeHeadDim > 0 ? geometry.qkNopeHeadDim : geometry.headDim
         let gateMode = geometry.mlaConfig?.outputGateMode
             ?? (geometry.attnOutputGate ? .elementWiseFromQLora : .none)
+        let hmla = geometry.hybridMLAConfig
+        let fuseOGateInQKV = (hmla == nil && gateMode == .elementWiseFromHidden)
         let inlineGate = (gateMode == .elementWiseFromQLora) ? geometry.qHeads * geometry.vHeadDim : 0
         let extGateCols = gateMode == .headWiseFromHidden
             ? geometry.qHeads
             : (gateMode == .elementWiseFromHidden ? geometry.qHeads * geometry.vHeadDim : 0)
         let yVhaCols = geometry.usesDecoupledRopeMLA ? (geometry.qHeads * geometry.vHeadDim) : 0
         let extraQ = geometry.usesNoPEMLA ? 0 : (geometry.qHeads * ropeDim + inlineGate)
-        let latentStride = geometry.qLoraRank + geometry.kvLoraRank + ropeDim + idxDim
+        let latentStride = (geometry.mlaHasDirectQ ? 0 : geometry.qLoraRank)
+            + geometry.kvLoraRank + ropeDim + idxDim + (fuseOGateInQKV ? geometry.qHeads * geometry.vHeadDim : 0)
         let qFullStride = geometry.qHeads * nopeDim + extraQ + idxHeads * idxDim
         let perLayerRings = (geometry.usesDecoupledRopeMLA || !hasIndexer)
             ? 0

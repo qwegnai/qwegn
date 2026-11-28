@@ -1,6 +1,7 @@
 import XCTest
 @testable import QWServer
 import QWCore
+import QWHAL
 import QWKV
 
 final class QWHardwareInfoTests: XCTestCase {
@@ -96,5 +97,31 @@ final class QWHardwareInfoTests: XCTestCase {
                     "missing descriptor must say unknown, not fabricate")
         XCTAssertFalse(banner.contains("D=5120"))
         XCTAssertFalse(banner.contains("Qwen3.8-27B (D=5120"))
+    }
+
+    func testHardwareBannerReportsAllAppleGPUFamilies() {
+        let hw = QWMachineHardwareInfo(
+            modelIdentifier: "Mac14,6", cpuBrand: "Apple Silicon",
+            physicalCores: 12, logicalCores: 12, physicalMemoryBytes: 64 << 30,
+            osProductVersion: "26.2", kernelRelease: "26.2.0"
+        )
+        let params = QWEngineParametersInfo(modelPackPath: "/models/test", modelName: "test")
+        let cases: [(a7: Bool, a8: Bool, a9: Bool, a10: Bool, a11: Bool, expected: String)] = [
+            (true, false, false, false, false, "Apple7 — Metal 3.2 simdgroup MMA"),
+            (true, true, false, false, false, "Apple8 — Metal 3.2 simdgroup MMA"),
+            (true, true, true, false, false, "Apple9 — simdgroup MMA"),
+            (true, true, true, true, false, "Yes (Apple10+)"),
+            (true, true, true, true, true, "Yes (Apple11)"),
+        ]
+        for c in cases {
+            let caps = QWDeviceCaps(
+                name: "Apple GPU", familyApple7: c.a7, familyApple8: c.a8, familyApple9: c.a9,
+                familyApple10: c.a10, familyApple11: c.a11, unifiedMemory: true,
+                maxWorkingSetBytes: 48 << 30, maxBufferLength: 32 << 30, gpuCores: 16,
+                threadsPerTG: 1024, measuredReadBWBps: nil, measuredL2BWBps: nil, isSimulated: true
+            )
+            let banner = QWHardwareBanner.renderBanner(hardware: hw, caps: caps, params: params, host: "127.0.0.1", port: 8080)
+            XCTAssertTrue(banner.contains(c.expected), "Banner missing '\(c.expected)'")
+        }
     }
 }

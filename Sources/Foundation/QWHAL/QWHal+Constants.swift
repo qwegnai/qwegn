@@ -6,7 +6,12 @@ extension QWHal {
     public static func makeFunctionConstants(
         geometry: QWModelGeometry,
         isAQ4: Bool = false,
-        swigluClamp: QWSwiGLUClampSpec? = nil
+        swigluClamp: QWSwiGLUClampSpec? = nil,
+        weightBasis: QWWeightBasis = .rotated,
+        fcDrafterRotated: Bool? = nil,
+        fcHeadRotated: Bool? = nil,
+        gdnNormSigmoid: Bool? = nil,
+        gdnGateScale: Float? = nil
     ) -> MTLFunctionConstantValues {
         let fc = MTLFunctionConstantValues()
         func setU32(_ v: Int, at idx: Int) {
@@ -85,13 +90,19 @@ extension QWHal {
         fc.setConstantValue(&aq4, type: .bool, index: 232)
         var postSilu = swigluClamp?.postSilu ?? (geometry.swigluClampConfig?.mode == .postSilu && geometry.swigluLimit != nil)
         fc.setConstantValue(&postSilu, type: .bool, index: 233)
-        var gdnNormSigmoid = geometry.kdaConfig.map { $0.outputNormAct == .sigmoid } ?? geometry.gdnVectorDecay
-        fc.setConstantValue(&gdnNormSigmoid, type: .bool, index: 234)
+        var normSig = gdnNormSigmoid ?? geometry.kdaConfig.map { $0.outputNormAct == .sigmoid } ?? geometry.gdnVectorDecay
+        fc.setConstantValue(&normSig, type: .bool, index: 234)
+        var gateScale = gdnGateScale ?? Float(1.0)
+        fc.setConstantValue(&gateScale, type: .float, index: 235)
         // The activation basis is NOT a function constant. It is a build-time
         // property of the metallib — see `QWWeightBasis.metallibFileName` —
         // because the rotation is a chain of `simd_shuffle_xor` calls and a
         // runtime branch in front of them puts the shuffle in a divergent
         // region, which cost 14.5% of prefill throughput when it was tried.
+        var drafterRotated = fcDrafterRotated ?? weightBasis.rotatesActivations
+        fc.setConstantValue(&drafterRotated, type: .bool, index: 236)
+        var headRotated = fcHeadRotated ?? weightBasis.rotatesActivations
+        fc.setConstantValue(&headRotated, type: .bool, index: 237)
         return fc
     }
 

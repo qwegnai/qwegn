@@ -1,0 +1,39 @@
+// qw_gdn_norm.metalh — Shared GDN per-head gated RMSNorm + FWHT32 epilogue.
+// Supports both SiLU (`z * sigmoid(z)`) and scaled Sigmoid (`sigmoid(z) * gateScale`)
+// specialized at PSO creation time via `QW_FC_GDN_NORM_SIGMOID` (234) and `QW_FC_GDN_GATE_SCALE` (235).
+#pragma once
+#include <metal_stdlib>
+#include "qw_dequant.metalh"
+#include "qw_geometry_constants.metalh"
+using namespace metal;
+
+/// Evaluates GDN output gated-RMSNorm on one element and rotates in-register via `simd_fwht32`.
+METAL_FUNC half qw_gdn_gated_norm_elem(float o, float rms, half w_c, half z_c, uint lane) {
+    const float zn = float(z_c);
+    float gate = QW_GDN_NORM_SIGMOID ? (1.0f / (1.0f + exp(-zn))) : (zn / (1.0f + exp(-zn)));
+    if (QW_GDN_GATE_SCALE != 1.0f) {
+        gate *= QW_GDN_GATE_SCALE;
+    }
+    const half hg = half((o * rms * float(w_c)) * gate);
+    return simd_fwht32(hg, lane);
+}
+
+/// Evaluates a 128-element per-head GDN gated-RMSNorm row across 4 simdgroups (`tid` in `0..<128`).
+METAL_FUNC void qw_gdn_prefill_norm_row128(
+        device const float* o_scr,
+        device const half*  zrow,
+        device const half*  w,
+        device half*        o_out,
+        threadgroup float*  red,
+        uint                row,
+        uint                tid,
+        uint                simd,
+        uint                sg) {
+    const uint64_t off = (uint64_t)row * 128ull + tid;
+    const float o = o_scr[off];
+    const float sq = simd_sum(o * o);
+    if (simd == 0u) red[sg] = sq;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const float rms = rsqrt((red[0] + red[1] + red[2] + red[3]) * (1.0f / 128.0f) + QW_RMS_EPS);
+    o_out[off] = qw_gdn_gated_norm_elem(o, rms, w[tid], zrow[off], simd);
+}

@@ -9,7 +9,7 @@ final class QWHeadF16BatchedTests: XCTestCase {
     override func setUpWithError() throws {
         try XCTSkipUnless(
             ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] != "true"
-                && QWDeviceCaps.current?.familyApple9 == true,
+                && QWDeviceCaps.current?.supportsSimdgroupMMA == true,
             "Metal F16 batched head tests require bare-metal Apple Silicon GPU"
         )
     }

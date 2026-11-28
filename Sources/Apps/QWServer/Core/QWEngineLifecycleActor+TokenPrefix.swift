@@ -177,10 +177,19 @@ extension QWEngineLifecycleActor {
         }
         let saltKey = cacheSalt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let marker: String
+        let roleBeforeMarker: Bool
         if tok.tokenId(for: "<|im_start|>") != nil {
             marker = "<|im_start|>"
+            roleBeforeMarker = false
         } else if tok.tokenId(for: "<|maxwell_start|>") != nil {
             marker = "<|maxwell_start|>"
+            roleBeforeMarker = false
+        } else if tok.tokenId(for: "<|role_sep|>\n") != nil {
+            marker = "<|role_sep|>\n"
+            roleBeforeMarker = true
+        } else if tok.tokenId(for: "<|role_sep|>") != nil {
+            marker = "<|role_sep|>"
+            roleBeforeMarker = true
         } else {
             return (try tok.encode(wire), nil)
         }
@@ -191,7 +200,15 @@ extension QWEngineLifecycleActor {
         let maxEntries = max(12, getConfig().maxConcurrentSessions * 2 + 4)
 
         var systemWire: String? = nil
-        if wire.hasPrefix("\(marker)system") || wire.hasPrefix("\(marker)developer") {
+        if roleBeforeMarker {
+            if (wire.hasPrefix("<s>system\(marker)") || wire.hasPrefix("system\(marker)")
+                || wire.hasPrefix("<s>developer\(marker)") || wire.hasPrefix("developer\(marker)")),
+               let firstRange = wire.range(of: marker),
+               let secondRange = wire.range(of: marker, range: firstRange.upperBound..<wire.endIndex),
+               secondRange.lowerBound <= lastRange.lowerBound {
+                systemWire = String(wire[..<secondRange.lowerBound])
+            }
+        } else if wire.hasPrefix("\(marker)system") || wire.hasPrefix("\(marker)developer") {
             let afterFirst = wire.index(wire.startIndex, offsetBy: marker.count)
             if let secondRange = wire.range(of: marker, range: afterFirst..<wire.endIndex),
                secondRange.lowerBound <= lastRange.lowerBound {

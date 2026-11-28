@@ -40,7 +40,7 @@ final class QWKVCachePagePressureTests: XCTestCase {
     override func setUpWithError() throws {
         try XCTSkipUnless(
             ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] != "true"
-                && QWDeviceCaps.current?.familyApple9 == true,
+                && QWDeviceCaps.current?.supportsSimdgroupMMA == true,
             "QWKVCache GPU arena tests require bare-metal Apple Silicon GPU"
         )
     }

@@ -31,7 +31,7 @@ METAL_FUNC void qw_attn_batch_score_tok(
     }
 }
 
-template <uint MODE>
+template <uint MODE, uint MAX_U = 2u>
 METAL_FUNC void qwg_attn_decode_sink_rel_gqa_batch_body(
     device const bfloat* qBF16, device const bfloat* rBF16, device const bfloat* relProj,
     device const bfloat* sinkBF16, device const bfloat* gateBF16,
@@ -48,7 +48,7 @@ METAL_FUNC void qwg_attn_decode_sink_rel_gqa_batch_body(
     const uint sp = tg.x;
     const uint kvh = tg.y / gChunks;
     const uint g0 = (tg.y - kvh * gChunks) * 4u;
-    const uint tGrpBase = tg.z * 16u;
+    const uint tGrpBase = (MAX_U == 1u) ? 0u : (tg.z * 16u);
     if (sp >= p.splits || kvh >= p.nKV || g0 >= gqa || tGrpBase >= p.T) return;
 
     const uint gCount = min(4u, gqa - g0);
@@ -56,11 +56,8 @@ METAL_FUNC void qwg_attn_decode_sink_rel_gqa_batch_body(
     const uint dBase = lane * 4u;
     const bool activeD = (dBase < p.headDim);
     const float qkScale = rsqrt(float(p.headDim));
-    const bool fastT4 = (p.T <= 4u && tGrpBase == 0u);
-    const uint gSub = fastT4 ? ((sgi & 1u) * 2u) : 0u;
-    const uint myGCount = (gSub < gCount) ? min(fastT4 ? 2u : 4u, gCount - gSub) : 0u;
-    const uint headBaseLocal = headBase + gSub;
-    const uint uEnd = fastT4 ? 1u : 2u;
+    const bool fastT8 = (MAX_U == 1u) || (p.T <= 8u && tGrpBase == 0u);
+    const uint uEnd = fastT8 ? 1u : MAX_U;
 
     // Partition prefix keys by fixed blocks when splitSpan > 0 so T=1 and T>=2 match bit-for-bit.
     const uint prefixEnd = min(p.posOffset, p.kvLen);
@@ -74,7 +71,7 @@ METAL_FUNC void qwg_attn_decode_sink_rel_gqa_batch_body(
         kEnd = min(blockEnd, prefixEnd);
     } else {
         uint prefixMinKey = 0xFFFFFFFFu;
-        const uint tGrpEnd = min(p.T, tGrpBase + 16u);
+        const uint tGrpEnd = min(p.T, tGrpBase + ((MAX_U == 1u) ? 8u : 16u));
         for (uint tk = tGrpBase; tk < tGrpEnd; ++tk) {
             const uint qp = (tree.isTree != 0u && tk < 16u) ? (p.posOffset + tree.depths[tk]) : (p.posOffset + tk);
             const uint mk = (p.sliding > 0u && qp + 1u > p.sliding) ? (qp + 1u - p.sliding) : 0u;
@@ -87,17 +84,17 @@ METAL_FUNC void qwg_attn_decode_sink_rel_gqa_batch_body(
         kEnd = min(prefixEnd, kStart + chunk);
     }
 
-    const uint t0 = tGrpBase + sgi * 2u;
-    bool tokValid[2];
-    uint tokIdx[2], qPos[2], tokMin[2];
-    float4 q4[2][4], acc[2][4];
-    float rLane[2][4], m[2][4], l[2][4];
+    const uint t0 = tGrpBase + sgi * MAX_U;
+    bool tokValid[MAX_U];
+    uint tokIdx[MAX_U], qPos[MAX_U], tokMin[MAX_U];
+    float4 q4[MAX_U][4], acc[MAX_U][4];
+    float rLane[MAX_U][4], m[MAX_U][4], l[MAX_U][4];
 
     #pragma unroll
-    for (uint u = 0u; u < 2u; ++u) {
-        const uint tok = fastT4 ? (sgi >> 1u) : (t0 + u);
+    for (uint u = 0u; u < MAX_U; ++u) {
+        const uint tok = fastT8 ? sgi : (t0 + u);
         tokIdx[u] = tok;
-        tokValid[u] = (u < uEnd) && (tok < p.T) && (myGCount > 0u);
+        tokValid[u] = (u < uEnd) && (tok < p.T) && (gCount > 0u);
         qPos[u] = (tokValid[u] && tree.isTree != 0u && tok < 16u)
             ? (p.posOffset + tree.depths[tok]) : (p.posOffset + tok);
         tokMin[u] = (p.sliding > 0u && qPos[u] + 1u > p.sliding) ? (qPos[u] + 1u - p.sliding) : 0u;
@@ -107,8 +104,8 @@ METAL_FUNC void qwg_attn_decode_sink_rel_gqa_batch_body(
             : ((sp == 0u) && (p.hasSink != 0u));
         #pragma unroll
         for (uint g = 0u; g < 4u; ++g) {
-            if (tokValid[u] && g < myGCount) {
-                const uint h = headBaseLocal + g;
+            if (tokValid[u] && g < gCount) {
+                const uint h = headBase + g;
                 q4[u][g] = activeD
                     ? float4(*(device const bfloat4*)(qBF16 + (size_t(tok) * p.nH + h) * p.headDim + dBase))
                     : float4(0.0f);
@@ -142,12 +139,12 @@ METAL_FUNC void qwg_attn_decode_sink_rel_gqa_batch_body(
             const float4 kf = activeD ? float4(kSh[b][lane]) : float4(0.0f);
             const float4 vf = activeD ? float4(vSh[b][lane]) : float4(0.0f);
             #pragma unroll
-            for (uint u = 0u; u < 2u; ++u) {
+            for (uint u = 0u; u < MAX_U; ++u) {
                 if (u >= uEnd) break;
                 if (!tokValid[u] || j < tokMin[u]) continue;
                 const uint dist = qPos[u] - j;
                 qw_attn_batch_score_tok(
-                    dist, myGCount, mayRel, qkScale, kf, vf, relProj, p, lane,
+                    dist, gCount, mayRel, qkScale, kf, vf, relProj, p, lane,
                     q4[u], rLane[u], m[u], l[u], acc[u]);
             }
         }
@@ -181,7 +178,7 @@ METAL_FUNC void qwg_attn_decode_sink_rel_gqa_batch_body(
                 const float4 kf = activeD ? float4(kSh[b][lane]) : float4(0.0f);
                 const float4 vf = activeD ? float4(vSh[b][lane]) : float4(0.0f);
                 #pragma unroll
-                for (uint u = 0u; u < 2u; ++u) {
+                for (uint u = 0u; u < MAX_U; ++u) {
                     if (u >= uEnd) break;
                     if (!tokValid[u]) continue;
                     const uint tok = tokIdx[u];
@@ -199,7 +196,7 @@ METAL_FUNC void qwg_attn_decode_sink_rel_gqa_batch_body(
                     }
                     if (!vis) continue;
                     qw_attn_batch_score_tok(
-                        dist, myGCount, mayRel, qkScale, kf, vf, relProj, p, lane,
+                        dist, gCount, mayRel, qkScale, kf, vf, relProj, p, lane,
                         q4[u], rLane[u], m[u], l[u], acc[u]);
                 }
             }
@@ -208,7 +205,7 @@ METAL_FUNC void qwg_attn_decode_sink_rel_gqa_batch_body(
     }
 
     #pragma unroll
-    for (uint u = 0u; u < 2u; ++u) {
+    for (uint u = 0u; u < MAX_U; ++u) {
         if (u >= uEnd) break;
         if (!tokValid[u]) continue;
         const uint tok = tokIdx[u];
@@ -216,8 +213,8 @@ METAL_FUNC void qwg_attn_decode_sink_rel_gqa_batch_body(
             if (!activeD) continue;
             #pragma unroll
             for (uint g = 0u; g < 4u; ++g) {
-                if (g < myGCount) {
-                    const uint h = headBaseLocal + g;
+                if (g < gCount) {
+                    const uint h = headBase + g;
                     const size_t oBase = (size_t(tok) * p.nH + h) * p.headDim + dBase;
                     float4 res = acc[u][g] / max(l[u][g], 1e-30f);
                     if (p.hasOutGate != 0u) {
@@ -233,8 +230,8 @@ METAL_FUNC void qwg_attn_decode_sink_rel_gqa_batch_body(
         } else {
             #pragma unroll
             for (uint g = 0u; g < 4u; ++g) {
-                if (g < myGCount) {
-                    const uint h = headBaseLocal + g;
+                if (g < gCount) {
+                    const uint h = headBase + g;
                     const size_t mlIdx = (size_t(tok) * p.nH + h) * p.splits + sp;
                     if (activeD) *(device float4*)(partO + mlIdx * p.headDim + dBase) = acc[u][g];
                     if (lane == 0u) partML[mlIdx] = float2(m[u][g], l[u][g]);
@@ -442,7 +439,23 @@ kernel void qwg_attn_decode_sink_rel_gqa_batch##SFX( \
     uint lane [[thread_index_in_simdgroup]]) { \
     threadgroup half4 kSh[16][33]; \
     threadgroup half4 vSh[16][33]; \
-    qwg_attn_decode_sink_rel_gqa_batch_body<MODE>( \
+    qwg_attn_decode_sink_rel_gqa_batch_body<MODE, 2u>( \
+        qBF16, rBF16, relProj, sinkBF16, gateBF16, kCache, vCache, kMeta, vMeta, \
+        outBF16, partO, partML, p, tree, tg, sgi, lane, kSh, vSh); \
+} \
+kernel void qwg_attn_decode_sink_rel_gqa_batch8##SFX( \
+    device const bfloat* qBF16 [[buffer(0)]], device const bfloat* rBF16 [[buffer(1)]], \
+    device const bfloat* relProj [[buffer(2)]], device const bfloat* sinkBF16 [[buffer(3)]], \
+    device const bfloat* gateBF16 [[buffer(4)]], device const uchar* kCache [[buffer(5)]], \
+    device const uchar* vCache [[buffer(6)]], device const uchar* kMeta [[buffer(7)]], \
+    device const uchar* vMeta [[buffer(8)]], device bfloat* outBF16 [[buffer(9)]], \
+    device float* partO [[buffer(10)]], device float2* partML [[buffer(11)]], \
+    constant QWSinkRelAttnParams& p [[buffer(12)]], constant QWSinkRelTreeMeta& tree [[buffer(13)]], \
+    uint3 tg [[threadgroup_position_in_grid]], uint sgi [[simdgroup_index_in_threadgroup]], \
+    uint lane [[thread_index_in_simdgroup]]) { \
+    threadgroup half4 kSh[16][33]; \
+    threadgroup half4 vSh[16][33]; \
+    qwg_attn_decode_sink_rel_gqa_batch_body<MODE, 1u>( \
         qBF16, rBF16, relProj, sinkBF16, gateBF16, kCache, vCache, kMeta, vMeta, \
         outBF16, partO, partML, p, tree, tg, sgi, lane, kSh, vSh); \
 } \

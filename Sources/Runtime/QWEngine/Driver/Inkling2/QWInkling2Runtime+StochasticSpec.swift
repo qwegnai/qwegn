@@ -275,24 +275,18 @@ extension QWInkling2Runtime {
                 pos += 1
                 let (tok, _) = try sampleRow(0, draft: nil, rowMargin: 0)
                 stepMs.append(elapsedSeconds(roundStart.duration(to: clock.now)) * 1000.0)
-                if stopIDs.contains(tok) {
+                let outcome = try consumeSpeculativeToken(
+                    tok, vocab: V, stopIDs: stopIDs, constraint: constraint, usePenalty: usePenalty,
+                    recentGeneratedForPenalty: &recentGeneratedForPenalty, penaltyHistory: &penaltyHistory,
+                    history: &history, generated: &generated, stopTokenID: &stopTokenID,
+                    onStopToken: onStopToken, onToken: onToken
+                )
+                if outcome == .stopped {
                     stepCounts.append(0)
-                    stopTokenID = tok
-                    onStopToken?(tok)
                     return (stats, true)
                 }
-                try constraint?.accept(tok)
-                let p2 = history.count >= 2 ? history[history.count - 2] : nil
-                session.tokenRecycler.recordTransition(previous: p2, current: history[history.count - 1], next: tok)
-                history.append(tok)
-                generated.append(tok)
-                if usePenalty {
-                    Self.recordGeneratedTokenForPenalty(
-                        tok, vocab: V, recentGenerated: &recentGeneratedForPenalty, activeLoopTokens: &penaltyHistory
-                    )
-                }
                 stepCounts.append(1)
-                if onToken?(tok) == false { return (stats, true) }
+                if outcome == .cancelled { return (stats, true) }
                 if cooldownSteps > 0 { cooldownSteps -= 1 }
                 let nextInit = proposeConstrainedOrPLD(
                     maxCount: maxVerifyDrafts(cap: pldCap), allowRecycler: dspark == nil)
@@ -338,24 +332,18 @@ extension QWInkling2Runtime {
             for r in 0..<B {
                 let targetDraft = r < drafts.count ? drafts[r] : nil
                 let (tok, didAccept) = try sampleRow(r, draft: targetDraft, rowMargin: roundMargin)
-                if stopIDs.contains(tok) {
-                    stopTokenID = tok
-                    onStopToken?(tok)
+                let outcome = try consumeSpeculativeToken(
+                    tok, vocab: V, stopIDs: stopIDs, constraint: constraint, usePenalty: usePenalty,
+                    recentGeneratedForPenalty: &recentGeneratedForPenalty, penaltyHistory: &penaltyHistory,
+                    history: &history, generated: &generated, stopTokenID: &stopTokenID,
+                    onStopToken: onStopToken, onToken: onToken
+                )
+                if outcome == .stopped {
                     stopped = true
                     break
                 }
-                try constraint?.accept(tok)
-                let prev2 = history.count >= 2 ? history[history.count - 2] : nil
-                session.tokenRecycler.recordTransition(previous: prev2, current: history[history.count - 1], next: tok)
-                history.append(tok)
-                generated.append(tok)
-                if usePenalty {
-                    Self.recordGeneratedTokenForPenalty(
-                        tok, vocab: V, recentGenerated: &recentGeneratedForPenalty, activeLoopTokens: &penaltyHistory
-                    )
-                }
                 emitted += 1
-                if onToken?(tok) == false {
+                if outcome == .cancelled {
                     cancelled = true
                     break
                 }
@@ -406,10 +394,7 @@ extension QWInkling2Runtime {
             let elapsedMs = elapsedSeconds(roundStart.duration(to: clock.now)) * 1000.0
             stepMs.append(elapsedMs)
             stepCounts.append(emitted)
-            stats.rounds += 1
-            stats.roundTokens += emitted
-            stats.proposals += drafts.count
-            stats.accepted += accepted
+            stats.recordRound(emitted: emitted, proposals: drafts.count, accepted: accepted)
 
             if stopped || cancelled {
                 return (stats, true)

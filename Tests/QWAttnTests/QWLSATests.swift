@@ -192,7 +192,10 @@ final class QWLSATests: XCTestCase {
     }
 
     func testSparsePagedPrefillMatchesDenseWhenAllBlocksSelected() throws {
-        try XCTSkipUnless(Self.hal.caps.isMetal4TensorCapable, "Sparse paged NAX prefill requires Metal 4 tensor hardware")
+        try XCTSkipUnless(
+            Self.hal.caps.supportsSimdgroupMMA,
+            "Sparse paged MMA/NAX prefill requires Apple7+ hardware"
+        )
         let pos = 64
         let T = 8
         let sp = 32
@@ -250,7 +253,10 @@ final class QWLSATests: XCTestCase {
     }
 
     func testSparsePagedPrefillQuantKVAndCausalBoundaryParity() throws {
-        try XCTSkipUnless(Self.hal.caps.isMetal4TensorCapable, "Sparse paged NAX prefill requires Metal 4 tensor hardware")
+        try XCTSkipUnless(
+            Self.hal.caps.supportsSimdgroupMMA,
+            "Sparse paged MMA/NAX prefill requires Apple7+ hardware"
+        )
         let pos = 256, T = 40, sp = 64, ceiling = pos + T + 256
         let kAll = QWAttnPagedPrefillTests.synthKV(n: pos + T, seed: 0x7711)
         let vAll = QWAttnPagedPrefillTests.synthV(n: pos + T, seed: 0x8822)
@@ -576,7 +582,10 @@ final class QWLSATests: XCTestCase {
         }
 
         // Part 2: headDim = 128 (_hd128) NAX sparse paged prefill parity vs scalar general kernel across f16/q8/q4.
-        try XCTSkipUnless(Self.hal.caps.isMetal4TensorCapable, "NAX _hd128 test requires Metal 4 tensor hardware")
+        try XCTSkipUnless(
+            Self.hal.caps.supportsSimdgroupMMA,
+            "Paged MMA/NAX _hd128 test requires Apple7+ hardware"
+        )
         let geo = try QWAttnPagedPrefillGeneralTests.tinyGeometry(gated: true)
         XCTAssertEqual(geo.headDim, 128)
         let hal128 = try QWHal(geometry: geo)

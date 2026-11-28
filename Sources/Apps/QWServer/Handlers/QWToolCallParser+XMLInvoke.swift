@@ -1,4 +1,4 @@
-// QWToolCallParser+XMLInvoke.swift — Dialect-agnostic tool envelopes and XML <invoke name="..."><parameter name="..."> parsing.
+// QWToolCallParser+XMLInvoke.swift — Dialect-agnostic tool envelopes and XML/GCML <invoke name="..."><parameter name="..."> parsing.
 import Foundation
 import QWCore
 import QWToken
@@ -10,15 +10,26 @@ public struct QWToolCallEnvelope: Equatable, Hashable, Sendable {
     public let closeTagPrefix: String
 
     public static let standard = QWToolCallEnvelope(openTag: "<tool_call>", closeTag: "</tool_call>")
+    public static let ernie = QWToolCallEnvelope(openTag: "<ernie:tool_call>", closeTag: "</ernie:tool_call>")
+    public static let gcml = QWToolCallEnvelope(openTag: "<｜GCML｜tool_calls>", closeTag: "</｜GCML｜tool_calls>")
     public static let knownEnvelopes: [QWToolCallEnvelope] = [
         .standard,
-        QWToolCallEnvelope(openTag: "<ernie:tool_call>", closeTag: "</ernie:tool_call>"),
+        .ernie,
+        .gcml,
     ]
 
     public init(openTag: String, closeTag: String) {
         self.openTag = openTag
         self.closeTag = closeTag
         self.closeTagPrefix = closeTag.hasSuffix(">") ? String(closeTag.dropLast()) : closeTag
+    }
+
+    public static func envelopes(prioritizing active: QWToolCallEnvelope) -> [QWToolCallEnvelope] {
+        var list: [QWToolCallEnvelope] = [active]
+        for env in knownEnvelopes where !list.contains(env) {
+            list.append(env)
+        }
+        return list
     }
 
     /// Builds an open/close pair from `<...>` (e.g. `<acme:tool_call>` -> `</acme:tool_call>`).
@@ -31,6 +42,18 @@ public struct QWToolCallEnvelope: Equatable, Hashable, Sendable {
 
     /// Detects the active tool-call envelope declared by a chat template source.
     public static func detect(in templateSource: String) -> QWToolCallEnvelope {
+        if templateSource.contains(gcml.openTag) {
+            return .gcml
+        }
+        if let regex = try? NSRegularExpression(pattern: #"<｜[A-Za-z0-9_]+｜tool_calls?>"#),
+           let m = regex.firstMatch(
+               in: templateSource,
+               range: NSRange(templateSource.startIndex..<templateSource.endIndex, in: templateSource)
+           ),
+           let r = Range(m.range, in: templateSource),
+           let env = fromOpenTag(String(templateSource[r])) {
+            return env
+        }
         if let regex = try? NSRegularExpression(pattern: #"<([A-Za-z0-9_]+):tool_call>"#),
            let m = regex.firstMatch(
                in: templateSource,
@@ -41,13 +64,22 @@ public struct QWToolCallEnvelope: Equatable, Hashable, Sendable {
             return env
         }
         if templateSource.contains("<|ernie:im_start|>") && templateSource.contains("<ernie:global_setting>") {
-            return QWToolCallEnvelope(openTag: "<ernie:tool_call>", closeTag: "</ernie:tool_call>")
+            return .ernie
         }
         return .standard
     }
 }
 
 extension QWToolCallParser {
+    private static let invokeTagPairs: [(open: String, close: String)] = [
+        ("<｜GCML｜invoke", "</｜GCML｜invoke>"),
+        ("<invoke", "</invoke>"),
+    ]
+    private static let paramTagPairs: [(open: String, close: String)] = [
+        ("<｜GCML｜parameter", "</｜GCML｜parameter>"),
+        ("<parameter", "</parameter>"),
+    ]
+
     static func earliestToolSegmentOpen(
         in text: Substring,
         envelopes: [QWToolCallEnvelope] = QWToolCallEnvelope.knownEnvelopes
@@ -88,7 +120,7 @@ extension QWToolCallParser {
            let call = parseSingleToolCall(inner: inner, schemas: schemas) {
             return [call]
         }
-        if inner.contains("<invoke") {
+        if inner.contains("<invoke") || inner.contains("<｜GCML｜invoke") {
             let xmlCalls = parseXMLInvokeToolCalls(inner, schemas: schemas)
             if !xmlCalls.isEmpty { return xmlCalls }
         }
@@ -182,95 +214,196 @@ extension QWToolCallParser {
 
     static func isBalancedXMLInvokePayload(_ raw: Substring) -> Bool {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.hasSuffix("</invoke>") else { return false }
-        let invokeOpens = trimmed.components(separatedBy: "<invoke").count - 1
-        let invokeCloses = trimmed.components(separatedBy: "</invoke>").count - 1
-        let paramOpens = trimmed.components(separatedBy: "<parameter").count - 1
-        let paramCloses = trimmed.components(separatedBy: "</parameter>").count - 1
-        return invokeOpens >= 1 && invokeOpens == invokeCloses && paramOpens == paramCloses
+        for (iIdx, inv) in invokeTagPairs.enumerated() where trimmed.hasSuffix(inv.close) {
+            let prm = paramTagPairs[iIdx]
+            let invokeOpens = trimmed.components(separatedBy: inv.open).count - 1
+            let invokeCloses = trimmed.components(separatedBy: inv.close).count - 1
+            let paramOpens = trimmed.components(separatedBy: prm.open).count - 1
+            let paramCloses = trimmed.components(separatedBy: prm.close).count - 1
+            if invokeOpens >= 1 && invokeOpens == invokeCloses && paramOpens == paramCloses {
+                return true
+            }
+        }
+        return false
     }
 
     static func hasUnclosedXMLInvoke(_ raw: Substring) -> Bool {
         let trimmed = raw.drop(while: { $0.isWhitespace })
-        guard trimmed.contains("<invoke") else { return false }
-        let invokeOpens = trimmed.components(separatedBy: "<invoke").count - 1
-        let invokeCloses = trimmed.components(separatedBy: "</invoke>").count - 1
-        let paramOpens = trimmed.components(separatedBy: "<parameter").count - 1
-        let paramCloses = trimmed.components(separatedBy: "</parameter>").count - 1
-        return invokeOpens > invokeCloses || paramOpens > paramCloses
+        for (iIdx, inv) in invokeTagPairs.enumerated() where trimmed.contains(inv.open) {
+            let prm = paramTagPairs[iIdx]
+            let invokeOpens = trimmed.components(separatedBy: inv.open).count - 1
+            let invokeCloses = trimmed.components(separatedBy: inv.close).count - 1
+            let paramOpens = trimmed.components(separatedBy: prm.open).count - 1
+            let paramCloses = trimmed.components(separatedBy: prm.close).count - 1
+            if invokeOpens > invokeCloses || paramOpens > paramCloses { return true }
+        }
+        return false
     }
 
     static func parseXMLInvokeToolCalls(_ inner: String, schemas: ToolSchemas) -> [ToolCall] {
         var calls: [ToolCall] = []
         var cursor = inner.startIndex
-        while let (fnName, bodyStart) = nextNamedTag(in: inner, from: cursor, tag: "<invoke") {
+        while let match = nextNamedTag(in: inner, from: cursor, tagPairs: invokeTagPairs) {
             let body: String
             let nextCursor: String.Index
             if let (end, after) = findBoundaryCloseTag(
-                in: inner, from: bodyStart, closeTag: "</invoke>", nextOpenTag: "<invoke"
+                in: inner, from: match.bodyStart, closeTag: match.closeTag, nextOpenTag: match.openTag
             ) {
-                body = String(inner[bodyStart..<end])
+                body = String(inner[match.bodyStart..<end])
                 nextCursor = after
             } else {
-                body = String(inner[bodyStart...])
+                body = String(inner[match.bodyStart...])
                 nextCursor = inner.endIndex
             }
             var members: [String] = []
-            for (pName, pVal) in extractXMLNamedParameters(in: body) {
-                members.append("\(jsonLiteral(pName)):\(jsonValue(pVal, type: schemas.type(function: fnName, parameter: pName)))")
+            for param in extractXMLNamedParameters(in: body) {
+                let encodedVal = formatXMLParameterValue(
+                    param.value,
+                    stringAttr: param.stringAttr,
+                    schemaType: schemas.type(function: match.name, parameter: param.name)
+                )
+                members.append("\(jsonLiteral(param.name)):\(encodedVal)")
             }
             calls.append(ToolCall(
                 id: generateCallId(),
                 type: "function",
-                function: ToolCallFunction(name: fnName, arguments: "{" + members.joined(separator: ",") + "}")
+                function: ToolCallFunction(name: match.name, arguments: "{" + members.joined(separator: ",") + "}")
             ))
             cursor = nextCursor
         }
         return calls
     }
 
-    private static func extractXMLNamedParameters(in body: String) -> [(String, String)] {
-        var out: [(String, String)] = []
+    private static func formatXMLParameterValue(
+        _ raw: String,
+        stringAttr: Bool?,
+        schemaType: ToolSchemas.ParamType
+    ) -> String {
+        if stringAttr == true {
+            return jsonLiteral(raw)
+        }
+        if stringAttr == false {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            let low = trimmed.lowercased()
+            if low == "true" { return "true" }
+            if low == "false" { return "false" }
+            if low == "null" { return "null" }
+            if let iv = Int64(trimmed) { return String(iv) }
+            if let data = trimmed.data(using: .utf8),
+               let value = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]),
+               let out = try? JSONSerialization.data(
+                   withJSONObject: value,
+                   options: [.fragmentsAllowed, .sortedKeys, .withoutEscapingSlashes]
+               ),
+               let str = String(data: out, encoding: .utf8) {
+                return str
+            }
+            if schemaType != .string {
+                return jsonValue(raw, type: schemaType)
+            }
+            return jsonLiteral(raw)
+        }
+        return jsonValue(raw, type: schemaType)
+    }
+
+    private struct NamedParameter {
+        let name: String
+        let value: String
+        let stringAttr: Bool?
+    }
+
+    private struct NamedTagMatch {
+        let name: String
+        let stringAttr: Bool?
+        let openTag: String
+        let closeTag: String
+        let bodyStart: String.Index
+    }
+
+    private static func extractXMLNamedParameters(in body: String) -> [NamedParameter] {
+        var out: [NamedParameter] = []
         var cursor = body.startIndex
-        while let (pName, valStart) = nextNamedTag(in: body, from: cursor, tag: "<parameter") {
+        while let match = nextNamedTag(in: body, from: cursor, tagPairs: paramTagPairs) {
             if let (valEnd, nextCursor) = findBoundaryCloseTag(
-                in: body, from: valStart, closeTag: "</parameter>", nextOpenTag: "<parameter"
+                in: body, from: match.bodyStart, closeTag: match.closeTag, nextOpenTag: match.openTag
             ) {
-                out.append((pName, String(body[valStart..<valEnd])))
+                out.append(NamedParameter(
+                    name: match.name,
+                    value: String(body[match.bodyStart..<valEnd]),
+                    stringAttr: match.stringAttr
+                ))
                 cursor = nextCursor
             } else {
-                out.append((pName, String(body[valStart...])))
+                out.append(NamedParameter(
+                    name: match.name,
+                    value: String(body[match.bodyStart...]),
+                    stringAttr: match.stringAttr
+                ))
                 break
             }
         }
         return out
     }
 
-    private static func nextNamedTag(in text: String, from start: String.Index, tag: String) -> (name: String, bodyStart: String.Index)? {
+    private static func nextNamedTag(
+        in text: String,
+        from start: String.Index,
+        tagPairs: [(open: String, close: String)]
+    ) -> NamedTagMatch? {
         var search = start
-        while let open = text[search...].range(of: tag) {
-            var idx = open.upperBound
+        while search < text.endIndex {
+            var earliest: (range: Range<String.Index>, open: String, close: String)?
+            for pair in tagPairs {
+                if let r = text[search...].range(of: pair.open),
+                   earliest.map({ r.lowerBound < $0.range.lowerBound }) ?? true {
+                    earliest = (r, pair.open, pair.close)
+                }
+            }
+            guard let hit = earliest else { return nil }
+            var idx = hit.range.upperBound
             guard idx < text.endIndex, text[idx].isWhitespace else {
-                search = open.upperBound
+                search = hit.range.upperBound
                 continue
             }
-            while idx < text.endIndex, text[idx].isWhitespace { idx = text.index(after: idx) }
-            guard text[idx...].hasPrefix("name=\"") else {
-                search = open.upperBound
-                continue
+            var parsedName: String?
+            var parsedStringAttr: Bool?
+            var validAttrs = true
+            while idx < text.endIndex {
+                while idx < text.endIndex, text[idx].isWhitespace { idx = text.index(after: idx) }
+                guard idx < text.endIndex else { validAttrs = false; break }
+                if text[idx] == ">" { break }
+                guard let eqIdx = text[idx...].firstIndex(of: "=") else { validAttrs = false; break }
+                let attrKey = text[idx..<eqIdx].trimmingCharacters(in: .whitespaces)
+                let afterEq = text.index(after: eqIdx)
+                guard afterEq < text.endIndex, (text[afterEq] == "\"" || text[afterEq] == "'") else {
+                    validAttrs = false
+                    break
+                }
+                let quote = text[afterEq]
+                let valStart = text.index(after: afterEq)
+                guard let quoteEnd = text[valStart...].firstIndex(of: quote) else { return nil }
+                let attrVal = String(text[valStart..<quoteEnd])
+                if attrVal.contains("\n") { validAttrs = false; break }
+                if attrKey == "name" {
+                    parsedName = attrVal
+                } else if attrKey == "string" {
+                    let low = attrVal.lowercased()
+                    if low == "true" { parsedStringAttr = true }
+                    else if low == "false" { parsedStringAttr = false }
+                }
+                idx = text.index(after: quoteEnd)
             }
-            let nameStart = text.index(idx, offsetBy: 6)
-            guard let quoteEnd = text[nameStart...].firstIndex(of: "\"") else { return nil }
-            let afterQuote = text.index(after: quoteEnd)
-            guard afterQuote < text.endIndex, text[afterQuote] == ">" else {
-                search = open.upperBound
-                continue
+            if validAttrs, idx < text.endIndex, text[idx] == ">",
+               let name = parsedName, !name.isEmpty {
+                return NamedTagMatch(
+                    name: name,
+                    stringAttr: parsedStringAttr,
+                    openTag: hit.open,
+                    closeTag: hit.close,
+                    bodyStart: text.index(after: idx)
+                )
             }
-            let name = String(text[nameStart..<quoteEnd])
-            if !name.isEmpty, !name.contains("\n") {
-                return (name, text.index(after: afterQuote))
-            }
-            search = open.upperBound
+            search = hit.range.upperBound
         }
         return nil
     }

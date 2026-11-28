@@ -523,17 +523,12 @@ final class QWInkling2Session: @unchecked Sendable {
         primarySlotState.resetConvStates()
     }
 
-    func snapshotPreVerifyConvStates() {
-        guard let preBuf = convPreVerifyBuf else { return }
-        memcpy(preBuf.contents(), convStatesSlab.contents(), convStatesSlab.length)
-    }
-
     private struct SConvVerifyCommitParams {
         var numVisits, kvDim, H, kept, stateKvStride, stateHStride, verifyKvStride, verifyHStride: UInt32
     }
 
     func commitVerifyConv(hal: QWHal, kept: Int, profiler: QWInkling2Profiler? = nil) throws {
-        guard kept > 0, let vInBuf = convVerifyInputsBuf else { return }
+        guard kept > 0, convVerifyInputsBuf != nil else { return }
         let cbOpt = (profiler == nil)
             ? (hal.queue.makeCommandBufferWithUnretainedReferences() ?? hal.queue.makeCommandBuffer())
             : hal.queue.makeCommandBuffer()
@@ -542,6 +537,20 @@ final class QWInkling2Session: @unchecked Sendable {
         profiler?.beginStage(.sconv, on: cb, encoder: &encOpt, hal: hal)
         if encOpt == nil { encOpt = cb.makeComputeCommandEncoder() }
         guard let enc = encOpt else { throw QWInkling2Error.badState("failed to create sconv commit encoder") }
+        try encodeCommitVerifyConv(enc, hal: hal, kept: kept)
+        profiler?.endActiveStage(encoder: &encOpt)
+        encOpt?.endEncoding()
+        cb.commit()
+        cb.waitUntilCompleted()
+        if let err = cb.error { throw QWInkling2Error.badState("sconv verify commit failed: \(err.localizedDescription)") }
+    }
+
+    func encodeCommitVerifyConv(
+        _ enc: any MTLComputeCommandEncoder,
+        hal: QWHal,
+        kept: Int
+    ) throws {
+        guard kept > 0, let vInBuf = convVerifyInputsBuf else { return }
         let H = descriptor.hidden, kvDim = descriptor.kvHeads * descriptor.headDim, numVisits = executionPlan.count
         var p = SConvVerifyCommitParams(
             numVisits: UInt32(numVisits), kvDim: UInt32(kvDim), H: UInt32(H), kept: UInt32(kept),
@@ -555,11 +564,6 @@ final class QWInkling2Session: @unchecked Sendable {
         enc.setBytes(&p, length: MemoryLayout<SConvVerifyCommitParams>.stride, index: 2)
         enc.dispatchThreads(MTLSize(width: totalCh, height: numVisits, depth: 1),
                             threadsPerThreadgroup: MTLSize(width: min(256, totalCh), height: 1, depth: 1))
-        profiler?.endActiveStage(encoder: &encOpt)
-        encOpt?.endEncoding()
-        cb.commit()
-        cb.waitUntilCompleted()
-        if let err = cb.error { throw QWInkling2Error.badState("sconv verify commit failed: \(err.localizedDescription)") }
     }
 
     func commitVerifyConvStates(kept: Int) {

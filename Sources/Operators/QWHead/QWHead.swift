@@ -58,8 +58,10 @@ public final class QWHead {
     private let psoGemvArgmax: any MTLComputePipelineState
     private let psoCombine: any MTLComputePipelineState
     private let psoArgmax: any MTLComputePipelineState
+    private let psoArgmaxSoftcap: any MTLComputePipelineState
     private let psoArgmaxFin: any MTLComputePipelineState
     private let psoMultiMax: any MTLComputePipelineState
+    private let psoSoftcap: any MTLComputePipelineState
     private let f2plan: QWGemmPlan
 
     public init(hal: QWHal, geometry: QWModelGeometry) throws {
@@ -69,8 +71,10 @@ public final class QWHead {
         self.psoGemvArgmax = try hal.pipeline("qwg_head_gemv_q4g_argmax")
         self.psoCombine = try hal.pipeline("qwg_head_combine")
         self.psoArgmax = try hal.pipeline("qwg_head_argmax")
+        self.psoArgmaxSoftcap = try hal.pipeline("qwg_head_argmax_softcap")
         self.psoArgmaxFin = try hal.pipeline("qwg_head_argmax_fin")
         self.psoMultiMax = try hal.pipeline("qwg_multimax_f32")
+        self.psoSoftcap = try hal.pipeline("qwg_head_softcap_f32")
         self.f2plan = QWGemm.plan(QWGemmShape(m: 1, n: geometry.vocab, k: geometry.hidden),
                                   dtype: .q4g, epi: .none, vocab: geometry.vocab)
     }
@@ -99,7 +103,8 @@ public final class QWHead {
     public static func encodeF16(_ enc: any MTLComputeCommandEncoder, hal: QWHal,
                                  w: QWTensorValue, x: QWTensorValue, y: QWTensorValue,
                                  geometry: QWModelGeometry,
-                                 M: Int = 1, N: Int? = nil) throws {
+                                 M: Int = 1, N: Int? = nil,
+                                 softcap: Float = 0.0) throws {
         let hidden = geometry.hidden
         let N = N ?? geometry.vocab
         guard (1...16).contains(M), N > 0, N <= geometry.vocab,
@@ -118,8 +123,12 @@ public final class QWHead {
             let y0 = QWTensorValue(region: y.region, offset: y.offset, shape: QWTensorShape([c0 * N], .f32))
             let x1 = QWTensorValue(region: x.region, offset: x.offset + c0 * hidden * 2, shape: QWTensorShape([c1 * hidden], .f16))
             let y1 = QWTensorValue(region: y.region, offset: y.offset + c0 * N * 4, shape: QWTensorShape([c1 * N], .f32))
-            try encodeF16(enc, hal: hal, w: w, x: x0, y: y0, geometry: geometry, M: c0, N: N)
-            try encodeF16(enc, hal: hal, w: w, x: x1, y: y1, geometry: geometry, M: c1, N: N)
+            try encodeF16(enc, hal: hal, w: w, x: x0, y: y0, geometry: geometry, M: c0, N: N, softcap: 0.0)
+            try encodeF16(enc, hal: hal, w: w, x: x1, y: y1, geometry: geometry, M: c1, N: N, softcap: 0.0)
+            if softcap > 0 {
+                enc.memoryBarrier(scope: .buffers)
+                try encodeSoftcapF32(enc, hal: hal, logits: y, count: M * N, softcap: softcap)
+            }
             return
         }
         let kernel = M == 1 ? "qwg_gemv_f16_v4"
@@ -136,6 +145,10 @@ public final class QWHead {
         let tgThreads = M == 1 ? 32 : 128
         enc.dispatchThreadgroups(MTLSize(width: tgCount, height: 1, depth: 1),
                                  threadsPerThreadgroup: MTLSize(width: tgThreads, height: 1, depth: 1))
+        if softcap > 0 {
+            enc.memoryBarrier(scope: .buffers)
+            try encodeSoftcapF32(enc, hal: hal, logits: y, count: M * N, softcap: softcap)
+        }
     }
 
     public func encode(_ enc: any MTLComputeCommandEncoder, storage: QWHeadStorage,
@@ -143,22 +156,17 @@ public final class QWHead {
                        M: Int = 1, softcap: Float = 0.0) throws {
         switch storage {
         case .f16(let weight):
-            guard softcap == 0 else {
-                throw QWHeadError.badShape("softcap is only supported on .bf16 head projection or encodeBatchedGreedyArgmax")
-            }
-            try Self.encodeF16(enc, hal: hal, w: weight, x: x, y: y, geometry: geometry, M: M)
+            try Self.encodeF16(enc, hal: hal, w: weight, x: x, y: y,
+                               geometry: geometry, M: M, softcap: softcap)
         case .bf16(let weight):
             try Self.encodeBF16(enc, hal: hal, w: weight, x: x, y: y,
                                 geometry: geometry, M: M, softcap: softcap)
         case .q4g(let weight):
-            guard softcap == 0 else {
-                throw QWHeadError.badShape("softcap is only supported on .bf16 head projection or encodeBatchedGreedyArgmax")
-            }
             if M == 1 {
-                try encode(enc, x: x, gs: gs, w: weight, y: y)
+                try encode(enc, x: x, gs: gs, w: weight, y: y, softcap: softcap)
             } else {
                 try Self.encodeBatched(enc, hal: hal, view: weight.view,
-                                       x: x, gs: gs, y: y, m: M)
+                                       x: x, gs: gs, y: y, m: M, softcap: softcap)
             }
         }
     }
@@ -166,7 +174,8 @@ public final class QWHead {
     public static func encodeBatched(_ enc: any MTLComputeCommandEncoder, hal: QWHal,
                                      view: QWWeightView, x: QWTensorValue,
                                      gs: QWTensorValue? = nil, y: QWTensorValue,
-                                     m: Int) throws {
+                                     m: Int, preferNAX: Bool = false,
+                                     softcap: Float = 0.0) throws {
         _ = gs
         guard (2...16).contains(m) else {
             throw QWHeadError.badShape("batched HQ4_G32 head requires m=2…16 (got \(m))")
@@ -174,6 +183,15 @@ public final class QWHead {
         guard x.shape.dtype == .f16, x.shape.elementCount == m * view.k,
               y.shape.dtype == .f32, y.shape.elementCount >= m * view.n else {
             throw QWHeadError.badShape("batched HQ4_G32 head x/y shape-dtype mismatch")
+        }
+        if preferNAX && hal.caps.isMetal4TensorCapable
+            && (view.n % 64 == 0 || !view.isIncumbentContainer) && (view.k % 64) == 0 {
+            try QWGemm.encodeNaxF32(enc, hal: hal, weight: view, x16: x, y16: x, y32: y, rows: m)
+            if softcap > 0 {
+                enc.memoryBarrier(scope: .buffers)
+                try encodeSoftcapF32(enc, hal: hal, logits: y, count: m * view.n, softcap: softcap)
+            }
+            return
         }
         if !view.isIncumbentContainer && (view.isSHVQ || !(view.bits == 4 && view.groupSize == 32)) {
             var r0 = 0
@@ -191,9 +209,17 @@ public final class QWHead {
                                     rows: chunk, isSHVQ: view.isSHVQ)
                 r0 += chunk
             }
+            if softcap > 0 {
+                enc.memoryBarrier(scope: .buffers)
+                try encodeSoftcapF32(enc, hal: hal, logits: y, count: m * view.n, softcap: softcap)
+            }
             return
         }
         try encodeBatchedQ4GKernel(enc, hal: hal, view: view, x: x, y: y, m: m)
+        if softcap > 0 {
+            enc.memoryBarrier(scope: .buffers)
+            try encodeSoftcapF32(enc, hal: hal, logits: y, count: m * view.n, softcap: softcap)
+        }
     }
 
     /// Dispatches the one-pass HQ4_G32/AQ4_G32 batched head; at m >= 4 each x load is
@@ -229,24 +255,34 @@ public final class QWHead {
 
     public static func encodeQ4g(_ enc: any MTLComputeCommandEncoder, hal: QWHal,
                                  weight: QWHeadWeight, x: QWTensorValue,
-                                 gs: QWTensorValue? = nil, y: QWTensorValue) throws {
+                                 gs: QWTensorValue? = nil, y: QWTensorValue,
+                                 softcap: Float = 0.0) throws {
         let view = weight.view
         if !view.isIncumbentContainer {
             try QWGemmAQ.encode(enc, hal: hal, blocks: view.blocks, x: x, y: y,
                                 n: view.n, k: view.k, bits: view.bits, group: view.groupSize,
                                 isSHVQ: view.isSHVQ)
+            if softcap > 0 {
+                enc.memoryBarrier(scope: .buffers)
+                try encodeSoftcapF32(enc, hal: hal, logits: y, count: view.n, softcap: softcap)
+            }
             return
         }
         let plan = QWGemm.plan(QWGemmShape(m: 1, n: view.n, k: view.k),
                                dtype: .q4g, epi: .none, vocab: view.n)
         try QWGemm.encode(enc, hal: hal, plan: plan, x: x,
                           xGroupSum: gs, wQ4: view, y: y)
+        if softcap > 0 {
+            enc.memoryBarrier(scope: .buffers)
+            try encodeSoftcapF32(enc, hal: hal, logits: y, count: view.n, softcap: softcap)
+        }
     }
 
-    /// GEMV: x [K] f16 → y [N] f32. One dispatch (S=1) or GEMV+combine (S>1).
+    /// GEMV: x [K] f16 → y [N] f32. One dispatch (S=1) or GEMV+combine (S>1), plus optional softcap.
     public func encode(_ enc: any MTLComputeCommandEncoder,
                        x: QWTensorValue, gs: QWTensorValue? = nil, w: QWHeadWeight,
-                       y: QWTensorValue, partials: QWTensorValue? = nil) throws {
+                       y: QWTensorValue, partials: QWTensorValue? = nil,
+                       softcap: Float = 0.0) throws {
         let K = w.view.k, N = w.view.n
         guard K == geometry.hidden else { throw QWHeadError.badShape("head K=\(K) ≠ hidden") }
         guard x.shape.elementCount == K, x.shape.dtype == .f16,
@@ -257,6 +293,10 @@ public final class QWHead {
             try QWGemmAQ.encode(enc, hal: hal, blocks: w.view.blocks, x: x, y: y,
                                 n: N, k: K, bits: w.view.bits, group: w.view.groupSize,
                                 isSHVQ: w.view.isSHVQ)
+            if softcap > 0 {
+                enc.memoryBarrier(scope: .buffers)
+                try encodeSoftcapF32(enc, logits: y, count: N, softcap: softcap)
+            }
             return
         }
         let S = splits
@@ -264,6 +304,10 @@ public final class QWHead {
         if S == 1 {
             try QWGemm.encode(enc, hal: hal, plan: f2plan, x: x,
                               xGroupSum: gs, wQ4: w.view, y: y)
+            if softcap > 0 {
+                enc.memoryBarrier(scope: .buffers)
+                try encodeSoftcapF32(enc, logits: y, count: N, softcap: softcap)
+            }
             return
         }
         if S > 1 {
@@ -293,6 +337,10 @@ public final class QWHead {
             enc.dispatchThreadgroups(MTLSize(width: (N + 255) / 256, height: 1, depth: 1),
                                      threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
         }
+        if softcap > 0 {
+            enc.memoryBarrier(scope: .buffers)
+            try encodeSoftcapF32(enc, logits: y, count: N, softcap: softcap)
+        }
     }
 
     /// Greedy argmax (T=0): y [N] f32 → token u32. Two dispatches; the
@@ -300,8 +348,10 @@ public final class QWHead {
     public static func encodeArgmax(_ enc: any MTLComputeCommandEncoder,
                                     psoArgmax: any MTLComputePipelineState,
                                     psoArgmaxFin: any MTLComputePipelineState,
+                                    psoArgmaxSoftcap: (any MTLComputePipelineState)? = nil,
                                     y: QWTensorValue, keysHi: QWTensorValue, keysLo: QWTensorValue,
-                                    token: QWTensorValue, N: Int) throws {
+                                    token: QWTensorValue, N: Int,
+                                    softcap: Float = 0.0) throws {
         let nTG = argmaxSlots(N)
         guard y.shape.elementCount >= N, y.shape.dtype == .f32,
               keysHi.shape.elementCount >= nTG, keysHi.shape.dtype == .i32,
@@ -310,11 +360,24 @@ public final class QWHead {
             throw QWHeadError.badShape("argmax buffers mismatch (N=\(N))")
         }
         var nU = UInt32(N)
-        enc.setComputePipelineState(psoArgmax)
-        y.bind(enc, index: 0)
-        keysHi.bind(enc, index: 1)
-        keysLo.bind(enc, index: 2)
-        enc.setBytes(&nU, length: 4, index: 3)
+        if softcap > 0 {
+            guard let psoCap = psoArgmaxSoftcap else {
+                throw QWHeadError.badShape("psoArgmaxSoftcap required when softcap > 0")
+            }
+            var cap = softcap
+            enc.setComputePipelineState(psoCap)
+            y.bind(enc, index: 0)
+            keysHi.bind(enc, index: 1)
+            keysLo.bind(enc, index: 2)
+            enc.setBytes(&nU, length: 4, index: 3)
+            enc.setBytes(&cap, length: 4, index: 4)
+        } else {
+            enc.setComputePipelineState(psoArgmax)
+            y.bind(enc, index: 0)
+            keysHi.bind(enc, index: 1)
+            keysLo.bind(enc, index: 2)
+            enc.setBytes(&nU, length: 4, index: 3)
+        }
         enc.dispatchThreadgroups(MTLSize(width: nTG, height: 1, depth: 1),
                                  threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
         enc.memoryBarrier(scope: .buffers)
@@ -330,18 +393,24 @@ public final class QWHead {
 
     public static func encodeArgmax(_ enc: any MTLComputeCommandEncoder, hal: QWHal,
                                     y: QWTensorValue, keysHi: QWTensorValue, keysLo: QWTensorValue,
-                                    token: QWTensorValue, N: Int) throws {
+                                    token: QWTensorValue, N: Int,
+                                    softcap: Float = 0.0) throws {
         try encodeArgmax(enc,
                          psoArgmax: try hal.pipeline("qwg_head_argmax"),
                          psoArgmaxFin: try hal.pipeline("qwg_head_argmax_fin"),
-                         y: y, keysHi: keysHi, keysLo: keysLo, token: token, N: N)
+                         psoArgmaxSoftcap: softcap > 0 ? try hal.pipeline("qwg_head_argmax_softcap") : nil,
+                         y: y, keysHi: keysHi, keysLo: keysLo, token: token, N: N,
+                         softcap: softcap)
     }
 
     public func encodeArgmax(_ enc: any MTLComputeCommandEncoder,
                              y: QWTensorValue, keysHi: QWTensorValue, keysLo: QWTensorValue,
-                             token: QWTensorValue, N: Int) throws {
+                             token: QWTensorValue, N: Int,
+                             softcap: Float = 0.0) throws {
         try Self.encodeArgmax(enc, psoArgmax: psoArgmax, psoArgmaxFin: psoArgmaxFin,
-                              y: y, keysHi: keysHi, keysLo: keysLo, token: token, N: N)
+                              psoArgmaxSoftcap: psoArgmaxSoftcap,
+                              y: y, keysHi: keysHi, keysLo: keysLo, token: token, N: N,
+                              softcap: softcap)
     }
 
     /// Fused LM-head GEMV + block argmax epilogue followed by final key
@@ -351,7 +420,8 @@ public final class QWHead {
                                 x: QWTensorValue, w: QWHeadWeight,
                                 y: QWTensorValue, keysHi: QWTensorValue, keysLo: QWTensorValue,
                                 token: QWTensorValue,
-                                writeLogits: Bool = true) throws {
+                                writeLogits: Bool = true,
+                                softcap: Float = 0.0) throws {
         let K = w.view.k, N = w.view.n
         let nTG = (N + 31) / 32
         guard K == geometry.hidden,
@@ -361,6 +431,27 @@ public final class QWHead {
               keysLo.shape.elementCount >= nTG, keysLo.shape.dtype == .i32,
               token.shape.elementCount >= 1, token.shape.dtype == .i32 else {
             throw QWHeadError.badShape("encodeGreedyQ4g buffers mismatch (N=\(N), K=\(K))")
+        }
+        if softcap > 0 {
+            let fastSlots = (N + 7) / 8
+            if !writeLogits,
+               keysHi.shape.elementCount >= fastSlots,
+               keysLo.shape.elementCount >= fastSlots,
+               !w.view.isSHVQ,
+               (w.view.isIncumbentContainer || (w.view.bits == 4 && w.view.groupSize == 32)) {
+                try Self.encodeBatchedGreedyArgmax(
+                    enc, hal: hal, storage: .q4g(w), x: x,
+                    keysHi: keysHi, keysLo: keysLo, tokens: token,
+                    geometry: geometry, M: 1, N: N, softcap: softcap
+                )
+                return
+            }
+            try Self.encodeQ4g(enc, hal: hal, weight: w, x: x, y: y,
+                               softcap: writeLogits ? softcap : 0.0)
+            enc.memoryBarrier(scope: .buffers)
+            try encodeArgmax(enc, y: y, keysHi: keysHi, keysLo: keysLo, token: token,
+                             N: N, softcap: writeLogits ? 0.0 : softcap)
+            return
         }
         var nU = UInt32(N) | 0x8000_0000 | (writeLogits ? 0 : 0x4000_0000), kU = UInt32(K), nTG32 = UInt32(nTG)
         if w.view.isIncumbentContainer {
@@ -391,6 +482,40 @@ public final class QWHead {
         enc.setBytes(&nTG32, length: 4, index: 3)
         enc.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
                                  threadsPerThreadgroup: MTLSize(width: 1024, height: 1, depth: 1))
+    }
+
+    /// Applies in-place `cap * precise::tanh(clamp(v / cap, -15, 15))` over `count` `f32` logits.
+    public static func encodeSoftcapF32(_ enc: any MTLComputeCommandEncoder,
+                                        psoSoftcap: any MTLComputePipelineState,
+                                        logits: QWTensorValue, count: Int,
+                                        softcap: Float) throws {
+        guard count > 0,
+              logits.shape.dtype == .f32, logits.shape.elementCount >= count else {
+            throw QWHeadError.badShape("encodeSoftcapF32 requires logits[count] f32")
+        }
+        guard softcap > 0 else { return }
+        var countU = UInt32(count)
+        var cap = softcap
+        enc.setComputePipelineState(psoSoftcap)
+        logits.bind(enc, index: 0)
+        enc.setBytes(&countU, length: 4, index: 1)
+        enc.setBytes(&cap, length: 4, index: 2)
+        enc.dispatchThreadgroups(MTLSize(width: (count + 255) / 256, height: 1, depth: 1),
+                                 threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
+    }
+
+    public static func encodeSoftcapF32(_ enc: any MTLComputeCommandEncoder, hal: QWHal,
+                                        logits: QWTensorValue, count: Int,
+                                        softcap: Float) throws {
+        try encodeSoftcapF32(enc, psoSoftcap: try hal.pipeline("qwg_head_softcap_f32"),
+                             logits: logits, count: count, softcap: softcap)
+    }
+
+    public func encodeSoftcapF32(_ enc: any MTLComputeCommandEncoder,
+                                 logits: QWTensorValue, count: Int,
+                                 softcap: Float) throws {
+        try Self.encodeSoftcapF32(enc, psoSoftcap: psoSoftcap,
+                                  logits: logits, count: count, softcap: softcap)
     }
 
     /// Applies in-place piecewise linear-quadratic `MultiMax` logit calibration over `count` `f32` logits.

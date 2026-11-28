@@ -11,8 +11,14 @@ extension QWMCPDispatcher {
         .object([("type", .string(type))])
     }
 
-    private static func schema(_ name: String, _ desc: String, properties: [(String, QWJson)], required: [String]) -> QWJson {
-        .object([
+    private static func schema(
+        _ name: String,
+        _ desc: String,
+        properties: [(String, QWJson)],
+        required: [String],
+        readOnly: Bool = true
+    ) -> QWJson {
+        var fields: [(String, QWJson)] = [
             ("name", .string(name)),
             ("description", .string(desc)),
             ("inputSchema", .object([
@@ -20,7 +26,11 @@ extension QWMCPDispatcher {
                 ("properties", .object(properties)),
                 ("required", .array(required.map { .string($0) })),
             ])),
-        ])
+        ]
+        if readOnly {
+            fields.append(("annotations", .object([("readOnlyHint", .bool(true))])))
+        }
+        return .object(fields)
     }
 
     static func cognitiveAndVaultToolDefinitions() -> [QWJson] {
@@ -46,7 +56,8 @@ extension QWMCPDispatcher {
                     ("drop_confidence_rail", objProp("number")),
                     ("archive_session_id", objProp("string")),
                 ],
-                required: ["turns"]
+                required: ["turns"],
+                readOnly: false
             ),
             schema(
                 "qwg_episodic_recover",
@@ -104,19 +115,38 @@ extension QWMCPDispatcher {
                 required: ["prompt"]
             ),
             schema(
+                "qwg_vault_mount",
+                "Mount one or more workspace or documentation/PDF roots into the Cognitive Vault v2 (auto-indexing manifests when needed).",
+                properties: [
+                    ("workspace_path", objProp("string")),
+                    ("paths", objProp("array")),
+                    ("docs", objProp("array")),
+                    ("pack_name", objProp("string")),
+                ],
+                required: [],
+                readOnly: false
+            ),
+            schema(
                 "qwg_vault_query",
-                "Query the workspace-contained .qwg/manifest.json Memory Vault and optionally screen recalled passages.",
+                "Query mounted Cognitive Vault v2 codebases and PDF/Markdown docs with span-windowed Hybrid RRF, 1-hop AST slices, and default prompt-injection screening.",
                 properties: [
                     ("workspace_path", objProp("string")),
                     ("query", objProp("string")),
+                    ("pack_names", objProp("array")),
                     ("max_files", objProp("integer")),
+                    ("max_tokens", objProp("integer")),
+                    ("expand_ast_hops", objProp("integer")),
                     ("screen", objProp("boolean")),
+                    ("format", .object([
+                        ("type", .string("string")),
+                        ("enum", .array([.string("json"), .string("markdown")])),
+                    ])),
                 ],
-                required: ["workspace_path", "query"]
+                required: ["query"]
             ),
             schema(
                 "qwg_vault_status",
-                "Report mounted Memory Pack status and optional workspace manifest health inside allowed workspace roots.",
+                "Report mounted Memory Pack and Cognitive Vault v2 multi-pack status, AST declaration counts, and PDF/vector health.",
                 properties: [
                     ("workspace_path", objProp("string")),
                 ],
@@ -130,9 +160,10 @@ extension QWMCPDispatcher {
             return QWCognitiveRails(runner: nil)
         }
         let act = self.actor
-        return QWCognitiveRails(decideFn: { req in
-            try await act.decide(req).response
-        })
+        return QWCognitiveRails(
+            decideFn: { req in try await act.decide(req).response },
+            decideBatchFn: { reqs in try await act.decideBatch(reqs).map(\.response) }
+        )
     }
 
     func executeCognitiveOrVaultTool(name: String, arguments: QWJson) async throws -> String? {
@@ -217,42 +248,103 @@ extension QWMCPDispatcher {
             let a = try decoder.decode(QWRouteTurnInput.self, from: rawData)
             return try encode(await makeCognitiveRails().routeTurn(a))
 
-        case "qwg_vault_query":
-            struct Args: Decodable { let workspace_path: String; let query: String; let max_files: Int?; let screen: Bool? }
+        case "qwg_vault_mount":
+            struct Args: Decodable {
+                let workspace_path: String?
+                let paths: [String]?
+                let docs: [String]?
+                let pack_name: String?
+            }
             let a = try decoder.decode(Args.self, from: rawData)
-            let rootURL = try actor.resolveValidatedMemoryRootURL(at: a.workspace_path)
-            let manifest = try QWMemoryManifest.load(from: rootURL)
-            let recall = QWMemoryVault.recallVaultContext(
-                query: a.query, manifest: manifest, includeCortexFiles: true, maxFiles: a.max_files ?? 4
+            var mounted: [QWMountedVaultPackSummary] = []
+            if let ws = a.workspace_path, !ws.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                mounted.append(try await actor.mountAuxiliaryVaultPack(at: ws, packName: a.pack_name, autoIndexIfMissing: true))
+            }
+            for p in a.paths ?? [] where !p.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                mounted.append(try await actor.mountAuxiliaryVaultPack(at: p, autoIndexIfMissing: true))
+            }
+            for d in a.docs ?? [] where !d.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                mounted.append(try await actor.mountAuxiliaryVaultPack(at: d, autoIndexIfMissing: true))
+            }
+            guard !mounted.isEmpty else {
+                throw QWDecisionError.invalidQuestion("qwg_vault_mount requires workspace_path, paths, or docs")
+            }
+            struct MountOut: Encodable {
+                let mounted_count: Int
+                let packs: [QWMountedVaultPackSummary]
+            }
+            return try encode(MountOut(mounted_count: mounted.count, packs: mounted))
+
+        case "qwg_vault_query":
+            struct Args: Decodable {
+                let workspace_path: String?
+                let query: String
+                let pack_names: [String]?
+                let max_files: Int?
+                let max_tokens: Int?
+                let expand_ast_hops: Int?
+                let screen: Bool?
+                let format: String?
+            }
+            let a = try decoder.decode(Args.self, from: rawData)
+            let screenOn = a.screen ?? true
+            let outcome = try await actor.queryVaultV2(
+                query: a.query,
+                workspacePath: a.workspace_path,
+                packNames: a.pack_names,
+                maxFiles: a.max_files ?? 4,
+                maxTokens: a.max_tokens ?? QWMemoryVault.defaultVaultRecallTokenBudget,
+                expandASTHops: a.expand_ast_hops ?? 1,
+                screen: screenOn,
+                includeCortexFiles: true
             )
-            var screenedItems: [QWRerankScreenItem]? = nil
-            if a.screen == true && !recall.recalledFiles.isEmpty {
-                let passages = recall.recalledFiles.enumerated().map { idx, rel in
-                    let fileURL = rootURL.appendingPathComponent(rel)
-                    let content = (try? String(contentsOf: fileURL, encoding: .utf8)) ?? ""
-                    return QWRerankPassageInput(id: rel, text: String(content.prefix(2048)), metadata: ["rank": "\(idx)"])
+            if a.format?.lowercased() == "markdown" {
+                let metaLine = "[QWG VAULT META: recalled=\(outcome.recalledItems.count) ast_slices=\(outcome.astSlices.count) quarantined=\(outcome.quarantinedCount) screen_mode=\(outcome.screenMode) tokens=\(outcome.estimatedTokens)]"
+                if outcome.recallBlock.isEmpty {
+                    return "<|memory_vault_recall|>\n\(metaLine)\n[QWG VAULT RECALL: 0 matching spans]\n</|memory_vault_recall|>"
                 }
-                screenedItems = await makeCognitiveRails().screenAndRerankPassages(query: a.query, passages: passages).items
+                return outcome.recallBlock.replacingOccurrences(
+                    of: "<|memory_vault_recall|>\n",
+                    with: "<|memory_vault_recall|>\n\(metaLine)\n"
+                )
+            }
+            let resolvedWs: String
+            if let ws = a.workspace_path, !ws.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               let root = try? actor.resolveValidatedMemoryRootURL(at: ws) {
+                resolvedWs = root.path
+            } else {
+                resolvedWs = outcome.recalledItems.first?.workspace ?? actor.listMountedVaultPacks().first?.rootPath ?? ""
             }
             struct VaultQueryOut: Encodable {
                 let workspace: String
+                let mounted_packs: [String]
                 let recalled_files: [String]
+                let recalled_items: [QWVaultV2RecalledItem]
+                let ast_slices: [QWMemorySymbolGraph.DeclarationSlice]
+                let quarantined_count: Int
+                let quarantined_items: [QWVaultV2QuarantinedItem]
+                let screen_mode: String
                 let estimated_tokens: Int
                 let recall_block: String
-                let screened_items: [QWRerankScreenItem]?
             }
             return try encode(VaultQueryOut(
-                workspace: rootURL.path,
-                recalled_files: recall.recalledFiles,
-                estimated_tokens: recall.estimatedTokens,
-                recall_block: recall.recallBlock,
-                screened_items: screenedItems
+                workspace: resolvedWs,
+                mounted_packs: outcome.mountedPacks,
+                recalled_files: outcome.recalledFiles,
+                recalled_items: outcome.recalledItems,
+                ast_slices: outcome.astSlices,
+                quarantined_count: outcome.quarantinedCount,
+                quarantined_items: outcome.quarantinedItems,
+                screen_mode: outcome.screenMode,
+                estimated_tokens: outcome.estimatedTokens,
+                recall_block: outcome.recallBlock
             ))
 
         case "qwg_vault_status":
             struct Args: Decodable { let workspace_path: String? }
             let a = try decoder.decode(Args.self, from: rawData)
             let mounted = actor.statusBox.getMountedMemoryPackInfo()
+            let vaultPacks = actor.listMountedVaultPacks()
             var manifestFiles: Int? = nil
             var resolvedWorkspace: String? = nil
             if let ws = a.workspace_path, !ws.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -266,13 +358,15 @@ extension QWMCPDispatcher {
                 let mounted: Bool
                 let pack_name: String?
                 let token_count: Int?
+                let mounted_packs: [QWMountedVaultPackSummary]
                 let workspace: String?
                 let manifest_file_count: Int?
             }
             return try encode(VaultStatusOut(
-                mounted: mounted != nil,
-                pack_name: mounted?.packName,
+                mounted: mounted != nil || !vaultPacks.isEmpty,
+                pack_name: mounted?.packName ?? vaultPacks.first?.packName,
                 token_count: mounted?.tokenCount,
+                mounted_packs: vaultPacks,
                 workspace: resolvedWorkspace,
                 manifest_file_count: manifestFiles
             ))

@@ -9,6 +9,8 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import check_basis  # noqa: E402
+import lint_package_dag  # noqa: E402
 import lint_skills  # noqa: E402
 import log_papercut  # noqa: E402
 
@@ -178,6 +180,50 @@ class PapercutTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertIn("2 recorded", buf2.getvalue())
             self.assertIn("2x  [cli] qwg run", buf2.getvalue())
+
+
+class CICacheAndDAGResilienceTests(unittest.TestCase):
+    def test_compound_test_dependency_condition_parsed_for_all_branches(self) -> None:
+        sample = '''
+        let components: [(String, String)] = [
+            ("QWRope", "QWRopeTests"), ("QWAttn", "QWAttnTests"), ("QWGDN", "QWGDNTests"),
+        ]
+        var targets: [Target] = [T("QWCore"), T("QWQuant", ["QWCore"])]
+        for (mod, test) in components {
+            var deps: [Target.Dependency] = [.byName(name: mod)]
+            if mod == "QWRope" || mod == "QWAttn" || mod == "QWGDN" { deps.append(.byName(name: "QWQuant")) }
+        }
+        '''
+        _, tests = lint_package_dag.parse_package_swift(sample)
+        self.assertIn("QWQuant", tests["QWRopeTests"])
+        self.assertIn("QWQuant", tests["QWAttnTests"])
+        self.assertIn("QWQuant", tests["QWGDNTests"])
+
+    def test_basis_cache_key_invalidates_on_any_metal_or_header_edit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            mroot = root / "QWMetal"
+            (mroot / "include").mkdir(parents=True)
+            mtl = mroot / "sample.metal"
+            hdr = mroot / "include" / "lut.metalh"
+            script = root / "check_basis.py"
+            mtl.write_text("kernel void k() {}\n", encoding="utf-8")
+            hdr.write_text("constant float c = 1.0f;\n", encoding="utf-8")
+            script.write_text("# v1\n", encoding="utf-8")
+            cc = ["/usr/bin/true"]
+
+            k1 = check_basis.compute_basis_cache_key(mroot, cc, script_path=script)
+            # Touching an ignored .metallib output must NOT invalidate the source key.
+            (mroot / "kernel.metallib").write_bytes(b"\x00\x01")
+            self.assertEqual(k1, check_basis.compute_basis_cache_key(mroot, cc, script_path=script))
+            # 1-byte header edit MUST invalidate immediately.
+            hdr.write_text("constant float c = 2.0f;\n", encoding="utf-8")
+            k2 = check_basis.compute_basis_cache_key(mroot, cc, script_path=script)
+            self.assertNotEqual(k1, k2)
+            # Script flag edit MUST invalidate immediately.
+            script.write_text("# v2\n", encoding="utf-8")
+            k3 = check_basis.compute_basis_cache_key(mroot, cc, script_path=script)
+            self.assertNotEqual(k2, k3)
 
 
 if __name__ == "__main__":

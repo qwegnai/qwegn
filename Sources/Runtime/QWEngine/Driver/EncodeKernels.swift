@@ -42,7 +42,7 @@ extension QWEngineDriver {
         for wQ4: QWWeightView,
         weightFormat: QWWeightFormat,
         hal: QWHal,
-        defaultPSO: any MTLComputePipelineState,
+        defaultPSO: (any MTLComputePipelineState)?,
         opName: String,
         incumbentKernel: String,
         swigluClamp: QWSwiGLUClampSpec? = nil,
@@ -53,7 +53,7 @@ extension QWEngineDriver {
             && wQ4.bits == weightFormat.bits
             && wQ4.groupSize == weightFormat.groupSize
             && wQ4.isSHVQ == weightFormat.denseIsSHVQ
-        if matchesDefault { return defaultPSO }
+        if matchesDefault, let defaultPSO { return defaultPSO }
         let name = wQ4.isIncumbentContainer ? incumbentKernel : aqKernel()
         guard let kernelName = name else {
             throw QWEngineDriverError.unsupportedModel(
@@ -123,25 +123,29 @@ extension QWEngineDriver {
                         x: QWTensorValue, wQ4: QWWeightView,
                         y16: QWTensorValue,
                         xStride: Int? = nil, yStride: Int? = nil) throws {
+        let useNAX = hal.caps.isMetal4TensorCapable
+        guard hal.caps.supportsSimdgroupMMA else {
+            throw QWEngineDriverError.unsupportedModel("prefill H16 GEMM requires Apple7+ simdgroup or Apple10+ NAX hardware")
+        }
         // BM64 beats BM128 at every M (QWGemm.encodeNaxF32); rows are chunked to keep x in the SLC.
         let pso = try Self.resolveWeightPSO(
             for: wQ4, weightFormat: weightFormat, hal: hal,
             defaultPSO: psoGemmBatchedH16, opName: "prefill GEMM",
-            incumbentKernel: "qwg_gemm_q4g_h16",
-            aqKernel: { QWGemmAQ.gemmKernelName(bits: wQ4.bits, group: wQ4.groupSize, isSHVQ: wQ4.isSHVQ) }
+            incumbentKernel: useNAX ? "qwg_gemm_q4g_h16" : "qwg_gemm_q4g_sg",
+            aqKernel: { QWGemmAQ.gemmKernelName(bits: wQ4.bits, group: wQ4.groupSize, isSHVQ: wQ4.isSHVQ, useNAX: useNAX) }
         )
         enc.setComputePipelineState(pso)
         enc.bindTensors(wQ4.blocks, x, y16, y16, startIndex: 0) // index 3 is dummy slot for unused y32
         enc.setUInt32s(n, k, startIndex: 5)
         let xs = xStride ?? k, ys = yStride ?? n
         enc.setUInt32s(xs, ys, startIndex: 9)
-        let useSmallTile = hal.caps.isMetal4TensorCapable
-        let chunk = QWGemm.naxRowChunk(rows: m, k: k)
+        let useSmallTile = hal.caps.supportsSimdgroupMMA
+        let chunk = QWGemm.naxRowChunk(rows: m, k: k, gpuCores: hal.caps.gpuCores)
         var r0 = 0
         while r0 < m {
             let r = min(chunk, m - r0)
             let bm = useSmallTile ? (r <= 16 ? 16 : (r <= 32 ? 32 : 64)) : 64
-            let bn = (useSmallTile && r <= 16) ? 128 : 64
+            let bn = (useNAX && r <= 16) ? 128 : 64
             let modeBits = useSmallTile ? (r <= 16 ? 0x2000_0000 : (r <= 32 ? 0x4000_0000 : 0)) : 0
             if r0 > 0 {
                 x.slice(byteOffset: r0 * xs * 2, count: r * xs).bind(enc, index: 1)
@@ -161,22 +165,26 @@ extension QWEngineDriver {
                               out16: QWTensorValue,
                               xStride: Int? = nil, yStride: Int? = nil,
                               swigluClamp: QWSwiGLUClampSpec? = nil) throws {
+        let useNAX = hal.caps.isMetal4TensorCapable
+        guard hal.caps.supportsSimdgroupMMA else {
+            throw QWEngineDriverError.unsupportedModel("fused SwiGLU GEMM requires Apple7+ simdgroup or Apple10+ NAX hardware")
+        }
         let pso = try Self.resolveWeightPSO(
             for: wQ4, weightFormat: weightFormat, hal: hal,
             defaultPSO: psoGemmBatchedH16SwiGLU, opName: "fused SwiGLU GEMM",
-            incumbentKernel: "qwg_gemm_q4g_h16_swiglu",
+            incumbentKernel: useNAX ? "qwg_gemm_q4g_h16_swiglu" : "qwg_gemm_q4g_sg_swiglu",
             swigluClamp: swigluClamp,
-            aqKernel: { QWGemmAQ.swigluGemmKernelName(bits: wQ4.bits, group: wQ4.groupSize, isSHVQ: wQ4.isSHVQ) }
+            aqKernel: { QWGemmAQ.swigluGemmKernelName(bits: wQ4.bits, group: wQ4.groupSize, isSHVQ: wQ4.isSHVQ, useNAX: useNAX) }
         )
         enc.setComputePipelineState(pso)
         enc.bindTensors(wQ4.blocks, x, out16, startIndex: 0)
         let xs = xStride ?? k, ys = yStride ?? i
-        let useSmallTile = hal.caps.isMetal4TensorCapable
-        let chunk = QWGemm.naxRowChunk(rows: m, k: k)
+        let useSmallTile = hal.caps.supportsSimdgroupMMA
+        let chunk = QWGemm.naxRowChunk(rows: m, k: k, gpuCores: hal.caps.gpuCores)
         var r0 = 0
         while r0 < m {
             let r = min(chunk, m - r0)
-            let use64 = useSmallTile && r <= 16 && (i & 63) == 0
+            let use64 = useNAX && r <= 16 && (i & 63) == 0
             let bm = useSmallTile ? (use64 ? 16 : (r <= 32 ? 32 : 64)) : 64
             let bn = use64 ? 64 : 32
             let modeBits = useSmallTile ? (use64 ? 0x2000_0000 : (r <= 32 ? 0x4000_0000 : 0)) : 0
@@ -195,13 +203,16 @@ extension QWEngineDriver {
                                  m: Int, n: Int, k: Int,
                                  x: QWTensorValue, wQ4: QWWeightView,
                                  qkv16: QWTensorValue, z16: QWTensorValue, y32: QWTensorValue) {
-        enc.setComputePipelineState(psoGemmBatchedH16GdnInProj)
+        guard let pso = psoGemmBatchedH16GdnInProj else {
+            preconditionFailure("GDN in-proj batched GEMM requires Apple9+ or Apple10+ tensor hardware")
+        }
+        enc.setComputePipelineState(pso)
         enc.bindTensors(wQ4.blocks, x, qkv16, y32, startIndex: 0)
         enc.setUInt32s(n, k, startIndex: 5)
         z16.bind(enc, index: 7)
         let qkvC = geometry.gdnQKVChannels, zC = geometry.gdnZChannels
         let abCols = max(1, n - qkvC - zC)
-        let chunk = QWGemm.naxRowChunk(rows: m, k: k)
+        let chunk = QWGemm.naxRowChunk(rows: m, k: k, gpuCores: hal.caps.gpuCores)
         var r0 = 0
         while r0 < m {
             let r = min(chunk, m - r0)
@@ -372,6 +383,22 @@ extension QWEngineDriver {
             return mhcSplit != nil && rows <= QWMHCSplitRouter.maxRows
         }
         return true
+    }
+
+    func canSkipPreMoERot32(weights: LayerW, scratch: MoEScratch, rows: Int) -> Bool {
+        guard let moe = weights.moe, moe.latent == nil,
+              rows >= 64, geometry.supportsGroupedNAXMoEPrefill,
+              hal.caps.isMetal4TensorCapable else { return false }
+        let hasGroupedNaxScratch = scratch.expOff != nil && scratch.sortedPair != nil
+            && scratch.sortedTok != nil && scratch.invPerm != nil
+            && scratch.tileE != nil && scratch.tileR != nil
+            && scratch.tileCount != nil && scratch.dnHi != nil
+            && scratch.naxX16 != nil
+            && (scratch.gu16 != nil || QWGemm.supportsMoEGateUpNaxSwiglu(moe.gateUp))
+        guard hasGroupedNaxScratch else { return false }
+        let H = geometry.hidden
+        let ISh = geometry.sharedExpertIntermediate
+        return ISh == 0 || (H % 64 == 0 && (2 * ISh) % 64 == 0)
     }
 
     func encodeRMSNormResidualFast(_ enc: any MTLComputeCommandEncoder,

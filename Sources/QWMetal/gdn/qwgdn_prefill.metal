@@ -3,6 +3,7 @@
 #include "qwgdn_prefill_tables.h"
 #include "include/qw_dequant.metalh"
 #include "include/qw_geometry_constants.metalh"
+#include "include/qw_gdn_norm.metalh"
 using namespace metal;
 
 // qwgdn_prefill.metal — C13: chunked (UT-transform) GDN prefill.
@@ -689,9 +690,7 @@ kernel void qwg_gdn_prefill_scan_hybrid(
     }
 }
 
-// K3 — per-row GatedRMSNorm over [T][48] rows, row = t*48+h (agrees with
-// K2's o_scr layout; math identical to C12 decode fused norm: o·rsqrt(mean(o²)
-// +1e-6)·w ⊙ silu(z_f32) → f16 store).
+// K3 — per-row GatedRMSNorm over [T][V_HEADS] rows (`qw_gdn_norm.metalh`).
 kernel void qwg_gdn_prefill_norm(
         device const float* o_scr [[buffer(0)]],
         device const half*  zrow  [[buffer(1)]],   // [T][6144]
@@ -702,19 +701,7 @@ kernel void qwg_gdn_prefill_norm(
         uint simd [[thread_index_in_simdgroup]],
         uint sg  [[simdgroup_index_in_threadgroup]]) {
     threadgroup float red[4];
-    const uint row = tg.x;                    // t*48 + h
-    const uint64_t row_off = (uint64_t)row * NH128;
-    const float o = o_scr[row_off + tid];
-    const float sq = simd_sum(o * o);
-    if (simd == 0u) red[sg] = sq;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    const float rms = rsqrt((red[0] + red[1] + red[2] + red[3]) * (1.0f / 128.0f) + QW_RMS_EPS);
-    // z: token t = row/48; z[h] at t·6144 + h·128 + tid = row·128 + tid (exact algebraic identity)
-    const uint64_t off = row_off + tid;
-    const float zn = float(zrow[off]);
-    const float gate = QW_GDN_NORM_SIGMOID ? (1.0f / (1.0f + exp(-zn))) : (zn / (1.0f + exp(-zn)));
-    const half hg = half((o * rms * float(w[tid])) * gate);
-    o_out[off] = simd_fwht32(hg, simd);
+    qw_gdn_prefill_norm_row128(o_scr, zrow, w, o_out, red, tg.x, tid, simd, sg);
 }
 
 // qwg_gdn_prefill_regres — EXP-9 sub-item 1, OPT-IN ALTERNATIVE prefill

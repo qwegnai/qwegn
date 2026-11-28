@@ -630,7 +630,7 @@ final class QWFPQuantKernelParityTests: XCTestCase {
                 try QWMoEOperator.encodeFPResident(
                     &enc, hal: hal, weights: fpWeights, scratch: scratch,
                     input: xS, inDtype: .bf16, out: outS, outDtype: .bf16, rows: tokens,
-                    supportsGroupedNaxPrefill: hal.caps.isMetal4TensorCapable,
+                    supportsGroupedNaxPrefill: hal.caps.supportsSimdgroupMMA,
                     concurrentBarriers: true, rotateEncoder: rot)
             }
             let gotIdx = arena.read(scratch.idx, as: Int32.self, count: pairs)
@@ -745,7 +745,7 @@ final class QWFPQuantKernelParityTests: XCTestCase {
         let dnAccTV = try ar.allocate(QWTensorShape([totalPairs, hidden], .f16))
         let outTV = try ar.allocate(QWTensorShape([tokens, hidden], .f32))
 
-        for curT in hal.caps.isMetal4TensorCapable ? [1, 4, tokens] : [1, 4] {
+        for curT in hal.caps.supportsSimdgroupMMA ? [1, 4, tokens] : [1, 4] {
             try runOnGPU(hal) { enc, rot in
                 try QWGemm.encodeMoEBankRoutedCombine(
                     &enc, hal: hal, x: QWFPBufferSlice(xTV), xDtype: .f16, interDtype: .f16,

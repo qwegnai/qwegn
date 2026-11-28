@@ -228,13 +228,18 @@ extension QWHyperStreamRuntime {
         let hdrSize = MemoryLayout<FNPrefixHeader>.size
         guard data.count >= hdrSize else { return nil }
 
-        return try data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> FNRestoredPrefix? in
+        var pendingInPlaceKV = false
+        var pendingN = 0
+        var pendingMTPSeed = false
+        let restored: FNRestoredPrefix? = data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> FNRestoredPrefix? in
             guard let base = raw.baseAddress else { return nil }
             var offset = 0
             var hdr = FNPrefixHeader(magic: 0, version: 0, tokenCount: 0, kvModeCode: 0,
                                      hasMTP: 0, lastArgmax: 0, mtpDraft: 0,
                                      vocabCount: 0, hiddenSize: 0, widthSize: 0, hcSize: 0)
-            memcpy(&hdr, base, hdrSize)
+            withUnsafeMutableBytes(of: &hdr) { dst in
+                dst.copyMemory(from: UnsafeRawBufferPointer(start: base, count: hdrSize))
+            }
             offset += hdrSize
 
             let N = Int(hdr.tokenCount)
@@ -270,7 +275,10 @@ extension QWHyperStreamRuntime {
             let logitBytes = vocab * MemoryLayout<Float>.size
             guard offset + logitBytes <= data.count else { return nil }
             if isExact {
-                memcpy(arena.cpuPointer(of: head.logits), base.advanced(by: offset), logitBytes)
+                let logitsPtr = arena.cpuPointer(of: head.logits)
+                withExtendedLifetime(head.logits.region.buffer) {
+                    logitsPtr.copyMemory(from: base.advanced(by: offset), byteCount: logitBytes)
+                }
                 arena.write(head.token, from: [hdr.lastArgmax])
             }
             offset += logitBytes
@@ -323,16 +331,16 @@ extension QWHyperStreamRuntime {
                 if let g = rec.gdn {
                     let sBytes = g.states[0].bytes
                     let csBytes = g.convState[0].bytes
-                    memcpy(arena.cpuPointer(of: g.states[0]), basePtr.advanced(by: off), sBytes)
+                    arena.cpuPointer(of: g.states[0]).copyMemory(from: basePtr.advanced(by: off), byteCount: sBytes)
                     off += sBytes
                     g.stateParity = 0
-                    memcpy(arena.cpuPointer(of: g.convState[0]), basePtr.advanced(by: off), csBytes)
+                    arena.cpuPointer(of: g.convState[0]).copyMemory(from: basePtr.advanced(by: off), byteCount: csBytes)
                     off += csBytes
                     g.convParity = 0
                 }
                 if let p = rec.weights.ple {
                     let hBytes = p.history[0].bytes
-                    memcpy(arena.cpuPointer(of: p.history[0]), basePtr.advanced(by: off), hBytes)
+                    arena.cpuPointer(of: p.history[0]).copyMemory(from: basePtr.advanced(by: off), byteCount: hBytes)
                     off += hBytes
                     p.parity = 0
                 }
@@ -343,32 +351,15 @@ extension QWHyperStreamRuntime {
                     let idxRowBytes = (a.indexK.bytes / cap) * N
                     let poolBlocks = (N + 3) / 4
                     let poolBytes = min(a.pooled.bytes, (a.pooled.bytes / max(1, cap / 4)) * poolBlocks)
-                    memcpy(arena.cpuPointer(of: a.k), basePtr.advanced(by: off), kvRowBytes); off += kvRowBytes
-                    memcpy(arena.cpuPointer(of: a.v), basePtr.advanced(by: off), kvRowBytes); off += kvRowBytes
+                    arena.cpuPointer(of: a.k).copyMemory(from: basePtr.advanced(by: off), byteCount: kvRowBytes); off += kvRowBytes
+                    arena.cpuPointer(of: a.v).copyMemory(from: basePtr.advanced(by: off), byteCount: kvRowBytes); off += kvRowBytes
                     if metaRowBytes > 0 {
-                        memcpy(arena.cpuPointer(of: a.kMeta), basePtr.advanced(by: off), metaRowBytes); off += metaRowBytes
-                        memcpy(arena.cpuPointer(of: a.vMeta), basePtr.advanced(by: off), metaRowBytes); off += metaRowBytes
+                        arena.cpuPointer(of: a.kMeta).copyMemory(from: basePtr.advanced(by: off), byteCount: metaRowBytes); off += metaRowBytes
+                        arena.cpuPointer(of: a.vMeta).copyMemory(from: basePtr.advanced(by: off), byteCount: metaRowBytes); off += metaRowBytes
                     }
-                    memcpy(arena.cpuPointer(of: a.indexK), basePtr.advanced(by: off), idxRowBytes); off += idxRowBytes
-                    memcpy(arena.cpuPointer(of: a.pooled), basePtr.advanced(by: off), poolBytes); off += poolBytes
+                    arena.cpuPointer(of: a.indexK).copyMemory(from: basePtr.advanced(by: off), byteCount: idxRowBytes); off += idxRowBytes
+                    arena.cpuPointer(of: a.pooled).copyMemory(from: basePtr.advanced(by: off), byteCount: poolBytes); off += poolBytes
                 }
-            }
-
-            if !inPlaceKV, N >= 512, layerRecords.contains(where: { $0.attnState?.lsaClusters != nil }),
-               let (cb, enc) = arena.hal.begin() {
-                var encEnded = false
-                defer { if !encEnded { enc.endEncoding() } }
-                for rec in layerRecords {
-                    if let a = rec.attnState, let clusters = a.lsaClusters {
-                        try QWGemm.encodeFnLSAClusterRange(
-                            enc, hal: arena.hal, pooled: a.pooled, clusters: clusters,
-                            pos0: 0, count: N, indexDim: 128)
-                    }
-                }
-                encEnded = true
-                arena.hal.end(cb, enc)
-                cb.waitUntilCompleted()
-                if let err = cb.error { throw err }
             }
 
             if hasMTP, let mtp = self.mtp {
@@ -382,16 +373,16 @@ extension QWHyperStreamRuntime {
                     let rowTotal = 2 * kvRowStride + 2 * metaRowStride + idxRowStride + poolBlockStride
                     guard N > 0, offset + rowTotal <= data.count else { return nil }
                     let lastRow = N - 1
-                    memcpy(arena.cpuPointer(of: a.k).advanced(by: lastRow * kvRowStride), base.advanced(by: offset), kvRowStride); offset += kvRowStride
-                    memcpy(arena.cpuPointer(of: a.v).advanced(by: lastRow * kvRowStride), base.advanced(by: offset), kvRowStride); offset += kvRowStride
+                    arena.cpuPointer(of: a.k).advanced(by: lastRow * kvRowStride).copyMemory(from: base.advanced(by: offset), byteCount: kvRowStride); offset += kvRowStride
+                    arena.cpuPointer(of: a.v).advanced(by: lastRow * kvRowStride).copyMemory(from: base.advanced(by: offset), byteCount: kvRowStride); offset += kvRowStride
                     if metaRowStride > 0 {
-                        memcpy(arena.cpuPointer(of: a.kMeta).advanced(by: lastRow * metaRowStride), base.advanced(by: offset), metaRowStride); offset += metaRowStride
-                        memcpy(arena.cpuPointer(of: a.vMeta).advanced(by: lastRow * metaRowStride), base.advanced(by: offset), metaRowStride); offset += metaRowStride
+                        arena.cpuPointer(of: a.kMeta).advanced(by: lastRow * metaRowStride).copyMemory(from: base.advanced(by: offset), byteCount: metaRowStride); offset += metaRowStride
+                        arena.cpuPointer(of: a.vMeta).advanced(by: lastRow * metaRowStride).copyMemory(from: base.advanced(by: offset), byteCount: metaRowStride); offset += metaRowStride
                     }
-                    memcpy(arena.cpuPointer(of: a.indexK).advanced(by: lastRow * idxRowStride), base.advanced(by: offset), idxRowStride); offset += idxRowStride
+                    arena.cpuPointer(of: a.indexK).advanced(by: lastRow * idxRowStride).copyMemory(from: base.advanced(by: offset), byteCount: idxRowStride); offset += idxRowStride
                     let lastBlock = lastRow / 4
                     if (lastBlock + 1) * poolBlockStride <= a.pooled.bytes {
-                        memcpy(arena.cpuPointer(of: a.pooled).advanced(by: lastBlock * poolBlockStride), base.advanced(by: offset), poolBlockStride)
+                        arena.cpuPointer(of: a.pooled).advanced(by: lastBlock * poolBlockStride).copyMemory(from: base.advanced(by: offset), byteCount: poolBlockStride)
                     }
                     offset += poolBlockStride
                 } else {
@@ -404,41 +395,37 @@ extension QWHyperStreamRuntime {
                     guard offset + totalMTP <= data.count else { return nil }
                     if inPlaceKV, N > 0 {
                         let lastRow = N - 1
-                        memcpy(arena.cpuPointer(of: a.k).advanced(by: lastRow * kvRowStride), base.advanced(by: offset + lastRow * kvRowStride), kvRowStride); offset += kvRowBytes
-                        memcpy(arena.cpuPointer(of: a.v).advanced(by: lastRow * kvRowStride), base.advanced(by: offset + lastRow * kvRowStride), kvRowStride); offset += kvRowBytes
+                        arena.cpuPointer(of: a.k).advanced(by: lastRow * kvRowStride).copyMemory(from: base.advanced(by: offset + lastRow * kvRowStride), byteCount: kvRowStride); offset += kvRowBytes
+                        arena.cpuPointer(of: a.v).advanced(by: lastRow * kvRowStride).copyMemory(from: base.advanced(by: offset + lastRow * kvRowStride), byteCount: kvRowStride); offset += kvRowBytes
                         if metaRowBytes > 0 {
-                            memcpy(arena.cpuPointer(of: a.kMeta).advanced(by: lastRow * metaRowStride), base.advanced(by: offset + lastRow * metaRowStride), metaRowStride); offset += metaRowBytes
-                            memcpy(arena.cpuPointer(of: a.vMeta).advanced(by: lastRow * metaRowStride), base.advanced(by: offset + lastRow * metaRowStride), metaRowStride); offset += metaRowBytes
+                            arena.cpuPointer(of: a.kMeta).advanced(by: lastRow * metaRowStride).copyMemory(from: base.advanced(by: offset + lastRow * metaRowStride), byteCount: metaRowStride); offset += metaRowBytes
+                            arena.cpuPointer(of: a.vMeta).advanced(by: lastRow * metaRowStride).copyMemory(from: base.advanced(by: offset + lastRow * metaRowStride), byteCount: metaRowStride); offset += metaRowBytes
                         }
-                        memcpy(arena.cpuPointer(of: a.indexK).advanced(by: lastRow * idxRowStride), base.advanced(by: offset + lastRow * idxRowStride), idxRowStride); offset += idxRowBytes
+                        arena.cpuPointer(of: a.indexK).advanced(by: lastRow * idxRowStride).copyMemory(from: base.advanced(by: offset + lastRow * idxRowStride), byteCount: idxRowStride); offset += idxRowBytes
                         let lastBlock = lastRow / 4
                         if (lastBlock + 1) * poolBlockStride <= poolBytes {
-                            memcpy(arena.cpuPointer(of: a.pooled).advanced(by: lastBlock * poolBlockStride), base.advanced(by: offset + lastBlock * poolBlockStride), poolBlockStride)
+                            arena.cpuPointer(of: a.pooled).advanced(by: lastBlock * poolBlockStride).copyMemory(from: base.advanced(by: offset + lastBlock * poolBlockStride), byteCount: poolBlockStride)
                         }
                         offset += poolBytes
                     } else {
-                        memcpy(arena.cpuPointer(of: a.k), base.advanced(by: offset), kvRowBytes); offset += kvRowBytes
-                        memcpy(arena.cpuPointer(of: a.v), base.advanced(by: offset), kvRowBytes); offset += kvRowBytes
+                        arena.cpuPointer(of: a.k).copyMemory(from: base.advanced(by: offset), byteCount: kvRowBytes); offset += kvRowBytes
+                        arena.cpuPointer(of: a.v).copyMemory(from: base.advanced(by: offset), byteCount: kvRowBytes); offset += kvRowBytes
                         if metaRowBytes > 0 {
-                            memcpy(arena.cpuPointer(of: a.kMeta), base.advanced(by: offset), metaRowBytes); offset += metaRowBytes
-                            memcpy(arena.cpuPointer(of: a.vMeta), base.advanced(by: offset), metaRowBytes); offset += metaRowBytes
+                            arena.cpuPointer(of: a.kMeta).copyMemory(from: base.advanced(by: offset), byteCount: metaRowBytes); offset += metaRowBytes
+                            arena.cpuPointer(of: a.vMeta).copyMemory(from: base.advanced(by: offset), byteCount: metaRowBytes); offset += metaRowBytes
                         }
-                        memcpy(arena.cpuPointer(of: a.indexK), base.advanced(by: offset), idxRowBytes); offset += idxRowBytes
-                        memcpy(arena.cpuPointer(of: a.pooled), base.advanced(by: offset), poolBytes); offset += poolBytes
+                        arena.cpuPointer(of: a.indexK).copyMemory(from: base.advanced(by: offset), byteCount: idxRowBytes); offset += idxRowBytes
+                        arena.cpuPointer(of: a.pooled).copyMemory(from: base.advanced(by: offset), byteCount: poolBytes); offset += poolBytes
                     }
                 }
 
-                // When continuing with a suffix (not exact match), re-seed MTP row (N - 1) using actual history[N]
-                if !isExact, let nextTok = nextTokenAfterPrefix, let lastDecodeSlot = decodeStack.slots.last {
+                // When continuing with a suffix (not exact match), copy seed inputs before re-seeding MTP row (N - 1).
+                if !isExact, nextTokenAfterPrefix != nil, let lastDecodeSlot = decodeStack.slots.last {
                     let s = lastDecodeSlot.scratch
-                    memcpy(arena.cpuPointer(of: s.h2), h2Src, h2Bytes)
-                    memcpy(arena.cpuPointer(of: s.moeOut), moeSrc, moeBytes)
-                    memcpy(arena.cpuPointer(of: s.injB), injSrc, injBytes)
-                    let preInj = (base: s.h2, src: s.moeOut, scale: s.injB)
-                    _ = try mtp.forwardPrefill(streamBuf: decodeStack.lastStreamTensor, preInject: preInj,
-                                               nextTokens: [nextTok], startPos: N - 1,
-                                               prefillScratch: mtp.scratch1, projectLastRow: false)
-                    gpuSec += mtp.lastGPUMillis / 1000.0
+                    arena.cpuPointer(of: s.h2).copyMemory(from: h2Src, byteCount: h2Bytes)
+                    arena.cpuPointer(of: s.moeOut).copyMemory(from: moeSrc, byteCount: moeBytes)
+                    arena.cpuPointer(of: s.injB).copyMemory(from: injSrc, byteCount: injBytes)
+                    pendingMTPSeed = true
                 }
             }
 
@@ -455,10 +442,38 @@ extension QWHyperStreamRuntime {
             residentKVWatermark.recordRestored(expectedTokens: expectedTokens,
                                                hasMTP: hasMTP || wantDFlash, inPlace: inPlaceKV)
             highWaterPos = max(highWaterPos, N)
+            pendingInPlaceKV = inPlaceKV
+            pendingN = N
 
             return FNRestoredPrefix(matched: N, lastArgmax: Int(hdr.lastArgmax), mtpDraft: Int(hdr.mtpDraft),
                                     dflashCacheOffset: restoredDFlashOffset)
         }
+        guard let restored else { return nil }
+        if !pendingInPlaceKV, pendingN >= 512, layerRecords.contains(where: { $0.attnState?.lsaClusters != nil }),
+           let (cb, enc) = arena.hal.begin() {
+            var encEnded = false
+            defer { if !encEnded { enc.endEncoding() } }
+            for rec in layerRecords {
+                if let a = rec.attnState, let clusters = a.lsaClusters {
+                    try QWGemm.encodeFnLSAClusterRange(
+                        enc, hal: arena.hal, pooled: a.pooled, clusters: clusters,
+                        pos0: 0, count: pendingN, indexDim: 128)
+                }
+            }
+            encEnded = true
+            arena.hal.end(cb, enc)
+            cb.waitUntilCompleted()
+            if let err = cb.error { throw err }
+        }
+        if pendingMTPSeed, let mtp = self.mtp, let nextTok = nextTokenAfterPrefix, let lastDecodeSlot = decodeStack.slots.last {
+            let s = lastDecodeSlot.scratch
+            let preInj = (base: s.h2, src: s.moeOut, scale: s.injB)
+            _ = try mtp.forwardPrefill(streamBuf: decodeStack.lastStreamTensor, preInject: preInj,
+                                       nextTokens: [nextTok], startPos: pendingN - 1,
+                                       prefillScratch: mtp.scratch1, projectLastRow: false)
+            gpuSec += mtp.lastGPUMillis / 1000.0
+        }
+        return restored
     }
 
 }

@@ -228,11 +228,12 @@ extension QWGemm {
         let colTiles = rowsPerExpert / 64
         let grp = QWNaxGroupedParams(experts: packedExperts, n: UInt32(rowsPerExpert), k: UInt32(bank.k),
                                      blocksPerRow: UInt32(bank.k / max(1, bank.groupSize)), rowTiles: 0, colTiles: UInt32(colTiles))
+        let useNAX = hal.caps.isMetal4TensorCapable
         if bank.isIncumbentContainer {
-            enc.setComputePipelineState(try hal.pipeline("qwg_moe_nax_gemm"))
+            enc.setComputePipelineState(try hal.pipeline(useNAX ? "qwg_moe_nax_gemm" : "qwg_moe_sg_gemm"))
         } else {
             guard let aqName = QWGemmAQ.moeNaxGemmKernelName(bits: bank.bits, group: bank.groupSize,
-                                                             isSHVQ: bank.isSHVQ) else {
+                                                             isSHVQ: bank.isSHVQ, useNAX: useNAX) else {
                 throw QWGemmError.badWeights("no affine-quantised moe nax gemm kernel for \(bank.bits)-bit group \(bank.groupSize)")
             }
             enc.setComputePipelineState(try hal.pipeline(aqName))
@@ -268,11 +269,12 @@ extension QWGemm {
         let colTiles = rowsPerExpert / 64
         let grp = QWNaxGroupedParams(experts: packedExperts, n: UInt32(rowsPerExpert), k: UInt32(bank.k),
                                      blocksPerRow: UInt32(bank.k / max(1, bank.groupSize)), rowTiles: 0, colTiles: UInt32(colTiles))
+        let useNAX = hal.caps.isMetal4TensorCapable
         if bank.isIncumbentContainer {
-            enc.setComputePipelineState(try hal.pipeline("qwg_moe_nax_split_f32"))
+            enc.setComputePipelineState(try hal.pipeline(useNAX ? "qwg_moe_nax_split_f32" : "qwg_moe_sg_split_f32"))
         } else {
             guard let aqName = QWGemmAQ.moeNaxSplitF32KernelName(bits: bank.bits, group: bank.groupSize,
-                                                                 isSHVQ: bank.isSHVQ) else {
+                                                                 isSHVQ: bank.isSHVQ, useNAX: useNAX) else {
                 throw QWGemmError.badWeights("no affine-quantised moe nax split kernel for \(bank.bits)-bit group \(bank.groupSize)")
             }
             enc.setComputePipelineState(try hal.pipeline(aqName))
@@ -610,7 +612,7 @@ extension QWGemm {
         @inline(__always) func barrier() {
             if concurrentBarriers { enc.memoryBarrier(scope: .buffers) }
         }
-        let useNax = T >= minNaxRows && supportsGroupedNaxPrefill && hal.caps.isMetal4TensorCapable
+        let useNax = T >= minNaxRows && supportsGroupedNaxPrefill && hal.caps.supportsSimdgroupMMA
             && (xDtype == .f16 || xDtype == .bf16) && tileE != nil && tileR != nil && tileCount != nil
         if useNax, let te = tileE, let tr = tileR, let tc = tileCount {
             guard let rotateEncoder else {

@@ -37,10 +37,10 @@ extension QWEngineDriver {
     }
 
     /// The prefill GEMM for a container.
-    static func gemmKernelName(format: QWWeightFormat) throws -> String {
-        guard format.usesDenseAQKernels else { return "qwg_gemm_q4g_h16" }
+    static func gemmKernelName(format: QWWeightFormat, useNAX: Bool = true) throws -> String {
+        guard format.usesDenseAQKernels else { return useNAX ? "qwg_gemm_q4g_h16" : "qwg_gemm_q4g_sg" }
         guard let name = QWGemmAQ.gemmKernelName(bits: format.bits, group: format.groupSize,
-                                                 isSHVQ: format.denseIsSHVQ) else {
+                                                 isSHVQ: format.denseIsSHVQ, useNAX: useNAX) else {
             throw QWEngineDriverError.state("no prefill kernel for \(format.bits)-bit group "
                                             + "\(format.groupSize)")
         }
@@ -48,10 +48,10 @@ extension QWEngineDriver {
     }
 
     /// The fused gate_up + SwiGLU + FWHT-32 prefill GEMM for a container.
-    static func swigluGemmKernelName(format: QWWeightFormat) throws -> String {
-        guard format.usesDenseAQKernels else { return "qwg_gemm_q4g_h16_swiglu" }
+    static func swigluGemmKernelName(format: QWWeightFormat, useNAX: Bool = true) throws -> String {
+        guard format.usesDenseAQKernels else { return useNAX ? "qwg_gemm_q4g_h16_swiglu" : "qwg_gemm_q4g_sg_swiglu" }
         guard let name = QWGemmAQ.swigluGemmKernelName(bits: format.bits, group: format.groupSize,
-                                                       isSHVQ: format.denseIsSHVQ) else {
+                                                       isSHVQ: format.denseIsSHVQ, useNAX: useNAX) else {
             throw QWEngineDriverError.state("no fused SwiGLU kernel for \(format.bits)-bit group "
                                             + "\(format.groupSize)")
         }
@@ -72,11 +72,12 @@ extension QWEngineDriver {
     }
 
     /// The GDN in-projection prefill kernel for a container.
-    static func gdnInProjPrefillKernelName(format: QWWeightFormat) throws -> String {
-        guard format.usesDenseAQKernels else { return "qwg_gemm_q4g_h16_gdn_inproj" }
+    static func gdnInProjPrefillKernelName(format: QWWeightFormat, useNAX: Bool = true) throws -> String {
+        guard format.usesDenseAQKernels else { return useNAX ? "qwg_gemm_q4g_h16_gdn_inproj" : "qwg_gemm_q4g_sg_gdn_inproj" }
         guard let name = QWGemmAQ.gdnInProjPrefillKernelName(bits: format.bits,
                                                             group: format.groupSize,
-                                                            isSHVQ: format.denseIsSHVQ) else {
+                                                            isSHVQ: format.denseIsSHVQ,
+                                                            useNAX: useNAX) else {
             throw QWEngineDriverError.state("no GDN prefill kernel for \(format.bits)-bit group "
                                             + "\(format.groupSize)")
         }

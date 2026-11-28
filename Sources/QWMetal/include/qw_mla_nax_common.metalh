@@ -4,6 +4,9 @@
 #include <metal_stdlib>
 #include <metal_simdgroup>
 #include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
+#if !defined(__ENVIRONMENT_OS_VERSION_MIN_REQUIRED__) || __ENVIRONMENT_OS_VERSION_MIN_REQUIRED__ < 260200
+#error "NAX cooperative_tensor kernels require -mmacosx-version-min=26.2 or newer (Apple MPP operand_index ABI)."
+#endif
 #include "mlx/backend/metal/kernels/steel/defines.h"
 #include "mlx/backend/metal/kernels/steel/utils/integral_constant.h"
 #include "mlx/backend/metal/kernels/steel/gemm/nax.h"
@@ -331,7 +334,8 @@ METAL_FUNC void qw_mla_dsa_nax_attend(
     const uint denseLim = p.topK + p.windowTokens;
     const bool isDensePrefix = !isDenseStream && (seqLen <= denseLim);
     const uint slots = isDenseStream ? (seqLen - startTok) : min(min(seqLen, denseLim), 2560u);
-    const float scale2 = rsqrt(float(p.headDim)) * 1.4426950408889634f;
+    const float baseScale = (p.softmaxScale > 0.0f) ? p.softmaxScale : rsqrt(float(p.headDim));
+    const float scale2 = baseScale * 1.4426950408889634f;
     uint sBegin = 0u, sEnd = slots;
     if (SPLIT) {
         const uint chunk = (((slots + nSplit - 1u) / nSplit) + MLA_NAX_BK - 1u) & ~(MLA_NAX_BK - 1u);

@@ -116,6 +116,7 @@ public final class QWSigLIP2VisionWeights: @unchecked Sendable {
             self.outDim = merged
             self.fc1W = nil; self.fc1B = nil; self.fc2W = nil; self.fc2B = nil
         }
+        ck.releaseBacking()
     }
 }
 

@@ -31,6 +31,7 @@ public struct QWModelDescriptor: Sendable, Hashable {
         case lfm3 = "lfm3"
         case lfm2Encoder = "lfm2_encoder"
         case modernBert = "modernbert"
+        case gigachat4 = "gigachat4"
     }
 
     public enum Capability: String, Sendable, Hashable, CaseIterable, Codable {
@@ -123,6 +124,10 @@ public struct QWModelDescriptor: Sendable, Hashable {
     public let perKindRoPEConfig: PerKindRoPEConfig?
     public let attnGateMode: AttnGateMode
     public let decisionConfig: QWDecisionModelConfig?
+    public let gatedNormConfig: GatedNormConfig?
+    public let gdnGatingConfig: GDNGatingConfig?
+    public let finalLogitSoftcapping: Float?
+    internal let v2DigestHeadDim: Int
 
     public let hidden: Int
     public let vocab: Int
@@ -325,7 +330,11 @@ public struct QWModelDescriptor: Sendable, Hashable {
                 useSandwichNorm: Bool = false,
                 perKindRoPEConfig: PerKindRoPEConfig? = nil,
                 attnGateMode: AttnGateMode? = nil,
-                decisionConfig: QWDecisionModelConfig? = nil) {
+                decisionConfig: QWDecisionModelConfig? = nil,
+                gatedNormConfig: GatedNormConfig? = nil,
+                gdnGatingConfig: GDNGatingConfig? = nil,
+                finalLogitSoftcapping: Float? = nil,
+                v2DigestHeadDim: Int? = nil) {
         self.family = family; self.modelType = modelType
         self.role = role ?? (capabilities.contains(.vision) ? .multimodalConditionalLM : .causalLM)
         self.shortConvConfig = shortConvConfig
@@ -334,6 +343,10 @@ public struct QWModelDescriptor: Sendable, Hashable {
         self.perKindRoPEConfig = perKindRoPEConfig
         self.attnGateMode = attnGateMode ?? (attnOutputGate ? .packedElementWiseQProj : .none)
         self.decisionConfig = decisionConfig
+        self.gatedNormConfig = gatedNormConfig
+        self.gdnGatingConfig = gdnGatingConfig
+        self.finalLogitSoftcapping = finalLogitSoftcapping
+        self.v2DigestHeadDim = v2DigestHeadDim ?? headDim
         self.inkling2Config = inkling2Config
         self.dsparkConfig = dsparkConfig
         self.envelopeModelType = envelopeModelType
@@ -419,8 +432,9 @@ public struct QWModelDescriptor: Sendable, Hashable {
             ropeTheta: ropeTheta, ropeInterleave: resolvedInterleave,
             indexerHeads: indexerHeads, indexKPoolCompress: indexKPoolCompress, mlaUseNoPE: mlaUseNoPE,
             kvLoraRank: kvLoraRank, qLoraRank: qLoraRank, qkNopeHeadDim: qkNopeHeadDim,
-            qkRopeHeadDim: qkRopeHeadDim, vHeadDim: vHeadDim, hybridMLAConfig: hybridMLAConfig,
-            numExperts: numExperts, sharedExpertHasGate: sharedExpertHasGate,
+            qkRopeHeadDim: qkRopeHeadDim, vHeadDim: vHeadDim,
+            hybridMLAConfig: hybridMLAConfig, yarnRopeConfig: self.yarnRopeConfig,
+            numExperts: numExperts, denseIntermediate: denseIntermediate, sharedExpertHasGate: sharedExpertHasGate,
             expertGateType: expertGateType, topkMethod: topkMethod,
             moeRouterEnableExpertBias: moeRouterEnableExpertBias, routedScalingFactor: routedScalingFactor,
             routedScalingFactorLearnable: routedScalingFactorLearnable, normTopKProb: normTopKProb,
@@ -564,7 +578,9 @@ public struct QWModelDescriptor: Sendable, Hashable {
             ropeInterleave: ropeInterleave, role: role,
             shortConvConfig: shortConvConfig, normKind: normKind,
             useSandwichNorm: useSandwichNorm, perKindRoPEConfig: perKindRoPEConfig,
-            attnGateMode: attnGateMode, decisionConfig: decisionConfig
+            attnGateMode: attnGateMode, decisionConfig: decisionConfig,
+            gatedNormConfig: gatedNormConfig, gdnGatingConfig: gdnGatingConfig,
+            finalLogitSoftcapping: finalLogitSoftcapping, v2DigestHeadDim: v2DigestHeadDim
         )
     }
 
@@ -670,7 +686,7 @@ public struct QWModelDescriptor: Sendable, Hashable {
             "layers=\(d.numLayers)",
             "layer_kinds=\(kinds)",
             "fa_interval=\(d.fullAttentionInterval)",
-            "q=\(d.qHeads)", "kv=\(d.kvHeads)", "hd=\(d.headDim)",
+            "q=\(d.qHeads)", "kv=\(d.kvHeads)", "hd=\(d.v2DigestHeadDim)",
             "qgate=\(d.attnOutputGate ? 1 : 0)",
             "rot_f=0x\(String(d.partialRotaryFactor.bitPattern, radix: 16, uppercase: false))",
             "theta=0x\(String(d.ropeTheta.bitPattern, radix: 16, uppercase: false))",

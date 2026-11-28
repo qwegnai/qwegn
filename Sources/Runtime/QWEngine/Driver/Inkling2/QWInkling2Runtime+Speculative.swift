@@ -6,15 +6,25 @@ import QWHead
 
 extension QWInkling2Runtime {
     struct SpeculativeStats {
-        var rounds: Int = 0
-        var roundTokens: Int = 0
+        var label: String = "dspark"
+        var stepTokenCounts: [Int] = []
         var proposals: Int = 0
         var accepted: Int = 0
 
+        mutating func recordRound(emitted: Int, proposals: Int, accepted: Int) {
+            stepTokenCounts.append(emitted)
+            self.proposals += proposals
+            self.accepted += accepted
+        }
+
         var summary: String? {
-            guard rounds > 0 else { return nil }
-            let mean = Double(roundTokens) / Double(rounds)
-            return String(format: "dspark rounds=%d, mean=%.2f tok/rnd (%d/%d)", rounds, mean, accepted, proposals)
+            guard !stepTokenCounts.isEmpty else { return nil }
+            return QWTrunkRuntimeSupport.formatSpeculativeSummary(
+                label: label,
+                accepted: accepted,
+                proposals: proposals,
+                stepTokenCounts: stepTokenCounts
+            )
         }
     }
 
@@ -198,22 +208,23 @@ extension QWInkling2Runtime {
             var cancelled = false
 
             var currNode = 0
+            var unusedRecent: [Int] = []
+            var unusedPenalty: [Int] = []
             while true {
                 let tok = Int(headTokPtr[currNode])
                 keptNodes.append(currNode)
-                if stopIDs.contains(tok) {
-                    stopTokenID = tok
-                    onStopToken?(tok)
+                let outcome = try consumeSpeculativeToken(
+                    tok, vocab: ink2.unpaddedVocabSize, stopIDs: stopIDs,
+                    recentGeneratedForPenalty: &unusedRecent, penaltyHistory: &unusedPenalty,
+                    history: &history, generated: &generated, stopTokenID: &stopTokenID,
+                    onStopToken: onStopToken, onToken: onToken
+                )
+                if outcome == .stopped {
                     stopped = true
                     break
                 }
-                let prev2 = history.count >= 2 ? history[history.count - 2] : nil
-                let prev1 = history[history.count - 1]
-                session.tokenRecycler.recordTransition(previous: prev2, current: prev1, next: tok)
-                history.append(tok)
-                generated.append(tok)
                 emitted += 1
-                if onToken?(tok) == false {
+                if outcome == .cancelled {
                     cancelled = true
                     break
                 }
@@ -269,10 +280,7 @@ extension QWInkling2Runtime {
             let elapsedMs = elapsedSeconds(roundStart.duration(to: clock.now)) * 1000.0
             stepMs.append(elapsedMs)
             stepCounts.append(emitted)
-            stats.rounds += 1
-            stats.roundTokens += emitted
-            stats.proposals += maxDepthProposals
-            stats.accepted += accepted
+            stats.recordRound(emitted: emitted, proposals: maxDepthProposals, accepted: accepted)
 
             if stopped || cancelled {
                 try drainPendingRoundCB()
@@ -306,17 +314,17 @@ extension QWInkling2Runtime {
                     try drainPendingRoundCB()
                     pos = stepPos + 1
                     let cTok = Int(headTokPtr[0])
-                    if stopIDs.contains(cTok) {
+                    let cOutcome = try consumeSpeculativeToken(
+                        cTok, vocab: ink2.unpaddedVocabSize, stopIDs: stopIDs,
+                        recentGeneratedForPenalty: &unusedRecent, penaltyHistory: &unusedPenalty,
+                        history: &history, generated: &generated, stopTokenID: &stopTokenID,
+                        onStopToken: onStopToken, onToken: nil
+                    )
+                    if cOutcome == .stopped {
                         stepMs.append(elapsedSeconds(cStart.duration(to: clock.now)) * 1000.0)
                         stepCounts.append(0)
-                        stopTokenID = cTok
-                        onStopToken?(cTok)
                         return (stats, true)
                     }
-                    let p2 = history.count >= 2 ? history[history.count - 2] : nil
-                    session.tokenRecycler.recordTransition(previous: p2, current: history[history.count - 1], next: cTok)
-                    history.append(cTok)
-                    generated.append(cTok)
                     let canContinue = generated.count < effectiveMaxNew
                     if cooldownSteps > 1 && canContinue {
                         pendingRoundCB = try dspark.ingestContextTaps(

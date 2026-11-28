@@ -434,7 +434,10 @@ final class QWAttnSinkRelParityTests: XCTestCase {
     func testPrefillParityShortAndMultiTileAcrossKVModes() throws {
         let geometry = try Self.makeGeometry(qHeads: 12, kvHeads: 4, headDim: 128)
         let hal = try QWHal(geometry: geometry)
-        try XCTSkipUnless(hal.caps.isMetal4TensorCapable, "NAX sink/rel prefill requires Metal 4 tensor hardware")
+        try XCTSkipUnless(
+            hal.caps.supportsSimdgroupMMA,
+            "Sink/rel MMA/NAX prefill requires Apple7+ hardware"
+        )
         let op = try QWAttnSinkRel(hal: hal)
 
         for mode in [QWKVMode.f16, .q8, .q4] {
@@ -454,7 +457,10 @@ final class QWAttnSinkRelParityTests: XCTestCase {
     func testPrefillRelSkipSlidingWindowAndOptionalFlags() throws {
         let geometry = try Self.makeGeometry(qHeads: 12, kvHeads: 4, headDim: 128)
         let hal = try QWHal(geometry: geometry)
-        try XCTSkipUnless(hal.caps.isMetal4TensorCapable, "NAX sink/rel prefill requires Metal 4 tensor hardware")
+        try XCTSkipUnless(
+            hal.caps.supportsSimdgroupMMA,
+            "Sink/rel MMA/NAX prefill requires Apple7+ hardware"
+        )
         let op = try QWAttnSinkRel(hal: hal)
 
         // Exact relExtent skip boundary: minDist == relExtent (95 - 31 == 64) and minDist == relExtent - 1 (94 - 31 == 63).

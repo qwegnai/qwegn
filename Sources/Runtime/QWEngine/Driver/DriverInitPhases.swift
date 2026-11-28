@@ -39,7 +39,8 @@ extension QWEngineDriver {
                 moe: nextN.layer.moe,
                 mla: attn.mla,
                 qkvBias: attn.qkvBias,
-                oBias: attn.oBias
+                oBias: attn.oBias,
+                gatedNorms: nextN.gatedNorms
             )
         }
             let mPreFcNormEmb = try L.f16wNorm("mtp.pre_fc_norm_embedding.weight", geometry.hidden)
@@ -130,7 +131,10 @@ extension QWEngineDriver {
         let clampSubstrings = [
             "silu", "swiglu", "moe_route_decode", "moe_gateup", "moe_compact", "mlp_gate_up"
         ]
-        for k in doors {
+        let activeDoors = hal.caps.isMetal4TensorCapable
+            ? doors
+            : doors.filter { !QWNaxKernelRegistry.names.contains($0) }
+        for k in activeDoors {
             _ = try hal.pipeline(k)
             if !specs.isEmpty && clampSubstrings.contains(where: { k.contains($0) }) {
                 for spec in specs {

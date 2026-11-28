@@ -655,15 +655,14 @@ kernel void qwg_head_q4g_argmax_m16(
     qw_head_q4g_argmax_body<16u, 1u, true>(blocks, x, keysHi, keysLo, sh, sl, N, K, softcap, tg, ti, tptg);
 }
 
-kernel void qwg_head_argmax_batched_fin(
-        device const uint* keysHi [[buffer(0)]],
-        device const uint* keysLo [[buffer(1)]],
-        device int32_t* tokens [[buffer(2)]],
-        constant uint& nTG [[buffer(3)]],
-        constant uint& M [[buffer(4)]],
-        uint3 tg [[threadgroup_position_in_grid]],
-        uint tid [[thread_index_in_threadgroup]],
-        uint3 tptg3 [[threads_per_threadgroup]]) {
+static inline void qw_head_argmax_batched_fin_body(
+        device const uint* keysHi,
+        device const uint* keysLo,
+        device int32_t*    tokens,
+        threadgroup uint*  sh,
+        threadgroup uint*  sl,
+        uint nTG, uint M, float softcap,
+        uint3 tg, uint tid, uint3 tptg3) {
     const uint row = (tg.y > 0u) ? tg.y : tg.x;
     const uint tptg = tptg3.x * tptg3.y * tptg3.z;
     if (row >= M) return;
@@ -671,8 +670,12 @@ kernel void qwg_head_argmax_batched_fin(
     device const uint* rLo = keysLo + (size_t)row * nTG;
     uint bh = 0u, bl = 0u;
     for (uint q = tid; q < nTG; q += tptg) {
-        const uint h = rHi[q];
+        uint h = rHi[q];
         const uint l = rLo[q];
+        if (softcap > 0.0f && l != 0u) {
+            const uint raw = ((h & 0x80000000u) != 0u) ? (h ^ 0x80000000u) : ~h;
+            h = qw_sortable_f32_u32(qw_head_softcap(as_type<float>(raw), softcap));
+        }
         if (h > bh || (h == bh && l > bl)) {
             bh = h;
             bl = l;
@@ -680,7 +683,6 @@ kernel void qwg_head_argmax_batched_fin(
     }
     const uint maxHi = simd_max(bh);
     const uint maxLo = simd_max((bh == maxHi) ? bl : 0u);
-    threadgroup uint sh[32], sl[32];
     const uint lane = tid & 31u;
     const uint simd_id = tid >> 5u;
     if (lane == 0u && simd_id < 32u) {
@@ -700,4 +702,33 @@ kernel void qwg_head_argmax_batched_fin(
         }
         tokens[row] = (nTG > 0u) ? int32_t(~bl2) : 0;
     }
+}
+
+kernel void qwg_head_argmax_batched_fin(
+        device const uint* keysHi [[buffer(0)]],
+        device const uint* keysLo [[buffer(1)]],
+        device int32_t*    tokens [[buffer(2)]],
+        constant uint&     nTG    [[buffer(3)]],
+        constant uint&     M      [[buffer(4)]],
+        uint3 tg [[threadgroup_position_in_grid]],
+        uint tid [[thread_index_in_threadgroup]],
+        uint3 tptg3 [[threads_per_threadgroup]]) {
+    threadgroup uint sh[32];
+    threadgroup uint sl[32];
+    qw_head_argmax_batched_fin_body(keysHi, keysLo, tokens, sh, sl, nTG, M, 0.0f, tg, tid, tptg3);
+}
+
+kernel void qwg_head_argmax_batched_fin_softcap(
+        device const uint* keysHi  [[buffer(0)]],
+        device const uint* keysLo  [[buffer(1)]],
+        device int32_t*    tokens  [[buffer(2)]],
+        constant uint&     nTG     [[buffer(3)]],
+        constant uint&     M       [[buffer(4)]],
+        constant float&    softcap [[buffer(5)]],
+        uint3 tg [[threadgroup_position_in_grid]],
+        uint tid [[thread_index_in_threadgroup]],
+        uint3 tptg3 [[threads_per_threadgroup]]) {
+    threadgroup uint sh[32];
+    threadgroup uint sl[32];
+    qw_head_argmax_batched_fin_body(keysHi, keysLo, tokens, sh, sl, nTG, M, softcap, tg, tid, tptg3);
 }

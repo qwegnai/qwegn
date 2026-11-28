@@ -9,6 +9,16 @@ import QWHAL
 import QWLoad
 import QWQuant
 
+enum DFlashLinearWeight: Sendable {
+    case quant(QWWeightView)
+    case bf16(QWGemmFP.BF16Bank)
+
+    var quantView: QWWeightView? {
+        if case let .quant(view) = self { return view }
+        return nil
+    }
+}
+
 struct DrafterQuantKey: Hashable, Sendable {
     let bits: Int
     let group: Int
@@ -18,16 +28,12 @@ struct DrafterQuantKey: Hashable, Sendable {
 struct DrafterQuantPipelines {
     let decodeT4: any MTLComputePipelineState
     let siluPair: any MTLComputePipelineState
-    let gemmBatched: any MTLComputePipelineState
+    let gemmBatched: (any MTLComputePipelineState)?
 }
 
 extension QWDFlashDrafter {
     public static func computeWeightCapacity(pack: QWQuant.Pack, isDSpine: Bool) -> Int {
-        let defaultCap = isDSpine ? 1_920_000_000 : 1_480_000_000
-        let allIncumbent = pack.tensors.values.allSatisfy { !$0.quantized || $0.isIncumbentHQ4 }
-        if allIncumbent {
-            return defaultCap
-        }
+        _ = isDSpine
         var total = 0
         for e in pack.tensors.values {
             let bytes: Int
@@ -41,6 +47,14 @@ extension QWDFlashDrafter {
         return max(64 * 1024 * 1024, total + 64 * 1024 * 1024)
     }
 
+    public static func computeSafeTensorsWeightCapacity(st: QWSafeTensorsContainer) -> Int {
+        var total = 0
+        for t in st.tensors.values {
+            total += ((t.byteLength + 16383) / 16384) * 16384
+        }
+        return max(64 * 1024 * 1024, total + 64 * 1024 * 1024)
+    }
+
     static func loadQuantWeight(
         pack: QWQuant.Pack,
         io: PlaneIO,
@@ -50,6 +64,7 @@ extension QWDFlashDrafter {
         n: Int,
         k: Int
     ) throws -> QWWeightView {
+        let e = try pack.entry(name)
         let s = try QWCheckpointTensorLoader.span(pack, name)
         guard s.rows == n, s.cols == k else {
             throw QWDFlashError.weightMissing(name, "DFlash quant shape [\(s.rows), \(s.cols)] != [\(n), \(k)]")
@@ -57,7 +72,7 @@ extension QWDFlashDrafter {
         let t = try wSub.allocate(QWTensorShape([s.bytes / 2], .f16))
         let dst = t.region.buffer.contents().advanced(by: t.region.base + t.offset)
         try io.load(name, layout: .hq4, into: dst)
-        let rot = hal.weightBasis.rotatesActivations
+        let rot = (e.hq?.vq != "aq")
         guard let v = QWWeightView(
             blocks: t, n: n, k: k, bits: s.bits, groupSize: s.group,
             isRotated: rot, isIncumbentContainer: rot && s.isIncumbent, isSHVQ: rot && s.isSHVQ
@@ -82,6 +97,8 @@ extension QWDFlashDrafter {
             }
             return (spec.name, spec.n, s)
         }
+        let firstEntry = try pack.entry(specs[0].name)
+        let rot = (firstEntry.hq?.vq != "aq")
         guard let first = spans.first?.span,
               spans.allSatisfy({
                   $0.span.bits == first.bits && $0.span.group == first.group
@@ -93,7 +110,6 @@ extension QWDFlashDrafter {
         let totalBytes = spans.reduce(0) { $0 + $1.span.bytes }
         let blocks = try wSub.allocate(QWTensorShape([totalBytes / 2], .f16))
         let basePtr = blocks.region.buffer.contents().advanced(by: blocks.region.base + blocks.offset)
-        let rot = hal.weightBasis.rotatesActivations
         guard let big = QWWeightView(
             blocks: blocks, n: totalN, k: k, bits: first.bits, groupSize: first.group,
             isRotated: rot, isIncumbentContainer: rot && first.isIncumbent, isSHVQ: rot && first.isSHVQ
@@ -117,26 +133,21 @@ extension QWDFlashDrafter {
 
     static func loadQuantPipelines(
         hal: QWHal,
-        fc: QWWeightView,
-        layers: [LayerWeights]
+        views: [QWWeightView]
     ) throws -> [DrafterQuantKey: DrafterQuantPipelines] {
-        var views: [QWWeightView] = [fc]
-        for lw in layers {
-            views.append(contentsOf: [lw.qkvProj, lw.kvProj, lw.oProj, lw.gateUpProj, lw.downProj])
-        }
         var map: [DrafterQuantKey: DrafterQuantPipelines] = [:]
         for w in views where !Self.usesQ4GMKernel(w) {
             let key = DrafterQuantKey(bits: w.bits, group: w.groupSize, isSHVQ: w.isSHVQ)
             if map[key] != nil { continue }
             guard let decName = QWGemmAQ.decodeKernelName(bits: w.bits, group: w.groupSize, isSHVQ: w.isSHVQ),
                   let siluName = QWGemmAQ.siluPairKernelName(bits: w.bits, group: w.groupSize, isSHVQ: w.isSHVQ),
-                  let gemmName = QWGemmAQ.gemmKernelName(bits: w.bits, group: w.groupSize, isSHVQ: w.isSHVQ) else {
+                  let gemmName = QWGemmAQ.gemmKernelName(bits: w.bits, group: w.groupSize, isSHVQ: w.isSHVQ, useNAX: hal.caps.isMetal4TensorCapable) else {
                 throw QWDFlashError.state("QWDFlashDrafter: unsupported quant format \(w.formatName)")
             }
             map[key] = DrafterQuantPipelines(
                 decodeT4: try hal.pipeline(decName),
                 siluPair: try hal.pipeline(siluName),
-                gemmBatched: try hal.pipeline(gemmName)
+                gemmBatched: hal.caps.supportsSimdgroupMMA ? try hal.pipeline(gemmName) : nil
             )
         }
         return map
@@ -159,13 +170,13 @@ extension QWDFlashDrafter {
         var xs = UInt32(k), ys = UInt32(n)
         enc.setBytes(&xs, length: 4, index: 9)
         enc.setBytes(&ys, length: 4, index: 10)
-        let chunk = QWGemm.naxRowChunk(rows: rows, k: k)
+        let chunk = QWGemm.naxRowChunk(rows: rows, k: k, gpuCores: gpuCores)
         var r0 = 0
         while r0 < rows {
             let r = min(chunk, rows - r0)
-            let bm = isMetal4TensorCapable ? (r <= 16 ? 16 : (r <= 32 ? 32 : 64)) : 64
+            let bm = supportsSimdgroupGemm ? (r <= 16 ? 16 : (r <= 32 ? 32 : 64)) : 64
             let bn = (isMetal4TensorCapable && r <= 16) ? 128 : 64
-            let modeBits = isMetal4TensorCapable ? (r <= 16 ? 0x2000_0000 : (r <= 32 ? 0x4000_0000 : 0)) : 0
+            let modeBits = supportsSimdgroupGemm ? (r <= 16 ? 0x2000_0000 : (r <= 32 ? 0x4000_0000 : 0)) : 0
             let xSlice = r0 == 0 ? input : input.slice(byteOffset: r0 * k * 2, count: r * k)
             let ySlice = r0 == 0 ? output : output.slice(byteOffset: r0 * n * 2, count: r * n)
             xSlice.bind(enc, index: 1)
@@ -189,7 +200,8 @@ extension QWDFlashDrafter {
         enc.setComputePipelineState(psoSiluMulF16)
         gu.bind(enc, index: 0)
         out.bind(enc, index: 1)
-        var mU = UInt32(rows), iU = UInt32(i)
+        let limBits = config.swigluLimit > 0 ? UInt32(Float16(config.swigluLimit).bitPattern) : 0
+        var mU = UInt32(rows & 0xFFFF) | (limBits << 16), iU = UInt32(i)
         enc.setBytes(&mU, length: 4, index: 2)
         enc.setBytes(&iU, length: 4, index: 3)
         enc.dispatchThreadgroups(MTLSize(width: Self.siluThreadgroups(i: i), height: rows, depth: 1),
@@ -212,8 +224,22 @@ extension QWDFlashDrafter {
             throw QWDFlashError.state("QWDFlashDrafter: missing quant pipelines for \(weight.formatName)")
         }
         let n = weight.n, k = weight.k
-        let useNaxSmall = isMetal4TensorCapable && rows >= 8 && n % 64 == 0 && k % 64 == 0
-        if rows == 1 {
+        let minSimdRows = isMetal4TensorCapable ? 4 : 8
+        let useNaxSmall = supportsSimdgroupGemm && rows >= minSimdRows && n % 64 == 0 && k % 64 == 0
+        if weight.isSHVQ && !useNaxSmall {
+            var r0 = 0
+            while r0 < rows {
+                let chunkRows = min(16, rows - r0)
+                let xChunk = r0 == 0 ? input : input.slice(byteOffset: r0 * k * 2, count: chunkRows * k)
+                let yChunk = r0 == 0 ? output : output.slice(byteOffset: r0 * n * 2, count: chunkRows * n)
+                try QWGemmAQ.encodeDecodeT4(
+                    enc, hal: hal, blocks: weight.blocks, x: xChunk, y16: yChunk,
+                    n: n, k: k, bits: weight.bits, group: weight.groupSize,
+                    rows: chunkRows, isSHVQ: true
+                )
+                r0 += chunkRows
+            }
+        } else if rows == 1 {
             enc.setComputePipelineState(qps.decodeT4)
             weight.blocks.bind(enc, index: 0)
             input.bind(enc, index: 1)
@@ -224,7 +250,7 @@ extension QWDFlashDrafter {
             output.bind(enc, index: 8)
             enc.dispatchThreadgroups(MTLSize(width: (n + 15) / 16, height: 1, depth: 1),
                                      threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
-        } else if !useNaxSmall && (2...16).contains(rows) {
+        } else if !useNaxSmall {
             enc.setComputePipelineState(qps.decodeT4)
             weight.blocks.bind(enc, index: 0)
             var kU = UInt32(k)
@@ -244,8 +270,10 @@ extension QWDFlashDrafter {
                                          threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
                 r0 += chunkRows
             }
+        } else if let pso = qps.gemmBatched {
+            encodeSmallTileNAX(enc, pso: pso, weight: weight, input: input, output: output, rows: rows)
         } else {
-            encodeSmallTileNAX(enc, pso: qps.gemmBatched, weight: weight, input: input, output: output, rows: rows)
+            throw QWDFlashError.state("QWDFlashDrafter: missing NAX GEMM pipeline for \(weight.formatName)")
         }
     }
 
@@ -262,7 +290,20 @@ extension QWDFlashDrafter {
         }
         let H = config.hiddenSize
         let I = config.intermediateSize
-        if isMetal4TensorCapable && rows >= 8 && canUseNAXGateUpScratch(rows: rows, h: H, i: I) {
+        let clampSpec = config.swigluLimit > 0
+            ? QWSwiGLUClampSpec(limit: config.swigluLimit, postSilu: false)
+            : nil
+        let minSimdRows = isMetal4TensorCapable ? 4 : 8
+        if supportsSimdgroupGemm && rows >= minSimdRows && H % 64 == 0 && I % 32 == 0
+            && QWGemm.supportsDenseSwiGLUNax(weight) {
+            try QWGemm.encodeDenseSwiGLUNax(
+                enc, hal: hal, weight: weight, x16: input, out16: output,
+                rows: rows, intermediate: I, swigluClamp: clampSpec
+            )
+            return
+        }
+        if (config.swigluLimit > 0 && draftLogits.bytes >= rows * 2 * I * 2)
+            || (supportsSimdgroupGemm && rows >= minSimdRows && canUseNAXGateUpScratch(rows: rows, h: H, i: I)) {
             let guScratch = QWTensorValue(region: draftLogits.region, offset: draftLogits.offset,
                                           shape: QWTensorShape([rows * 2 * I], .f16))
             try encodeAQMatmul(enc, weight: weight, input: input, output: guScratch, rows: rows)

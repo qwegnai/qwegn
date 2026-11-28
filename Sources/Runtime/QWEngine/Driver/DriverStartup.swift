@@ -14,6 +14,7 @@ import QWAttn
 import QWGDN
 import QWMLP
 import QWHead
+import QWLoad
 import QWMTP
 import QWQuant
 
@@ -161,10 +162,23 @@ extension QWEngineDriver {
             }
             try Self.validateKVMode(mode: kvMode)
         }
-        let headIsQ4g = (isSafetensors || isHyperStream || isInkling2)
-            ? true
-            : ((try? QWQuant.Pack(url: URL(fileURLWithPath: packPath))
-                .entry("lm_head.weight").quantized) ?? false)
+        let headIsQ4g: Bool = {
+            if isSafetensors { return true }
+            if let pack = try? QWQuant.Pack(url: URL(fileURLWithPath: packPath)) {
+                let resolvedName = QWCheckpointTensorLoader.resolveName(
+                    "lm_head.weight",
+                    tieWordEmbeddings: targetDescriptor?.tieWordEmbeddings ?? false,
+                    rawExists: { (try? pack.entry($0)) != nil }
+                )
+                let headEntry = (try? pack.entry(resolvedName))
+                    ?? (try? pack.entry("language_model.lm_head.weight"))
+                    ?? (try? pack.entry("lm_head.weight"))
+                if let headEntry {
+                    return PlaneLayout.resolve(headEntry) == .hq4
+                }
+            }
+            return isSafetensors
+        }()
         let environment = ProcessInfo.processInfo.environment
         if let env = environment["QW_EVICT_PREFILL_SCRATCH"] {
             evictionResolved = try QWPrefillScratchEvictionPolicy.parse(env)
@@ -204,16 +218,22 @@ extension QWEngineDriver {
         let verifyHeadQ4Enabled = try Self.resolveMTPFlag(name: "QW_MTP_VERIFY_HEAD_Q4",
             value: environment["QW_MTP_VERIFY_HEAD_Q4"], drafts: mtpDrafts, maxDrafts: maxDrafts)
         try Self.validateMTPVerifyHeadQ4(enabled: verifyHeadQ4Enabled, draftHead: draftHeadEnabled)
+        let explicitDFlashPack = dflashDraftPackPath?.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedDFlashPackPath: String = {
-            if let path = dflashDraftPackPath?.trimmingCharacters(in: .whitespacesAndNewlines), !path.isEmpty {
+            if let path = explicitDFlashPack, !path.isEmpty {
                 return path
             }
             if let envPath = environment["QW_DFLASH_DRAFT_PACK"]?.trimmingCharacters(in: .whitespacesAndNewlines), !envPath.isEmpty {
                 return envPath
             }
-            return QWDFlashConfig.defaultPackPath(for: targetDescriptor)
+            return QWDFlashConfig.defaultPackPath(for: targetDescriptor, targetPackPath: packPath)
         }()
-        if mtpBackend == nil && mtpDrafts > 0 && targetDescriptor?.dsparkConfig != nil
+        let hasExplicitDFlash = (explicitDFlashPack.map { !$0.isEmpty && !$0.hasSuffix("dspark.qwp") } ?? false)
+            || ((environment["QW_DFLASH_DRAFT_PACK"]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
+                && !(environment["QW_DFLASH_DRAFT_PACK"]?.hasSuffix("dspark.qwp") ?? false))
+        if mtpBackend == nil && mtpDrafts > 0 && hasExplicitDFlash {
+            mtpBackendResolved = .dflash2
+        } else if mtpBackend == nil && mtpDrafts > 0 && targetDescriptor?.dsparkConfig != nil
             && QWModelDescriptor.DSparkConfig.resolvePackURL(near: packPath) != nil {
             mtpBackendResolved = .dspark
         }

@@ -71,23 +71,49 @@ final class QWStateTests: XCTestCase {
     private func recWalk(state sp: UnsafeMutablePointer<Float>, t0: Int, t1: Int,
                          k: [Float], v: [Float], beta: [Float], dec: [Float]) {
         let GVh = QWModelGeometry.qwen38_27b.gdnVHeads, HD = QWModelGeometry.qwen38_27b.gdnHeadDim
-        for t in t0..<t1 {
-            for h in 0..<GVh {
-                let decay = dec[t * GVh + h]
-                let dltB = beta[t * GVh + h]
-                let ob = h * HD * HD
-                var kmem = [Float](repeating: 0, count: HD)
-                for kk in 0..<HD {
-                    let kt = k[(t * GVh + h) * HD + kk]
-                    let base = ob + kk * HD
-                    for vv in 0..<HD { kmem[vv] = kmem[vv] + kt * sp[base + vv] }
-                }
-                let vbase = (t * GVh + h) * HD
-                for vv in 0..<HD {
-                    let dlt = (v[vbase + vv] - kmem[vv]) * dltB
-                    for kk in 0..<HD {
-                        sp[ob + kk * HD + vv] = sp[ob + kk * HD + vv] * decay
-                            + k[(t * GVh + h) * HD + kk] * dlt
+        k.withUnsafeBufferPointer { kBuf in
+            v.withUnsafeBufferPointer { vBuf in
+                beta.withUnsafeBufferPointer { bBuf in
+                    dec.withUnsafeBufferPointer { dBuf in
+                        guard let kp = kBuf.baseAddress, let vp = vBuf.baseAddress,
+                              let bp = bBuf.baseAddress, let dp = dBuf.baseAddress else { return }
+                        withUnsafeTemporaryAllocation(of: Float.self, capacity: HD) { kmem in
+                            guard let km = kmem.baseAddress else { return }
+                            var t = t0
+                            while t < t1 {
+                                var h = 0
+                                while h < GVh {
+                                    let th = t * GVh + h
+                                    let decay = dp[th]
+                                    let dltB = bp[th]
+                                    let ob = h * HD * HD
+                                    let kvBase = th * HD
+                                    var z = 0
+                                    while z < HD { km[z] = 0; z += 1 }
+                                    var kk = 0
+                                    while kk < HD {
+                                        let kt = kp[kvBase + kk]
+                                        let row = sp + (ob + kk * HD)
+                                        var vv = 0
+                                        while vv < HD { km[vv] = km[vv] + kt * row[vv]; vv += 1 }
+                                        kk += 1
+                                    }
+                                    var vv = 0
+                                    while vv < HD {
+                                        let dlt = (vp[kvBase + vv] - km[vv]) * dltB
+                                        var kk2 = 0
+                                        while kk2 < HD {
+                                            let idx = ob + kk2 * HD + vv
+                                            sp[idx] = sp[idx] * decay + kp[kvBase + kk2] * dlt
+                                            kk2 += 1
+                                        }
+                                        vv += 1
+                                    }
+                                    h += 1
+                                }
+                                t += 1
+                            }
+                        }
                     }
                 }
             }
@@ -97,9 +123,11 @@ final class QWStateTests: XCTestCase {
     private func ringRotate(_ rp: UnsafeMutablePointer<Float>, mixed: [Float], t: Int) {
         let W = QWModelGeometry.qwen38_27b.gdnQKVChannels
         let ringN = QWSlotGeometry.ringElems(geometry: .qwen38_27b)
-        for i in 0..<(ringN - W) { rp[i] = rp[i + W] }
-        let src = t * W
-        for c in 0..<W { rp[ringN - W + c] = mixed[src + c] }
+        memmove(rp, rp + W, (ringN - W) * MemoryLayout<Float>.stride)
+        mixed.withUnsafeBufferPointer { mBuf in
+            guard let mp = mBuf.baseAddress else { return }
+            memcpy(rp + (ringN - W), mp + (t * W), W * MemoryLayout<Float>.stride)
+        }
     }
 
     private func loadFloats(_ name: String) -> [Float] { Self.bins(name) }
@@ -121,9 +149,18 @@ final class QWStateTests: XCTestCase {
         }
 
         let recN = QWSlotGeometry.recElems(geometry: .qwen38_27b)
+        let ringBytes = QWSlotGeometry.ringElems(geometry: .qwen38_27b) * 4
+
+        let s2 = try st0.adopt(seq: 200, prefixFP: nil)
+        let sp2 = s2.gdnStates[0].region.buffer.contents()
+            .advanced(by: s2.gdnStates[0].region.base + s2.gdnStates[0].offset)
+            .assumingMemoryBound(to: Float.self)
+        let rp2 = s2.convRings[0].region.buffer.contents()
+            .advanced(by: s2.convRings[0].region.base + s2.convRings[0].offset)
+            .assumingMemoryBound(to: Float.self)
+        var s2Cursor = 0
 
         for P in [1, 37, 96] {
-            // fresh slot (adopt miss zeroes it)
             let s = try st0.adopt(seq: 100 + P, prefixFP: nil)
             let sp = s.gdnStates[0].region.buffer.contents()
                 .advanced(by: s.gdnStates[0].region.base + s.gdnStates[0].offset)
@@ -132,40 +169,41 @@ final class QWStateTests: XCTestCase {
                 .advanced(by: s.convRings[0].region.base + s.convRings[0].offset)
                 .assumingMemoryBound(to: Float.self)
 
-            // (a) walk P → snapshot → restore → walk 64
-            for t in 0..<P { ringRotate(rp, mixed: mixed, t: t); recWalk(state: sp, t0: t, t1: t + 1, k: k, v: v, beta: beta, dec: dec) }
+            var t = 0
+            while t < P {
+                ringRotate(rp, mixed: mixed, t: t)
+                recWalk(state: sp, t0: t, t1: t + 1, k: k, v: v, beta: beta, dec: dec)
+                t += 1
+            }
             let snap = st0.snapshot(s, as: "fp\(P)")
-            // second decode pass happens on a restore: rollback the SAME slot (MTP-rollback semantics)
             st0.rollback(s, to: snap)
-            for t in P..<(P + 64) { ringRotate(rp, mixed: mixed, t: t); recWalk(state: sp, t0: t, t1: t + 1, k: k, v: v, beta: beta, dec: dec) }
+            while t < P + 64 {
+                ringRotate(rp, mixed: mixed, t: t)
+                recWalk(state: sp, t0: t, t1: t + 1, k: k, v: v, beta: beta, dec: dec)
+                t += 1
+            }
             let after = Data(bytes: sp, count: recN * 4)
-            let ringAfter = Data(bytes: rp, count: QWSlotGeometry.ringElems(geometry: .qwen38_27b) * 4)
+            let ringAfter = Data(bytes: rp, count: ringBytes)
 
-            // (c) fresh walk P+64 in a second slot
-            let s2 = try st0.adopt(seq: 200 + P, prefixFP: nil)
-            let sp2 = s2.gdnStates[0].region.buffer.contents()
-                .advanced(by: s2.gdnStates[0].region.base + s2.gdnStates[0].offset)
-                .assumingMemoryBound(to: Float.self)
-            let rp2 = s2.convRings[0].region.buffer.contents()
-                .advanced(by: s2.convRings[0].region.base + s2.convRings[0].offset)
-                .assumingMemoryBound(to: Float.self)
-            for t in 0..<(P + 64) { ringRotate(rp2, mixed: mixed, t: t); recWalk(state: sp2, t0: t, t1: t + 1, k: k, v: v, beta: beta, dec: dec) }
+            while s2Cursor < P + 64 {
+                ringRotate(rp2, mixed: mixed, t: s2Cursor)
+                recWalk(state: sp2, t0: s2Cursor, t1: s2Cursor + 1, k: k, v: v, beta: beta, dec: dec)
+                s2Cursor += 1
+            }
             let fresh = Data(bytes: sp2, count: recN * 4)
-            let ringFresh = Data(bytes: rp2, count: QWSlotGeometry.ringElems(geometry: .qwen38_27b) * 4)
+            let ringFresh = Data(bytes: rp2, count: ringBytes)
 
             XCTAssertEqual(after, fresh, "rollback parity VIOLATED at P=\(P) — the MTP rollback anchor is wrong")
             XCTAssertEqual(ringAfter, ringFresh, "conv-ring rollback parity violated at P=\(P)")
 
-            // and the gold arm: the generator's own bytes (P+64) == fresh
             let gold = try Data(contentsOf: Self.out.appendingPathComponent("st_rec_c_P\(P).bin"))
             XCTAssertEqual(gold, fresh, "generator/Swift canonical walk diverged at P=\(P) — summation-order law broken")
             let goldRing = try Data(contentsOf: Self.out.appendingPathComponent("st_ring_c_P\(P).bin"))
             XCTAssertEqual(goldRing, ringFresh, "generator/Swift ring law diverged at P=\(P)")
 
             try st0.finish(seq: 100 + P)
-            try st0.finish(seq: 200 + P)
         }
-        // steady-state: slot table drained, zero steady allocs.
+        try st0.finish(seq: 200)
         XCTAssertEqual(st0.liveCount, 0)
     }
 

@@ -283,7 +283,7 @@ final class QWDSparkDrafter: @unchecked Sendable {
         let ropePairs = max(1, aGeo.ropeDim / 2)
         let moeBytes = weights.moeExperts > 0
             ? QWEngineDriver.moeScratchAllocationBytes(
-                rows: B, geometry: geometry, useGroupedNAX: hal.caps.isMetal4TensorCapable)
+                rows: B, geometry: geometry, useGroupedNAX: hal.caps.supportsSimdgroupMMA)
             : 0
 
         var cursor = 0
@@ -388,7 +388,7 @@ final class QWDSparkDrafter: @unchecked Sendable {
                     offset: 0,
                     shape: QWTensorShape([elems], dt)
                 )
-            }, rows: B, geometry: geometry, useGroupedNAX: hal.caps.isMetal4TensorCapable)
+            }, rows: B, geometry: geometry, useGroupedNAX: hal.caps.supportsSimdgroupMMA)
         } else {
             self.blkMoe = nil
         }
@@ -414,31 +414,41 @@ final class QWDSparkDrafter: @unchecked Sendable {
         try warm("qwg_fwht32_f16")
         try warm("qwg_multimax_f32")
         try warm("qwg_gemv_q4g_dx_h16_t4")
-        try warm("qwg_gemm_q4g_h16")
-        try warm("qwg_gemm_q4g_h16_swiglu")
+        let useNAX = hal.caps.isMetal4TensorCapable
+        let canSG = hal.caps.supportsSimdgroupMMA
+        if canSG {
+            try warm(useNAX ? "qwg_gemm_q4g_h16" : "qwg_gemm_q4g_sg")
+            try warm(useNAX ? "qwg_gemm_q4g_h16_swiglu" : "qwg_gemm_q4g_sg_swiglu")
+        }
         if case .quantized(let dhView) = weights.draftHead, !dhView.isIncumbentContainer {
             try warm(QWGemmAQ.kernelName(bits: dhView.bits, group: dhView.groupSize, isSHVQ: dhView.isSHVQ))
         }
         for lw in weights.layers {
             for w in [weights.mainProj, lw.qDownProj, lw.kvProj, lw.qUpGateProj, lw.oProj] {
                 if !w.isIncumbentContainer {
-                    try warm(QWGemmAQ.gemmKernelName(bits: w.bits, group: w.groupSize, isSHVQ: w.isSHVQ))
+                    if canSG {
+                        try warm(QWGemmAQ.gemmKernelName(bits: w.bits, group: w.groupSize, isSHVQ: w.isSHVQ, useNAX: useNAX))
+                    }
                     try warm(QWGemmAQ.decodeKernelName(bits: w.bits, group: w.groupSize, isSHVQ: w.isSHVQ))
                 }
             }
             if let moe = lw.moe {
                 for w in [moe.sharedGateUp, moe.sharedDown, moe.latent?.fc1, moe.latent?.fc2].compactMap({ $0 }) {
                     if !w.isIncumbentContainer {
-                        try warm(QWGemmAQ.gemmKernelName(bits: w.bits, group: w.groupSize, isSHVQ: w.isSHVQ))
+                        if canSG {
+                            try warm(QWGemmAQ.gemmKernelName(bits: w.bits, group: w.groupSize, isSHVQ: w.isSHVQ, useNAX: useNAX))
+                        }
                         try warm(QWGemmAQ.decodeKernelName(bits: w.bits, group: w.groupSize, isSHVQ: w.isSHVQ))
                     }
                 }
             }
-            if let gu = lw.denseGateUp, !gu.isIncumbentContainer {
-                try warm(QWGemmAQ.swigluGemmKernelName(bits: gu.bits, group: gu.groupSize, isSHVQ: gu.isSHVQ))
+            if let gu = lw.denseGateUp, !gu.isIncumbentContainer, canSG {
+                try warm(QWGemmAQ.swigluGemmKernelName(bits: gu.bits, group: gu.groupSize, isSHVQ: gu.isSHVQ, useNAX: useNAX))
             }
             if let dn = lw.denseDown, !dn.isIncumbentContainer {
-                try warm(QWGemmAQ.gemmKernelName(bits: dn.bits, group: dn.groupSize, isSHVQ: dn.isSHVQ))
+                if canSG {
+                    try warm(QWGemmAQ.gemmKernelName(bits: dn.bits, group: dn.groupSize, isSHVQ: dn.isSHVQ, useNAX: useNAX))
+                }
                 try warm(QWGemmAQ.decodeKernelName(bits: dn.bits, group: dn.groupSize, isSHVQ: dn.isSHVQ))
             }
         }

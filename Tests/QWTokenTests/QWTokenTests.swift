@@ -24,6 +24,8 @@ final class QWTokenTests: XCTestCase {
         try XCTSkipIf(ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] == "true",
                       "Golden fixtures in Scripts/spike/out are omitted on GitHub Actions CI")
         let p = outURL.appendingPathComponent(name)
+        try XCTSkipIf(!FileManager.default.fileExists(atPath: p.path),
+                      "Golden fixture \(name) absent in worktree Scripts/spike/out")
         guard let d = FileManager.default.contents(atPath: p.path) else {
             throw NSError(domain: "fixture", code: 2, userInfo: [NSLocalizedDescriptionKey: "missing \(name) at \(p.path)"])
         }

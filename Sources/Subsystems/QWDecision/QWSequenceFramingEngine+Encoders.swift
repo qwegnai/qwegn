@@ -237,4 +237,54 @@ extension QWSequenceFramingEngine {
             }
         }
     }
+
+    public static func buildNativeRerankBatch(
+        query: String,
+        documents: [String],
+        config: QWDecisionModelConfig,
+        tokenizer: QWTokenizer,
+        maxContextLength: Int
+    ) throws -> (batch: QWDecisionBackendBatchRequest, promptTokens: Int, truncatedTokens: Int) {
+        let frameCap: Int
+        if case .sequencePair(let maxLen) = config.framing, maxLen > 0 {
+            frameCap = min(maxLen, maxContextLength)
+        } else {
+            frameCap = maxContextLength
+        }
+        let budgetLimit = max(16, frameCap)
+        let clsId = tokenizer.tokenId(for: "[CLS]") ?? tokenizer.tokenId(for: "<s>") ?? 1
+        let sepId = tokenizer.tokenId(for: "[SEP]") ?? tokenizer.tokenId(for: "</s>") ?? 2
+        let rawQueryIds = try tokenizer.encode(query, addSpecialTokens: false)
+        let maxQueryTokens = max(4, min(rawQueryIds.count, (budgetLimit - 4) / 2))
+        let queryIds = Array(rawQueryIds.prefix(maxQueryTokens))
+
+        var sequences: [QWDecisionSequenceInput] = []
+        var slots: [QWDecisionSlotTarget] = []
+        sequences.reserveCapacity(documents.count)
+        slots.reserveCapacity(documents.count)
+        var totalPromptTokens = 0
+        var truncatedTotal = max(0, rawQueryIds.count - queryIds.count)
+
+        for doc in documents {
+            let docIds = try tokenizer.encode(doc, addSpecialTokens: false)
+            let room = max(0, budgetLimit - 3 - queryIds.count)
+            let keptDoc = Array(docIds.prefix(room))
+            truncatedTotal += max(0, docIds.count - keptDoc.count)
+            let ids = [clsId] + queryIds + [sepId] + keptDoc + [sepId]
+            let seqIdx = sequences.count
+            sequences.append(QWDecisionSequenceInput(
+                tokenIds: ids,
+                topology: config.topology,
+                pairIndex: 1,
+                chain: "rerank"
+            ))
+            slots.append(QWDecisionSlotTarget(sequenceIndex: seqIdx, tokenPosition: 0))
+            totalPromptTokens += ids.count
+        }
+        return (
+            QWDecisionBackendBatchRequest(sequences: sequences, slots: slots),
+            totalPromptTokens,
+            truncatedTotal
+        )
+    }
 }

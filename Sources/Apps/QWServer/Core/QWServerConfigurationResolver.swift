@@ -30,6 +30,7 @@ public enum QWServerConfigurationResolver {
     public static func resolve(
         cliConfigPath: String? = nil, cliPack: String? = nil, cliHost: String? = nil, cliPort: Int? = nil,
         cliApiKey: String? = nil, cliAllowLocalImagePaths: Bool? = nil, cliAllowRemoteImageURLs: Bool? = nil,
+        cliPinModel: Bool? = nil,
         cliModelName: String? = nil, cliModelAlias: String? = nil, cliMaxContext: Int? = nil, cliKVMode: String? = nil,
         cliTemperature: Double? = nil, cliTopP: Double? = nil, cliTopK: Int? = nil, cliMaxTokens: Int? = nil,
         cliRepetitionPenalty: Double? = nil, cliSeed: Int? = nil, cliEnableThinking: Bool? = nil,
@@ -510,10 +511,22 @@ public enum QWServerConfigurationResolver {
             finalModelPackPath = resolvedPack
             finalDecisionModelPackPath = extra.decisionModelPackPath
         }
+        let resolvedPinModel: Bool = {
+            if let p = cliPinModel {
+                sources["pinModel"] = "cli (--pin-model)"
+                return p
+            }
+            if environment["QWG_PIN_MODEL"] == "1" {
+                sources["pinModel"] = "env (QWG_PIN_MODEL=1)"
+                return true
+            }
+            return false
+        }()
         var resolvedConfig = QWResolvedServerConfig(
             host: resolvedHost, port: resolvedPort,
             apiKey: resolvedApiKey, corsAllowedOrigins: resolvedCorsAllowedOrigins,
             allowLocalImagePaths: resolvedAllowLocalImagePaths, allowRemoteImageURLs: resolvedAllowRemoteImageURLs,
+            pinModel: resolvedPinModel,
             modelPackPath: finalModelPackPath,
             modelName: resolvedModelName, modelAlias: resolvedModelAlias,
             maxContext: resolvedMaxContext, kvMode: resolvedKVMode,

@@ -11,7 +11,7 @@ final class QWHeadBF16ArgmaxTests: XCTestCase {
     private func skipUnlessMetal() throws {
         try XCTSkipIf(
             ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] == "true"
-                || QWDeviceCaps.current?.familyApple9 != true,
+                || QWDeviceCaps.current?.supportsSimdgroupMMA != true,
             "requires bare-metal Apple Silicon GPU"
         )
     }

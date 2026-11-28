@@ -399,11 +399,6 @@ public struct QWBatchWaveState: Sendable, Equatable {
         )
     }
 
-    public mutating func clampedSlotIndex(activeCount: Int) -> Int {
-        if roundRobinIndex >= activeCount { roundRobinIndex = 0 }
-        return roundRobinIndex
-    }
-
     public mutating func finishSerialSlotRemoved(activeCount: Int) {
         clearBlock()
         if roundRobinIndex >= activeCount { roundRobinIndex = 0 }

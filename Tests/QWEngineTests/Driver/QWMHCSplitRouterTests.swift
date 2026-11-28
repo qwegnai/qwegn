@@ -27,8 +27,12 @@ final class QWMHCSplitRouterTests: XCTestCase {
     }
 
     private func halves(_ b: any MTLBuffer, _ n: Int) -> [Float] {
-        let p = b.contents().bindMemory(to: Float16.self, capacity: n)
-        return (0..<n).map { Float(p[$0]) }
+        let p = b.contents().bindMemory(to: UInt16.self, capacity: n)
+        return [Float](unsafeUninitializedCapacity: n) { dst, initCnt in
+            guard let dp = dst.baseAddress else { initCnt = 0; return }
+            var i = 0; while i < n { dp[i] = Float(Float16(bitPattern: p[i])); i += 1 }
+            initCnt = n
+        }
     }
 
     private struct Outputs {
@@ -125,8 +129,20 @@ final class QWMHCSplitRouterTests: XCTestCase {
 
     private func assertZeroULP(_ a: [Float], _ b: [Float], _ what: String) {
         XCTAssertEqual(a.count, b.count)
-        for i in 0..<a.count {
-            XCTAssertEqual(a[i].bitPattern, b[i].bitPattern, "\(what) 0-ULP mismatch at \(i): \(a[i]) vs \(b[i])")
+        guard a.count == b.count else { return }
+        a.withUnsafeBufferPointer { aB in
+            b.withUnsafeBufferPointer { bB in
+                guard let ap = aB.baseAddress, let bp = bB.baseAddress else { return }
+                if memcmp(ap, bp, aB.count * 4) == 0 { return }
+                var i = 0
+                while i < aB.count {
+                    if ap[i].bitPattern != bp[i].bitPattern {
+                        XCTAssertEqual(ap[i].bitPattern, bp[i].bitPattern, "\(what) 0-ULP mismatch at \(i): \(ap[i]) vs \(bp[i])")
+                        return
+                    }
+                    i += 1
+                }
+            }
         }
     }
 
@@ -165,8 +181,18 @@ final class QWMHCSplitRouterTests: XCTestCase {
 
     private func assertClose(_ a: [Float], _ b: [Float], tol: Float, _ what: String) {
         XCTAssertEqual(a.count, b.count)
-        var worst: Float = 0
-        for i in 0..<a.count { worst = max(worst, abs(a[i] - b[i]) / max(1, abs(b[i]))) }
+        let worst = a.withUnsafeBufferPointer { aB in
+            b.withUnsafeBufferPointer { bB -> Float in
+                guard let ap = aB.baseAddress, let bp = bB.baseAddress else { return 0 }
+                var mx: Float = 0, i = 0
+                while i < aB.count {
+                    let r = abs(ap[i] - bp[i]) / max(1, abs(bp[i]))
+                    if r > mx { mx = r }
+                    i += 1
+                }
+                return mx
+            }
+        }
         XCTAssertLessThanOrEqual(worst, tol, "\(what) max rel err \(worst)")
     }
 
@@ -271,22 +297,46 @@ final class QWMHCSplitRouterTests: XCTestCase {
         let streamRef = try XCTUnwrap(hal.device.makeBuffer(length: streamCount * 4, options: .storageModeShared))
         let streamRun = try XCTUnwrap(hal.device.makeBuffer(length: streamCount * 4, options: .storageModeShared))
         let streamPtr = streamRef.contents().bindMemory(to: Float.self, capacity: streamCount)
-        for i in 0..<streamCount { streamPtr[i] = Float((i % 997) - 498) * 0.0019 }
+        let sLut = (0..<997).map { Float($0 - 498) * 0.0019 }
+        sLut.withUnsafeBufferPointer { lB in
+            guard let lp = lB.baseAddress else { return }
+            var i = 0
+            while i + 997 <= streamCount { memcpy(streamPtr + i, lp, 997 * 4); i += 997 }
+            while i < streamCount { streamPtr[i] = lp[i % 997]; i += 1 }
+        }
 
         let ctrlRef = try XCTUnwrap(hal.device.makeBuffer(length: ctrlCount * 4, options: .storageModeShared))
         let ctrlRun = try XCTUnwrap(hal.device.makeBuffer(length: ctrlCount * 4, options: .storageModeShared))
         let ctrlPtr = ctrlRef.contents().bindMemory(to: Float.self, capacity: ctrlCount)
-        for t in 0..<rows {
-            for i in 0..<activeC { ctrlPtr[t * numCtrl + i] = 0.5 + 0.1 * Float(i) }
-            for m in 0..<(activeC * activeC) {
-                ctrlPtr[t * numCtrl + activeC + m] = (m % (activeC + 1) == 0 ? 0.7 : 0.1)
-            }
+        var ctrlRow = [Float](repeating: 0, count: numCtrl)
+        for i in 0..<activeC { ctrlRow[i] = 0.5 + 0.1 * Float(i) }
+        for m in 0..<(activeC * activeC) { ctrlRow[activeC + m] = (m % (activeC + 1) == 0 ? 0.7 : 0.1) }
+        ctrlRow.withUnsafeBufferPointer { rB in
+            guard let rp = rB.baseAddress else { return }
+            var t = 0
+            while t < rows { memcpy(ctrlPtr + t * numCtrl, rp, numCtrl * 4); t += 1 }
         }
 
-        let w = try buffer(hal, (0..<(numRows * width)).map { cos(Float($0 % 2048) * 0.013) * 0.05 })
+        let w = try XCTUnwrap(hal.device.makeBuffer(length: numRows * width * 4, options: .storageModeShared))
+        let cosLut = (0..<2048).map { cos(Float($0) * 0.013) * 0.05 }
+        cosLut.withUnsafeBufferPointer { lB in
+            guard let lp = lB.baseAddress else { return }
+            let wp = w.contents().bindMemory(to: Float.self, capacity: numRows * width)
+            var i = 0, lim = numRows * width
+            while i + 2048 <= lim { memcpy(wp + i, lp, 2048 * 4); i += 2048 }
+            while i < lim { wp[i] = lp[i & 2047]; i += 1 }
+        }
         let b = try buffer(hal, (0..<numRows).map { sin(Float($0) * 0.3) * 0.2 })
         let gamma = try buffer(hal, f16: (0..<activeHidden).map { sin(Float($0) * 0.01) * 0.1 })
-        let branch = try buffer(hal, f16: (0..<(rows * activeHidden)).map { Float((($0 * 7) % 503) - 251) * 0.002 })
+        let branch = try XCTUnwrap(hal.device.makeBuffer(length: rows * activeHidden * 2, options: .storageModeShared))
+        let brLut = (0..<503).map { Float16(Float((($0 * 7) % 503) - 251) * 0.002) }
+        brLut.withUnsafeBufferPointer { lB in
+            guard let lp = lB.baseAddress else { return }
+            let bp = branch.contents().bindMemory(to: Float16.self, capacity: rows * activeHidden)
+            var i = 0, lim = rows * activeHidden
+            while i + 503 <= lim { memcpy(bp + i, lp, 503 * 2); i += 503 }
+            while i < lim { bp[i] = lp[i % 503]; i += 1 }
+        }
         let outFused = try XCTUnwrap(hal.device.makeBuffer(length: rows * activeHidden * 2, options: .storageModeShared))
         let outRows = try XCTUnwrap(hal.device.makeBuffer(length: rows * activeHidden * 2, options: .storageModeShared))
 
@@ -463,17 +513,33 @@ final class QWMHCSplitRouterTests: XCTestCase {
 
         let wF32Ptr = wF32Buf.contents().bindMemory(to: Float.self, capacity: n * k)
         let wBF16Ptr = wBF16Buf.contents().bindMemory(to: UInt16.self, capacity: n * k)
-        for i in 0..<(n * k) {
-            let v = Float(((i * 13) % 997) - 498) * 0.0002
-            wF32Ptr[i] = v
-            wBF16Ptr[i] = QWBF16.fromFloatRNE(v)
+        let wLutF32 = (0..<997).map { Float((($0 * 13) % 997) - 498) * 0.0002 }
+        let wLutBF16 = wLutF32.map { QWBF16.fromFloatRNE($0) }
+        wLutF32.withUnsafeBufferPointer { lf in
+            wLutBF16.withUnsafeBufferPointer { lb in
+                guard let lfp = lf.baseAddress, let lbp = lb.baseAddress else { return }
+                var i = 0, m = 0, lim = n * k
+                while i < lim {
+                    wF32Ptr[i] = lfp[m]; wBF16Ptr[i] = lbp[m]
+                    m += 1; if m == 997 { m = 0 }
+                    i += 1
+                }
+            }
         }
         let xF32Ptr = xF32Buf.contents().bindMemory(to: Float.self, capacity: rows * k)
         let xF16Ptr = xF16Buf.contents().bindMemory(to: Float16.self, capacity: rows * k)
-        for i in 0..<(rows * k) {
-            let h = Float16(Float(((i * 7) % 991) - 495) * 0.0005)
-            xF16Ptr[i] = h
-            xF32Ptr[i] = Float(h)
+        let xLutF16 = (0..<991).map { Float16(Float((($0 * 7) % 991) - 495) * 0.0005) }
+        let xLutF32 = xLutF16.map { Float($0) }
+        xLutF16.withUnsafeBufferPointer { lh in
+            xLutF32.withUnsafeBufferPointer { lf in
+                guard let lhp = lh.baseAddress, let lfp = lf.baseAddress else { return }
+                var i = 0, m = 0, lim = rows * k
+                while i < lim {
+                    xF16Ptr[i] = lhp[m]; xF32Ptr[i] = lfp[m]
+                    m += 1; if m == 991 { m = 0 }
+                    i += 1
+                }
+            }
         }
 
         let psoGemm = try hal.pipeline("qwg_router_gemm")

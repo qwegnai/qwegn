@@ -18,11 +18,20 @@ extension QWEngineDriver {
         candidateTokenIds: [Int],
         visualSpans: [QWVisualSpan] = []
     ) throws -> [QWDecisionSlotOutput] {
-        if hyperRuntime != nil || inkling2Runtime != nil {
-            throw QWDecisionError.backendFailed(
-                "decision logit extraction is not supported on hyper/inkling2 specialized runtimes yet"
-            )
-        }
+        try trunkExecutor.evaluateDecisionLogits(
+            tokens: tokens,
+            positions: positions,
+            candidateTokenIds: candidateTokenIds,
+            visualSpans: visualSpans
+        )
+    }
+
+    func evaluateStandardDecisionLogits(
+        tokens: [Int],
+        positions: [Int],
+        candidateTokenIds: [Int],
+        visualSpans: [QWVisualSpan] = []
+    ) throws -> [QWDecisionSlotOutput] {
         guard !tokens.isEmpty else {
             throw QWDecisionError.invalidQuestion("decision sequence must contain at least one token")
         }
@@ -101,16 +110,11 @@ extension QWEngineDriver {
             func extractFullSlotOutput() -> QWDecisionSlotOutput {
                 let rawLogits = sc.logits.region.pointer.advanced(by: sc.logits.offset)
                     .assumingMemoryBound(to: Float.self)
-                if !candidateTokenIds.isEmpty {
-                    var sparse: [Int: Float] = [:]
-                    sparse.reserveCapacity(candidateTokenIds.count)
-                    for tid in candidateTokenIds where tid >= 0 && tid < geometry.vocab {
-                        sparse[tid] = rawLogits[tid]
-                    }
-                    return QWDecisionSlotOutput(tokenLogits: sparse)
-                }
-                let full = Array(UnsafeBufferPointer(start: rawLogits, count: geometry.vocab))
-                return QWDecisionSlotOutput(fullLogits: full)
+                return QWTrunkRuntimeSupport.extractDecisionSlotOutput(
+                    logitsRow: rawLogits,
+                    vocab: geometry.vocab,
+                    candidateTokenIds: candidateTokenIds
+                )
             }
 
             func extractSparseBF16Output(lastChunkCount: Int) throws -> QWDecisionSlotOutput {

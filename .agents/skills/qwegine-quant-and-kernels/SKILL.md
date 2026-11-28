@@ -17,7 +17,7 @@ Follow these eight gates in order when introducing or optimizing a quantization 
    - Check [apple10-roofline-findings.md](./references/apple10-roofline-findings.md) to avoid refuted M5 Max shapes (`W4A8` INT8 NAX, `M > 8` single-pass verify, outer-`m` pre-unpacked GEMV, `8 KiB` `sparse_nax` double-buffering, `16 -> 9` MLA splits, rank-64/SVD compressed LSA).
    - Profile live bottlenecks first (`QW_PREFILL_PROFILE=1 QW_DECODE_PROFILE=1`) and trace call-graph reachability across `DenseModule`, `QWMoELayerKernel`, `QWMoEOperator`, `FlashNextModule`, and `NoPE MLA` / `HCA`.
    - **Lossy quant / pruning:** Benchmark MSE, cosine similarity, and logit KL in `Scripts/quantize/` at matched `bpw`; route `< 2.0 bpw` PTQ without QAT only to exact-verified drafters or cold banks passing `llmprobe` + needle gates.
-   - **Throughput kernels:** Run an isolated GPU-timestamp probe (`>= 6` alternating pairs, `min-of-2`, `>= 8` reps/CB) and implement **one kernel slice per diff**.
+   - **Throughput kernels:** Run an isolated GPU-timestamp probe (`>= 6` alternating pairs, `min-of-2`, `>= 8` reps/CB) — or `.build/release/qwg-bench-kernels --only-core-scaling --samples 6 --repeats 8` for TG-saturation and dispatch-tax ceilings — and implement **one kernel slice per diff**.
 2. **AGX `<= 32 KiB` Constant-Cache Isolation & SRAM Staging (`Law 27`):**
    - Keep every Metal PSO's `constant` arrays `<= 32 KiB`: isolate format-specialized PSOs (`QW_SHVQ_ROUTED_DIRECT_LUT`), split runtime-`bits` codebooks via `_sub2` / `template <bool SUB2>`, and stage `2–4 KiB` sub-4-bit LUTs into `threadgroup` SRAM (`ShvqTgLut`).
 3. **Code-Generated Tables, Plane Sizing & Residency Toggles:**
@@ -49,3 +49,5 @@ Follow these eight gates in order when introducing or optimizing a quantization 
 | `QW_METALLIB_PATH` ignored during release vs local bisect | Set `QW_METALLIB=<path>/kernel.metallib` (`QWHal.swift` reads `QW_METALLIB`) and run the 2×2 matrix in [kernel-invariants-and-bench-flags.md](./references/kernel-invariants-and-bench-flags.md). |
 | `Scripts/paired_perf.py --strict` rejects flags or fails `d=0` | Omit `"--mtp-backend"` when `"--mtp-drafts", "0"`, use `--mtp-draft-strategy hybrid|neural|ngram`, and remove existing `--output` path. |
 | `python3 Scripts/check_basis.py` catches `1/sqrt(32)` in std AIR | Fold exact `1/sqrt(N)` (`0.08838834764831844f` for `128`) directly when `#if QW_BASIS_STANDARD` drops `fwht32`. |
+| `qwg serve` refuses 2nd instance during `B=2..8` HTTP A/B | `QWPaths.swift` enforces a single-engine PID lock; alternate base/candidate servers sequentially per round (`start -> warm -> timed batch -> SIGTERM`) reusing `paired_http_perf.py` helpers. |
+| `qwg serve` rejects `--no-prefix-cache` or `--warm-cache-limit 4096` | Pass `--warm-cache-limit 0 --ssd-cache-limit 0` (`warmCacheLimitGiB` is in GiB `0.0...512.0`, not tokens) and `--lsa-mode off` (not `none`). |

@@ -383,6 +383,13 @@ extension QWEngineLifecycleActor {
         manifest.semanticIndex = vaultEntries.isEmpty
             ? nil
             : QWMemorySemanticIndex.build(entries: vaultEntries, rootPath: rootURL.path)
+        try await Self.buildAndSaveVaultV2Artifacts(
+            rootURL: rootURL,
+            discoveredFiles: files,
+            manifest: &manifest,
+            embedBatchFn: makeOptionalEmbedBatchClosure(),
+            enableDenseVectors: true
+        )
 
         let geometryDigest = tokContext.geometryDigest ?? loaded.descriptor.geometryDigestV3Hex
         let artifact = QWMemoryManifest.CacheArtifact(

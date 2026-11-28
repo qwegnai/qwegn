@@ -6,6 +6,13 @@ import QWCore
 @testable import QWEngine
 import QWHAL
 
+private extension QWInkling2Session {
+    func snapshotPreVerifyConvStates() {
+        guard let preBuf = convPreVerifyBuf else { return }
+        memcpy(preBuf.contents(), convStatesSlab.contents(), convStatesSlab.length)
+    }
+}
+
 final class QWInkling2DSparkParityTests: XCTestCase {
     private typealias R = QWInk2TestRef
 

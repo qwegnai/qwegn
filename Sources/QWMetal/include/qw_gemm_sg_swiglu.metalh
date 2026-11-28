@@ -1,0 +1,171 @@
+// qw_gemm_sg_swiglu.metalh — Paired-tile simdgroup_half8x8 gate_up + SwiGLU + FWHT-32.
+// Computes out = FWHT32(swiglu(x @ W_gate^T, x @ W_up^T)) directly in threadgroup SRAM.
+#pragma once
+#include "qw_gemm_sg.metalh"
+#include "qw_weight_basis.metalh"
+
+union QWSGSwigluMem {
+    struct {
+        half a[64 * QW_SG_LD];
+        half bGate[32 * QW_SG_LD];
+        half bUp[32 * QW_SG_LD];
+    } ab;
+    float c[2 * 64 * 32];
+};
+
+template <int BM, int WM, int WN,
+          int AQ_BITS = 0, int AQ_GROUP = 0,
+          bool IS_SHVQ = false, bool HAS_SHVQ_TG_LUT = false,
+          bool GATHER_A = false>
+METAL_FUNC void qmm_t_sg_swiglu_impl(
+    const device char* w,
+    const device half* x,
+    device half* out,
+    int K,
+    int I,
+    int M,
+    int xStride,
+    int yStride,
+    uint3 tid,
+    uint lid,
+    uint simd_gid,
+    uint simd_lid,
+    threadgroup QWSGSwigluMem& tg,
+    threadgroup const ushort4* shvqLut16 = nullptr,
+    const device int32_t* sortedTok = nullptr) {
+    constexpr int BN_OUT = 32;
+    constexpr int SM = BM / WM;
+    constexpr int SN = BN_OUT / (WN >> 1);
+    constexpr int TM = SM / 8;
+    constexpr int TN = SN / 8;
+    const int K_g = K / 32;
+    const int y_row = int(tid.y) * BM;
+    const int y_col = int(tid.x) * BN_OUT;
+    const int actualM = min(BM, max(0, M - y_row));
+    const int tgp_bn = min(BN_OUT, max(0, I - y_col));
+    if (actualM <= 0 || tgp_bn <= 0) return;
+
+    const int isUp = (WN == 4) ? (int(simd_gid) >> 1) : (int(simd_gid) & 1);
+    const int wm = (WN == 4) ? 0 : (int(simd_gid) >> 1);
+    const int sub = (WN == 4) ? ((int(simd_gid) & 1) * SN) : 0;
+    const int tm = SM * wm;
+    const bool sgActive = (tm < actualM) && (sub < tgp_bn);
+
+    const device Block_HQ4_G32* w_gate = (AQ_BITS == 0)
+        ? ((const device Block_HQ4_G32*)w + size_t(y_col) * size_t(K_g))
+        : nullptr;
+    const device Block_HQ4_G32* w_up = (AQ_BITS == 0)
+        ? ((const device Block_HQ4_G32*)w + size_t(I + y_col) * size_t(K_g))
+        : nullptr;
+    constexpr uint aqGroupBytes = qwg_sg_group_bytes<AQ_BITS, AQ_GROUP, IS_SHVQ>();
+    constexpr uint safeGroup = (AQ_GROUP > 0) ? uint(AQ_GROUP) : 1u;
+    const uint aqRowBytes = AQ_BITS > 0 ? (uint(K) / safeGroup) * aqGroupBytes : 0u;
+    const device char* w_aq_gate = (AQ_BITS > 0) ? (w + size_t(y_col) * size_t(aqRowBytes)) : nullptr;
+    const device char* w_aq_up = (AQ_BITS > 0) ? (w + size_t(I + y_col) * size_t(aqRowBytes)) : nullptr;
+
+    const device half* xBase = x;
+    const bool alignedX4 = ((size_t(xBase) & 7u) == 0u) && ((uint(xStride) & 3u) == 0u);
+
+    simdgroup_float8x8 D[TM][TN];
+    #pragma unroll
+    for (int m = 0; m < TM; ++m) {
+        #pragma unroll
+        for (int n = 0; n < TN; ++n) D[m][n] = simdgroup_float8x8(0.0f);
+    }
+
+    for (int g = 0; g < K_g; ++g) {
+        qwg_sg_stage_a<BM, GATHER_A>(
+            tg.ab.a, xBase, y_row, M, K, xStride, g * 32, alignedX4, sortedTok, lid);
+        qwg_sg_stage_b_k32<BN_OUT, AQ_BITS, AQ_GROUP, IS_SHVQ, HAS_SHVQ_TG_LUT>(
+            tg.ab.bGate, w_gate, K_g, g, w_aq_gate, aqRowBytes, aqGroupBytes, tgp_bn, lid, shvqLut16);
+        qwg_sg_stage_b_k32<BN_OUT, AQ_BITS, AQ_GROUP, IS_SHVQ, HAS_SHVQ_TG_LUT>(
+            tg.ab.bUp, w_up, K_g, g, w_aq_up, aqRowBytes, aqGroupBytes, tgp_bn, lid, shvqLut16);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if (sgActive) {
+            threadgroup const half* bPtr = (isUp != 0) ? tg.ab.bUp : tg.ab.bGate;
+            #pragma unroll
+            for (int k8 = 0; k8 < 4; ++k8) {
+                simdgroup_half8x8 A[TM];
+                simdgroup_half8x8 B[TN];
+                #pragma unroll
+                for (int m = 0; m < TM; ++m) {
+                    simdgroup_load(A[m], tg.ab.a + (tm + m * 8) * QW_SG_LD + k8 * 8, QW_SG_LD, ulong2(0, 0), false);
+                }
+                #pragma unroll
+                for (int n = 0; n < TN; ++n) {
+                    simdgroup_load(B[n], bPtr + (sub + n * 8) * QW_SG_LD + k8 * 8, QW_SG_LD, ulong2(0, 0), true);
+                }
+                #pragma unroll
+                for (int m = 0; m < TM; ++m) {
+                    #pragma unroll
+                    for (int n = 0; n < TN; ++n) {
+                        simdgroup_multiply_accumulate(D[m][n], A[m], B[n], D[m][n]);
+                    }
+                }
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    if (sgActive) {
+        threadgroup float* cDst = tg.c + (isUp * BM + tm) * BN_OUT + sub;
+        #pragma unroll
+        for (int m = 0; m < TM; ++m) {
+            #pragma unroll
+            for (int n = 0; n < TN; ++n) {
+                simdgroup_store(D[m][n], cDst + m * 8 * BN_OUT + n * 8, BN_OUT, ulong2(0, 0), false);
+            }
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    const uint sg = simd_gid;
+    const uint lane = simd_lid;
+    for (int rr = int(sg); rr < actualM; rr += 4) {
+        const float gVal = tg.c[rr * BN_OUT + lane];
+        const float uVal = tg.c[(BM + rr) * BN_OUT + lane];
+        float fv = qwg_swiglu_mul(gVal, uVal);
+        if ((uint(I) & 31u) == 0u) fv = qwg_fwht32_lane_f32(fv, lane);
+        if (int(lane) < tgp_bn) {
+            out[size_t(y_row + rr) * size_t(yStride) + y_col + int(lane)] = half(fv);
+        }
+    }
+}
+
+template <int AQ_BITS = 0, int AQ_GROUP = 0, bool IS_SHVQ = false, bool HAS_TG = false>
+METAL_FUNC void qwg_moe_sg_swiglu_body(
+    device const char* w, device const half* x, device half* y,
+    device const int32_t* expertOff, device const int32_t* tileE,
+    device const int32_t* tileR, device const int32_t* tileCount,
+    constant QWGemmGroupedParams& p, uint tileBlock,
+    device const int32_t* sortedTok, uint hasGather, device const char* coldW,
+    uint3 tgPos, uint lid, uint simd_gid, uint simd_lid,
+    threadgroup QWSGSwigluMem& tg, threadgroup const ushort4* tgLut = nullptr) {
+    const uint t = tgPos.y + ((tileBlock >> 8) & 0x7FFFFFu);
+    if (int(t) >= tileCount[0]) return;
+    const uint e = uint(tileE[t]);
+    const int rowBase = int(expertOff[e]), rowCount = int(expertOff[e + 1]) - rowBase;
+    const uint residentE = p.experts >> 16u;
+    const bool isCold = (residentE > 0u) && (e >= residentE);
+    if (((tileBlock & 0x40u) != 0u && isCold) || ((tileBlock & 0x80u) != 0u && !isCold)) return;
+    int bm; uint tidY;
+    qw_moe_decode_tile(tileR[t], rowCount, int(tileBlock & 0x3Fu), bm, tidY);
+    const size_t rowBytes = qwg_sg_row_bytes<AQ_BITS, AQ_GROUP, IS_SHVQ>(p);
+    const uint wExp = isCold ? (e - residentE) : e;
+    device const char* we = (isCold ? coldW : w) + size_t(wExp) * size_t(p.n) * rowBytes;
+    const int I = int(p.n >> 1u);
+    device half* ye = y + size_t(rowBase) * size_t(I);
+    const uint3 tid = uint3(tgPos.x, tidY, 0);
+    if (hasGather != 0u) {
+        device const int32_t* st = sortedTok + rowBase;
+        if (bm == 16) qmm_t_sg_swiglu_impl<16, 1, 4, AQ_BITS, AQ_GROUP, IS_SHVQ, HAS_TG, true>(we, x, ye, int(p.k), I, rowCount, int(p.k), I, tid, lid, simd_gid, simd_lid, tg, tgLut, st);
+        else if (bm == 32) qmm_t_sg_swiglu_impl<32, 2, 2, AQ_BITS, AQ_GROUP, IS_SHVQ, HAS_TG, true>(we, x, ye, int(p.k), I, rowCount, int(p.k), I, tid, lid, simd_gid, simd_lid, tg, tgLut, st);
+        else qmm_t_sg_swiglu_impl<64, 2, 2, AQ_BITS, AQ_GROUP, IS_SHVQ, HAS_TG, true>(we, x, ye, int(p.k), I, rowCount, int(p.k), I, tid, lid, simd_gid, simd_lid, tg, tgLut, st);
+    } else {
+        device const half* xe = x + size_t(rowBase) * size_t(p.k);
+        if (bm == 16) qmm_t_sg_swiglu_impl<16, 1, 4, AQ_BITS, AQ_GROUP, IS_SHVQ, HAS_TG, false>(we, xe, ye, int(p.k), I, rowCount, int(p.k), I, tid, lid, simd_gid, simd_lid, tg, tgLut, nullptr);
+        else if (bm == 32) qmm_t_sg_swiglu_impl<32, 2, 2, AQ_BITS, AQ_GROUP, IS_SHVQ, HAS_TG, false>(we, xe, ye, int(p.k), I, rowCount, int(p.k), I, tid, lid, simd_gid, simd_lid, tg, tgLut, nullptr);
+        else qmm_t_sg_swiglu_impl<64, 2, 2, AQ_BITS, AQ_GROUP, IS_SHVQ, HAS_TG, false>(we, xe, ye, int(p.k), I, rowCount, int(p.k), I, tid, lid, simd_gid, simd_lid, tg, tgLut, nullptr);
+    }
+}

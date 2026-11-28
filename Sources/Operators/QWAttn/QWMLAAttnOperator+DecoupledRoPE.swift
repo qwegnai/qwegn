@@ -12,22 +12,30 @@ import QWKV
 
 extension QWMLAAttnOperator {
 
-    private struct DSALatentPrepParams {
+    internal struct DSALatentPrepParams {
         var T: UInt32
         var pos0: UInt32
         var qLoraRank: UInt32
         var kvLoraRank: UInt32
         var ropeDim: UInt32
         var idxDim: UInt32
+        var latentStride: UInt32
+        var kvMode: UInt32
         var rmsEps: Float
         var kNormEps: Float
-        var kvMode: UInt32
         var mscale: Float
         var useHadamard: UInt32
         var ropeFlags: UInt32
+        var gatedFlags: UInt32
+        var qAGateRank: UInt32
+        var kvAGateRank: UInt32
+        var qAGatingWeight: Float
+        var kvAGatingWeight: Float
+        var alphaQ: Float
+        var alphaKV: Float
     }
 
-    private struct QRopeIdxPrepParams {
+    internal struct QRopeIdxPrepParams {
         var T: UInt32
         var pos0: UInt32
         var qHeads: UInt32
@@ -42,7 +50,7 @@ extension QWMLAAttnOperator {
         var ropeFlags: UInt32
     }
 
-    private struct DSASparseAttnParams {
+    internal struct DSASparseAttnParams {
         var T: UInt32
         var pos0: UInt32
         var qHeads: UInt32
@@ -56,9 +64,10 @@ extension QWMLAAttnOperator {
         var qRopeOffset: UInt32
         var qFullStride: UInt32
         var hasSink: UInt32
+        var softmaxScale: Float
     }
 
-    private struct VHAGateParams {
+    internal struct VHAGateParams {
         var T: UInt32
         var qHeads: UInt32
         var vHeadDim: UInt32
@@ -68,7 +77,7 @@ extension QWMLAAttnOperator {
         var hasOGate: UInt32
     }
 
-    private struct HeadGateProjParams {
+    internal struct HeadGateProjParams {
         var T: UInt32
         var hidden: UInt32
         var nGate: UInt32
@@ -88,13 +97,14 @@ extension QWMLAAttnOperator {
     }
 
     internal func captureDSAIndexerState(position: Int) -> Data {
-        precondition(position >= 0 && position <= maxBlocks)
+        let capLimit = max(maxBlocks, maxContext)
+        precondition(position >= 0 && position <= capLimit)
         let idxBytes = position * idxDim * 2
         let peBytes = position * ropeDim * 2
         var out = Data(capacity: indexerStateBytes(position: position))
         let base = region.pointer
         for ls in layers {
-            if idxBytes > 0 {
+            if ls.hasIndexer, idxBytes > 0 {
                 out.append(base.advanced(by: ls.pooledKeys.offset).assumingMemoryBound(to: UInt8.self),
                            count: idxBytes)
             }
@@ -107,7 +117,8 @@ extension QWMLAAttnOperator {
     }
 
     internal func restoreDSAIndexerState(_ data: Data, position: Int) -> Bool {
-        guard position >= 0, position <= maxBlocks,
+        let capLimit = max(maxBlocks, maxContext)
+        guard position >= 0, position <= capLimit,
               data.count == indexerStateBytes(position: position) else { return false }
         let idxBytes = position * idxDim * 2
         let peBytes = position * ropeDim * 2
@@ -116,7 +127,7 @@ extension QWMLAAttnOperator {
             guard let srcBase = raw.baseAddress else { return }
             var src = 0
             for ls in layers {
-                if idxBytes > 0 {
+                if ls.hasIndexer, idxBytes > 0 {
                     base.advanced(by: ls.pooledKeys.offset)
                         .copyMemory(from: srcBase.advanced(by: src), byteCount: idxBytes)
                     src += idxBytes
@@ -138,7 +149,7 @@ extension QWMLAAttnOperator {
         var total = 0
         for (i, ls) in layers.enumerated() {
             let pos = max(0, (i == mtpLayerIndex) ? mtpPosition : trunkPosition)
-            total += pos * idxStride
+            if ls.hasIndexer { total += pos * idxStride }
             if ls.kPeCache != nil { total += pos * peStride }
         }
         return total
@@ -146,12 +157,13 @@ extension QWMLAAttnOperator {
 
     internal func captureDSALiveSessionStash(trunkPosition: Int, mtpLayerIndex: Int?, mtpPosition: Int) -> Data {
         precondition(trunkPosition >= 0 && mtpPosition >= 0)
+        let capLimit = max(maxBlocks, maxContext)
         var out = Data(capacity: liveDSASessionStashBytes(trunkPosition: trunkPosition, mtpLayerIndex: mtpLayerIndex, mtpPosition: mtpPosition))
         let base = region.pointer
         for (i, ls) in layers.enumerated() {
             let pos = max(0, (i == mtpLayerIndex) ? mtpPosition : trunkPosition)
-            precondition(pos <= maxBlocks)
-            let idxBytes = pos * idxDim * 2
+            precondition(pos <= capLimit)
+            let idxBytes = ls.hasIndexer ? (pos * idxDim * 2) : 0
             let peBytes = pos * ropeDim * 2
             if idxBytes > 0 {
                 out.append(base.advanced(by: ls.pooledKeys.offset).assumingMemoryBound(to: UInt8.self), count: idxBytes)
@@ -164,13 +176,14 @@ extension QWMLAAttnOperator {
     }
 
     internal func restoreDSALiveSessionStash(_ data: Data, trunkPosition: Int, mtpLayerIndex: Int?, mtpPosition: Int) -> Bool {
+        let capLimit = max(maxBlocks, maxContext)
         guard trunkPosition >= 0, mtpPosition >= 0,
               data.count == liveDSASessionStashBytes(trunkPosition: trunkPosition, mtpLayerIndex: mtpLayerIndex, mtpPosition: mtpPosition) else {
             return false
         }
-        for i in layers.indices {
+        for (i, ls) in layers.enumerated() {
             let pos = max(0, (i == mtpLayerIndex) ? mtpPosition : trunkPosition)
-            if pos > maxBlocks { return false }
+            if pos > (ls.hasIndexer ? maxBlocks : capLimit) { return false }
         }
         let base = region.pointer
         data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
@@ -178,7 +191,7 @@ extension QWMLAAttnOperator {
             var src = 0
             for (i, ls) in layers.enumerated() {
                 let pos = max(0, (i == mtpLayerIndex) ? mtpPosition : trunkPosition)
-                let idxBytes = pos * idxDim * 2
+                let idxBytes = ls.hasIndexer ? (pos * idxDim * 2) : 0
                 let peBytes = pos * ropeDim * 2
                 if idxBytes > 0 {
                     base.advanced(by: ls.pooledKeys.offset).copyMemory(from: srcBase.advanced(by: src), byteCount: idxBytes)
@@ -206,26 +219,17 @@ extension QWMLAAttnOperator {
         let ls = layers[fullAttnLayer]
         let kPe = ls.kPeCache ?? mlaLatentScratch
         let hasMRoPE = stageMRoPEPositions(mropePositions, rows: rows)
-        let ropeFlags: UInt32 = (ropeInterleave ? 1 : 0) | (hasMRoPE ? 2 : 0)
-        var dsaP = DSALatentPrepParams(
-            T: UInt32(rows),
-            pos0: UInt32(pos0),
-            qLoraRank: UInt32(qLoraRank),
-            kvLoraRank: UInt32(kvLoraRank),
-            ropeDim: UInt32(ropeDim),
-            idxDim: UInt32(idxDim),
-            rmsEps: geometry.rmsEps,
-            kNormEps: 1e-6,
-            kvMode: Self.kvModeCode(kv.k.mode),
-            mscale: ropeMscale,
-            useHadamard: useFastHadamard ? 1 : 0,
-            ropeFlags: ropeFlags
+        var dsaP = buildDSALatentPrepParams(
+            mlaW: mlaW, state: ls, kvMode: kv.k.mode, pos0: pos0, rows: rows, hasMRoPE: hasMRoPE
         )
+        let qAW = mlaW.qAGatedNorm?.weight ?? mlaW.qANormW
+        let kvAW = mlaW.kvAGatedNorm?.weight ?? mlaW.kvANormW
+        let tgHBytes = ((max(512, max(qLoraRank, kvLoraRank)) * 2 + 15) & ~15)
 
         enc.setComputePipelineState(psoDSALatentPrep)
         mlaLatentScratch.bind(enc, index: 0)
-        mlaW.qANormW.bind(enc, index: 1)
-        mlaW.kvANormW.bind(enc, index: 2)
+        qAW.bind(enc, index: 1)
+        kvAW.bind(enc, index: 2)
         mlaW.kNormW.bind(enc, index: 3)
         mlaW.kNormB.bind(enc, index: 4)
         invFreqBuf.bind(enc, index: 5)
@@ -239,10 +243,16 @@ extension QWMLAAttnOperator {
         enc.setBytes(&dsaP, length: MemoryLayout<DSALatentPrepParams>.stride, index: 13)
         mropePosScratch.bind(enc, index: 14)
         ropeAxisMapBuf.bind(enc, index: 15)
+        (mlaW.qAGatedNorm?.gateUp ?? qAW).bind(enc, index: 16)
+        (mlaW.qAGatedNorm?.gateDown ?? qAW).bind(enc, index: 17)
+        (mlaW.kvAGatedNorm?.gateUp ?? kvAW).bind(enc, index: 18)
+        (mlaW.kvAGatedNorm?.gateDown ?? kvAW).bind(enc, index: 19)
+        enc.setThreadgroupMemoryLength(tgHBytes, index: 0)
         enc.dispatchThreadgroups(MTLSize(width: rows, height: 1, depth: 1),
                                  threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
 
-        if hasIndexer, idxHeads > 0, idxDim > 0 {
+        let effDense = isLayerDenseOnly(mlaW, state: ls)
+        if !effDense, idxHeads > 0, idxDim > 0 {
             var gwP = LatentPrepParams(
                 T: UInt32(rows),
                 pos0: UInt32(pos0),
@@ -289,7 +299,7 @@ extension QWMLAAttnOperator {
         let packedIdxHeads: UInt32 = (poolShift == 2 && windowBlocks == 0)
             ? UInt32(effIdxHeads)
             : (UInt32(effIdxHeads & 0xFF) | 0x1000 | (UInt32(poolShift & 0xF) << 8) | (UInt32(windowBlocks) << 16))
-        var rowStart = 0
+        var rowStart = isDecoupledDSA ? max(0, (topKPools + windowBlocks) - pos0) : 0
         while rowStart < rows {
             let batchRows = min(selectBatchRows, rows - rowStart)
             let qFullSub = selQFull.slice(byteOffset: rowStart * effQFullStride * 2,
@@ -441,6 +451,14 @@ extension QWMLAAttnOperator {
         let kPe = ls.kPeCache ?? mlaLatentScratch
         let hasMRoPE = stageMRoPEPositions(mropePositions, rows: rows)
         let ropeFlags: UInt32 = (ropeInterleave ? 1 : 0) | (hasMRoPE ? 2 : 0)
+        let effDense = isLayerDenseOnly(mlaW, state: ls)
+        let effIdxHeads = effDense ? 0 : idxHeads
+        let effIdxDim = effDense ? 0 : idxDim
+        let effTopK = effDense ? 0 : topKPools
+        let callQChannels = qChannels(for: mlaW)
+        let callQFullStride = qFullStride(for: mlaW, state: ls)
+        let effOGateInQKV = oGateInQKV || mlaW.oGateInQKV
+        let callLatStride = latentStride(for: mlaW, state: ls)
 
         // 0. In-place RoPE (GPT-J or NeoX; 1D or 3D MRoPE) on q_rope + optional NeoX/H_128 on q_idx.
         mark("mla.q_rope_idx")
@@ -448,12 +466,12 @@ extension QWMLAAttnOperator {
             T: UInt32(rows),
             pos0: UInt32(pos0),
             qHeads: UInt32(qHeads),
-            idxHeads: UInt32(idxHeads),
+            idxHeads: UInt32(effIdxHeads),
             ropeDim: UInt32(ropeDim),
-            idxDim: UInt32(idxDim),
+            idxDim: UInt32(effIdxDim),
             qRopeOffset: UInt32(qRopeOffset),
-            qChannels: UInt32(qChannels),
-            qFullStride: UInt32(qFullStride),
+            qChannels: UInt32(callQChannels),
+            qFullStride: UInt32(callQFullStride),
             mscale: ropeMscale,
             useHadamard: useFastHadamard ? 1 : 0,
             ropeFlags: ropeFlags
@@ -464,34 +482,44 @@ extension QWMLAAttnOperator {
         enc.setBytes(&qrP, length: MemoryLayout<QRopeIdxPrepParams>.stride, index: 2)
         mropePosScratch.bind(enc, index: 3)
         ropeAxisMapBuf.bind(enc, index: 4)
-        enc.dispatchThreadgroups(MTLSize(width: qHeads + idxHeads, height: rows, depth: 1),
+        enc.dispatchThreadgroups(MTLSize(width: qHeads + effIdxHeads, height: rows, depth: 1),
                                  threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1))
         QWCoarsePoolIndex.barrierIfConcurrent(enc)
 
-        let extGateMode = (outputGateMode == .headWiseFromHidden || outputGateMode == .elementWiseFromHidden)
+        let extGateMode = !effOGateInQKV && (
+            outputGateMode == .headWiseFromHidden
+            || outputGateMode == .elementWiseFromHidden
+            || mlaW.oGateProj != nil
+            || mlaW.oGateF16 != nil
+        )
         let extGateCols = outputGateMode == .headWiseFromHidden ? qHeads : (qHeads * vHeadDim)
-        if !externalGatePrecomputed, extGateMode, let gateF16 = mlaW.oGateF16, let ln1 {
-            var hgP = HeadGateProjParams(
-                T: UInt32(rows),
-                hidden: UInt32(geometry.hidden),
-                nGate: UInt32(extGateCols)
-            )
-            enc.setComputePipelineState(psoHeadGateProj)
-            ln1.bind(enc, index: 0)
-            gateF16.bind(enc, index: 1)
-            oGateScratch.bind(enc, index: 2)
-            enc.setBytes(&hgP, length: MemoryLayout<HeadGateProjParams>.stride, index: 3)
-            enc.dispatchThreadgroups(MTLSize(width: extGateCols, height: rows, depth: 1),
-                                     threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
+        if !externalGatePrecomputed, extGateMode, let ln1 {
+            if let gateProj = mlaW.oGateProj {
+                let gateOut = oGateScratch.slice(byteOffset: 0, count: rows * extGateCols, dtype: .f16)
+                try? encodeMLAWeightViewH16(enc, x: ln1, weight: gateProj, y16: gateOut, rows: rows)
+            } else if let gateF16 = mlaW.oGateF16 {
+                var hgP = HeadGateProjParams(
+                    T: UInt32(rows),
+                    hidden: UInt32(geometry.hidden),
+                    nGate: UInt32(extGateCols)
+                )
+                enc.setComputePipelineState(psoHeadGateProj)
+                ln1.bind(enc, index: 0)
+                gateF16.bind(enc, index: 1)
+                oGateScratch.bind(enc, index: 2)
+                enc.setBytes(&hgP, length: MemoryLayout<HeadGateProjParams>.stride, index: 3)
+                enc.dispatchThreadgroups(MTLSize(width: extGateCols, height: rows, depth: 1),
+                                         threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
+            }
         }
 
-        // 1. Exact dense bypass at seqLen <= topK + windowTokens (or O(1)-SRAM dense stream when !hasIndexer).
+        // 1. Exact dense bypass at seqLen <= topK + windowTokens (or O(1)-SRAM dense stream when effDense).
         mark("mla.score_select")
-        if hasIndexer, pos0 + rows > topKPools + windowTokens {
+        if !effDense, pos0 + rows > effTopK + windowTokens {
             let useFlashIndexer = flashIndexerEnabled
                 && rows >= 16
-                && idxHeads > Self.flashIndexerSelHeads
-                && idxHeads <= 64
+                && effIdxHeads > Self.flashIndexerSelHeads
+                && effIdxHeads <= 64
                 && geometry.hidden > 0
             if useFlashIndexer,
                let gateW = mlaW.flashGateW,
@@ -502,11 +530,11 @@ extension QWMLAAttnOperator {
                 var fiP = FlashIndexerParams(
                     T: UInt32(rows),
                     hidden: UInt32(geometry.hidden),
-                    fullIdxHeads: UInt32(idxHeads),
+                    fullIdxHeads: UInt32(effIdxHeads),
                     selHeads: UInt32(Self.flashIndexerSelHeads),
-                    idxDim: UInt32(idxDim),
-                    qChannels: UInt32(qChannels),
-                    qFullStride: UInt32(qFullStride)
+                    idxDim: UInt32(effIdxDim),
+                    qChannels: UInt32(callQChannels),
+                    qFullStride: UInt32(callQFullStride)
                 )
                 enc.setComputePipelineState(psoFlashIndexerSelectHeads)
                 ln1.bind(enc, index: 0)
@@ -530,7 +558,9 @@ extension QWMLAAttnOperator {
             } else {
                 encodeIndexerSelection(enc, ls: ls, pos0: pos0, rows: rows,
                                        probeClusters: Self.dsaEmeansProbeClusters,
-                                       windowBlocks: windowTokens)
+                                       windowBlocks: windowTokens,
+                                       activeIdxHeads: effIdxHeads,
+                                       activeQChannels: callQChannels)
             }
         }
 
@@ -541,7 +571,7 @@ extension QWMLAAttnOperator {
         let hasInlineOrFlagGate = mlaW.hasOGate
             || outputGateMode == .elementWiseFromQLora
             || (geometry.mlaConfig == nil && geometry.attnOutputGate)
-        let hasAnyOGate = extGateMode || hasInlineOrFlagGate
+        let hasAnyOGate = effOGateInQKV || extGateMode || hasInlineOrFlagGate
         let needsPostEpilogue = (mlaW.vhaMix != nil) || hasAnyOGate
         var absP = AbsorbParams(
             T: UInt32(rows),
@@ -549,7 +579,7 @@ extension QWMLAAttnOperator {
             nopeDim: UInt32(nopeDim),
             vHeadDim: UInt32(vHeadDim),
             kvLoraRank: UInt32(kvLoraRank),
-            qFullStride: UInt32(qFullStride),
+            qFullStride: UInt32(callQFullStride),
             bits: UInt32(mlaW.kvBProj.bits),
             group: UInt32(mlaW.kvBProj.groupSize),
             isIncumbent: baseInc | (needsPostEpilogue ? 0x10000 : 0)
@@ -567,14 +597,15 @@ extension QWMLAAttnOperator {
             qHeads: UInt32(qHeads),
             headDim: UInt32(nopeDim + ropeDim),
             kvLoraRank: UInt32(kvLoraRank),
-            topK: UInt32(topKPools),
+            topK: UInt32(effTopK),
             windowTokens: UInt32(windowTokens),
             listStride: UInt32(listStride),
             kvMode: Self.kvModeCode(kv.k.mode),
             ropeDim: UInt32(ropeDim),
             qRopeOffset: UInt32(qRopeOffset),
-            qFullStride: UInt32(qFullStride),
-            hasSink: mlaW.attnSink != nil ? 1 : 0
+            qFullStride: UInt32(callQFullStride),
+            hasSink: mlaW.attnSink != nil ? 1 : 0,
+            softmaxScale: effectiveSoftmaxScale(for: mlaW)
         )
         mark("mla.sparse_attn")
         let supportsNAXRopeDim = (ropeDim == 0 || ropeDim == 32 || ropeDim == 64 || ropeDim == 128)
@@ -653,20 +684,36 @@ extension QWMLAAttnOperator {
             let gateCode: UInt32 = switch outputGateMode {
             case .headWiseFromHidden: 2
             case .elementWiseFromHidden, .elementWiseFromQLora: 1
-            case .none: hasInlineOrFlagGate ? 1 : 0
+            case .none: hasAnyOGate ? 1 : 0
+            }
+            let gateSrc: QWTensorValue
+            let resolvedGateStride: Int
+            let resolvedGateOffset: Int
+            if effOGateInQKV {
+                gateSrc = mlaLatentScratch
+                resolvedGateStride = callLatStride
+                resolvedGateOffset = qLoraRank + kvLoraRank + ropeDim + effIdxDim
+            } else if extGateMode {
+                gateSrc = oGateScratch
+                resolvedGateStride = extGateCols
+                resolvedGateOffset = 0
+            } else {
+                gateSrc = mlaQFullScratch
+                resolvedGateStride = callQFullStride
+                resolvedGateOffset = qHeads * (nopeDim + ropeDim)
             }
             var vgP = VHAGateParams(
                 T: UInt32(rows),
                 qHeads: UInt32(qHeads),
                 vHeadDim: UInt32(vHeadDim),
-                gateStride: UInt32(extGateMode ? extGateCols : qFullStride),
-                oGateOffset: UInt32(extGateMode ? 0 : self.oGateOffset),
+                gateStride: UInt32(resolvedGateStride),
+                oGateOffset: UInt32(resolvedGateOffset),
                 hasVHA: mlaW.vhaMix != nil ? 1 : 0,
                 hasOGate: gateCode
             )
             enc.setComputePipelineState(psoVHAGateRot)
             yVhaScratch.bind(enc, index: 0)
-            (extGateMode ? oGateScratch : mlaQFullScratch).bind(enc, index: 1)
+            gateSrc.bind(enc, index: 1)
             (mlaW.vhaMix ?? yVhaScratch).bind(enc, index: 2)
             attOut.bind(enc, index: 3)
             enc.setBytes(&vgP, length: MemoryLayout<VHAGateParams>.stride, index: 4)

@@ -255,7 +255,7 @@ extension QWEngineDriver {
                 drafts = verified.drafts
                 draftedPairs = verified.draftedPairs
             } else if owner == nil, !mtpStageProfiling, !mtpVerificationProfiling, coldEvents == nil,
-               !mtpAdaptiveDepth, asyncSpecAllowed, let dflashDrafter,
+               asyncSpecAllowed, let dflashDrafter,
                let table = mtpDeviceEmbedding {
                 guard let dSlot = session.dflashSlot else {
                     try? drainPendingCommitIfNeeded()

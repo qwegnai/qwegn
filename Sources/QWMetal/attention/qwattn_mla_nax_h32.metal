@@ -1,5 +1,6 @@
 // 32-head (256T) head-major + heavy-first prefill NAX kernel for MLA;
 // shares blkIdx across two 16-head groups so SLC waves reuse sparse KV pages.
+#if !defined(QW_DISABLE_NAX)
 #include "qw_mla_nax_common.metalh"
 
 // Grid: (qHeads / 32, T, 1), Threadgroup: (256, 1, 1); 20 KiB TG SRAM (16+4).
@@ -35,3 +36,4 @@ kernel void qwg_mla_sparse_attn_nax_h32(
                                           t, h0, 0u, 1u, tid, sg_h, sg_d, lane, sPart, blkIdx);
     }
 }
+#endif // !defined(QW_DISABLE_NAX)

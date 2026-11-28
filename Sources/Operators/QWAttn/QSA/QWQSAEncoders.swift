@@ -303,7 +303,7 @@ public enum QWQSAEncoders {
             && pos0 >= 256 && maxSplits >= 1
         if useSplitNAX, let partO = splitPartO, let partML = splitPartML {
             let resolvedSplits = max(1, min(maxSplits, splits ?? recommendedNAXSplits(
-                rows: rows, kvHeads: kvHeads, pos0: pos0, maxSplits: maxSplits)))
+                rows: rows, kvHeads: kvHeads, pos0: pos0, maxSplits: maxSplits, gpuCores: hal.caps.gpuCores)))
             let minPartOElems = rows * heads * resolvedSplits * 256
             let minPartMLElems = rows * heads * resolvedSplits * 2
             if partO.shape.elementCount >= minPartOElems && partML.shape.elementCount >= minPartMLElems {
@@ -366,16 +366,6 @@ extension QWGemm {
                                          blocks: Int, compress: Int) throws {
         try QWQSAEncoders.encodeIndexPool(enc, hal: hal, idxK: idxK, ikNorm: ikNorm, bcos: bcos,
                                           bsin: bsin, pooled: pooled, blocks: blocks, compress: compress)
-    }
-
-    public static func encodeFnLSAWardCluster(_ enc: any MTLComputeCommandEncoder, hal: QWHal,
-                                              pooled: QWTensorValue,
-                                              clusters: QWQSACacheState.LSAClusterState,
-                                              startSuperblock: Int, numSuperblocks: Int,
-                                              indexDim: Int) throws {
-        try QWQSAEncoders.encodeLSAWardCluster(enc, hal: hal, pooled: pooled, clusters: clusters,
-                                               startSuperblock: startSuperblock, numSuperblocks: numSuperblocks,
-                                               indexDim: indexDim)
     }
 
     @discardableResult

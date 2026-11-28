@@ -94,3 +94,14 @@ QW_HEAD_F16_ENTRY(5)
 QW_HEAD_F16_ENTRY(6)
 QW_HEAD_F16_ENTRY(7)
 QW_HEAD_F16_ENTRY(8)
+
+// Isolated F32 logit softcap epilogue (`cap * precise::tanh(clamp(v / cap, -15, 15))`, 0 B LUTs).
+kernel void qwg_head_softcap_f32(
+        device float*   logits  [[buffer(0)]],
+        constant uint&  count   [[buffer(1)]],
+        constant float& softcap [[buffer(2)]],
+        uint gid [[thread_position_in_grid]]) {
+    if (gid >= count || !(softcap > 0.0f)) return;
+    const float v = logits[gid];
+    logits[gid] = precise::tanh(clamp(v / softcap, -15.0f, 15.0f)) * softcap;
+}

@@ -60,49 +60,57 @@ final class QWAQBatchedGemmTests: XCTestCase {
         return bank
     }
 
-    /// The code at `index` of a group's payload: the `bits`-wide integer at
-    /// that bit of the continuous little-endian bit stream. The test reads
-    /// the stream itself, so the reference owes the implementation nothing.
-    private func code(at index: Int, bits: Int, payload: [UInt8]) -> UInt32 {
-        var value: UInt32 = 0
-        for b in 0..<bits {
-            let bit = index * bits + b
-            let set = UInt32((payload[bit >> 3] >> UInt32(bit & 7)) & 1)
-            value |= set << UInt32(b)
-        }
-        return value
-    }
-
-    /// One row's weights, in the container's own arithmetic: the code's
-    /// scale and the group's bias, with the group's OWN header — no fold.
-    private func rowWeights(bits: Int, group: Int, bank: Data, row: Int, k: Int) -> [Float] {
+    /// Unpacks all `n` rows in the container's own arithmetic: each group's own
+    /// header, weight rounded to f16 before the fp32 dot.
+    private func unpackAllRows(bits: Int, group: Int, bank: Data, n: Int, k: Int) -> [Float] {
         let groups = k / group
         let groupBytes = group * bits / 8 + 4
-        let bytes = [UInt8](bank)
-        var out = [Float](repeating: 0, count: k)
-        for g in 0..<groups {
-            let base = (row * groups + g) * groupBytes
-            let scale = Double(Float16(bitPattern: UInt16(bytes[base]) | (UInt16(bytes[base + 1]) << 8)))
-            let bias = Double(Float16(bitPattern: UInt16(bytes[base + 2]) | (UInt16(bytes[base + 3]) << 8)))
-            let payload = Array(bytes[(base + 4)..<(base + groupBytes)])
-            for i in 0..<group {
-                let c = Double(code(at: i, bits: bits, payload: payload))
-                // The kernel rounds the weight to f16 before the fp32 dot.
-                out[g * group + i] = Float(Float16(c * scale + bias))
+        var out = [Float](repeating: 0, count: n * k)
+        bank.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            guard let bytes = raw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
+            out.withUnsafeMutableBufferPointer { outBuf in
+                guard let dst = outBuf.baseAddress else { return }
+                var row = 0
+                while row < n {
+                    var g = 0
+                    while g < groups {
+                        let base = (row * groups + g) * groupBytes
+                        let scale = Double(Float16(bitPattern: UInt16(bytes[base]) | (UInt16(bytes[base + 1]) << 8)))
+                        let bias = Double(Float16(bitPattern: UInt16(bytes[base + 2]) | (UInt16(bytes[base + 3]) << 8)))
+                        let pBase = bytes + (base + 4)
+                        let outBase = row * k + g * group
+                        var i = 0
+                        while i < group {
+                            var value: UInt32 = 0
+                            var b = 0
+                            while b < bits {
+                                let bit = i * bits + b
+                                let set = UInt32((pBase[bit >> 3] >> UInt32(bit & 7)) & 1)
+                                value |= set << UInt32(b)
+                                b += 1
+                            }
+                            dst[outBase + i] = Float(Float16(Double(value) * scale + bias))
+                            i += 1
+                        }
+                        g += 1
+                    }
+                    row += 1
+                }
             }
         }
         return out
     }
 
     /// The host's answer for one row, and the natural scale of the dot.
-    private func hostRow(weights: ArraySlice<Float>,
-                         x: ArraySlice<Float>) -> (value: Float, magnitude: Float) {
+    private func hostRowPtr(_ wPtr: UnsafePointer<Float>, _ xPtr: UnsafePointer<Float>, k: Int) -> (value: Float, magnitude: Float) {
         var acc: Float = 0
         var magnitude: Float = 0
-        for (w, xv) in zip(weights, x) {
-            let product = w * xv
+        var i = 0
+        while i < k {
+            let product = wPtr[i] * xPtr[i]
             acc += product
             magnitude += abs(product)
+            i += 1
         }
         return (acc, magnitude)
     }
@@ -167,22 +175,38 @@ final class QWAQBatchedGemmTests: XCTestCase {
                 let m = shape.m, n = shape.n, k = shape.k
                 let bank = makeBank(bits: bits, group: group, n: n, k: k)
                 let x = makeActivations(m: m, k: k)
-                let weights = (0..<n).map { rowWeights(bits: bits, group: group, bank: bank, row: $0, k: k) }
+                let weights = unpackAllRows(bits: bits, group: group, bank: bank, n: n, k: k)
                 let kernel = kernelName(bits: bits, group: group)
                 let got = try runGemm(kernel: kernel, bm: 64, m: m, n: n, k: k, bank: bank, x: x)
-                for token in 0..<m {
-                    let activations = x[(token * k)..<((token + 1) * k)].map { Float(Float16($0)) }
-                    for row in 0..<n {
-                        let ref = hostRow(weights: weights[row][...], x: activations[...])
-                        let scale = max(abs(Double(ref.value)), Double(ref.magnitude), 1e-6)
-                        let rel = abs(Double(got[token * n + row]) - Double(ref.value)) / scale
-                        let key = "\(bits)-bit group \(group)"
-                        worst[key] = max(worst[key] ?? 0, rel)
-                        XCTAssertLessThan(rel, 1e-3,
-                                          "\(key), \(kernel), token \(token), row \(row): "
-                                          + "got \(got[token * n + row]), want \(ref.value)")
+                let xNarrowed = x.map { Float(Float16($0)) }
+                let key = "\(bits)-bit group \(group)"
+                var worstPair = worst[key] ?? 0
+                weights.withUnsafeBufferPointer { wBuf in
+                    xNarrowed.withUnsafeBufferPointer { xBuf in
+                        got.withUnsafeBufferPointer { gBuf in
+                            guard let wp = wBuf.baseAddress, let xp = xBuf.baseAddress, let gp = gBuf.baseAddress else { return }
+                            var token = 0
+                            while token < m {
+                                let xRow = xp + (token * k)
+                                var row = 0
+                                while row < n {
+                                    let ref = hostRowPtr(wp + (row * k), xRow, k: k)
+                                    let scale = max(abs(Double(ref.value)), Double(ref.magnitude), 1e-6)
+                                    let gotVal = gp[token * n + row]
+                                    let rel = abs(Double(gotVal) - Double(ref.value)) / scale
+                                    if rel.isNaN || rel > worstPair { worstPair = rel }
+                                    if !(rel < 1e-3) {
+                                        XCTAssertLessThan(rel, 1e-3,
+                                                          "\(key), \(kernel), token \(token), row \(row): got \(gotVal), want \(ref.value)")
+                                    }
+                                    row += 1
+                                }
+                                token += 1
+                            }
+                        }
                     }
                 }
+                worst[key] = worstPair
             }
         }
         for (pair, error) in worst.sorted(by: { $0.key < $1.key }) {
@@ -269,18 +293,32 @@ final class QWAQBatchedGemmTests: XCTestCase {
         for (bits, group) in QWAQBlock.supported {
             let bank = makeBank(bits: bits, group: group, n: n, k: k)
             let x = makeActivations(m: m, k: k)
-            let weights = (0..<n).map { rowWeights(bits: bits, group: group, bank: bank, row: $0, k: k) }
+            let weights = unpackAllRows(bits: bits, group: group, bank: bank, n: n, k: k)
             let kernel = kernelName(bits: bits, group: group)
             let got = try runGemm(kernel: kernel, bm: 64, m: m, n: n, k: k, bank: bank, x: x)
-            for token in 0..<m {
-                let activations = x[(token * k)..<((token + 1) * k)].map { Float(Float16($0)) }
-                for row in 0..<n {
-                    let ref = hostRow(weights: weights[row][...], x: activations[...])
-                    let scale = max(abs(Double(ref.value)), Double(ref.magnitude), 1e-6)
-                    let rel = abs(Double(got[token * n + row]) - Double(ref.value)) / scale
-                    XCTAssertLessThan(rel, 1e-3,
-                                      "\(bits)-bit group \(group), \(kernel), token \(token), "
-                                      + "row \(row): got \(got[token * n + row]), want \(ref.value)")
+            let xNarrowed = x.map { Float(Float16($0)) }
+            weights.withUnsafeBufferPointer { wBuf in
+                xNarrowed.withUnsafeBufferPointer { xBuf in
+                    got.withUnsafeBufferPointer { gBuf in
+                        guard let wp = wBuf.baseAddress, let xp = xBuf.baseAddress, let gp = gBuf.baseAddress else { return }
+                        var token = 0
+                        while token < m {
+                            let xRow = xp + (token * k)
+                            var row = 0
+                            while row < n {
+                                let ref = hostRowPtr(wp + (row * k), xRow, k: k)
+                                let scale = max(abs(Double(ref.value)), Double(ref.magnitude), 1e-6)
+                                let gotVal = gp[token * n + row]
+                                let rel = abs(Double(gotVal) - Double(ref.value)) / scale
+                                if !(rel < 1e-3) {
+                                    XCTAssertLessThan(rel, 1e-3,
+                                                      "\(bits)-bit group \(group), \(kernel), token \(token), row \(row): got \(gotVal), want \(ref.value)")
+                                }
+                                row += 1
+                            }
+                            token += 1
+                        }
+                    }
                 }
             }
         }

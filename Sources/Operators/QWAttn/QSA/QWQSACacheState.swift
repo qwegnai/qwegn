@@ -35,57 +35,19 @@ public protocol QWQSAMixerSpec: Sendable {
     var rope: QWRopeCPU { get }
 }
 
-/// Standalone QSA mixer geometry for callers outside `QWFlashNext`.
-public struct QWQSAMixerConfig: QWQSAMixerSpec, Sendable {
-    public let heads: Int
-    public let kvHeads: Int
-    public let headDim: Int
-    public let indexHeads: Int
-    public let indexHeadDim: Int
-    public let rotaryDim: Int
-    public let compress: Int
-    public let blockTopK: Int
-    public let bankRows: Int
-    public let rope: QWRopeCPU
-
-    public init(
-        heads: Int,
-        kvHeads: Int,
-        headDim: Int,
-        indexHeads: Int,
-        indexHeadDim: Int,
-        rotaryDim: Int,
-        compress: Int,
-        blockTopK: Int,
-        bankRows: Int,
-        rope: QWRopeCPU
-    ) {
-        self.heads = heads
-        self.kvHeads = kvHeads
-        self.headDim = headDim
-        self.indexHeads = indexHeads
-        self.indexHeadDim = indexHeadDim
-        self.rotaryDim = rotaryDim
-        self.compress = compress
-        self.blockTopK = blockTopK
-        self.bankRows = bankRows
-        self.rope = rope
-    }
-}
-
 /// KV storage mode for QSA full-attention layers (`f32`, `f16` default, `q8`, `q4`).
 /// `indexK` and `pooled` always store `f16` (2 bytes/element).
-public enum FNKVStorageMode: String, Sendable {
+public enum QWQSAKVStorageMode: String, Sendable {
     case f32
     case f16
     case q8
     case q4
 
-    public static func resolve(_ requested: String?) throws -> FNKVStorageMode {
+    public static func resolve(_ requested: String?) throws -> QWQSAKVStorageMode {
         guard let raw = requested?.lowercased(), !raw.isEmpty, raw != "auto" else {
             return .f16
         }
-        guard let mode = FNKVStorageMode(rawValue: raw) else {
+        guard let mode = QWQSAKVStorageMode(rawValue: raw) else {
             throw QWQSAError.kvModeNotImplemented(requested ?? raw)
         }
         return mode
@@ -149,7 +111,7 @@ public enum FNKVStorageMode: String, Sendable {
     }
 }
 
-public typealias QWQSAKVStorageMode = FNKVStorageMode
+public typealias FNKVStorageMode = QWQSAKVStorageMode
 
 /// Per-layer decode state of one QSA full-attention layer: K/V cache (`f32`/`f16`/`q8`/`q4`)
 /// and QSA index caches (`f16` raw index keys per token, `f16` pooled block keys per block).
@@ -179,7 +141,7 @@ public final class QWQSACacheState: @unchecked Sendable {
     public let fullCapacity: Int, hidden: Int, rows: Int
     public let maxSplits: Int
     public private(set) var capacity: Int
-    public let kvMode: FNKVStorageMode
+    public let kvMode: QWQSAKVStorageMode
     public var lsaClusters: LSAClusterState? {
         didSet {
             if !isPartitioned { fullLSAClusters = lsaClusters }
@@ -207,7 +169,7 @@ public final class QWQSACacheState: @unchecked Sendable {
     public let splitPartML: QWTensorValue
 
     public init(arena: QWArena, mixer a: any QWQSAMixerSpec, hidden: Int, capacity: Int,
-                kvMode: FNKVStorageMode = .f16,
+                kvMode: QWQSAKVStorageMode = .f16,
                 sharedRope: (cos: QWTensorValue, sin: QWTensorValue, bcos: QWTensorValue, bsin: QWTensorValue)? = nil,
                 sharedQSAScores: QWTensorValue? = nil) throws {
         precondition(capacity % a.compress == 0, "capacity must be a multiple of the compress block")

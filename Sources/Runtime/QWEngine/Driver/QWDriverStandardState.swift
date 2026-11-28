@@ -55,6 +55,7 @@ final class QWDriverStandardState: @unchecked Sendable {
     let embedStaging: any MTLBuffer
     let headStorage: QWHeadStorage
     let finalNorm: QWTensorValue
+    let finalGatedNorm: QWGatedNormWeights?
     let mtpDraftHead: QWMTPTDraftHead?
     let mtpScratch: QWEngineDriver.MTPScratch?
     let mtpDraftEncoder: QWMTPDraftEncoder?
@@ -117,6 +118,7 @@ final class QWDriverStandardState: @unchecked Sendable {
         embedStaging: any MTLBuffer,
         headStorage: QWHeadStorage,
         finalNorm: QWTensorValue,
+        finalGatedNorm: QWGatedNormWeights? = nil,
         mtpDraftHead: QWMTPTDraftHead?,
         mtpScratch: QWEngineDriver.MTPScratch?,
         mtpDraftEncoder: QWMTPDraftEncoder?,
@@ -175,6 +177,7 @@ final class QWDriverStandardState: @unchecked Sendable {
         self.embedStaging = embedStaging
         self.headStorage = headStorage
         self.finalNorm = finalNorm
+        self.finalGatedNorm = finalGatedNorm
         self.mtpDraftHead = mtpDraftHead
         self.mtpScratch = mtpScratch
         self.mtpDraftEncoder = mtpDraftEncoder
@@ -235,9 +238,9 @@ extension QWEngineDriver {
     var psoRMSNormResidualMoE: any MTLComputePipelineState { requireStandard().pipelines.psoRMSNormResidualMoE }
     var psoRMSNormResidualMoEWide: any MTLComputePipelineState { requireStandard().pipelines.psoRMSNormResidualMoEWide }
     var psoHeadF16: any MTLComputePipelineState { requireStandard().pipelines.psoHeadF16 }
-    var psoGemmBatchedH16: any MTLComputePipelineState { requireStandard().pipelines.psoGemmBatchedH16 }
-    var psoGemmBatchedH16SwiGLU: any MTLComputePipelineState { requireStandard().pipelines.psoGemmBatchedH16SwiGLU }
-    var psoGemmBatchedH16GdnInProj: any MTLComputePipelineState { requireStandard().pipelines.psoGemmBatchedH16GdnInProj }
+    var psoGemmBatchedH16: (any MTLComputePipelineState)? { standardState?.pipelines.psoGemmBatchedH16 }
+    var psoGemmBatchedH16SwiGLU: (any MTLComputePipelineState)? { standardState?.pipelines.psoGemmBatchedH16SwiGLU }
+    var psoGemmBatchedH16GdnInProj: (any MTLComputePipelineState)? { standardState?.pipelines.psoGemmBatchedH16GdnInProj }
     var psoSiluMulF16: any MTLComputePipelineState { requireStandard().pipelines.psoSiluMulF16 }
     var psoKVPagedWrite: any MTLComputePipelineState { requireStandard().pipelines.psoKVPagedWrite }
     var psoKVPagedWriteGeneral: any MTLComputePipelineState { requireStandard().pipelines.psoKVPagedWriteGeneral }
@@ -266,6 +269,7 @@ extension QWEngineDriver {
     var embedStaging: any MTLBuffer { requireStandard().embedStaging }
     var headStorage: QWHeadStorage { requireStandard().headStorage }
     var finalNorm: QWTensorValue { requireStandard().finalNorm }
+    var finalGatedNorm: QWGatedNormWeights? { standardState?.finalGatedNorm }
     var mtpDraftHead: QWMTPTDraftHead? { standardState?.mtpDraftHead }
     var mtpScratch: MTPScratch? { standardState?.mtpScratch }
     var mtpDraftEncoder: QWMTPDraftEncoder? { standardState?.mtpDraftEncoder }

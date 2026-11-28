@@ -10,7 +10,7 @@ import QWQuant
 
 private extension QWQTensorEntry {
     var qwpContainerKind: QWWeightView.ContainerKind? {
-        guard rawOff == nil, hq4Off != nil else { return nil }
+        guard PlaneLayout.resolve(self) == .hq4 else { return nil }
         let rotated = hq?.vq != "aq"
         if isSHVQ {
             guard rotated else { return nil }
@@ -23,7 +23,7 @@ private extension QWQTensorEntry {
     }
 }
 
-private extension Ink2BumpAllocator {
+private extension QWSubAllocator {
     func copyQWP(_ name: String, from pack: QWQuant.Pack) throws -> (slice: Ink2Slice, entry: QWQTensorEntry) {
         let entry = try pack.entry(name)
         guard let layout = PlaneLayout.resolve(entry),
@@ -31,11 +31,13 @@ private extension Ink2BumpAllocator {
               let bytes = layout.byteCount(entry) else {
             throw QWInkling2Error.badState("invalid QWP1 plane layout for \(name)")
         }
-        let slice = try allocateBytes(bytes, alignment: 256, label: name)
+        let slice = try allocateBytes(bytes, label: name)
         if bytes > 0 {
             let dst = slice.buffer.contents().advanced(by: slice.offset)
-            try pack.withRawPointer(at: off, byteCount: bytes) { ptr in
-                _ = memcpy(dst, ptr, bytes)
+            try withExtendedLifetime(slice.buffer) {
+                try pack.withRawPointer(at: off, byteCount: bytes) { ptr in
+                    dst.copyMemory(from: ptr, byteCount: bytes)
+                }
             }
         }
         return (slice, entry)
@@ -63,10 +65,14 @@ private extension Ink2BumpAllocator {
     ) throws -> (linear: Ink2LinearW, slice: Ink2Slice, entry: QWQTensorEntry) {
         let (slice, entry) = try copyQWP(name, from: pack)
         if entry.rawOff != nil {
-            guard entry.kind != "f32", slice.length == n * k * 2 else {
+            let needBytes = n * k * 2
+            guard entry.kind != "f32", slice.length >= needBytes else {
                 throw QWInkling2Error.badState("expected BF16 weights [\(n), \(k)] for \(name)")
             }
-            return (.bf16(slice.bf16Bank(n: n, k: k)), slice, entry)
+            let sliced = (slice.length == needBytes)
+                ? slice
+                : Ink2Slice(buffer: slice.buffer, offset: slice.offset, length: needBytes)
+            return (.bf16(sliced.bf16Bank(n: n, k: k)), sliced, entry)
         }
         let view = try makeWeightView(slice: slice, n: n, k: k, entry: entry, name: name)
         return (.quant(view), slice, entry)
@@ -102,7 +108,7 @@ private extension Ink2BumpAllocator {
                 throw QWInkling2Error.badState("expected BF16 weights [\(nRows), \(kCols)] for \(name)")
             }
             try pack.withRawPointer(at: off, byteCount: bytes) { ptr in
-                _ = memcpy(dstRaw, ptr, bytes)
+                dstRaw.copyMemory(from: ptr, byteCount: bytes)
             }
             return
         }
@@ -158,15 +164,17 @@ private extension Ink2BumpAllocator {
               gBytes == experts * bytesPerExpert, uBytes == experts * bytesPerExpert else {
             throw QWInkling2Error.badState("\(label) QWP1 expert byte mismatch")
         }
-        let slab = try allocateBytes(experts * 2 * bytesPerExpert, alignment: 256, label: label)
+        let slab = try allocateBytes(experts * 2 * bytesPerExpert, label: label)
         let dst = slab.buffer.contents().advanced(by: slab.offset)
-        try pack.withRawPointer(at: gOff, byteCount: gBytes) { gPtr in
-            try pack.withRawPointer(at: uOff, byteCount: uBytes) { uPtr in
-                for e in 0..<experts {
-                    let srcOff = e * bytesPerExpert
-                    let dstOff = e * 2 * bytesPerExpert
-                    memcpy(dst.advanced(by: dstOff), gPtr.advanced(by: srcOff), bytesPerExpert)
-                    memcpy(dst.advanced(by: dstOff + bytesPerExpert), uPtr.advanced(by: srcOff), bytesPerExpert)
+        try withExtendedLifetime(slab.buffer) {
+            try pack.withRawPointer(at: gOff, byteCount: gBytes) { gPtr in
+                try pack.withRawPointer(at: uOff, byteCount: uBytes) { uPtr in
+                    for e in 0..<experts {
+                        let srcOff = e * bytesPerExpert
+                        let dstOff = e * 2 * bytesPerExpert
+                        dst.advanced(by: dstOff).copyMemory(from: gPtr.advanced(by: srcOff), byteCount: bytesPerExpert)
+                        dst.advanced(by: dstOff + bytesPerExpert).copyMemory(from: uPtr.advanced(by: srcOff), byteCount: bytesPerExpert)
+                    }
                 }
             }
         }
@@ -189,7 +197,7 @@ private struct Ink2QWPAttnProjLoad {
 }
 
 private func buildQWPAttnProj(
-    bump: Ink2BumpAllocator,
+    bump: QWSubAllocator,
     sa: String,
     isSliding: Bool,
     qDim: Int,
@@ -220,21 +228,26 @@ private func buildQWPAttnProj(
         && entries[5].qwpContainerKind == entries[0].qwpContainerKind
 
     func copyConcatSlab(_ parts: [(name: String, rows: Int)], totalBytes: Int, label: String) throws -> (Ink2Slice, [Ink2Slice]) {
-        let slab = try bump.allocateBytes(totalBytes, alignment: 256, label: label)
+        let slab = try bump.allocateBytes(totalBytes, label: label)
         let dst = slab.buffer.contents().advanced(by: slab.offset)
         var off = 0
         var subSlices: [Ink2Slice] = []
         subSlices.reserveCapacity(parts.count)
-        for (name, _) in parts {
-            let e = try pack.entry(name)
-            guard let l = PlaneLayout.resolve(e), let pOff = l.offset(e), let bytes = l.byteCount(e) else {
-                throw QWInkling2Error.badState("invalid QWP1 layout for \(name)")
+        try withExtendedLifetime(slab.buffer) {
+            for (name, _) in parts {
+                let e = try pack.entry(name)
+                guard let l = PlaneLayout.resolve(e), let pOff = l.offset(e), let bytes = l.byteCount(e) else {
+                    throw QWInkling2Error.badState("invalid QWP1 layout for \(name)")
+                }
+                guard off + bytes <= totalBytes else {
+                    throw QWInkling2Error.badState("copyConcatSlab overflow for \(name): \(off + bytes) > \(totalBytes)")
+                }
+                try pack.withRawPointer(at: pOff, byteCount: bytes) { ptr in
+                    dst.advanced(by: off).copyMemory(from: ptr, byteCount: bytes)
+                }
+                subSlices.append(Ink2Slice(buffer: slab.buffer, offset: slab.offset + off, length: bytes))
+                off += bytes
             }
-            try pack.withRawPointer(at: pOff, byteCount: bytes) { ptr in
-                _ = memcpy(dst.advanced(by: off), ptr, bytes)
-            }
-            subSlices.append(Ink2Slice(buffer: slab.buffer, offset: slab.offset + off, length: bytes))
-            off += bytes
         }
         return (slab, subSlices)
     }
@@ -313,7 +326,7 @@ private func buildQWPAttnProj(
 }
 
 private func buildQWPController(
-    bump: Ink2BumpAllocator,
+    bump: QWSubAllocator,
     cp: String,
     hidden: Int,
     rank: Int,
@@ -325,23 +338,28 @@ private func buildQWPController(
     let downBytes = rank * 2 * hidden * 2
     let partBytes = hidden * rank * 2
 
-    let downSlice = try bump.allocateBytes(downBytes, alignment: 256, label: "\(cp)down_weight")
-    try bump.dequantQWPEntryToBF16(
-        entry: downEntry, nRows: rank, kCols: 2 * hidden, name: "\(cp)down_weight",
-        from: pack, into: downSlice.buffer.contents().advanced(by: downSlice.offset)
-    )
+    let downSlice = try bump.allocateBytes(downBytes, label: "\(cp)down_weight")
+    let downDst = downSlice.buffer.contents().advanced(by: downSlice.offset)
+    try withExtendedLifetime(downSlice.buffer) {
+        try bump.dequantQWPEntryToBF16(
+            entry: downEntry, nRows: rank, kCols: 2 * hidden, name: "\(cp)down_weight",
+            from: pack, into: downDst
+        )
+    }
     let downW: Ink2LinearW = .bf16(downSlice.bf16Bank(n: rank, k: 2 * hidden))
 
-    let fgSlab = try bump.allocateBytes(2 * partBytes, alignment: 256, label: "\(cp)fgSlab")
+    let fgSlab = try bump.allocateBytes(2 * partBytes, label: "\(cp)fgSlab")
     let fgDst = fgSlab.buffer.contents().advanced(by: fgSlab.offset)
-    try bump.dequantQWPEntryToBF16(
-        entry: fEntry, nRows: hidden, kCols: rank, name: "\(cp)forget_weight",
-        from: pack, into: fgDst
-    )
-    try bump.dequantQWPEntryToBF16(
-        entry: gEntry, nRows: hidden, kCols: rank, name: "\(cp)gain_weight",
-        from: pack, into: fgDst.advanced(by: partBytes)
-    )
+    try withExtendedLifetime(fgSlab.buffer) {
+        try bump.dequantQWPEntryToBF16(
+            entry: fEntry, nRows: hidden, kCols: rank, name: "\(cp)forget_weight",
+            from: pack, into: fgDst
+        )
+        try bump.dequantQWPEntryToBF16(
+            entry: gEntry, nRows: hidden, kCols: rank, name: "\(cp)gain_weight",
+            from: pack, into: fgDst.advanced(by: partBytes)
+        )
+    }
     let forgetSlice = Ink2Slice(buffer: fgSlab.buffer, offset: fgSlab.offset, length: partBytes)
     let gainSlice = Ink2Slice(buffer: fgSlab.buffer, offset: fgSlab.offset + partBytes, length: partBytes)
     return QWInkling2Weights.ControllerW(
@@ -351,7 +369,7 @@ private func buildQWPController(
 }
 
 private func buildQWPExperts(
-    bump: Ink2BumpAllocator,
+    bump: QWSubAllocator,
     lp: String,
     experts: Int,
     moeI: Int,
@@ -371,15 +389,17 @@ private func buildQWPExperts(
             gateName: "\(sw)gate_proj.scales", upName: "\(sw)up_proj.scales",
             experts: experts, bytesPerExpert: expSBytes, label: "\(sw)gate_up.scales", from: pack
         )
-        let guS2 = try bump.allocateBytes(2 * s2Bytes, alignment: 256, label: "\(sw)gate_up.scales2")
+        let guS2 = try bump.allocateBytes(2 * s2Bytes, label: "\(sw)gate_up.scales2")
         let gs2 = try bump.copyQWP("\(sw)gate_proj.weight_scale_2", from: pack).slice
         let us2 = try bump.copyQWP("\(sw)up_proj.weight_scale_2", from: pack).slice
         guard gs2.length == s2Bytes, us2.length == s2Bytes else {
             throw QWInkling2Error.badState("\(sw) scales2 size mismatch")
         }
         let s2Dst = guS2.buffer.contents().advanced(by: guS2.offset)
-        memcpy(s2Dst, gs2.buffer.contents().advanced(by: gs2.offset), s2Bytes)
-        memcpy(s2Dst.advanced(by: s2Bytes), us2.buffer.contents().advanced(by: us2.offset), s2Bytes)
+        withExtendedLifetime(guS2.buffer) {
+            s2Dst.copyMemory(from: gs2.buffer.contents().advanced(by: gs2.offset), byteCount: s2Bytes)
+            s2Dst.advanced(by: s2Bytes).copyMemory(from: us2.buffer.contents().advanced(by: us2.offset), byteCount: s2Bytes)
+        }
 
         let (dw, _) = try bump.copyQWP("\(sw)down_proj.weight", from: pack)
         let (ds, _) = try bump.copyQWP("\(sw)down_proj.scales", from: pack)
@@ -410,14 +430,13 @@ extension QWInkling2Weights {
         qwp pack: QWQuant.Pack,
         device: any MTLDevice,
         descriptor: QWModelDescriptor,
-        ink2: QWModelDescriptor.Inkling2Config,
-        loadVision: Bool = false
+        ink2: QWModelDescriptor.Inkling2Config
     ) throws {
         func sumQWPBytes(forPrefix prefix: String?) throws -> Int {
             var total = 0
             for (name, entry) in pack.tensors {
                 if let prefix, !name.hasPrefix(prefix) { continue }
-                if name.contains("vision_tower.") { continue }
+                if name.contains("vision_tower.") || name.hasPrefix("visual.") || name.contains(".visual.") { continue }
                 guard let layout = PlaneLayout.resolve(entry),
                       let bytes = layout.byteCount(entry) else { continue }
                 let effBytes = (entry.rawOff == nil && name.contains(".controllers.") && entry.shape.count == 2)
@@ -443,7 +462,7 @@ extension QWInkling2Weights {
             }
             gCap += ((bytes + 255) / 256) * 256
         }
-        let gBump = try Ink2BumpAllocator(device: device, capacity: gCap)
+        let gBump = try QWSubAllocator.makeWeightAllocator(device: device, capacity: gCap)
         let embedTokens = try gBump.copyQWP(globalNames[0], from: pack).slice
         let embedNorm = try gBump.copyQWP(globalNames[1], from: pack).slice
         let H = descriptor.hidden
@@ -463,13 +482,16 @@ extension QWInkling2Weights {
             lmHeadBank = bank
         case .quant(let view):
             if view.isRotated { anyRotated = true }
-            lmHeadStorage = .q4g(QWHeadWeight(
+            guard let hw = QWHeadWeight(
                 blocks: view.blocks, n: view.n, k: view.k,
                 bits: view.bits, groupSize: view.groupSize,
                 isRotated: view.isRotated,
                 isIncumbentContainer: view.isIncumbentContainer,
                 isSHVQ: view.isSHVQ
-            )!)
+            ) else {
+                throw QWInkling2Error.badState("invalid QWP1 QWHeadWeight for lm_head.weight")
+            }
+            lmHeadStorage = .q4g(hw)
             lmHeadSlice = nil
             lmHeadTV = nil
             lmHeadBank = nil
@@ -488,7 +510,7 @@ extension QWInkling2Weights {
         let moeI = descriptor.moeIntermediate ?? 1152
         let nExp = descriptor.numExperts ?? 128
 
-        var buffers: [any MTLBuffer] = [gBump.buffer]
+        var buffers: [any MTLBuffer] = [gBump.slabBuffer]
         var builtLayers: [LayerWeights] = []
         builtLayers.reserveCapacity(descriptor.numLayers)
 
@@ -500,7 +522,7 @@ extension QWInkling2Weights {
             let lPfx = "\(mdl)layers.\(l)."
             // Reserve 2x for possible NVFP4 gate_proj+up_proj + scale_2 staging copies before building experts.
             let layerCap = try sumQWPBytes(forPrefix: lPfx) + (nExp * 4 * 4)
-            let lBump = try Ink2BumpAllocator(device: device, capacity: layerCap)
+            let lBump = try QWSubAllocator.makeWeightAllocator(device: device, capacity: layerCap)
             let isSliding = ink2.isSlidingLayer(l)
             let attnQuery = (l > 0) ? try lBump.copyQWP("\(lPfx)attention_input.query", from: pack).slice : nil
             let mlpQuery = try lBump.copyQWP("\(lPfx)mlp_input.query", from: pack).slice
@@ -570,7 +592,7 @@ extension QWInkling2Weights {
                 anyRotated = true
             }
 
-            buffers.append(lBump.buffer)
+            buffers.append(lBump.slabBuffer)
             builtLayers.append(LayerWeights(
                 layerIdx: l, isSliding: isSliding,
                 attnInputQuery: attnQuery, mlpInputQuery: mlpQuery,
@@ -588,7 +610,6 @@ extension QWInkling2Weights {
             ))
         }
 
-        let _ = loadVision
         let hasVis = pack.tensors.keys.contains { $0.contains("vision_tower.") || $0.contains("visual.") }
         self.init(
             embedTokens: embedTokens,

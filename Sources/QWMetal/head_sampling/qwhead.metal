@@ -50,6 +50,10 @@ static inline uint qw_sortable(float v) {
     return qw_sortable_f32_u32(v);
 }
 
+static inline float qw_head_apply_softcap(float v, float cap) {
+    return (cap > 0.0f) ? (precise::tanh(clamp(v / cap, -15.0f, 15.0f)) * cap) : v;
+}
+
 kernel void qwg_head_gemv_split(
         device const Block_HQ4_G32* blocks   [[buffer(0)]],
         constant const half*        x        [[buffer(1)]],
@@ -215,9 +219,9 @@ kernel void qwg_head_combine(
 // load/max/CAS all rejected by metal 4.0 compiler — recorded law).
 kernel void qwg_head_argmax(
         device const float* logits [[buffer(0)]],
-        device uint*  keysHi       [[buffer(1)]],    // [nTG]
-        device uint*  keysLo       [[buffer(2)]],    // [nTG]
-        constant uint& N           [[buffer(3)]],
+        device uint*        keysHi [[buffer(1)]],    // [nTG]
+        device uint*        keysLo [[buffer(2)]],    // [nTG]
+        constant uint&      N      [[buffer(3)]],
         uint3 tg [[threadgroup_position_in_grid]],
         uint tid [[thread_index_in_threadgroup]]) {
     const uint i = tg.x * 256u + tid;
@@ -235,6 +239,36 @@ kernel void qwg_head_argmax(
             if (sh[q] > bh || (sh[q] == bh && sl[q] > bl)) { bh = sh[q]; bl = sl[q]; }
         }
         keysHi[tg.x] = bh; keysLo[tg.x] = bl;
+    }
+}
+
+kernel void qwg_head_argmax_softcap(
+        device const float* logits  [[buffer(0)]],
+        device uint*        keysHi  [[buffer(1)]],
+        device uint*        keysLo  [[buffer(2)]],
+        constant uint&      N       [[buffer(3)]],
+        constant float&     softcap [[buffer(4)]],
+        uint3 tg [[threadgroup_position_in_grid]],
+        uint tid [[thread_index_in_threadgroup]]) {
+    const uint row = tg.y;
+    const uint nTG = (N + 255u) >> 8u;
+    const uint i = tg.x * 256u + tid;
+    const float raw = (i < N) ? logits[(size_t)row * N + i] : -INFINITY;
+    const float v = (i < N) ? qw_head_apply_softcap(raw, softcap) : -INFINITY;
+    const uint hi = (i < N) ? qw_sortable(v) : 0u;
+    const uint lo = (i < N) ? ~i : 0u;
+    const uint maxHi = simd_max(hi);
+    const uint maxLo = simd_max((hi == maxHi) ? lo : 0u);
+    threadgroup uint sh[8], sl[8];
+    if ((tid & 31u) == 0u) { sh[tid >> 5u] = maxHi; sl[tid >> 5u] = maxLo; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid == 0u) {
+        uint bh = sh[0], bl = sl[0];
+        for (uint q = 1u; q < 8u; q++) {
+            if (sh[q] > bh || (sh[q] == bh && sl[q] > bl)) { bh = sh[q]; bl = sl[q]; }
+        }
+        keysHi[(size_t)row * nTG + tg.x] = bh;
+        keysLo[(size_t)row * nTG + tg.x] = bl;
     }
 }
 

@@ -289,8 +289,8 @@ public enum FNNgramRowsLoader {
             return try FNNgramMLXRows(url: ngramTableBin, mapped: mapped)
         }
         let locations = assetsURL.appendingPathComponent("ple_ngram_locations.json")
-        let snapshot = snapshotDirectory()
-        if let snapshot {
+        if FileManager.default.fileExists(atPath: locations.path),
+           let snapshot = snapshotDirectory(assetsURL: assetsURL, locations: locations) {
             // Prefer the container: the row offsets come from the parsed
             // safetensors header, and the payload stays mapped, so a row
             // read is a memory read and not a `pread`.
@@ -307,26 +307,60 @@ public enum FNNgramRowsLoader {
                       userInfo: [NSLocalizedDescriptionKey: "Missing assets/ngram.bin in \(assetsURL.path)"])
     }
 
-    /// The snapshot the PLE shards live in: the override first, then the HF
-    /// cache.
-    static func snapshotDirectory() -> URL? {
+    /// Snapshot directory for PLE shards: env overrides, pack-local, then HF cache matching `locations`.
+    static func snapshotDirectory(assetsURL: URL? = nil, locations: URL? = nil) -> URL? {
         if let envSnap = ProcessInfo.processInfo.environment["FN_SNAPSHOT_DIR"], !envSnap.isEmpty {
             return URL(fileURLWithPath: envSnap)
         }
         if let envAssets = ProcessInfo.processInfo.environment["QW_PLE_ASSETS_DIR"], !envAssets.isEmpty {
             return URL(fileURLWithPath: envAssets)
         }
-        let hubRoot = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".cache/huggingface/hub")
-        guard let models = try? FileManager.default.contentsOfDirectory(atPath: hubRoot.path) else { return nil }
-        for m in models where m.localizedCaseInsensitiveContains("Qwen3.8-Flash-Next") {
+        let requiredFiles = shardFilenames(in: locations)
+        let fm = FileManager.default
+        if let assetsURL {
+            for candidate in [assetsURL.deletingLastPathComponent(), assetsURL] {
+                if snapshotMatches(candidate, requiredFiles: requiredFiles, fm: fm) {
+                    return candidate
+                }
+            }
+        }
+        let hubRoot = fm.homeDirectoryForCurrentUser.appendingPathComponent(".cache/huggingface/hub")
+        guard let models = try? fm.contentsOfDirectory(atPath: hubRoot.path) else { return nil }
+        for m in models.sorted() where m.hasPrefix("models--") {
             let snapsRoot = hubRoot.appendingPathComponent(m).appendingPathComponent("snapshots")
-            if let items = try? FileManager.default.contentsOfDirectory(atPath: snapsRoot.path),
-               let first = items.sorted().first(where: { !$0.hasPrefix(".") }) {
-                return snapsRoot.appendingPathComponent(first)
+            guard let items = try? fm.contentsOfDirectory(atPath: snapsRoot.path) else { continue }
+            for rev in items.sorted() where !rev.hasPrefix(".") {
+                let candidate = snapsRoot.appendingPathComponent(rev)
+                if snapshotMatches(candidate, requiredFiles: requiredFiles, fm: fm) {
+                    return candidate
+                }
             }
         }
         return nil
+    }
+
+    private static func shardFilenames(in locations: URL?) -> [String] {
+        guard let locations,
+              let data = try? Data(contentsOf: locations),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let shards = root["shards"] as? [[String: Any]] else {
+            return []
+        }
+        var seen = Set<String>()
+        var files: [String] = []
+        for s in shards {
+            if let f = s["file"] as? String, !f.isEmpty, seen.insert(f).inserted {
+                files.append(f)
+            }
+        }
+        return files
+    }
+
+    private static func snapshotMatches(_ dir: URL, requiredFiles: [String], fm: FileManager) -> Bool {
+        guard !requiredFiles.isEmpty else {
+            return indexJSON(in: dir) != nil
+        }
+        return requiredFiles.allSatisfy { fm.fileExists(atPath: dir.appendingPathComponent($0).path) }
     }
 
     /// The checkpoint's tensor index, if the snapshot has one.

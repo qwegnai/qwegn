@@ -20,14 +20,10 @@ typealias QWAsyncColdWriteController = QWCore.QWAsyncColdWriteController
 
 extension QWEngineDriver {
     public func configurePrefixCache(config: QWCacheConfig) throws {
-        if let hyper = hyperRuntime {
-            try hyper.configurePrefixCache(config)
-            return
-        }
-        if let ink = inkling2Runtime {
-            try ink.configurePrefixCache(config)
-            return
-        }
+        try trunkExecutor.configurePrefixCache(config)
+    }
+
+    func configureStandardPrefixCache(config: QWCacheConfig) throws {
         try withFlightPermit { try configurePrefixCacheLocked(config: config) }
     }
 
@@ -588,22 +584,20 @@ extension QWEngineDriver {
         pinAsSharedBase: Bool = true,
         onPrefillProgress: (@Sendable (Int, Int) -> Void)?
     ) throws -> Int {
-        if let hyper = hyperRuntime {
-            return try hyper.buildStandalonePrefixCache(
-                tokens: tokens,
-                outputURL: outputURL,
-                pinAsSharedBase: pinAsSharedBase,
-                onPrefillProgress: onPrefillProgress
-            )
-        }
-        if let ink = inkling2Runtime {
-            return try ink.buildStandalonePrefixCache(
-                tokens: tokens,
-                outputURL: outputURL,
-                pinAsSharedBase: pinAsSharedBase,
-                onPrefillProgress: onPrefillProgress
-            )
-        }
+        try trunkExecutor.buildStandalonePrefixCache(
+            tokens: tokens,
+            outputURL: outputURL,
+            pinAsSharedBase: pinAsSharedBase,
+            onPrefillProgress: onPrefillProgress
+        )
+    }
+
+    func buildStandardStandalonePrefixCache(
+        tokens: [Int],
+        outputURL: URL,
+        pinAsSharedBase: Bool = true,
+        onPrefillProgress: (@Sendable (Int, Int) -> Void)?
+    ) throws -> Int {
         return try requestGate.withRequest(flight: flight) { permit in
             guard !tokens.isEmpty, tokens.count <= ropeRows,
                   tokens.allSatisfy({ (0..<geometry.vocab).contains($0) }) else {
@@ -651,12 +645,10 @@ extension QWEngineDriver {
 
     /// Mounts a standalone `.qwcache` file from `fileURL` into warm RAM as a pinned shared base prefix.
     public func mountStandalonePrefixCache(from fileURL: URL) throws -> (tokens: [Int], byteCount: Int) {
-        if let hyper = hyperRuntime {
-            return try hyper.mountStandalonePrefixCache(from: fileURL)
-        }
-        if let ink = inkling2Runtime {
-            return try ink.mountStandalonePrefixCache(from: fileURL)
-        }
+        try trunkExecutor.mountStandalonePrefixCache(from: fileURL)
+    }
+
+    func mountStandardStandalonePrefixCache(from fileURL: URL) throws -> (tokens: [Int], byteCount: Int) {
         return try withFlightPermit {
             if prefixStore == nil {
                 try configurePrefixCacheLocked(config: QWCacheConfig(warmByteLimit: 512 << 20, ssdByteLimit: 0, entryLimit: 32))
@@ -685,14 +677,10 @@ extension QWEngineDriver {
 
     /// Unmounts all pinned shared-base prefixes from the warm prefix store.
     public func unmountSharedBasePrefixes() {
-        if let hyper = hyperRuntime {
-            hyper.unmountSharedBasePrefixes()
-            return
-        }
-        if let ink = inkling2Runtime {
-            ink.unmountSharedBasePrefixes()
-            return
-        }
+        trunkExecutor.unmountSharedBasePrefixes()
+    }
+
+    func unmountStandardSharedBasePrefixes() {
         guard flight.try() else { return }
         defer { flight.unlock() }
         lsaOperator?.setPinnedBaseState(nil, position: 0)

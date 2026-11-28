@@ -43,42 +43,72 @@ final class QWAttnDecodeBatchedTests: XCTestCase {
     /// norming contract) plus small-valued v and gate; returns raw f16 bits.
     static func synthRows(n: Int, seed: UInt64, qHeads: Int, headDim: Int) -> [UInt16] {
         var rng = SplitMix64(seed: seed)
-        var out = [UInt16](repeating: 0, count: n * qHeads * 2 * headDim / (qHeads == QWModelGeometry.qwen38_27b.qHeads ? 1 : 1))
-        // (kept simple: caller always passes qHeads == QWModelGeometry.qwen38_27b.qHeads or kvHeads)
-        out = [UInt16](repeating: 0, count: n * qHeads * 2 * headDim)
-        for row in 0..<n {
-            for h in 0..<qHeads {
-                var q = (0..<headDim).map { _ in rng.nextNormalish() }
-                let norm = sqrtf(q.reduce(0) { $0 + $1 * $1 }) + 1e-6
-                for d in 0..<headDim { q[d] /= norm }
-                let base = row * qHeads * 2 * headDim + h * (2 * headDim)
-                for d in 0..<headDim { out[base + d] = f16Bits(q[d]) }
-                for d in 0..<headDim { out[base + headDim + d] = f16Bits(rng.nextNormalish() * 0.5) }
+        let total = n * qHeads * 2 * headDim
+        return [UInt16](unsafeUninitializedCapacity: total) { dst, initialized in
+            guard let out = dst.baseAddress else { initialized = 0; return }
+            withUnsafeTemporaryAllocation(of: Float.self, capacity: headDim) { qTmp in
+                guard let qp = qTmp.baseAddress else { return }
+                var row = 0
+                while row < n {
+                    var h = 0
+                    while h < qHeads {
+                        var sumSq: Float = 0, d = 0
+                        while d < headDim {
+                            let v = rng.nextNormalish()
+                            qp[d] = v; sumSq += v * v; d += 1
+                        }
+                        let norm = sqrtf(sumSq) + 1e-6
+                        let base = row * qHeads * 2 * headDim + h * (2 * headDim)
+                        d = 0
+                        while d < headDim { out[base + d] = f16Bits(qp[d] / norm); d += 1 }
+                        d = 0
+                        while d < headDim { out[base + headDim + d] = f16Bits(rng.nextNormalish() * 0.5); d += 1 }
+                        h += 1
+                    }
+                    row += 1
+                }
             }
+            initialized = total
         }
-        return out
     }
     static func synthKV(n: Int, seed: UInt64) -> [UInt16] {
         var rng = SplitMix64(seed: seed)
         let H = QWModelGeometry.qwen38_27b.headDim, KVH = QWModelGeometry.qwen38_27b.kvHeads
-        var out = [UInt16](repeating: 0, count: n * KVH * H)
-        for row in 0..<n {
-            for h in 0..<KVH {
-                var k = (0..<H).map { _ in rng.nextNormalish() }
-                let norm = sqrtf(k.reduce(0) { $0 + $1 * $1 }) + 1e-6
-                for d in 0..<H { k[d] /= norm }
-                let base = row * KVH * H + h * H
-                for d in 0..<H { out[base + d] = f16Bits(k[d]) }
+        let total = n * KVH * H
+        return [UInt16](unsafeUninitializedCapacity: total) { dst, initialized in
+            guard let out = dst.baseAddress else { initialized = 0; return }
+            withUnsafeTemporaryAllocation(of: Float.self, capacity: H) { kTmp in
+                guard let kp = kTmp.baseAddress else { return }
+                var row = 0
+                while row < n {
+                    var h = 0
+                    while h < KVH {
+                        var sumSq: Float = 0, d = 0
+                        while d < H {
+                            let v = rng.nextNormalish()
+                            kp[d] = v; sumSq += v * v; d += 1
+                        }
+                        let norm = sqrtf(sumSq) + 1e-6
+                        let base = row * KVH * H + h * H
+                        d = 0
+                        while d < H { out[base + d] = f16Bits(kp[d] / norm); d += 1 }
+                        h += 1
+                    }
+                    row += 1
+                }
             }
+            initialized = total
         }
-        return out
     }
     static func synthV(n: Int, seed: UInt64) -> [UInt16] {
         var rng = SplitMix64(seed: seed)
-        let H = QWModelGeometry.qwen38_27b.headDim, KVH = QWModelGeometry.qwen38_27b.kvHeads
-        var out = [UInt16](repeating: 0, count: n * KVH * H)
-        for i in 0..<out.count { out[i] = f16Bits(rng.nextNormalish() * 0.3) }
-        return out
+        let total = n * QWModelGeometry.qwen38_27b.kvHeads * QWModelGeometry.qwen38_27b.headDim
+        return [UInt16](unsafeUninitializedCapacity: total) { dst, initialized in
+            guard let out = dst.baseAddress else { initialized = 0; return }
+            var i = 0
+            while i < total { out[i] = f16Bits(rng.nextNormalish() * 0.3); i += 1 }
+            initialized = total
+        }
     }
 
     static func buf(_ a: [UInt16]) -> MTLBuffer {
@@ -92,20 +122,33 @@ final class QWAttnDecodeBatchedTests: XCTestCase {
     }
     static func readOut(_ b: MTLBuffer, _ n: Int) -> [Float] {
         let p = b.contents().assumingMemoryBound(to: UInt16.self)
-        return (0..<n).map { f16(p[$0]) }
+        return [Float](unsafeUninitializedCapacity: n) { dst, initialized in
+            guard let dp = dst.baseAddress else { initialized = 0; return }
+            var i = 0
+            while i < n { dp[i] = Float(Float16(bitPattern: p[i])); i += 1 }
+            initialized = n
+        }
     }
 
     static func parityViolations(_ got: [Float], _ ref: [Float], absTol: Float = 1e-3)
         -> (violations: Int, worstAbs: Double, worstIdx: Int) {
-        var viol = 0, worst = 0.0, worstIdx = -1
-        for i in 0..<got.count {
-            let d = abs(Double(got[i]) - Double(ref[i]))
-            if d > worst { worst = d; worstIdx = i }
-            guard got[i].isFinite && ref[i].isFinite else { viol += 1; continue }
-            let spacing = max(Double(abs(got[i])), Double(abs(ref[i]))) * Double.ulpOfOne
-            if d > max(Double(absTol), spacing) { viol += 1 }
+        got.withUnsafeBufferPointer { gBuf in
+            ref.withUnsafeBufferPointer { rBuf in
+                guard let gp = gBuf.baseAddress, let rp = rBuf.baseAddress else { return (0, 0, -1) }
+                let n = gBuf.count
+                var viol = 0, worst = 0.0, worstIdx = -1, i = 0
+                while i < n {
+                    let gv = gp[i], rv = rp[i]
+                    let d = abs(Double(gv) - Double(rv))
+                    if d > worst { worst = d; worstIdx = i }
+                    if !(gv.isFinite && rv.isFinite) { viol += 1; i += 1; continue }
+                    let spacing = max(Double(abs(gv)), Double(abs(rv))) * Double.ulpOfOne
+                    if d > max(Double(absTol), spacing) { viol += 1 }
+                    i += 1
+                }
+                return (viol, worst, worstIdx)
+            }
         }
-        return (viol, worst, worstIdx)
     }
 
     /// Fresh cache+arena for a sequence with `pos` ALREADY-cached rows and
@@ -204,10 +247,21 @@ final class QWAttnDecodeBatchedTests: XCTestCase {
                     let parity = Self.parityViolations(got, ref, absTol: 5e-4)
                     XCTAssertEqual(parity.violations, 0, "B=\(T) C=\(pos) splits=\(splits) worst=\(parity.worstAbs)")
                     func orderedBits(_ value: Float) -> Int {
-                        let bits = Self.f16Bits(value)
+                        let bits = Float16(value).bitPattern
                         return bits & 0x8000 == 0 ? 0x8000 + Int(bits) : 0x8000 - Int(bits & 0x7FFF)
                     }
-                    let worstULP = zip(got, ref).map { abs(orderedBits($0.0) - orderedBits($0.1)) }.max() ?? 0
+                    let worstULP = got.withUnsafeBufferPointer { gB in
+                        ref.withUnsafeBufferPointer { rB -> Int in
+                            guard let gp = gB.baseAddress, let rp = rB.baseAddress else { return 0 }
+                            var mx = 0, i = 0
+                            while i < gB.count {
+                                let u = abs(orderedBits(gp[i]) - orderedBits(rp[i]))
+                                if u > mx { mx = u }
+                                i += 1
+                            }
+                            return mx
+                        }
+                    }
                     XCTAssertEqual(worstULP, 0, "exact FP16 parity B=\(T) C=\(pos) splits=\(splits)")
                 }
             }

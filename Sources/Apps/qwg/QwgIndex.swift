@@ -18,8 +18,22 @@ struct Index: ParsableCommand {
         abstract: "Build an offline LSA/QSA codebase memory pack (<root>/.qwg/manifest.json + .qwcache)."
     )
 
-    @Argument(help: "Repository or knowledge directory root to index (default: current directory).")
-    var path: String = "."
+    @Argument(help: "Repository or knowledge directory roots to index (default: current directory).")
+    var paths: [String] = []
+
+    var path: String { paths.first ?? "." }
+
+    @Option(name: .customLong("docs"),
+            help: "Additional documentation/PDF directory roots to index as off-context Vault packs (repeatable).")
+    var docs: [String] = []
+
+    @Flag(name: .customLong("no-dense-vectors"),
+          help: "Skip writing .qwg/dense_vectors.qvec even when an embedding sidecar is available.")
+    var noDenseVectors: Bool = false
+
+    @Option(name: .customLong("embed-model"),
+            help: "Optional embedding-capable decision pack to compute 256d .qwg/dense_vectors.qvec.")
+    var embedModel: String? = nil
 
     @Option(name: [.customLong("model"), .customShort("m")],
             help: "Model directory, name in ~/.qwg/models, or alias from settings.")
@@ -71,13 +85,24 @@ struct Index: ParsableCommand {
     var dflashDraftPack: String? = nil
 
     func run() throws {
-        let rootURL = URL(fileURLWithPath: path.expandingTildePath, isDirectory: true).standardizedFileURL
+        let targetRepoPaths = paths.isEmpty ? ["."] : paths
+        for docRoot in docs where !docRoot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            try indexSingleRoot(rawPath: docRoot, forceManifestOnly: true)
+        }
+        for (idx, rawRepo) in targetRepoPaths.enumerated() {
+            try indexSingleRoot(rawPath: rawRepo, forceManifestOnly: manifestOnly, overridePackName: idx == 0 ? packName : nil)
+        }
+    }
+
+    private func indexSingleRoot(rawPath: String, forceManifestOnly: Bool, overridePackName: String? = nil) throws {
+        let effectiveManifestOnly = forceManifestOnly
+        let rootURL = URL(fileURLWithPath: rawPath.expandingTildePath, isDirectory: true).standardizedFileURL
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: rootURL.path, isDirectory: &isDir), isDir.boolValue else {
             FileHandle.standardError.write("qwg index: error: directory not found at '\(rootURL.path)'\n".data(using: .utf8)!)
             throw ExitCode(2)
         }
-        let trimmedPackName = packName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let trimmedPackName = (overridePackName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedPackName = trimmedPackName.isEmpty ? rootURL.lastPathComponent : trimmedPackName
 
         let settings = QWSettingsManager.shared.loadSettings()
@@ -118,7 +143,7 @@ struct Index: ParsableCommand {
         QWMemoryPack.ensureGitExclude(in: rootURL)
         let gitSHA = QWMemoryPack.currentGitHeadSHA(in: rootURL)
 
-        if manifestOnly && resolvedModelPack.isEmpty {
+        if effectiveManifestOnly && resolvedModelPack.isEmpty {
             let requestedBudget = maxTokens > 0
                 ? maxTokens
                 : (fullPrefix ? nil : QWMemoryVault.defaultCortexTokenBudget)
@@ -144,6 +169,10 @@ struct Index: ParsableCommand {
             manifest.semanticIndex = vaultOnly.isEmpty
                 ? nil
                 : QWMemorySemanticIndex.build(entries: vaultOnly, rootPath: rootURL.path)
+            Self.saveVaultV2ArtifactsSync(
+                rootURL: rootURL, files: files, manifest: &manifest,
+                embedModel: embedModel, settings: settings, noDenseVectors: noDenseVectors
+            )
             try manifest.save(to: rootURL)
             let estTokens = built.fileEntries.filter(\.inCortex).last.map { $0.tokenOffset + $0.tokenCount } ?? 0
             print("indexed \(built.fileEntries.count) files (\(built.cortexFileCount) cortex + \(built.vaultFileCount) vault, ~\(estTokens) cortex tokens) -> \(QWMemoryManifest.manifestURL(in: rootURL).path)")
@@ -186,7 +215,7 @@ struct Index: ParsableCommand {
         let trimmedDraftPack = dflashDraftPack?.trimmingCharacters(in: .whitespacesAndNewlines)
         let explicitDraftPack = (trimmedDraftPack?.isEmpty == false) ? trimmedDraftPack : nil
 
-        if !manifestOnly, let runningPID = QWEngineInstanceLock.runningEnginePID() {
+        if !effectiveManifestOnly, let runningPID = QWEngineInstanceLock.runningEnginePID() {
             let delegatedReq = QWMemoryIndexRequest(
                 path: rootURL.path,
                 packName: resolvedPackName,
@@ -254,8 +283,12 @@ struct Index: ParsableCommand {
         manifest.semanticIndex = vaultEntries.isEmpty
             ? nil
             : QWMemorySemanticIndex.build(entries: vaultEntries, rootPath: rootURL.path)
+        Self.saveVaultV2ArtifactsSync(
+            rootURL: rootURL, files: files, manifest: &manifest,
+            embedModel: embedModel, settings: settings, noDenseVectors: noDenseVectors
+        )
 
-        if manifestOnly {
+        if effectiveManifestOnly {
             try manifest.save(to: rootURL)
             if built.vaultFileCount > 0 {
                 print("indexed \(built.fileEntries.count) files (\(built.cortexFileCount) cortex + \(built.vaultFileCount) vault, \(memoryTokens.count) cortex tokens, \(built.totalBytes) B) -> \(QWMemoryManifest.manifestURL(in: rootURL).path)")
@@ -510,5 +543,66 @@ struct Index: ParsableCommand {
         }
         let inferred = QWDFlashConfig.inferBackendAndMaxDrafts(packPath: candidatePack)
         return IndexSpeculation(drafts: max(1, inferred.maxDrafts), backend: .dflash2, dflashDraftPackPath: candidatePack)
+    }
+
+    private static func saveVaultV2ArtifactsSync(
+        rootURL: URL,
+        files: [QWMemoryPack.DiscoveredFile],
+        manifest: inout QWMemoryManifest,
+        embedModel: String?,
+        settings: QWServerSettings,
+        noDenseVectors: Bool
+    ) {
+        let graph = QWMemorySymbolGraph.build(files: files.map { ($0.relativePath, $0.content) })
+        if !graph.declarations.isEmpty, (try? graph.save(to: rootURL)) != nil {
+            manifest.symbolGraphFile = "symbol_graph.json"
+        }
+        guard !noDenseVectors else { return }
+        let rawEmbedRef = (embedModel?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 }
+            ?? (settings.decisionModelPackPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : settings.decisionModelPackPath)
+        guard let rawEmbedRef else { return }
+        let resolvedRef = settings.resolveModelReference(rawEmbedRef, allowArbitraryFilesystemPaths: true)
+        let packPath = resolvedRef.packPath.isEmpty ? rawEmbedRef.expandingTildePath : resolvedRef.packPath
+        guard FileManager.default.fileExists(atPath: packPath) else { return }
+
+        final class VecBox: @unchecked Sendable { var vectors: [[Float]]? = nil }
+        let box = VecBox()
+        let sem = DispatchSemaphore(value: 0)
+        let snippets = files.map { $0.relativePath + "\n" + String($0.content.prefix(2048)) }
+        Task {
+            defer { sem.signal() }
+            let actor = QWEngineLifecycleActor(
+                config: QWEngineLifecycleActor.Config(packPath: "", modelName: ""),
+                logger: QWServerLogger(level: .none)
+            )
+            guard (try? await actor.loadDecisionSidecar(packPath: packPath)) != nil else { return }
+            var out: [[Float]] = []
+            var cursor = 0
+            while cursor < snippets.count {
+                let end = min(snippets.count, cursor + 16)
+                let batch = Array(snippets[cursor..<end])
+                guard let res = try? await actor.embedTexts(
+                    batch, normalize: true, dimensions: QWMemoryDenseVectorStore.defaultDimension
+                ), res.embeddings.count == batch.count else {
+                    return
+                }
+                out.append(contentsOf: res.embeddings)
+                cursor = end
+            }
+            box.vectors = out
+        }
+        sem.wait()
+        if let vecs = box.vectors, vecs.count == files.count {
+            let store = QWMemoryDenseVectorStore(
+                dimension: QWMemoryDenseVectorStore.defaultDimension,
+                relativePaths: files.map(\.relativePath),
+                anchors: files.map { $0.spanAnchors.first?.label },
+                vectors: vecs
+            )
+            if (try? store.save(to: QWMemoryManifest.denseVectorsURL(in: rootURL))) != nil {
+                manifest.denseVectorFile = "dense_vectors.qvec"
+                manifest.denseVectorDim = QWMemoryDenseVectorStore.defaultDimension
+            }
+        }
     }
 }

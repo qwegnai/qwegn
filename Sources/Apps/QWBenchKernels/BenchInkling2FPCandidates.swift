@@ -88,8 +88,10 @@ enum Ink2FPCandidates {
         hal: QWHal, bufs: MoECandidateBuffers, t: Int, forceNAX: Bool? = nil
     ) -> (candName: String, encode: ((any MTLCommandBuffer, inout any MTLComputeCommandEncoder) -> Void)?) {
         let isPrefill = forceNAX ?? (t > 8)
+        let useNAX = hal.caps.isMetal4TensorCapable
+        let prefillKind = useNAX ? "nax" : "sg"
         let candName = isPrefill
-            ? (bufs.isMXFP8 ? "qwg_moe_nax_gemm_mxfp8_g32" : "qwg_moe_nax_gemm_nvfp4_g16")
+            ? (bufs.isMXFP8 ? "qwg_moe_\(prefillKind)_gemm_mxfp8_g32" : "qwg_moe_\(prefillKind)_gemm_nvfp4_g16")
             : (bufs.isMXFP8 ? "qwg_moe_compact_mxfp8_gate_up_swiglu" : "qwg_moe_compact_nvfp4_gate_up_swiglu")
         guard let pGrp = resolve(hal, "qwg_moe_group_pairs_f32"),
               let pComb = resolve(hal, "qwg_moe_down_reduce_combine_bf16") else { return (candName, nil) }
@@ -97,7 +99,7 @@ enum Ink2FPCandidates {
         let tg256 = MTLSize(width: 256, height: 1, depth: 1)
 
         if isPrefill {
-            guard hal.caps.isMetal4TensorCapable,
+            guard hal.caps.supportsSimdgroupMMA,
                   let pNaxGU = resolve(hal, candName),
                   let pNaxDn = resolve(hal, candName),
                   let pSwiGLU = resolve(hal, "qwg_swiglu_softcap_f16") else { return (candName, nil) }

@@ -16,6 +16,7 @@ public struct QWDFlashAdaptivePolicy: Sendable {
     private var acc: [Double]
     private var costMsBucket: (b3: Double, b5: Double, b7: Double, b15: Double)
     private var b2CostMs: Double = 25.5
+    private var observedBuckets: UInt8 = 0
     private var rounds: Int = 0
     private var lastDraftCount: Int = 0
     private var lastAcceptedAll: Bool = false
@@ -79,28 +80,42 @@ public struct QWDFlashAdaptivePolicy: Sendable {
             lastDraftCount = initial
             return initial
         }
+        let fastSparse = (observedBuckets & 2) != 0 && costMsBucket.b3 < 28.0
+        let effCap = (fastSparse && reach(drafts: 5) < 0.65) ? min(5, cap) : cap
         if lastAcceptedAll {
-            if lastDraftCount >= cap { return cap }
-            if consecutiveFullAccepts >= 2 && reach(drafts: lastDraftCount) >= 0.52 {
-                let promoted = nextSparseBucket(after: lastDraftCount, cap: cap)
+            if lastDraftCount >= effCap { return effCap }
+            if fastSparse && lastDraftCount < 3 {
+                let promoted = min(3, effCap)
                 lastDraftCount = promoted
                 return promoted
             }
-            return min(lastDraftCount, cap)
+            let minConsec = fastSparse ? 1 : 2
+            let minReach = fastSparse ? 0.22 : 0.52
+            if consecutiveFullAccepts >= minConsec && (reach(drafts: lastDraftCount) >= minReach || (fastSparse && consecutiveFullAccepts >= 2)) {
+                let promoted = nextSparseBucket(after: lastDraftCount, cap: effCap)
+                lastDraftCount = promoted
+                return promoted
+            }
+            return min(lastDraftCount, effCap)
+        }
+        if fastSparse, lastDraftCount <= 3, reach(drafts: 2) >= 0.48 {
+            let promoted = min(5, effCap)
+            lastDraftCount = promoted
+            return promoted
         }
         if rounds % Self.exploreEvery == 0 {
-            let b3 = min(3, cap)
+            let b3 = min(3, effCap)
             if lastDraftCount < b3 {
                 lastDraftCount = b3
                 return b3
             }
-            if lastDraftCount < cap && reach(drafts: lastDraftCount) >= 0.48 {
-                let explored = nextSparseBucket(after: lastDraftCount, cap: cap)
+            if lastDraftCount < effCap && reach(drafts: lastDraftCount) >= 0.48 {
+                let explored = nextSparseBucket(after: lastDraftCount, cap: effCap)
                 lastDraftCount = explored
                 return explored
             }
         }
-        let best = bestCandidate(from: [min(2, cap), min(3, cap), min(5, cap), min(7, cap), cap])
+        let best = bestCandidate(from: [min(2, effCap), min(3, effCap), min(5, effCap), min(7, effCap), effCap])
         lastDraftCount = best
         return best
     }
@@ -135,18 +150,33 @@ public struct QWDFlashAdaptivePolicy: Sendable {
             let target = accepted > i ? 1.0 : 0.0
             acc[i] += alpha * (target - acc[i])
         }
-        guard let ms = roundMs, ms > 0 else { return }
+        guard let rawMs = roundMs, rawMs > 0 else { return }
         let msAlpha = 0.20
+        let wasFirstObservation = (observedBuckets == 0)
+        let ms = (wasFirstObservation && rawMs > 90.0) ? min(rawMs, isSparseMoE ? 25.0 : 47.0) : rawMs
         if isSparseMoE && draftCount <= 2 {
-            b2CostMs += msAlpha * (ms - b2CostMs)
+            observedBuckets |= 1
+            b2CostMs = wasFirstObservation ? ms : (b2CostMs + msAlpha * (ms - b2CostMs))
         } else if draftCount <= 3 {
-            costMsBucket.b3 += msAlpha * (ms - costMsBucket.b3)
+            observedBuckets |= 2
+            costMsBucket.b3 = wasFirstObservation ? ms : (costMsBucket.b3 + msAlpha * (ms - costMsBucket.b3))
         } else if draftCount <= 5 {
-            costMsBucket.b5 += msAlpha * (ms - costMsBucket.b5)
+            observedBuckets |= 4
+            costMsBucket.b5 = wasFirstObservation ? ms : (costMsBucket.b5 + msAlpha * (ms - costMsBucket.b5))
         } else if draftCount <= 7 {
-            costMsBucket.b7 += msAlpha * (ms - costMsBucket.b7)
+            observedBuckets |= 8
+            costMsBucket.b7 = wasFirstObservation ? ms : (costMsBucket.b7 + msAlpha * (ms - costMsBucket.b7))
         } else {
-            costMsBucket.b15 += msAlpha * (ms - costMsBucket.b15)
+            observedBuckets |= 16
+            costMsBucket.b15 = wasFirstObservation ? ms : (costMsBucket.b15 + msAlpha * (ms - costMsBucket.b15))
+        }
+        if isSparseMoE, (observedBuckets & 2) != 0 {
+            let b3 = costMsBucket.b3
+            let fastSparse = b3 < 28.0
+            if (observedBuckets & 1) == 0 { b2CostMs = b3 * (fastSparse ? 0.95 : (25.5 / 30.5)) }
+            if (observedBuckets & 4) == 0 { costMsBucket.b5 = b3 * (fastSparse ? 1.12 : (39.5 / 30.5)) }
+            if (observedBuckets & 8) == 0 { costMsBucket.b7 = b3 * (fastSparse ? 1.38 : (46.5 / 30.5)) }
+            if (observedBuckets & 16) == 0 { costMsBucket.b15 = b3 * (fastSparse ? 2.35 : (98.0 / 30.5)) }
         }
     }
 

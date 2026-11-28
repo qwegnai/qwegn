@@ -2,6 +2,7 @@
 #include <metal_simdgroup_matrix>
 #include "include/qw_dequant.metalh"
 #include "include/qw_geometry_constants.metalh"
+#include "include/qw_gdn_norm.metalh"
 using namespace metal;
 
 // qwgdn_decode.metal — C12: GDN recurrent decode step (post-conv q̂k̂vz,
@@ -74,20 +75,35 @@ kernel void qwg_gdn_replay_state(
     }
 }
 
-kernel void qwg_gdn_recurrent(
-        device const half* y        [[buffer(0)]],   // this step: q̂‖k̂‖v (10240)
-        device const float* betas   [[buffer(1)]],   // [48]
-        device const float* glog    [[buffer(2)]],   // [48]
-        device float* state         [[buffer(3)]],   // [48][128][128] in place
-        device float* o_raw         [[buffer(4)]],   // [48][128] fp32 (pre-norm) optional
-        device const half*  zrow    [[buffer(5)]],   // this step's z (6144)
-        device const half*  w       [[buffer(6)]],   // norm weight (128)
-        device half*        o_out   [[buffer(7)]],   // [48][128] f16 (gated norm out)
-        device float*       out_gs  [[buffer(8)]],   // [48] f32 optional OutProj group-sums
-        device float*       innovation [[buffer(9)]], // [48][128] optional rank-1 update vector
-        uint3 tg                    [[threadgroup_position_in_grid]],
-        uint tid                    [[thread_index_in_threadgroup]]) {
-    const uint h = tg.x;                 // v-head 0..V_HEADS-1
+struct QWGDNBatchPtrTable8 {
+    ulong addrs[8];
+};
+
+struct QWGDNBatchStrides {
+    uint yStride;
+    uint betasStride;
+    uint glogStride;
+    uint zStride;
+    uint oStride;
+    uint oRawStride;
+};
+
+static inline void qwg_gdn_recurrent_row(
+        device const half* y,
+        device const float* betas,
+        device const float* glog,
+        device float* state,
+        device float* o_raw,
+        device const half* zrow,
+        device const half* w,
+        device half* o_out,
+        device float* out_gs,
+        device float* innovation,
+        threadgroup float2* red,
+        threadgroup float& rho_shared,
+        threadgroup float* redNorm,
+        uint h,
+        uint tid) {
     const uint c = tid & 127u;           // v-column (32 consecutive per SG)
     const uint kch = tid >> 7u;          // k-chunk 0..7
     const uint i = h / QW_GDN_V_PER_QK;  // KEY head it shares
@@ -98,9 +114,6 @@ kernel void qwg_gdn_recurrent(
     device float* S = state + (uint64_t)h * 16384u;          // S[k][c] at k*128+c
     device const half* qrow = y + (uint64_t)i * 128u;
     device const half* krow = y + qCh + (uint64_t)i * 128u;
-    threadgroup float2 red[1024];
-    threadgroup float rho_shared;
-    threadgroup float redNorm[4];
     const uint k0 = kch * QW_KC;
 
     // SIMD group 0 computes scalar rho = dot(k̂, q̂) across the 128 dims in parallel (4 halves per lane)
@@ -171,10 +184,7 @@ kernel void qwg_gdn_recurrent(
     if (kch == 0u && o_out != nullptr) {
         const float total = redNorm[0] + redNorm[1] + redNorm[2] + redNorm[3];
         const float rms = rsqrt(total * (1.0f / 128.0f) + QW_RMS_EPS);
-        const float zn = float(zrow[(uint64_t)h * 128u + c]);
-        const float gate = QW_GDN_NORM_SIGMOID ? (1.0f / (1.0f + exp(-zn))) : (zn / (1.0f + exp(-zn)));
-        const float gated = (o * rms * float(w[c])) * gate;
-        const half hg = simd_fwht32(half(gated), c & 31u);
+        const half hg = qw_gdn_gated_norm_elem(o, rms, w[c], zrow[(uint64_t)h * 128u + c], c & 31u);
         o_out[(uint64_t)h * 128u + c] = hg;
         if (out_gs != nullptr) {
             hg_buf[c] = hg;
@@ -201,6 +211,55 @@ kernel void qwg_gdn_recurrent(
             }
         }
     }
+}
+
+kernel void qwg_gdn_recurrent(
+        device const half* y        [[buffer(0)]],   // this step: q̂‖k̂‖v (10240)
+        device const float* betas   [[buffer(1)]],   // [48]
+        device const float* glog    [[buffer(2)]],   // [48]
+        device float* state         [[buffer(3)]],   // [48][128][128] in place
+        device float* o_raw         [[buffer(4)]],   // [48][128] fp32 (pre-norm) optional
+        device const half*  zrow    [[buffer(5)]],   // this step's z (6144)
+        device const half*  w       [[buffer(6)]],   // norm weight (128)
+        device half*        o_out   [[buffer(7)]],   // [48][128] f16 (gated norm out)
+        device float*       out_gs  [[buffer(8)]],   // [48] f32 optional OutProj group-sums
+        device float*       innovation [[buffer(9)]], // [48][128] optional rank-1 update vector
+        uint3 tg                    [[threadgroup_position_in_grid]],
+        uint tid                    [[thread_index_in_threadgroup]]) {
+    threadgroup float2 red[1024];
+    threadgroup float rho_shared;
+    threadgroup float redNorm[4];
+    qwg_gdn_recurrent_row(y, betas, glog, state, o_raw, zrow, w, o_out, out_gs,
+                          innovation, red, rho_shared, redNorm, tg.x, tid);
+}
+
+kernel void qwg_gdn_recurrent_batch(
+        device const half* y                    [[buffer(0)]],
+        device const float* betas               [[buffer(1)]],
+        device const float* glog                [[buffer(2)]],
+        device const half* zBase                [[buffer(3)]],
+        device const half* w                    [[buffer(4)]],
+        device half* o_out                      [[buffer(5)]],
+        device float* o_raw                     [[buffer(6)]],
+        constant QWGDNBatchPtrTable8& states    [[buffer(7)]],
+        constant QWGDNBatchStrides& strides     [[buffer(8)]],
+        uint3 tg                                [[threadgroup_position_in_grid]],
+        uint tid                                [[thread_index_in_threadgroup]]) {
+    threadgroup float2 red[1024];
+    threadgroup float rho_shared;
+    threadgroup float redNorm[4];
+    const uint b = tg.z;
+    device float* state = (device float*)states.addrs[b];
+    device float* oRawRow = (o_raw != nullptr) ? (o_raw + (uint64_t)b * strides.oRawStride) : nullptr;
+    qwg_gdn_recurrent_row(
+        y + (uint64_t)b * strides.yStride,
+        betas + (uint64_t)b * strides.betasStride,
+        glog + (uint64_t)b * strides.glogStride,
+        state, oRawRow,
+        zBase + (uint64_t)b * strides.zStride,
+        w,
+        o_out + (uint64_t)b * strides.oStride,
+        nullptr, nullptr, red, rho_shared, redNorm, tg.x, tid);
 }
 
 // Verify rows: R tokens through the T = 1 recurrence (qwg_gdn_recurrent) in ONE dispatch.
@@ -313,10 +372,7 @@ kernel void qwg_gdn_recurrent_rows(
             const uint idx = h * 128u + c;
             const float total = redNorm[0] + redNorm[1] + redNorm[2] + redNorm[3];
             const float rms = rsqrt(total * (1.0f / 128.0f) + QW_RMS_EPS);
-            const float zn = float(zBase[(uint64_t)r * zStride + idx]);
-            const float gate = QW_GDN_NORM_SIGMOID ? (1.0f / (1.0f + exp(-zn))) : (zn / (1.0f + exp(-zn)));
-            const float gated = (o * rms * float(w[c])) * gate;
-            const half hg = simd_fwht32(half(gated), c & 31u);
+            const half hg = qw_gdn_gated_norm_elem(o, rms, w[c], zBase[(uint64_t)r * zStride + idx], c & 31u);
             o_out[(uint64_t)r * QW_GDN_Z_CH + idx] = hg;
         }
         if (r + 1u < R) {

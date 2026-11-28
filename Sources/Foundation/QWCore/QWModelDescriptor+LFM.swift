@@ -65,7 +65,9 @@ extension QWModelDescriptor {
             ropeInterleave: ropeInterleave, role: role,
             shortConvConfig: shortConvConfig, normKind: normKind,
             useSandwichNorm: useSandwichNorm, perKindRoPEConfig: perKindRoPEConfig,
-            attnGateMode: attnGateMode, decisionConfig: updated
+            attnGateMode: attnGateMode, decisionConfig: updated,
+            gatedNormConfig: gatedNormConfig, gdnGatingConfig: gdnGatingConfig,
+            finalLogitSoftcapping: finalLogitSoftcapping, v2DigestHeadDim: v2DigestHeadDim
         )
     }
 
@@ -162,10 +164,13 @@ extension QWModelDescriptor {
             stateKey: hasConv ? "conv" : nil
         ) : nil
 
-        let sandwich = t.use_sandwich_norm ?? false
+        let sandwich = (t.use_sandwich_norm == true) || (t.layernorm_type == "pre_post")
+        let isGatedNorm = (t.norm_type == "GatedNorm" || t.norm_type == "ZeroCenteredGatedNorm")
         let normKind: NormKind?
         if familySpec.usesLayerNormByDefault {
             normKind = .layerNorm(eps: Float(resolvedNormEps), hasBias: t.norm_bias ?? false)
+        } else if isGatedNorm {
+            normKind = nil
         } else if sandwich || family == .lfm2 || family == .lfm3 || family == .lfm2Encoder {
             normKind = .rmsNorm(eps: Float(resolvedNormEps), hasUnitOffset: familySpec.usesPlusOneRMSNorm)
         } else {
@@ -205,7 +210,7 @@ extension QWModelDescriptor {
         }
 
         let decisionConfig = decodeDecisionModelConfig(
-            text: t, env: env, family: family,
+            text: t, env: env, familySpec: familySpec,
             resolvedMaxPos: resolvedMaxPos, tieWordEmbeddings: tieWordEmbeddings
         )
         return DecodedLFMTraits(
@@ -221,10 +226,11 @@ extension QWModelDescriptor {
     private static func decodeDecisionModelConfig(
         text t: ConfigEnvelope.Text,
         env: ConfigEnvelope,
-        family: Family,
+        familySpec: QWModelFamilySpec,
         resolvedMaxPos: Int,
         tieWordEmbeddings: Bool
     ) -> QWDecisionModelConfig? {
+        let family = familySpec.family
         if family == .lfm2Encoder {
             return QWDecisionModelConfig(
                 framing: .optionMarkers(
@@ -278,7 +284,11 @@ extension QWModelDescriptor {
         let rawId2Label = t.id2label ?? env.id2label
         let archs = t.architectures ?? env.architectures ?? []
         let isSeqCls = archs.contains(where: { $0.hasSuffix("ForSequenceClassification") })
-        if family == .modernBert || rawId2Label != nil || isSeqCls {
+        let isGenerativeArch = archs.contains(where: {
+            $0.hasSuffix("ForCausalLM") || $0.hasSuffix("ForConditionalGeneration")
+        })
+        let allowsBoilerplateId2Label = rawId2Label != nil && (!isGenerativeArch || familySpec.defaultRole == .decisionEncoder)
+        if family == .modernBert || isSeqCls || allowsBoilerplateId2Label {
             var parsedLabels: [Int: String] = [:]
             if let raw = rawId2Label {
                 for (k, v) in raw { if let idx = Int(k) { parsedLabels[idx] = v } }

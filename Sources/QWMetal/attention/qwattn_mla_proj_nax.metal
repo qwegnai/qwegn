@@ -1,5 +1,6 @@
 // qwattn_mla_proj_nax.metal — Apple10+ NAX absorb_q & proj_uv (BM=64, BN=64).
 // Isolated _sub2 / non-_sub2 PSOs keep constant LUTs <= 20 KiB per kernel.
+#if !defined(QW_DISABLE_NAX)
 #include <metal_stdlib>
 #include <metal_simdgroup>
 #include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
@@ -394,3 +395,4 @@ kernel void qwg_mla_proj_uv_nax_sub2(
     threadgroup MLAProjNaxTg st;
     qw_mla_proj_uv_nax_body<true>(uLat, kvBBlocks, attOut, p, st, tg, tid, sg, lane);
 }
+#endif // !defined(QW_DISABLE_NAX)

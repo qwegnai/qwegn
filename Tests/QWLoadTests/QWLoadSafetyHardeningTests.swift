@@ -5,6 +5,16 @@ import XCTest
 import QWQuant
 import QWCore
 
+private extension PlaneLayout {
+    static func isRawDecisionPlaneName(_ name: String) -> Bool {
+        let tokens = [
+            ".conv.", ".short_conv.", "decision_head", "classifier",
+            "score_head", "pointer_head", "marker_head", "type_emb", "type_embedding",
+        ]
+        return tokens.contains { name.contains($0) }
+    }
+}
+
 final class QWLoadSafetyHardeningTests: XCTestCase {
     private var dir: URL!
 
@@ -132,5 +142,32 @@ final class QWLoadSafetyHardeningTests: XCTestCase {
         XCTAssertTrue(PlaneLayout.isRawDecisionPlaneName("marker_head.mlp.0.weight"))
         XCTAssertTrue(PlaneLayout.isRawDecisionPlaneName("classifier.weight"))
         XCTAssertFalse(PlaneLayout.isRawDecisionPlaneName("model.layers.0.self_attn.q_proj.weight"))
+    }
+
+    func testPlaneLayoutPrecedenceAndSpanRejectsRaw() throws {
+        let both = QWQTensorEntry(shape: [4, 64], hq4Off: 128, rawOff: 0)
+        XCTAssertEqual(PlaneLayout.resolve(both), .raw)
+
+        let hdrObj: [String: Any] = [
+            "provenance": [
+                "model_id": QWModelDescriptor.qwen38_27b.family.rawValue,
+                "geometry_digest": QWModelDescriptor.qwen38_27b.geometryDigestV3Hex,
+            ],
+            "tensors": [
+                "raw_and_hq4": ["shape": [4, 64], "raw_off": 0, "hq4_off": 128],
+            ],
+        ]
+        let hdrData = try JSONSerialization.data(withJSONObject: hdrObj)
+        var out = Data(QWQuant.magic.utf8)
+        out.append(contentsOf: withUnsafeBytes(of: UInt64(hdrData.count).littleEndian) {
+            (raw: UnsafeRawBufferPointer) in Array(raw)
+        })
+        out.append(Data(repeating: 0, count: 16))
+        out.append(hdrData)
+        let packURL = dir.appendingPathComponent("precedence.qwp")
+        try out.write(to: packURL)
+
+        let pack = try QWQuant.Pack(url: packURL, descriptor: .qwen38_27b)
+        XCTAssertThrowsError(try QWCheckpointTensorLoader.span(pack, "raw_and_hq4"))
     }
 }

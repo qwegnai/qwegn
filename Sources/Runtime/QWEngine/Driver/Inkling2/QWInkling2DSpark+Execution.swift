@@ -77,7 +77,7 @@ extension QWInkling2DSpark {
             let x16TV = rotF16TV.slice(byteOffset: 0, count: m * view.k, dtype: .f16)
             let yBF16TV = QWTensorValue(region: QWMRegion(buffer: yBF16, base: 0, length: yBF16.length),
                                         offset: yOff, shape: QWTensorShape([m * view.n], .bf16))
-            if m >= 5 && hal.caps.isMetal4TensorCapable
+            if m >= 5 && hal.caps.supportsSimdgroupMMA
                 && ((view.n % 64) == 0 || !view.isIncumbentContainer) && (view.k % 64) == 0 {
                 try QWGemm.encodeNaxF32(enc, hal: hal, weight: view, x16: x16TV, y16: x16TV, y32: yBF16TV, rows: m)
                 return
@@ -464,11 +464,12 @@ extension QWInkling2DSpark {
             encodeRotateToF16(enc, srcBF16: propNormBuf, srcOff: H * 2,
                               dst: baseLogitsF16InBuf, count: draftCount * H, rotate: hw.view.isRotated)
             let x16 = baseLogitsF16InTV.slice(byteOffset: 0, count: draftCount * H, dtype: .f16)
-            let canUseNax = draftCount >= 3 && hal.caps.isMetal4TensorCapable
+            let useNAX = hal.caps.isMetal4TensorCapable
+            let canUseNax = draftCount >= 3 && hal.caps.supportsSimdgroupMMA
                 && (H % 64) == 0 && hw.view.n == V
                 && ((hw.view.n % 64) == 0 || !hw.view.isIncumbentContainer)
                 && (hw.view.isIncumbentContainer
-                    || QWGemmAQ.naxF32KernelName(bits: hw.view.bits, group: hw.view.groupSize, isSHVQ: hw.view.isSHVQ) != nil)
+                    || QWGemmAQ.naxF32KernelName(bits: hw.view.bits, group: hw.view.groupSize, isSHVQ: hw.view.isSHVQ, useNAX: useNAX) != nil)
             if canUseNax {
                 let yBF16 = QWTensorValue(region: QWMRegion(buffer: baseLogitsBF16Buf, base: 0, length: baseLogitsBF16Buf.length),
                                           offset: 0, shape: QWTensorShape([draftCount * V], .bf16))
@@ -713,22 +714,26 @@ extension QWInkling2DSpark {
         let rowBytes = config.kvHeads * config.headDim * 2
         for (idx, slice) in slices.enumerated() where idx < layers.count {
             let l = layers[idx]
-            let kp = l.kCache.contents().assumingMemoryBound(to: UInt8.self)
-            let vp = l.vCache.contents().assumingMemoryBound(to: UInt8.self)
-            slice.kData.withUnsafeBytes { raw in
-                guard let base = raw.baseAddress else { return }
-                for r in 0..<slice.count {
-                    let absPos = slice.startPos + r
-                    let slot = l.usesRingBuffer ? (absPos % l.ringCap) : absPos
-                    memcpy(kp.advanced(by: slot * rowBytes), base.advanced(by: r * rowBytes), rowBytes)
+            let kp = l.kCache.contents()
+            let vp = l.vCache.contents()
+            withExtendedLifetime(l.kCache) {
+                slice.kData.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                    guard let base = raw.baseAddress else { return }
+                    for r in 0..<slice.count {
+                        let absPos = slice.startPos + r
+                        let slot = l.usesRingBuffer ? (absPos % l.ringCap) : absPos
+                        kp.advanced(by: slot * rowBytes).copyMemory(from: base.advanced(by: r * rowBytes), byteCount: rowBytes)
+                    }
                 }
             }
-            slice.vData.withUnsafeBytes { raw in
-                guard let base = raw.baseAddress else { return }
-                for r in 0..<slice.count {
-                    let absPos = slice.startPos + r
-                    let slot = l.usesRingBuffer ? (absPos % l.ringCap) : absPos
-                    memcpy(vp.advanced(by: slot * rowBytes), base.advanced(by: r * rowBytes), rowBytes)
+            withExtendedLifetime(l.vCache) {
+                slice.vData.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                    guard let base = raw.baseAddress else { return }
+                    for r in 0..<slice.count {
+                        let absPos = slice.startPos + r
+                        let slot = l.usesRingBuffer ? (absPos % l.ringCap) : absPos
+                        vp.advanced(by: slot * rowBytes).copyMemory(from: base.advanced(by: r * rowBytes), byteCount: rowBytes)
+                    }
                 }
             }
         }
@@ -737,7 +742,7 @@ extension QWInkling2DSpark {
         withExtendedLifetime(lastTapBuf) {
             lastTap.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
                 guard let base = raw.baseAddress else { return }
-                memcpy(tapDst, base, tapBytes)
+                tapDst.copyMemory(from: base, byteCount: tapBytes)
             }
         }
         ctxLen = pos

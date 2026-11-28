@@ -37,6 +37,7 @@ NON_KERNEL_LITERALS = {
     "qwg_search_enough",
     "qwg_supervise",
     "qwg_route_turn",
+    "qwg_vault_mount",
     "qwg_vault_query",
     "qwg_vault_status",
 }
@@ -58,51 +59,55 @@ def metallib_names(path: Path | None = None) -> set[str]:
     return found
 
 
-def basis_problems() -> list[str]:
-    """The two libraries must each carry the marker of their OWN basis.
-
-    The basis is a build-time property (specs/02-qwhal.md): there are two
-    libraries, one per basis, and the standard one is compiled with
-    `-DQW_BASIS_STANDARD`. If that flag stopped reaching the compiler, the
-    standard library would be a second copy of the rotated one and a
-    standard-basis model would run with rotated activations — wrong numbers
-    with no error anywhere. The markers are what the HAL reads to refuse
-    that, so the gate checks they are actually there and actually apart.
-    """
+def basis_problems(rot: Path | None = None, std: Path | None = None) -> list[str]:
+    """The rotated and standard libraries must each carry their OWN basis marker."""
     problems: list[str] = []
-    std = ROOT / "Sources" / "QWMetal" / "kernel_std.metallib"
-    if not std.exists():
-        return [f"MISSING STANDARD METALLIB: {std.relative_to(ROOT)} "
-                f"— run Scripts/build_metallib.sh"]
-    rotated = metallib_names()
+    rot = rot or METALLIB
+    std = std or (ROOT / "Sources" / "QWMetal" / "kernel_std.metallib")
+    for lib in (rot, std):
+        if not lib.exists():
+            problems.append(f"MISSING METALLIB: {lib.relative_to(ROOT)} — run Scripts/build_metallib.sh")
+    if problems:
+        return problems
+    rotated = metallib_names(rot)
     standard = metallib_names(std)
     if "qwg_basis_marker" not in rotated:
-        problems.append("BASIS MARKER: the rotated metallib does not carry "
+        problems.append(f"BASIS MARKER: {rot.name} does not carry "
                         "qwg_basis_marker — the HAL cannot tell which basis it holds")
     if "qwg_basis_marker_standard" in rotated:
-        problems.append("BASIS MARKER: the rotated metallib carries the "
+        problems.append(f"BASIS MARKER: {rot.name} carries the "
                         "STANDARD marker — it is the wrong build")
     if "qwg_basis_marker_standard" not in standard:
-        problems.append("BASIS MARKER: the standard metallib does not carry "
+        problems.append(f"BASIS MARKER: {std.name} does not carry "
                         "qwg_basis_marker_standard — it is the wrong build")
     if "qwg_basis_marker" in standard:
-        problems.append("BASIS MARKER: the standard metallib carries the "
+        problems.append(f"BASIS MARKER: {std.name} carries the "
                         "ROTATED marker — it is the wrong build")
-    # The two libraries are two builds of the SAME sources, so they must
-    # offer the same kernels. A name only one of them has would be a kernel
-    # that exists in one basis and not the other — a dispatch that works for
-    # one model and refuses the other for no reason the caller can see. The
-    # two markers are the one name that must differ: they are how the
-    # libraries tell each other apart.
     markers = {"qwg_basis_marker", "qwg_basis_marker_standard"}
     only_rotated = sorted((rotated - standard) - markers)
     only_standard = sorted((standard - rotated) - markers)
     if only_rotated:
-        problems.append(f"BASIS SYMBOLS: {len(only_rotated)} kernel(s) only in the rotated "
-                        f"metallib: {only_rotated[:3]}")
+        problems.append(f"BASIS SYMBOLS ({rot.name}): {len(only_rotated)} kernel(s) only in rotated: "
+                        f"{only_rotated[:3]}")
     if only_standard:
-        problems.append(f"BASIS SYMBOLS: {len(only_standard)} kernel(s) only in the standard "
-                        f"metallib: {only_standard[:3]}")
+        problems.append(f"BASIS SYMBOLS ({std.name}): {len(only_standard)} kernel(s) only in standard: "
+                        f"{only_standard[:3]}")
+    return problems
+
+
+def m3_problems(full_names: set[str], nax_names: set[str]) -> list[str]:
+    """Verify kernel_m3.metallib + kernel_m3_std.metallib markers and non-NAX parity."""
+    m3_rot = ROOT / "Sources" / "QWMetal" / "kernel_m3.metallib"
+    m3_std = ROOT / "Sources" / "QWMetal" / "kernel_m3_std.metallib"
+    problems = basis_problems(m3_rot, m3_std)
+    if not m3_rot.exists():
+        return problems
+    m3_names = metallib_names(m3_rot) - declared_helpers()
+    expected_non_nax = full_names - nax_names
+    missing = sorted(expected_non_nax - m3_names)
+    if missing:
+        problems.append(
+            f"M3 MISSING NON-NAX KERNELS: {len(missing)} non-NAX kernel(s) absent from {m3_rot.name}: {missing[:5]}")
     return problems
 
 
@@ -145,7 +150,7 @@ def prod_swift_refs() -> tuple[dict[str, list[str]], set[str]]:
     lit = re.compile(r"[\"'](q[a-z0-9_]{6,})[\"']")
     interp = re.compile(r"[\"'](q[a-z0-9_]+_[a-z0-9_]*?)\\?\(")
     for path in (ROOT / "Sources").rglob("*.swift"):
-        if "QWMetal" in path.parts or "QWBenchKernels" in path.parts or path.name == "QWKernelInventory.swift":
+        if "QWMetal" in path.parts or "QWBenchKernels" in path.parts or path.name in ("QWKernelInventory.swift", "QWNaxKernelRegistry.swift"):
             continue
         text = strip_comments(path.read_text(encoding="utf-8", errors="ignore"))
         for name in lit.findall(text):
@@ -306,6 +311,22 @@ def door_problems(available: set[str], dynamic: set[str] | None = None) -> list[
     return problems
 
 
+def nax_registry_problems(available: set[str]) -> list[str]:
+    """QWNaxKernelRegistry must match nax_kernels.json and ship in full metallib."""
+    problems: list[str] = []
+    try:
+        nax_names = gen_kernel_inventory.load_nax_manifest()
+    except (OSError, ValueError) as error:
+        return [f"INVALID NAX MANIFEST: {error}"]
+    rendered = gen_kernel_inventory.render_nax_registry(nax_names)
+    out_path = gen_kernel_inventory.NAX_OUTPUT
+    if not out_path.exists() or out_path.read_text(encoding="utf-8") != rendered:
+        problems.append("STALE NAX REGISTRY: run python3 Scripts/gen_kernel_inventory.py")
+    for missing in sorted(set(nax_names) - available):
+        problems.append(f"MISSING NAX KERNEL: {missing!r} in nax_kernels.json is not in the metallib")
+    return problems
+
+
 def main() -> int:
     names = metallib_names() - declared_helpers()
     prod_refs, prod_dynamic = prod_swift_refs()
@@ -344,7 +365,13 @@ def main() -> int:
                         f"which is not in the metallib")
 
     problems.extend(door_problems(names, dynamic))
+    problems.extend(nax_registry_problems(names))
     problems.extend(basis_problems())
+    try:
+        nax_set = set(gen_kernel_inventory.load_nax_manifest())
+    except (OSError, ValueError):
+        nax_set = set()
+    problems.extend(m3_problems(names, nax_set))
 
     for line in problems:
         print(line)

@@ -270,4 +270,76 @@ public enum QWContextCopyDrafter {
         return Proposal(drafts: [mtpDraft], mtpActive: mtpActive,
                         mtpSourcedDrafts: 1, periodicDrafts: false, runMTPOnVerify: true)
     }
+
+    /// Selects hybrid periodic + suffix PLD + recycler drafts for DFlash bypass rounds.
+    public static func selectHybridPLDDrafts(
+        history: [Int64],
+        extraToken: Int64? = nil,
+        previousToken: Int? = nil,
+        pendingToken: Int,
+        mode: QWDraftStrategy,
+        maxDrafts: Int,
+        recycler: QWTokenRecycler
+    ) -> [Int] {
+        selectHybridPLDDraftsCore(
+            history: history, extraToken: extraToken, previousToken: previousToken,
+            pendingToken: pendingToken, mode: mode, maxDrafts: maxDrafts, recycler: recycler
+        )
+    }
+
+    public static func selectHybridPLDDrafts(
+        history: [Int],
+        extraToken: Int? = nil,
+        previousToken: Int? = nil,
+        pendingToken: Int,
+        mode: QWDraftStrategy,
+        maxDrafts: Int,
+        recycler: QWTokenRecycler
+    ) -> [Int] {
+        selectHybridPLDDraftsCore(
+            history: history, extraToken: extraToken, previousToken: previousToken,
+            pendingToken: pendingToken, mode: mode, maxDrafts: maxDrafts, recycler: recycler
+        )
+    }
+
+    private static func selectHybridPLDDraftsCore<T: FixedWidthInteger>(
+        history: [T],
+        extraToken: T?,
+        previousToken: Int?,
+        pendingToken: Int,
+        mode: QWDraftStrategy,
+        maxDrafts: Int,
+        recycler: QWTokenRecycler
+    ) -> [Int] {
+        guard maxDrafts > 0, mode != .mtp else { return [] }
+        let minPld = (mode == .ngram) ? min(4, maxDrafts) : min(7, maxDrafts)
+        let periodic = history.withUnsafeBufferPointer { base in
+            [].withUnsafeBufferPointer { empty in
+                periodicCore(VirtualIntSequence(base: base, extraFirst: extraToken, trailing: empty),
+                             maxCount: maxDrafts, maxPeriod: 8, minRepeats: 3)
+            }
+        }
+        if let pld = periodic, pld.count >= minPld {
+            return Array(pld.prefix(maxDrafts))
+        }
+        var drafts: [Int] = []
+        let match = history.withUnsafeBufferPointer { base in
+            [].withUnsafeBufferPointer { empty in
+                draftsCore(VirtualIntSequence(base: base, extraFirst: extraToken, trailing: empty),
+                           maxCount: maxDrafts, minMatchLen: 6, maxMatchLen: 20)
+            }
+        }
+        if let match, !match.tokens.isEmpty {
+            drafts = Array(match.tokens.prefix(maxDrafts))
+        }
+        if !drafts.isEmpty || mode == .ngram {
+            recycler.appendDrafts(
+                into: &drafts, maxCount: maxDrafts,
+                previousToken: previousToken, pendingToken: pendingToken,
+                maxUnigramFallbacks: 0
+            )
+            if drafts.count >= minPld { return drafts }
+        }
+        return []
+    }
 }

@@ -122,24 +122,20 @@ struct QWVerifyWindow {
     func encodeHead(_ enc: any MTLComputeCommandEncoder, hal: QWHal, head: QWHead,
                     storage: QWHeadStorage, q4Head: QWMTPTDraftHead? = nil,
                     activeRows: Int? = nil, unrotateForF16Head: Bool = false,
-                    multimaxParams: QWTensorValue? = nil) throws {
+                    multimaxParams: QWTensorValue? = nil,
+                    headInput: QWTensorValue? = nil,
+                    softcap: Float = 0.0) throws {
         let count = activeRows ?? rows
         guard (2...rows).contains(count) else {
             throw QWEngineDriverError.state("verify head active row count is invalid")
         }
+        let srcHidden = headInput ?? hidden
         if let q4Head {
-            // EXP-12 opt-in (QW_MTP_VERIFY_HEAD_Q4=1): the batched q4 head —
-            // one 606 MiB read feeds all rows (probe: 2.44× f16 at M=2).
-            // LOSSY: the operator accepted verify-verdict drift; golden
-            // parity is voided on this path by design. hidden is [rows·K]
-            // contiguous f16 — the FLAT 128-groups are exactly the per-row
-            // groups (batched-MLP group-sum law), so ONE launch covers all
-            // rows.
             if count <= 16 {
                 guard let gsHead else {
                     throw QWEngineDriverError.state("q4 verify head requires window gsHead scratch")
                 }
-                let input = QWTensorValue(region: hidden.region, offset: hidden.offset,
+                let input = QWTensorValue(region: srcHidden.region, offset: srcHidden.offset,
                                           shape: QWTensorShape([count * geometry.hidden], .f16))
                 let sums = QWTensorValue(region: gsHead.region, offset: gsHead.offset,
                                          shape: QWTensorShape([count * geometry.hidden / 128], .f32))
@@ -149,15 +145,24 @@ struct QWVerifyWindow {
             } else {
                 for row in 0..<count {
                     enc.memoryBarrier(scope: .buffers)
-                    try q4Head.encode(enc, hal: hal, x: hiddenRow(row),
+                    let xRow = QWTensorValue(region: srcHidden.region,
+                                             offset: srcHidden.offset + row * geometry.hidden * 2,
+                                             shape: QWTensorShape([geometry.hidden], .f16))
+                    try q4Head.encode(enc, hal: hal, x: xRow,
                                       gs: headGroupSums, y: logitRow(row))
                     enc.memoryBarrier(scope: .buffers)
                 }
             }
+            if softcap > 0 {
+                enc.memoryBarrier(scope: .buffers)
+                let allLogits = QWTensorValue(region: logits.region, offset: logits.offset,
+                                              shape: QWTensorShape([count * vocabulary], .f32))
+                try head.encodeSoftcapF32(enc, logits: allLogits, count: count * vocabulary, softcap: softcap)
+            }
         } else {
             switch storage {
             case .f16(let weight):
-                let input = QWTensorValue(region: hidden.region, offset: hidden.offset,
+                let input = QWTensorValue(region: srcHidden.region, offset: srcHidden.offset,
                                           shape: QWTensorShape([count * geometry.hidden], .f16))
                 let output = QWTensorValue(region: logits.region, offset: logits.offset,
                                            shape: QWTensorShape([count * vocabulary], .f32))
@@ -166,13 +171,13 @@ struct QWVerifyWindow {
                     enc.memoryBarrier(scope: .buffers)
                 }
                 try QWHead.encodeF16(enc, hal: hal, w: weight, x: input, y: output,
-                                     geometry: geometry, M: count, N: vocabulary)
+                                     geometry: geometry, M: count, N: vocabulary, softcap: softcap)
                 if unrotateForF16Head {
                     enc.memoryBarrier(scope: .buffers)
                     try QWGemm.encodeFwht32(enc, hal: hal, x: input)
                 }
             case .bf16(let weight):
-                let input = QWTensorValue(region: hidden.region, offset: hidden.offset,
+                let input = QWTensorValue(region: srcHidden.region, offset: srcHidden.offset,
                                           shape: QWTensorShape([count * geometry.hidden], .f16))
                 let output = QWTensorValue(region: logits.region, offset: logits.offset,
                                            shape: QWTensorShape([count * vocabulary], .f32))
@@ -181,30 +186,23 @@ struct QWVerifyWindow {
                     enc.memoryBarrier(scope: .buffers)
                 }
                 try QWHead.encodeBF16(enc, hal: hal, w: weight, x: input, y: output,
-                                      geometry: geometry, M: count, N: vocabulary)
+                                      geometry: geometry, M: count, N: vocabulary, softcap: softcap)
                 if unrotateForF16Head {
                     enc.memoryBarrier(scope: .buffers)
                     try QWGemm.encodeFwht32(enc, hal: hal, x: input)
                 }
             case .q4g(let weight):
-                // Phase 3 Step 3.0: ONE batched plane pass feeds all rows.
-                // The per-row GEMV loop this replaces re-read the full 606
-                // MiB per row (~1.8 GB at rows=3, ~3.6 GB at rows=6); the
-                // batched kernel is BIT-EXACT row-for-row vs that loop
-                // (same pinned fold tree + lane law + shuffle), so this is
-                // a pure speed change — zero token drift on the q4g pack
-                // path, no new lossiness beyond what the repack chose.
                 guard weight.view.n == vocabulary else {
                     throw QWEngineDriverError.state("verify head vocab mismatch")
                 }
-                let input = QWTensorValue(region: hidden.region, offset: hidden.offset,
+                let input = QWTensorValue(region: srcHidden.region, offset: srcHidden.offset,
                                           shape: QWTensorShape([count * geometry.hidden], .f16))
                 let sums = QWTensorValue(region: headGroupSums.region, offset: headGroupSums.offset,
                                          shape: QWTensorShape([count * geometry.hidden / 128], .f32))
                 let output = QWTensorValue(region: logits.region, offset: logits.offset,
                                            shape: QWTensorShape([count * vocabulary], .f32))
                 try QWHead.encodeBatched(enc, hal: hal, view: weight.view,
-                                         x: input, gs: sums, y: output, m: count)
+                                         x: input, gs: sums, y: output, m: count, softcap: softcap)
             }
         }
         if let mm = multimaxParams {
@@ -449,6 +447,8 @@ struct QWVerifyWindow {
                 activeRows: Int? = nil,
                 unrotateForF16Head: Bool = false,
                 multimaxParams: QWTensorValue? = nil,
+                headInput: QWTensorValue? = nil,
+                softcap: Float = 0.0,
                 outOfPlaceGDN: Bool = false,
                 windowEncoder: (() throws -> Void)? = nil,
                 currentCommandBuffer: (() -> (any MTLCommandBuffer))? = nil,
@@ -489,7 +489,8 @@ struct QWVerifyWindow {
         try encodeHead(enc, hal: hal, head: head, storage: headStorage,
                        q4Head: q4Head, activeRows: count,
                        unrotateForF16Head: unrotateForF16Head,
-                       multimaxParams: multimaxParams)
+                       multimaxParams: multimaxParams,
+                       headInput: headInput, softcap: softcap)
     }
 
     static func encodeCopy(_ enc: any MTLComputeCommandEncoder, hal: QWHal,

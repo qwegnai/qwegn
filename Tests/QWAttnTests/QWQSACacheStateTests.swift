@@ -7,6 +7,19 @@ import QWHAL
 import QWAlloc
 import QWRope
 
+private struct QWQSAMixerConfig: QWQSAMixerSpec, Sendable {
+    let heads: Int
+    let kvHeads: Int
+    let headDim: Int
+    let indexHeads: Int
+    let indexHeadDim: Int
+    let rotaryDim: Int
+    let compress: Int
+    let blockTopK: Int
+    let bankRows: Int
+    let rope: QWRopeCPU
+}
+
 final class QWQSACacheStateTests: XCTestCase {
     private static func makeHAL() throws -> QWHal {
         try QWHal(geometry: .qwen38_27b)

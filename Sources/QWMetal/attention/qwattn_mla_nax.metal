@@ -1,5 +1,6 @@
 // MQA-shared sparse latent attention on NAX tensor MMA (Apple10+, f16/q8/q4 KV);
 // 1 token x 16/32/64 heads per TG; decode/verify use split-K merged by combine.
+#if !defined(QW_DISABLE_NAX)
 #include "qw_mla_dsa_nax_shared.metalh"
 
 // Grid: (T, qHeads / 16, 1), Threadgroup: (128, 1, 1).
@@ -64,6 +65,12 @@ kernel void qwg_mla_sparse_attn_nax_split(
                                          tg.x, tg.y * MLA_NAX_HG, tg.z, ntg.z, tid, 0u, sg, lane, sPart, blkIdx);
     }
 }
+#else
+#include <metal_stdlib>
+#include "qw_mla_params.metalh"
+using namespace metal;
+#define MLA_NAX_RANK 512u
+#endif // !defined(QW_DISABLE_NAX)
 
 // Grid: (T * qHeads, 1, 1), Threadgroup: (128, 1, 1).
 kernel void qwg_mla_sparse_attn_combine(
@@ -98,6 +105,7 @@ kernel void qwg_mla_sparse_attn_combine(
     *(device half4*)(uLatOut + ((size_t)t * p.qHeads + h) * MLA_NAX_RANK + tid * 4u) = half4(acc * inv);
 }
 
+#if !defined(QW_DISABLE_NAX)
 kernel void qwg_mla_dsa_sparse_attn_nax(
     device const half*              qAbs      [[buffer(0)]],
     device const half*              kPool     [[buffer(1)]],
@@ -159,6 +167,7 @@ kernel void qwg_mla_dsa_sparse_attn_nax_split(
                                             mlaQFull, kPeCache, attnSink, tg.x, tg.y * MLA_NAX_HG, tg.z, ntg.z, 0u, sg, lane, sPart);
     }
 }
+#endif // !defined(QW_DISABLE_NAX)
 
 kernel void qwg_mla_dsa_sparse_attn_combine(
     device const half*              partO     [[buffer(0)]],
@@ -199,6 +208,7 @@ kernel void qwg_mla_dsa_sparse_attn_combine(
     *(device half4*)(uLatOut + ((size_t)t * p.qHeads + h) * MLA_NAX_RANK + tid * 4u) = half4(acc * inv);
 }
 
+#if !defined(QW_DISABLE_NAX)
 // Shared-KV 32-head (256T, grid (T, qHeads / 32, 1)) and 64-head (512T, grid (T, qHeads / 64, 1))
 // heavy-first Decoupled-RoPE DSA NAX kernels (BK=16, 16.0 KiB union TG SRAM).
 template <uint NG>
@@ -275,3 +285,4 @@ kernel void qwg_mla_dsa_sparse_attn_nax_h64(
     qw_mla_dsa_shared_dispatch<4u>(qAbs, kPool, vPool, kTable, vTable, blockList, uLatOut, p,
                                    mlaQFull, kPeCache, attnSink, tgMem, tg, tid, sg, lane);
 }
+#endif // !defined(QW_DISABLE_NAX)

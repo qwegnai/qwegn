@@ -8,6 +8,7 @@ public struct QWChatTemplateOptions: Sendable {
     public var tools: QWJson = .undefined
     public var reasoningEffort: QWJson = .undefined
     public var enableThinking: QWJson = .undefined
+    public var reasoning: QWJson = .undefined
     public var preserveThinking: QWJson = .undefined
     public var addVisionId = false
 
@@ -111,20 +112,61 @@ public struct QWChatTemplate: Sendable {
         return token
     }
 
-    /// Normalizes Python Jinja2 integer attribute accesses (e.g. `m.content.0.type`)
-    /// into subscript indexing (`m.content[0].type`) outside quoted string literals.
+    /// Normalizes Python Jinja2 syntax (`m.content.0`, `call` variables, and `namespace(items=...)`
+    /// attributes shadowed by `swift-jinja` dictionary methods) outside string literals.
     private static func normalizePythonJinjaSyntax(_ source: String) -> String {
-        guard let regex = try? NSRegularExpression(pattern: #"(\b[A-Za-z_][A-Za-z0-9_]*|\])\.([0-9]+)\b"#) else {
+        let shadowedNSPairs = Self.detectShadowedNamespaceAttributes(in: source)
+        guard let intAttrRegex = try? NSRegularExpression(pattern: #"(\b[A-Za-z_][A-Za-z0-9_]*|\])\.([0-9]+)\b"#),
+              let callIdentRegex = try? NSRegularExpression(pattern: #"\bcall\b"#),
+              let dictCallRegex = try? NSRegularExpression(pattern: #"(?<![A-Za-z0-9_.])dict(\s*\()"#),
+              let nsKwargRegex = try? NSRegularExpression(
+                  pattern: #"(?<![!<>=\w.])(items|keys|values|get)(\s*=(?!=))"#
+              ) else {
             return source
         }
-        func rewriteCodeSegment(_ segment: Substring) -> String {
+        let hasCallBlock = source.contains("endcall")
+        let nsMemberRegexes: [(NSRegularExpression, String)] = shadowedNSPairs.compactMap { nsVar, attr in
+            let escVar = NSRegularExpression.escapedPattern(for: nsVar)
+            let escAttr = NSRegularExpression.escapedPattern(for: attr)
+            guard let re = try? NSRegularExpression(pattern: "\\b\(escVar)\\.\(escAttr)\\b(?!\\s*\\()") else {
+                return nil
+            }
+            return (re, "\(nsVar).__qw_ns_\(attr)")
+        }
+        var inNamespaceSetTag = false
+        func rewriteCodeSegment(_ segment: Substring, isStatementHead: Bool) -> String {
             var current = String(segment)
+            if isStatementHead && !shadowedNSPairs.isEmpty,
+               current.range(of: #"^[-+]?\s*set\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*namespace\s*\("#, options: .regularExpression) != nil {
+                inNamespaceSetTag = true
+            }
             for _ in 0..<8 {
                 let range = NSRange(current.startIndex..<current.endIndex, in: current)
-                let next = regex.stringByReplacingMatches(in: current, range: range, withTemplate: "$1[$2]")
+                let next = intAttrRegex.stringByReplacingMatches(in: current, range: range, withTemplate: "$1[$2]")
                 if next == current { break }
                 current = next
             }
+            if !shadowedNSPairs.isEmpty {
+                if inNamespaceSetTag {
+                    let range = NSRange(current.startIndex..<current.endIndex, in: current)
+                    current = nsKwargRegex.stringByReplacingMatches(
+                        in: current, range: range, withTemplate: "__qw_ns_$1$2"
+                    )
+                }
+                for (re, replacement) in nsMemberRegexes {
+                    let range = NSRange(current.startIndex..<current.endIndex, in: current)
+                    current = re.stringByReplacingMatches(in: current, range: range, withTemplate: replacement)
+                }
+            }
+            if !hasCallBlock {
+                let range = NSRange(current.startIndex..<current.endIndex, in: current)
+                current = callIdentRegex.stringByReplacingMatches(in: current, range: range, withTemplate: "__qw_call")
+            } else if !isStatementHead || current.range(of: #"^[-+]?\s*call\b"#, options: .regularExpression) == nil {
+                let range = NSRange(current.startIndex..<current.endIndex, in: current)
+                current = callIdentRegex.stringByReplacingMatches(in: current, range: range, withTemplate: "__qw_call")
+            }
+            let dictRange = NSRange(current.startIndex..<current.endIndex, in: current)
+            current = dictCallRegex.stringByReplacingMatches(in: current, range: dictRange, withTemplate: "__qw_dict$1")
             return current
         }
 
@@ -132,6 +174,7 @@ public struct QWChatTemplate: Sendable {
         out.reserveCapacity(source.count)
         var i = source.startIndex
         var inTag = false
+        var isStatementHead = false
         var tagClose = ""
         var codeStart = source.startIndex
 
@@ -141,6 +184,7 @@ public struct QWChatTemplate: Sendable {
                 if rest.hasPrefix("{{") || rest.hasPrefix("{%") {
                     out += source[codeStart..<i]
                     tagClose = rest.hasPrefix("{{") ? "}}" : "%}"
+                    isStatementHead = (tagClose == "%}")
                     let tagOpenEnd = source.index(i, offsetBy: 2)
                     out += source[i..<tagOpenEnd]
                     i = tagOpenEnd
@@ -165,7 +209,8 @@ public struct QWChatTemplate: Sendable {
 
             let ch = source[i]
             if ch == "\"" || ch == "'" {
-                out += rewriteCodeSegment(source[codeStart..<i])
+                out += rewriteCodeSegment(source[codeStart..<i], isStatementHead: isStatementHead)
+                isStatementHead = false
                 let quoteStart = i
                 var escaped = false
                 i = source.index(after: i)
@@ -187,7 +232,9 @@ public struct QWChatTemplate: Sendable {
             }
 
             if source[i...].hasPrefix(tagClose) {
-                out += rewriteCodeSegment(source[codeStart..<i])
+                out += rewriteCodeSegment(source[codeStart..<i], isStatementHead: isStatementHead)
+                isStatementHead = false
+                inNamespaceSetTag = false
                 let tagEnd = source.index(i, offsetBy: 2)
                 out += source[i..<tagEnd]
                 i = tagEnd
@@ -198,9 +245,46 @@ public struct QWChatTemplate: Sendable {
             i = source.index(after: i)
         }
         if codeStart < source.endIndex {
-            out += inTag ? rewriteCodeSegment(source[codeStart..<source.endIndex]) : String(source[codeStart..<source.endIndex])
+            out += inTag
+                ? rewriteCodeSegment(source[codeStart..<source.endIndex], isStatementHead: isStatementHead)
+                : String(source[codeStart..<source.endIndex])
         }
         return out
+    }
+
+    private static func detectShadowedNamespaceAttributes(in source: String) -> [(String, String)] {
+        guard source.contains("namespace(") || source.contains("namespace ("),
+              let headRegex = try? NSRegularExpression(
+                  pattern: #"\bset\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*namespace\s*\("#
+              ),
+              let kwRegex = try? NSRegularExpression(pattern: #"\b(items|keys|values|get)\s*="#) else {
+            return []
+        }
+        var pairs: [(String, String)] = []
+        let fullRange = NSRange(source.startIndex..<source.endIndex, in: source)
+        for m in headRegex.matches(in: source, range: fullRange) {
+            guard let varRange = Range(m.range(at: 1), in: source),
+                  let callEnd = Range(m.range, in: source)?.upperBound else { continue }
+            let nsVar = String(source[varRange])
+            var idx = callEnd
+            var depth = 1
+            while idx < source.endIndex && depth > 0 {
+                let ch = source[idx]
+                if ch == "(" { depth += 1 }
+                else if ch == ")" { depth -= 1 }
+                idx = source.index(after: idx)
+            }
+            let argSlice = String(source[callEnd..<idx])
+            let argRange = NSRange(argSlice.startIndex..<argSlice.endIndex, in: argSlice)
+            for km in kwRegex.matches(in: argSlice, range: argRange) {
+                guard let attrRange = Range(km.range(at: 1), in: argSlice) else { continue }
+                let attr = String(argSlice[attrRange])
+                if !pairs.contains(where: { $0.0 == nsVar && $0.1 == attr }) {
+                    pairs.append((nsVar, attr))
+                }
+            }
+        }
+        return pairs
     }
 
     public func render(messages: [QWJson],
@@ -215,22 +299,52 @@ public struct QWChatTemplate: Sendable {
             return try renderErnie(messages: messages, options: options)
         }
         var context = tokenizerContext.mapValues(Self.value(from:))
+        context["__qw_dict"] = .function(Self.pythonCompatibleDict)
         context["messages"] = .array(messages.map(Self.value(from:)))
         context["add_generation_prompt"] = .boolean(options.addGenerationPrompt)
         context["tools"] = Self.value(from: options.tools)
+        let effectiveThinking = (options.enableThinking == .undefined) ? options.reasoning : options.enableThinking
+        let effectiveReasoning = (options.reasoning == .undefined) ? options.enableThinking : options.reasoning
         context["reasoning_effort"] = Self.value(from: options.reasoningEffort)
-        context["enable_thinking"] = .init(Self.value(from: options.enableThinking))
+        context["enable_thinking"] = .init(Self.value(from: effectiveThinking))
+        context["reasoning"] = Self.value(from: effectiveReasoning)
         context["preserve_thinking"] = Self.value(from: options.preserveThinking)
         context["add_vision_id"] = .boolean(options.addVisionId)
         var rendered = try template.render(context)
         if options.addGenerationPrompt,
-           case .bool(false) = options.enableThinking,
+           case .bool(false) = effectiveThinking,
            let openThink = thinkOpenTag,
            let closeThink = thinkCloseTag,
            rendered.hasSuffix(openThink) {
             rendered += closeThink
         }
         return rendered
+    }
+
+    private static let pythonCompatibleDict: @Sendable ([Value], [String: Value], Environment) throws -> Value = {
+        args, kwargs, _ in
+        var ordered = OrderedDictionary<ObjectKey, Value>()
+        if let first = args.first {
+            switch first {
+            case .object(let existing):
+                for (k, v) in existing { ordered[k] = v }
+            case .array(let items):
+                for item in items {
+                    guard case .array(let pair) = item, pair.count == 2 else { continue }
+                    switch pair[0] {
+                    case .string(let s): ordered[.string(s)] = pair[1]
+                    case .int(let n): ordered[.int(n)] = pair[1]
+                    default: break
+                    }
+                }
+            default:
+                break
+            }
+        }
+        for (key, value) in kwargs.sorted(by: { $0.key < $1.key }) {
+            ordered[.string(key)] = value
+        }
+        return .object(ordered)
     }
 
     private static func value(from json: QWJson) -> Value {

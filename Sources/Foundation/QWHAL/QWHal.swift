@@ -4,6 +4,7 @@
 // Nothing above QWHAL calls MTLCreateSystemDefaultDevice directly.
 
 import Foundation
+import IOKit
 import Metal
 import os
 import QuartzCore
@@ -12,40 +13,165 @@ import Synchronization
 
 public struct QWDeviceCaps: Sendable {
     public let name: String
+    public let familyApple7: Bool
+    public let familyApple8: Bool
     public let familyApple9: Bool
     public let familyApple10: Bool
     public let familyApple11: Bool
     public let unifiedMemory: Bool
     public let maxWorkingSetBytes: Int
+    public let maxBufferLength: Int
+    public let gpuCores: Int
     public let threadsPerTG: Int
-    /// Measured DRAM read bandwidth, GB/s (S3 fair run; 585 on this machine).
-    public let measuredReadBWBps: Double
-    /// Measured L2-resident read bandwidth, GB/s (~950 at 32 MB).
-    public let measuredL2BWBps: Double
+    /// Measured DRAM read bandwidth, B/s (only populated on verified reference hardware).
+    public let measuredReadBWBps: Double?
+    /// Measured L2-resident read bandwidth, B/s (only populated on verified reference hardware).
+    public let measuredL2BWBps: Double?
+    public let isSimulated: Bool
 
-    public var isMetal4TensorCapable: Bool { familyApple10 }
+    public var isMetal4TensorCapable: Bool { familyApple10 || familyApple11 }
+    public var supportsMetal4Library: Bool { familyApple9 || familyApple10 || familyApple11 }
+    public var supportsSimdgroupMMA: Bool {
+        familyApple7 || familyApple8 || familyApple9 || familyApple10 || familyApple11
+    }
+    public var hasDynamicCaching: Bool { familyApple9 || familyApple10 || familyApple11 }
+
+    public var gpuFamilyLabel: String {
+        if familyApple11 { return "Apple11" }
+        if familyApple10 { return "Apple10" }
+        if familyApple9 { return "Apple9" }
+        if familyApple8 { return "Apple8" }
+        if familyApple7 { return "Apple7" }
+        return "Standard"
+    }
+
+    public init(
+        name: String, familyApple7: Bool, familyApple8: Bool, familyApple9: Bool,
+        familyApple10: Bool, familyApple11: Bool, unifiedMemory: Bool,
+        maxWorkingSetBytes: Int, maxBufferLength: Int, gpuCores: Int, threadsPerTG: Int,
+        measuredReadBWBps: Double?, measuredL2BWBps: Double?, isSimulated: Bool
+    ) {
+        self.name = name
+        self.familyApple7 = familyApple7
+        self.familyApple8 = familyApple8
+        self.familyApple9 = familyApple9
+        self.familyApple10 = familyApple10
+        self.familyApple11 = familyApple11
+        self.unifiedMemory = unifiedMemory
+        self.maxWorkingSetBytes = maxWorkingSetBytes
+        self.maxBufferLength = maxBufferLength
+        self.gpuCores = gpuCores
+        self.threadsPerTG = threadsPerTG
+        self.measuredReadBWBps = measuredReadBWBps
+        self.measuredL2BWBps = measuredL2BWBps
+        self.isSimulated = isSimulated
+    }
 }
 
 extension QWDeviceCaps {
     /// The device's capabilities, read from the device itself.
     public static func probe(_ dev: MTLDevice) -> QWDeviceCaps {
+        var apple7 = dev.supportsFamily(.apple7)
+        var apple8 = dev.supportsFamily(.apple8)
         var apple9 = false, apple10 = false, apple11 = false
         if #available(macOS 14.0, *) { apple9 = dev.supportsFamily(.apple9) }
         if #available(macOS 15.0, *) { apple10 = dev.supportsFamily(.apple10) }
         if #available(macOS 26.0, *), let f11 = MTLGPUFamily(rawValue: 1011) {
             apple11 = dev.supportsFamily(f11)
         }
+        var simulated = false
+        let env = ProcessInfo.processInfo.environment
+        switch env["QW_SIMULATE_GPU_FAMILY"]?.lowercased() {
+        case "apple7", "m1":
+            apple7 = true; apple8 = false; apple9 = false; apple10 = false; apple11 = false
+            simulated = true
+        case "apple8", "m2":
+            apple7 = true; apple8 = true; apple9 = false; apple10 = false; apple11 = false
+            simulated = true
+        case "apple9", "m3", "m4":
+            apple7 = true; apple8 = true; apple9 = true; apple10 = false; apple11 = false
+            simulated = true
+        case "apple10", "m5":
+            apple7 = true; apple8 = true; apple9 = true
+            apple10 = dev.supportsFamily(.apple10); apple11 = false
+            simulated = true
+        case "apple11", "m6":
+            apple7 = true; apple8 = true; apple9 = true
+            let hasTensor = dev.supportsFamily(.apple10)
+            apple10 = hasTensor; apple11 = hasTensor
+            simulated = true
+        default:
+            break
+        }
+        var cores = probeGPUCores()
+        if let rawCores = env["QW_SIMULATE_GPU_CORES"], let parsed = Int(rawCores), parsed > 0 {
+            cores = parsed
+            simulated = true
+        }
+        let nativeWorkingSet = Int(dev.recommendedMaxWorkingSetSize)
+        var maxWorkingSet = nativeWorkingSet
+        if let rawWS = env["QW_SIMULATE_WORKING_SET_GB"], let wsGB = Double(rawWS), wsGB > 0 {
+            let simBytes = Int(wsGB * 1024.0 * 1024.0 * 1024.0)
+            maxWorkingSet = min(nativeWorkingSet, max(1, simBytes))
+            simulated = true
+        }
+        let isRefM5Max = apple10 && !apple11 && !simulated && dev.name == "Apple M5 Max"
         return QWDeviceCaps(
             name: dev.name,
+            familyApple7: apple7,
+            familyApple8: apple8,
             familyApple9: apple9,
             familyApple10: apple10,
             familyApple11: apple11,
             unifiedMemory: dev.hasUnifiedMemory,
-            maxWorkingSetBytes: Int(dev.recommendedMaxWorkingSetSize),
+            maxWorkingSetBytes: maxWorkingSet,
+            maxBufferLength: min(dev.maxBufferLength, Int.max),
+            gpuCores: cores,
             threadsPerTG: 1024,
-            measuredReadBWBps: 585e9,
-            measuredL2BWBps: 950e9
+            measuredReadBWBps: isRefM5Max ? 585e9 : nil,
+            measuredL2BWBps: isRefM5Max ? 950e9 : nil,
+            isSimulated: simulated
         )
+    }
+
+    private static func probeGPUCores() -> Int {
+        var iterator = io_iterator_t()
+        let match = IOServiceMatching("IOAccelerator")
+        if IOServiceGetMatchingServices(kIOMainPortDefault, match, &iterator) == KERN_SUCCESS {
+            defer { IOObjectRelease(iterator) }
+            var entry = IOIteratorNext(iterator)
+            while entry != 0 {
+                defer { IOObjectRelease(entry) }
+                var props: Unmanaged<CFMutableDictionary>?
+                if IORegistryEntryCreateCFProperties(entry, &props, kCFAllocatorDefault, 0) == KERN_SUCCESS,
+                   let p = props?.takeRetainedValue() as? [String: Any],
+                   let c = decodeGPUCoreCount(p["gpu-core-count"]), c > 0 {
+                    return c
+                }
+                entry = IOIteratorNext(iterator)
+            }
+        }
+        return 16
+    }
+
+    private static func decodeGPUCoreCount(_ rawValue: Any?) -> Int? {
+        if let count = rawValue as? Int { return count > 0 ? count : nil }
+        if let num = rawValue as? NSNumber {
+            let count = num.intValue
+            return count > 0 ? count : nil
+        }
+        guard let data = rawValue as? Data else { return nil }
+        if data.count == MemoryLayout<UInt32>.size {
+            let v = data.withUnsafeBytes { $0.load(as: UInt32.self) }
+            let count = Int(UInt32(littleEndian: v))
+            return count > 0 ? count : nil
+        }
+        if data.count == MemoryLayout<UInt64>.size {
+            let v = data.withUnsafeBytes { $0.load(as: UInt64.self) }
+            guard let count = Int(exactly: UInt64(littleEndian: v)), count > 0 else { return nil }
+            return count
+        }
+        return nil
     }
 
     /// The capabilities of this machine, found once. They do not change
@@ -55,6 +181,12 @@ extension QWDeviceCaps {
         guard let dev = MTLCreateSystemDefaultDevice() else { return nil }
         return probe(dev)
     }()
+
+    /// Current Metal device allocated bytes, exposed from HAL so higher layers need no Metal import.
+    public static func systemDeviceAllocatedBytes() -> UInt64 {
+        guard let dev = MTLCreateSystemDefaultDevice() else { return 0 }
+        return UInt64(dev.currentAllocatedSize)
+    }
 }
 
 public enum QWHalError: Error, CustomStringConvertible {
@@ -63,6 +195,7 @@ public enum QWHalError: Error, CustomStringConvertible {
     case metallibLoadFailed(String)
     case metallibBasisMismatch(path: String, expected: QWWeightBasis, found: QWWeightBasis)
     case kernelMissing(String)
+    case naxKernelDisallowed(String)
 
     public var description: String {
         switch self {
@@ -72,6 +205,8 @@ public enum QWHalError: Error, CustomStringConvertible {
         case .metallibBasisMismatch(let p, let expected, let found):
             return "QWHAL: metallib at \(p) is in the \(found) basis, but the model needs \(expected)"
         case .kernelMissing(let n): return "QWHAL: kernel '\(n)' missing from metallib"
+        case .naxKernelDisallowed(let n):
+            return "QWHAL: kernel '\(n)' requires Apple10+ NAX tensor hardware (disallowed on pre-Apple10 or simulated non-NAX device)"
         }
     }
 }
@@ -87,6 +222,8 @@ public final class QWHal: @unchecked Sendable {
     public let device: any MTLDevice
     public let caps: QWDeviceCaps
     public let queue: any MTLCommandQueue
+    /// Fixed 4.06 MiB (4,259,840 B) private scratch buffer for multi-TG GatedNorm staging (`hScratch` + `g1Scratch`).
+    public let gatedNormScratch: any MTLBuffer
     /// Lock-free snapshot residency state (see QWResidency.swift).
     final class FrozenResidencySnapshot: @unchecked Sendable {
         let resources: [any MTLResource]
@@ -108,6 +245,8 @@ public final class QWHal: @unchecked Sendable {
     let prefersRetainedCommandBuffers: Bool
     public let metallib: any MTLLibrary
     public let geometry: QWModelGeometry
+    public let gdnNormSigmoidOverride: Bool?
+    public let gdnGateScaleOverride: Float?
     private let functionConstants: MTLFunctionConstantValues
     private let aq4FunctionConstants: MTLFunctionConstantValues
 
@@ -194,24 +333,40 @@ public final class QWHal: @unchecked Sendable {
     ///   in. It picks the metallib and so decides whether the kernels rotate
     ///   the activations; it must be the basis the loader actually produced.
     public init(metallibPath: String? = nil, geometry: QWModelGeometry,
-                weightBasis: QWWeightBasis = .rotated) throws {
+                weightBasis: QWWeightBasis = .rotated,
+                gdnNormSigmoid: Bool? = nil,
+                gdnGateScale: Float? = nil) throws {
         self.geometry = geometry
         self.weightBasis = weightBasis
+        self.gdnNormSigmoidOverride = gdnNormSigmoid
+        self.gdnGateScaleOverride = gdnGateScale
         self.prefersRetainedCommandBuffers =
             ProcessInfo.processInfo.environment["QWG_RETAINED_CB"] == "1"
-        self.functionConstants = Self.makeFunctionConstants(geometry: geometry, isAQ4: false)
-        self.aq4FunctionConstants = Self.makeFunctionConstants(geometry: geometry, isAQ4: true)
+        self.functionConstants = Self.makeFunctionConstants(
+            geometry: geometry, isAQ4: false, weightBasis: weightBasis,
+            gdnNormSigmoid: gdnNormSigmoid, gdnGateScale: gdnGateScale
+        )
+        self.aq4FunctionConstants = Self.makeFunctionConstants(
+            geometry: geometry, isAQ4: true, weightBasis: weightBasis,
+            gdnNormSigmoid: gdnNormSigmoid, gdnGateScale: gdnGateScale
+        )
         guard let dev = MTLCreateSystemDefaultDevice() else { throw QWHalError.noDevice }
         device = dev
+        let probedCaps = QWDeviceCaps.probe(dev)
         // Cold-expert decode commits ~2 CBs per MoE layer; the default cap of 64 would block encode.
-        guard let q = dev.makeCommandQueue(maxCommandBufferCount: 256) else { throw QWHalError.noDevice }
+        guard let q = dev.makeCommandQueue(maxCommandBufferCount: 256),
+              let gnScratch = dev.makeBuffer(length: 4_259_840, options: .storageModePrivate) else {
+            throw QWHalError.noDevice
+        }
+        gnScratch.label = "qwg-gated-norm-scratch"
         queue = q
+        gatedNormScratch = gnScratch
 
         let mtlPath: String
         if let p = metallibPath {
             mtlPath = p
         } else {
-            mtlPath = QWHal.defaultMetallibPath(basis: weightBasis)
+            mtlPath = QWHal.defaultMetallibPath(basis: weightBasis, metal4: probedCaps.supportsMetal4Library)
         }
         guard FileManager.default.fileExists(atPath: mtlPath) else {
             throw QWHalError.metallibNotFound(mtlPath)
@@ -231,28 +386,35 @@ public final class QWHal: @unchecked Sendable {
                                                     found: libBasis)
         }
 
-        caps = QWDeviceCaps.probe(dev)
+        caps = probedCaps
     }
 
     /// Bundled metallib lookup: env override -> bundle -> build dir walk-up -> installed Qwegn.app.
     /// The basis picks the file: two builds of the same sources, one per basis.
     public static func defaultMetallibPath(basis: QWWeightBasis,
+                                           metal4: Bool = true,
                                            appBundleURL: URL? = nil,
                                            searchDirs: [URL]? = nil) -> String {
-        if let env = ProcessInfo.processInfo.environment["QW_METALLIB"] { return env }
+        let env = ProcessInfo.processInfo.environment
+        if !metal4 {
+            if basis == .standard, let m3StdEnv = env["QW_METALLIB_M3_STD"] { return m3StdEnv }
+            if let m3Env = env["QW_METALLIB_M3"] { return m3Env }
+        }
+        if basis == .standard, let stdEnv = env["QW_METALLIB_STD"] { return stdEnv }
+        if let rotEnv = env["QW_METALLIB"] { return rotEnv }
         // A bundle that ships one library per basis names them after the
         // basis; the incumbent's generic "default" is the last resort, and a
         // bundle holding the wrong one is refused by the basis check below.
-        let resource = basis.metallibFileName.replacingOccurrences(of: ".metallib", with: "")
+        let name = basis.metallibFileName(metal4: metal4)
+        let resource = name.replacingOccurrences(of: ".metallib", with: "")
         if searchDirs == nil, appBundleURL == nil {
             if let b = Bundle.main.url(forResource: resource, withExtension: "metallib") {
                 return b.path
             }
-            if let b = Bundle.main.url(forResource: "default", withExtension: "metallib") {
+            if metal4, let b = Bundle.main.url(forResource: "default", withExtension: "metallib") {
                 return b.path
             }
         }
-        let name = basis.metallibFileName
         let execDir = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().deletingLastPathComponent()
         let startDirs = searchDirs ?? [execDir, URL(fileURLWithPath: FileManager.default.currentDirectoryPath)]
         for rel in ["Sources/QWMetal/\(name)",
@@ -294,6 +456,9 @@ public final class QWHal: @unchecked Sendable {
         isAQ4: Bool = false,
         swigluClamp: QWSwiGLUClampSpec? = nil
     ) throws -> any MTLComputePipelineState {
+        if !caps.isMetal4TensorCapable && QWNaxKernelRegistry.names.contains(name) {
+            throw QWHalError.naxKernelDisallowed(name)
+        }
         let baseKey = isAQ4 ? "\(name)#aq4" : name
         let defaultLim = Float(geometry.swigluLimit ?? 0.0)
         let key: String
@@ -327,10 +492,100 @@ public final class QWHal: @unchecked Sendable {
             do {
                 let constants: MTLFunctionConstantValues
                 if let customClamp {
-                    constants = Self.makeFunctionConstants(geometry: geometry, isAQ4: isAQ4, swigluClamp: customClamp)
+                    constants = Self.makeFunctionConstants(
+                        geometry: geometry, isAQ4: isAQ4, swigluClamp: customClamp, weightBasis: weightBasis,
+                        gdnNormSigmoid: gdnNormSigmoidOverride, gdnGateScale: gdnGateScaleOverride
+                    )
                 } else {
                     constants = isAQ4 ? aq4FunctionConstants : functionConstants
                 }
+                fn = try metallib.makeFunction(name: name, constantValues: constants)
+            } catch {
+                throw QWHalError.kernelMissing(name)
+            }
+            let psoT0 = CFAbsoluteTimeGetCurrent()
+            let p = try device.makeComputePipelineState(function: fn)
+            QWHalPSOStats.add(CFAbsoluteTimeGetCurrent() - psoT0)
+            state.map[key] = p
+            if state.frozen { publishFrozenSnapshotLocked(&state) }
+            return p
+        }
+    }
+
+    /// Cached pipeline state specialized for independent DFlash drafter and target-head rotation bases.
+    public func pipeline(
+        _ name: String,
+        fcDrafterRotated: Bool,
+        fcHeadRotated: Bool
+    ) throws -> any MTLComputePipelineState {
+        if !caps.isMetal4TensorCapable && QWNaxKernelRegistry.names.contains(name) {
+            throw QWHalError.naxKernelDisallowed(name)
+        }
+        let defRot = weightBasis.rotatesActivations
+        if fcDrafterRotated == defRot && fcHeadRotated == defRot {
+            return try pipeline(name)
+        }
+        let key = "\(name)#dr=\(fcDrafterRotated ? 1 : 0)#hr=\(fcHeadRotated ? 1 : 0)"
+        if let raw = frozenSnapshotPtr.load(ordering: .acquiring),
+           let hit = Unmanaged<FrozenPSOSnapshot>.fromOpaque(raw).takeUnretainedValue().map[key] {
+            return hit
+        }
+        return try psoState.withLock { state in
+            state.lockCount += 1
+            if let p = state.map[key] {
+                if state.frozen { publishFrozenSnapshotLocked(&state) }
+                return p
+            }
+            let constants = Self.makeFunctionConstants(
+                geometry: geometry, isAQ4: false, weightBasis: weightBasis,
+                fcDrafterRotated: fcDrafterRotated, fcHeadRotated: fcHeadRotated,
+                gdnNormSigmoid: gdnNormSigmoidOverride, gdnGateScale: gdnGateScaleOverride
+            )
+            let fn: any MTLFunction
+            do {
+                fn = try metallib.makeFunction(name: name, constantValues: constants)
+            } catch {
+                throw QWHalError.kernelMissing(name)
+            }
+            let psoT0 = CFAbsoluteTimeGetCurrent()
+            let p = try device.makeComputePipelineState(function: fn)
+            QWHalPSOStats.add(CFAbsoluteTimeGetCurrent() - psoT0)
+            state.map[key] = p
+            if state.frozen { publishFrozenSnapshotLocked(&state) }
+            return p
+        }
+    }
+
+    /// Cached pipeline state specialized for GDN output-norm gating (`QW_FC_GDN_NORM_SIGMOID` + `QW_FC_GDN_GATE_SCALE`).
+    public func pipeline(
+        _ name: String,
+        gdnNormSigmoid: Bool?,
+        gdnGateScale: Float?
+    ) throws -> any MTLComputePipelineState {
+        let effSig = gdnNormSigmoid ?? gdnNormSigmoidOverride
+        let effScale = gdnGateScale ?? gdnGateScaleOverride
+        if effSig == gdnNormSigmoidOverride && effScale == gdnGateScaleOverride {
+            return try pipeline(name)
+        }
+        let sigTag = effSig.map { $0 ? "1" : "0" } ?? "d"
+        let scaleTag = effScale.map { String($0.bitPattern, radix: 16) } ?? "d"
+        let key = "\(name)#gsig=\(sigTag)#gsc=\(scaleTag)"
+        if let raw = frozenSnapshotPtr.load(ordering: .acquiring),
+           let hit = Unmanaged<FrozenPSOSnapshot>.fromOpaque(raw).takeUnretainedValue().map[key] {
+            return hit
+        }
+        return try psoState.withLock { state in
+            state.lockCount += 1
+            if let p = state.map[key] {
+                if state.frozen { publishFrozenSnapshotLocked(&state) }
+                return p
+            }
+            let constants = Self.makeFunctionConstants(
+                geometry: geometry, isAQ4: false, weightBasis: weightBasis,
+                gdnNormSigmoid: effSig, gdnGateScale: effScale
+            )
+            let fn: any MTLFunction
+            do {
                 fn = try metallib.makeFunction(name: name, constantValues: constants)
             } catch {
                 throw QWHalError.kernelMissing(name)

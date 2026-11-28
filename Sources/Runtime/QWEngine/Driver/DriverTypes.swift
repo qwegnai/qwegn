@@ -132,6 +132,21 @@ extension QWEngineDriver {
         let ffnW: QWTensorValue
         let ffnB: QWTensorValue
     }
+    struct GatedLayerNorms: @unchecked Sendable {
+        let input: QWGatedNormWeights
+        let postSelfAttn: QWGatedNormWeights
+        let postAttn: QWGatedNormWeights
+        let postFFN: QWGatedNormWeights
+    }
+    struct GatedMTPNorms: @unchecked Sendable {
+        let enorm: QWGatedNormWeights
+        let hnorm: QWGatedNormWeights
+        let input: QWGatedNormWeights
+        let postSelfAttn: QWGatedNormWeights
+        let postAttn: QWGatedNormWeights
+        let postFFN: QWGatedNormWeights
+        let sharedHead: QWGatedNormWeights
+    }
     final class LayerW: @unchecked Sendable {
         let ln1: QWTensorValue, ln2: QWTensorValue
         let gu: QWMLPWeight, down: QWWeightView
@@ -142,10 +157,12 @@ extension QWEngineDriver {
         /// views; the banks live here.
         let moe: MoEW?
         let mhc: MHCLayerWeights?
+        let gatedNorms: GatedLayerNorms?
 
         init(ln1: QWTensorValue, ln2: QWTensorValue, gu: QWMLPWeight, down: QWWeightView,
              kind: QWLayerPass, gdn: GdnW?, attn: AttnW?, moe: MoEW?,
-             mhc: MHCLayerWeights? = nil, hca: QWHCAAttnOperator.LayerWeights? = nil) {
+             mhc: MHCLayerWeights? = nil, hca: QWHCAAttnOperator.LayerWeights? = nil,
+             gatedNorms: GatedLayerNorms? = nil) {
             self.ln1 = ln1
             self.ln2 = ln2
             self.gu = gu
@@ -156,6 +173,7 @@ extension QWEngineDriver {
             self.hca = hca
             self.moe = moe
             self.mhc = mhc
+            self.gatedNorms = gatedNorms
         }
     }
     /// The sparse-MoE chain's scratch. One set of shapes serves a decode step

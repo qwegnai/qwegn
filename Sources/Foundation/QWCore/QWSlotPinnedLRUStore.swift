@@ -239,10 +239,74 @@ public final class QWSlotPinnedLRUStore<Key: Hashable & Sendable, Value: Sendabl
         }
     }
 
-    public func removeSharedBaseEntries() {
-        lock.withLock {
-            for key in Array(_sharedBaseKeys) { forgetLocked(key) }
+    /// Updates byte/entry budgets, purging everything on zero byte limit or evicting excess entries.
+    public func reconfigure(byteLimit: Int, entryLimit: Int? = nil) {
+        let pending = lock.withLock { () -> ([(Key, StoredEntry)], [Key], ((Key, StoredEntry) -> Void)?, ((Key) -> Void)?) in
+            _byteLimit = max(0, byteLimit)
+            if let entryLimit {
+                _entryLimit = max(1, entryLimit)
+            }
+            var evicted: [(Key, StoredEntry)] = []
+            var removed: [Key] = []
+            if _byteLimit == 0 {
+                for key in Array(_order) {
+                    if let item = evictKeyLocked(key, removed: &removed) { evicted.append(item) }
+                }
+                clearMetadataLocked()
+                return (evicted, removed, _onEvict, _onRemove)
+            }
+            while _entries.count > _entryLimit || _chargedBytes > _byteLimit {
+                guard let victim = _order.first(where: {
+                    !isProtectedLastKeyLocked($0) && !isSharedBaseKeyLocked($0)
+                }) else { break }
+                if let item = evictKeyLocked(victim, removed: &removed) { evicted.append(item) }
+            }
+            while _entries.count > _entryLimit || _chargedBytes > _byteLimit {
+                guard let victim = _order.first(where: { !isSharedBaseKeyLocked($0) }) else { break }
+                if let item = evictKeyLocked(victim, removed: &removed) { evicted.append(item) }
+            }
+            while _entries.count > _entryLimit || _chargedBytes > _byteLimit {
+                guard let victim = _order.first else { break }
+                if let item = evictKeyLocked(victim, removed: &removed) { evicted.append(item) }
+            }
+            return (evicted, removed, _onEvict, _onRemove)
         }
+        notifyRemovals(pending.1, callback: pending.3)
+        notifyEvictions(pending.0, callback: pending.2)
+    }
+
+    public func removeAll() {
+        let pending = lock.withLock { () -> ([Key], ((Key) -> Void)?) in
+            let removedKeys = _onRemove != nil ? Array(_entries.keys) : []
+            clearMetadataLocked()
+            return (removedKeys, _onRemove)
+        }
+        notifyRemovals(pending.0, callback: pending.1)
+    }
+
+    private func clearMetadataLocked() {
+        _entries.removeAll()
+        _order.removeAll()
+        _chargedBytes = 0
+        _keySlot.removeAll()
+        _slotLastKey.removeAll()
+        _slotBaseKey.removeAll()
+        _slotLastTokens.removeAll()
+        _slotRootHash.removeAll()
+        _slotLastTouch.removeAll()
+        _sharedBaseKeys.removeAll()
+        _sharedBranchKeys.removeAll()
+    }
+
+    public func removeSharedBaseEntries() {
+        let pending = lock.withLock { () -> ([Key], ((Key) -> Void)?) in
+            var removed: [Key] = []
+            for key in Array(_sharedBaseKeys) {
+                if let k = forgetLocked(key) { removed.append(k) }
+            }
+            return (removed, _onRemove)
+        }
+        notifyRemovals(pending.0, callback: pending.1)
     }
 
     public var isEnabled: Bool { lock.withLock { _byteLimit > 0 } }
@@ -360,8 +424,8 @@ public final class QWSlotPinnedLRUStore<Key: Hashable & Sendable, Value: Sendabl
         incomingBytes: Int,
         isPrefixEntry: (Key, Int) -> Bool
     ) {
-        let pending = lock.withLock { () -> ([(Key, StoredEntry)], ((Key, StoredEntry) -> Void)?) in
-            guard _byteLimit > 0 else { return ([], nil) }
+        let pending = lock.withLock { () -> ([(Key, StoredEntry)], [Key], ((Key, StoredEntry) -> Void)?, ((Key) -> Void)?) in
+            guard _byteLimit > 0 else { return ([], [], nil, nil) }
             let clampedSlot = max(0, min(_maxSlots - 1, slot))
             _slotLastTokens[clampedSlot] = history
             var keepBaseKey: Key? = nil
@@ -383,64 +447,75 @@ public final class QWSlotPinnedLRUStore<Key: Hashable & Sendable, Value: Sendabl
             }
             if let keepBaseKey { _slotBaseKey[clampedSlot] = keepBaseKey }
 
+            var removed: [Key] = []
             for key in Array(_order) {
                 if key == keepBaseKey || isSharedBaseKeyLocked(key) { continue }
-                if _keySlot[key] == clampedSlot { forgetLocked(key); continue }
+                if _keySlot[key] == clampedSlot {
+                    if let k = forgetLocked(key) { removed.append(k) }
+                    continue
+                }
                 guard !isProtectedLastKeyLocked(key, excludingSlot: clampedSlot),
                       !_sharedBranchKeys.contains(key),
                       _keySlot[key] == nil,
                       let entry = _entries[key],
                       entry.tokenCount > 0, entry.tokenCount < history.count,
                       isPrefixEntry(key, entry.tokenCount) else { continue }
-                forgetLocked(key)
+                if let k = forgetLocked(key) { removed.append(k) }
             }
 
             if let baseKey = keepBaseKey, !isSharedBaseKeyLocked(baseKey), _chargedBytes + incomingBytes > _byteLimit {
-                forgetLocked(baseKey)
+                if let k = forgetLocked(baseKey) { removed.append(k) }
             }
-            return (makeRoomLocked(for: incomingBytes, activeSlot: clampedSlot), _onEvict)
+            let evicted = makeRoomLocked(for: incomingBytes, activeSlot: clampedSlot, removed: &removed)
+            return (evicted, removed, _onEvict, _onRemove)
         }
-        notifyEvictions(pending.0, callback: pending.1)
+        notifyRemovals(pending.1, callback: pending.3)
+        notifyEvictions(pending.0, callback: pending.2)
     }
 
     /// Two-pass eviction: first evicts non-protected non-shared entries, then short (<1024) or unprotected non-shared entries.
     /// Pinned shared-base entries (`isSharedBaseKey`) are never evicted by normal slot insertions.
     public func makeRoom(for incomingBytes: Int, activeSlot: Int? = nil) {
-        let pending = lock.withLock {
-            (makeRoomLocked(for: incomingBytes, activeSlot: activeSlot), _onEvict)
+        let pending = lock.withLock { () -> ([(Key, StoredEntry)], [Key], ((Key, StoredEntry) -> Void)?, ((Key) -> Void)?) in
+            var removed: [Key] = []
+            let evicted = makeRoomLocked(for: incomingBytes, activeSlot: activeSlot, removed: &removed)
+            return (evicted, removed, _onEvict, _onRemove)
         }
-        notifyEvictions(pending.0, callback: pending.1)
+        notifyRemovals(pending.1, callback: pending.3)
+        notifyEvictions(pending.0, callback: pending.2)
     }
 
-    private func makeRoomLocked(for incomingBytes: Int, activeSlot: Int?) -> [(Key, StoredEntry)] {
+    private func makeRoomLocked(for incomingBytes: Int, activeSlot: Int?, removed: inout [Key]) -> [(Key, StoredEntry)] {
         guard _byteLimit > 0, incomingBytes <= _byteLimit else { return [] }
         var evicted: [(Key, StoredEntry)] = []
         while _entries.count >= _entryLimit || _chargedBytes + incomingBytes > _byteLimit {
             guard let victim = _order.first(where: {
                 !isProtectedLastKeyLocked($0, excludingSlot: activeSlot) && !isSharedBaseKeyLocked($0)
             }) else { break }
-            if let item = evictKeyLocked(victim) { evicted.append(item) }
+            if let item = evictKeyLocked(victim, removed: &removed) { evicted.append(item) }
         }
         while _entries.count >= _entryLimit || _chargedBytes + incomingBytes > _byteLimit {
             let shortVictim = _order.first { key in
                 !isSharedBaseKeyLocked(key) && (_keySlot[key] != activeSlot && (_entries[key]?.tokenCount ?? 0) < 1024)
             }
             guard let victim = shortVictim ?? _order.first(where: { !isSharedBaseKeyLocked($0) }) else { break }
-            if let item = evictKeyLocked(victim) { evicted.append(item) }
+            if let item = evictKeyLocked(victim, removed: &removed) { evicted.append(item) }
         }
         return evicted
     }
 
     @discardableResult
     public func evictOldest(excludingSlot: Int? = nil) -> Bool {
-        let pending = lock.withLock { () -> ((Key, StoredEntry)?, ((Key, StoredEntry) -> Void)?) in
+        let pending = lock.withLock { () -> ((Key, StoredEntry)?, [Key], ((Key, StoredEntry) -> Void)?, ((Key) -> Void)?) in
             guard let victim = _order.first(where: {
                 !isProtectedLastKeyLocked($0, excludingSlot: excludingSlot) && !isSharedBaseKeyLocked($0)
-            }) ?? _order.first(where: { !isSharedBaseKeyLocked($0) }) else { return (nil, nil) }
-            return (evictKeyLocked(victim), _onEvict)
+            }) ?? _order.first(where: { !isSharedBaseKeyLocked($0) }) else { return (nil, [], nil, nil) }
+            var removed: [Key] = []
+            return (evictKeyLocked(victim, removed: &removed), removed, _onEvict, _onRemove)
         }
+        notifyRemovals(pending.1, callback: pending.3)
         guard let item = pending.0 else { return false }
-        pending.1?(item.0, item.1)
+        pending.2?(item.0, item.1)
         return true
     }
 
@@ -457,19 +532,20 @@ public final class QWSlotPinnedLRUStore<Key: Hashable & Sendable, Value: Sendabl
         isSharedBase: Bool = false,
         isBranchCheckpoint: Bool = false
     ) -> Bool {
-        let (stored, evicted, cb) = lock.withLock { () -> (Bool, [(Key, StoredEntry)], ((Key, StoredEntry) -> Void)?) in
-            guard _byteLimit > 0, charge <= _byteLimit else { return (false, [], nil) }
-            forgetLocked(key)
-            let evicted = makeRoomLocked(for: charge, activeSlot: slot)
+        let pending = lock.withLock { () -> (Bool, [(Key, StoredEntry)], [Key], ((Key, StoredEntry) -> Void)?, ((Key) -> Void)?) in
+            guard _byteLimit > 0, charge <= _byteLimit else { return (false, [], [], nil, nil) }
+            var removed: [Key] = []
+            if let k = forgetLocked(key) { removed.append(k) }
+            let evicted = makeRoomLocked(for: charge, activeSlot: slot, removed: &removed)
             guard _entries.count < _entryLimit, _chargedBytes + charge <= _byteLimit else {
-                return (false, evicted, _onEvict)
+                return (false, evicted, removed, _onEvict, _onRemove)
             }
             _entries[key] = StoredEntry(value: value, charge: charge, tokenCount: tokenCount, allowsSuffix: allowsSuffix, rootHash: rootHash)
             _order.append(key)
             _chargedBytes += charge
             if isSharedBase {
                 _sharedBaseKeys.insert(key)
-                return (true, evicted, _onEvict)
+                return (true, evicted, removed, _onEvict, _onRemove)
             }
             if isBranchCheckpoint {
                 _sharedBranchKeys.insert(key)
@@ -488,10 +564,11 @@ public final class QWSlotPinnedLRUStore<Key: Hashable & Sendable, Value: Sendabl
                 touchCounter &+= 1
                 _slotLastTouch[clampedSlot] = touchCounter
             }
-            return (true, evicted, _onEvict)
+            return (true, evicted, removed, _onEvict, _onRemove)
         }
-        notifyEvictions(evicted, callback: cb)
-        return stored
+        notifyRemovals(pending.2, callback: pending.4)
+        notifyEvictions(pending.1, callback: pending.3)
+        return pending.0
     }
 
     public func value(for key: Key, touchOnHit: Bool = true) -> StoredEntry? {
@@ -512,20 +589,16 @@ public final class QWSlotPinnedLRUStore<Key: Hashable & Sendable, Value: Sendabl
         }
     }
 
-    public func touchSlot(for key: Key) {
-        lock.withLock {
-            if let s = _keySlot[key] {
-                touchCounter &+= 1
-                _slotLastTouch[s] = touchCounter
-            }
+    public func forget(_ key: Key) {
+        let pending = lock.withLock { () -> (Key?, ((Key) -> Void)?) in
+            (forgetLocked(key), _onRemove)
+        }
+        if let removedKey = pending.0 {
+            pending.1?(removedKey)
         }
     }
 
-    public func forget(_ key: Key) {
-        lock.withLock { forgetLocked(key) }
-    }
-
-    private func forgetLocked(_ key: Key) {
+    private func forgetLocked(_ key: Key) -> Key? {
         let removed = _entries.removeValue(forKey: key)
         if let entry = removed { _chargedBytes -= entry.charge }
         _order.removeAll { $0 == key }
@@ -535,15 +608,13 @@ public final class QWSlotPinnedLRUStore<Key: Hashable & Sendable, Value: Sendabl
             if _slotLastKey[s] == key { _slotLastKey.removeValue(forKey: s) }
             if _slotBaseKey[s] == key { _slotBaseKey.removeValue(forKey: s) }
         }
-        if removed != nil {
-            _onRemove?(key)
-        }
+        return removed != nil ? key : nil
     }
 
-    private func evictKeyLocked(_ key: Key) -> (Key, StoredEntry)? {
+    private func evictKeyLocked(_ key: Key, removed: inout [Key]) -> (Key, StoredEntry)? {
         guard let entry = _entries[key] else { return nil }
         let slot = _keySlot[key]
-        forgetLocked(key)
+        if let k = forgetLocked(key) { removed.append(k) }
         if let slot, _slotLastKey[slot] == nil, _slotBaseKey[slot] == nil, !_keySlot.values.contains(slot) {
             _slotLastTokens.removeValue(forKey: slot)
             _slotRootHash.removeValue(forKey: slot)
@@ -551,6 +622,11 @@ public final class QWSlotPinnedLRUStore<Key: Hashable & Sendable, Value: Sendabl
         }
         _evictions += 1
         return (key, entry)
+    }
+
+    private func notifyRemovals(_ keys: [Key], callback: ((Key) -> Void)?) {
+        guard let callback, !keys.isEmpty else { return }
+        for key in keys { callback(key) }
     }
 
     private func notifyEvictions(_ evicted: [(Key, StoredEntry)], callback: ((Key, StoredEntry) -> Void)?) {

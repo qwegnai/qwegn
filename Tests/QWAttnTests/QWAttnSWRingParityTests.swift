@@ -97,7 +97,8 @@ final class QWAttnSWRingParityTests: XCTestCase {
             }
 
             let genPrefill = try QWAttnPagedPrefillGeneral(hal: hal, geometry: ringGeo)
-            let naxPrefill = hal.caps.isMetal4TensorCapable ? try QWAttnPagedPrefill(hal: hal, geometry: ringGeo) : nil
+            let naxPrefill = hal.caps.supportsSimdgroupMMA
+                ? try QWAttnPagedPrefill(hal: hal, geometry: ringGeo) : nil
             let decOp = try QWAttnDecode(hal: hal, kvMode: mode, geometry: ringGeo, forceGeneral: true)
 
             func submit(_ encode: (any MTLComputeCommandEncoder) throws -> Void) throws {

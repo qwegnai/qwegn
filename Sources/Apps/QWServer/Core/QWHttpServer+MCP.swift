@@ -177,8 +177,14 @@ public struct QWMCPDispatcher: Sendable {
         return Data((envelope.tojson + "\n").utf8)
     }
 
-    private static func toolSchema(_ name: String, _ desc: String, properties: [(String, QWJson)], required: [String]) -> QWJson {
-        .object([
+    private static func toolSchema(
+        _ name: String,
+        _ desc: String,
+        properties: [(String, QWJson)],
+        required: [String],
+        readOnly: Bool = true
+    ) -> QWJson {
+        var fields: [(String, QWJson)] = [
             ("name", .string(name)),
             ("description", .string(desc)),
             ("inputSchema", .object([
@@ -186,7 +192,11 @@ public struct QWMCPDispatcher: Sendable {
                 ("properties", .object(properties)),
                 ("required", .array(required.map { .string($0) })),
             ])),
-        ])
+        ]
+        if readOnly {
+            fields.append(("annotations", .object([("readOnlyHint", .bool(true))])))
+        }
+        return .object(fields)
     }
 
     private static func toolDefinitions() -> [QWJson] {

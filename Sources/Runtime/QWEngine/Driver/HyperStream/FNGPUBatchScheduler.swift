@@ -69,23 +69,54 @@ public final class FNBatchJob: @unchecked Sendable {
     var prefillCursor: Int = 0
     var effectiveMaxNew: Int = 0
     var prefillWallAcc: Double = 0
+    let scheduledJob: QWBatchScheduledJob?
     let promise = QWBatchJobPromise<FNBatchJobOutput>()
 
-    public init(prompt: [Int], maxNew: Int, stopIDs: Set<Int>,
-                sampling: QWSamplerConfig, useSpec: Bool, draftMode: QWDraftStrategy,
-                maxDrafts: Int = FNGPUSessionData.draftCapacity,
-                relaxedMargin: Float = 0,
-                relaxedMinProb: Float = 0,
-                quadraticSeeding: Bool = true,
-                collectLogprobs: Bool = false, topLogprobsCount: Int = 0,
-                onPrefillProgress: (@Sendable (Int, Int) -> Void)? = nil,
-                onToken: ((Int) -> Bool)?, onStopToken: ((Int) -> Void)?,
-                onTokenLogprob: ((QWTokenLogprob) -> Void)? = nil,
-                constraint: (any QWTokenConstraint)? = nil,
-                retainPrefixLength: Int? = nil,
-                visualSpans: [QWVisualSpan] = [],
-                usePrefixCache: Bool = true,
-                cacheSalt: String? = nil) {
+    public convenience init(prompt: [Int], maxNew: Int, stopIDs: Set<Int>,
+                            sampling: QWSamplerConfig, useSpec: Bool, draftMode: QWDraftStrategy,
+                            maxDrafts: Int = FNGPUSessionData.draftCapacity,
+                            relaxedMargin: Float = 0,
+                            relaxedMinProb: Float = 0,
+                            quadraticSeeding: Bool = true,
+                            collectLogprobs: Bool = false, topLogprobsCount: Int = 0,
+                            onPrefillProgress: (@Sendable (Int, Int) -> Void)? = nil,
+                            onToken: ((Int) -> Bool)?, onStopToken: ((Int) -> Void)?,
+                            onTokenLogprob: ((QWTokenLogprob) -> Void)? = nil,
+                            constraint: (any QWTokenConstraint)? = nil,
+                            retainPrefixLength: Int? = nil,
+                            visualSpans: [QWVisualSpan] = [],
+                            usePrefixCache: Bool = true,
+                            cacheSalt: String? = nil) {
+        self.init(
+            prompt: prompt, maxNew: maxNew, stopIDs: stopIDs,
+            sampling: sampling, useSpec: useSpec, draftMode: draftMode,
+            maxDrafts: maxDrafts, relaxedMargin: relaxedMargin, relaxedMinProb: relaxedMinProb,
+            quadraticSeeding: quadraticSeeding, collectLogprobs: collectLogprobs,
+            topLogprobsCount: topLogprobsCount, onPrefillProgress: onPrefillProgress,
+            onToken: onToken, onStopToken: onStopToken, onTokenLogprob: onTokenLogprob,
+            constraint: constraint, retainPrefixLength: retainPrefixLength,
+            visualSpans: visualSpans, usePrefixCache: usePrefixCache, cacheSalt: cacheSalt,
+            scheduledJob: nil
+        )
+    }
+
+    init(prompt: [Int], maxNew: Int, stopIDs: Set<Int>,
+         sampling: QWSamplerConfig, useSpec: Bool, draftMode: QWDraftStrategy,
+         maxDrafts: Int = FNGPUSessionData.draftCapacity,
+         relaxedMargin: Float = 0,
+         relaxedMinProb: Float = 0,
+         quadraticSeeding: Bool = true,
+         collectLogprobs: Bool = false, topLogprobsCount: Int = 0,
+         onPrefillProgress: (@Sendable (Int, Int) -> Void)? = nil,
+         onToken: ((Int) -> Bool)?, onStopToken: ((Int) -> Void)?,
+         onTokenLogprob: ((QWTokenLogprob) -> Void)? = nil,
+         constraint: (any QWTokenConstraint)? = nil,
+         retainPrefixLength: Int? = nil,
+         visualSpans: [QWVisualSpan] = [],
+         usePrefixCache: Bool = true,
+         cacheSalt: String? = nil,
+         scheduledJob: QWBatchScheduledJob?) {
+        self.scheduledJob = scheduledJob
         self.prompt = prompt
         self.maxNew = maxNew
         self.stopIDs = stopIDs
@@ -129,6 +160,7 @@ public final class FNGPUBatchScheduler: @unchecked Sendable {
     var batchStack: FNGPUDecodeStack?
     var currentActiveSlot: Int = 0
     var currentTotalSlots: Int = 1
+    var externalPollBlocked: Bool = false
 
     /// Optional callback invoked on any slot's prefix cache hit/miss evaluation.
     public var onCacheEvaluated: ((FNGPUSessionData) -> Void)?
@@ -173,6 +205,54 @@ public final class FNGPUBatchScheduler: @unchecked Sendable {
             driveLoop()
         }
         return try job.promise.wait()
+    }
+
+    func runScheduledBatch(
+        initialJobs: [QWBatchScheduledJob],
+        pollPending: (_ freeSlots: Int) -> [QWBatchScheduledJob],
+        requeueDelayed: ([QWBatchScheduledJob]) -> Void
+    ) {
+        guard !initialJobs.isEmpty else { return }
+        let initialBatchJobs = convertScheduledJobs(initialJobs)
+        guard !initialBatchJobs.isEmpty else { return }
+        coordinator.runExclusive {
+            externalPollBlocked = false
+            coordinator.withPendingAndSlots { pending, _ in
+                pending.append(contentsOf: initialBatchJobs)
+            }
+            withoutActuallyEscaping(pollPending) { pollEsc in
+                withoutActuallyEscaping(requeueDelayed) { requeueEsc in
+                    driveLoop(
+                        pollExternalPending: pollEsc,
+                        requeueExternalDelayed: requeueEsc
+                    )
+                }
+            }
+            externalPollBlocked = false
+        }
+    }
+
+    func convertScheduledJobs(_ scheduledJobs: [QWBatchScheduledJob]) -> [FNBatchJob] {
+        var batchJobs: [FNBatchJob] = []
+        batchJobs.reserveCapacity(scheduledJobs.count)
+        for sJob in scheduledJobs {
+            if sJob.request.prompt.isEmpty {
+                sJob.complete(.success(QWGenerationResult(tokens: [], stepMs: [], stepTokenCounts: [])))
+                continue
+            }
+            do {
+                let job = try engine.makeBatchJob(
+                    request: sJob.request,
+                    onToken: sJob.onToken,
+                    onStopToken: nil,
+                    scheduledJob: sJob
+                )
+                batchJobs.append(job)
+            } catch {
+                sJob.complete(.failure(engine.mapBatchError(error)))
+            }
+        }
+        return batchJobs
     }
 
     public func runExclusive<T>(_ body: () throws -> T) rethrows -> T {
@@ -375,8 +455,10 @@ public final class FNGPUBatchScheduler: @unchecked Sendable {
 
     func finishJob(slot: Int, job: FNBatchJob, error: (any Error)? = nil) {
         coordinator.setJob(nil, at: slot)
+        externalPollBlocked = false
         if let error {
             job.promise.complete(.failure(error))
+            job.scheduledJob?.complete(.failure(engine.mapBatchError(error)))
             return
         }
         let decSec = job.stepMs.isEmpty ? 0 : (job.decodeStart.map { Date().timeIntervalSince($0) } ?? 0)
@@ -397,6 +479,10 @@ public final class FNGPUBatchScheduler: @unchecked Sendable {
             tokenLogprobs: Array(job.session.tokenLogprobs.prefix(job.generatedTokens.count))
         )
         job.promise.complete(.success(out))
+        if let scheduledJob = job.scheduledJob {
+            let result = engine.finalizeGenerationResult(from: out, promptCount: job.prompt.count)
+            scheduledJob.complete(.success(result))
+        }
     }
 
     /// Emits `token` to `job`, returning `true` if `job` finished (hit stop token, `onToken` returned false, or reached `maxNew`).

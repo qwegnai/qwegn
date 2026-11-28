@@ -34,6 +34,7 @@ public final class QWBatchScheduler: @unchecked Sendable {
 
     private let underlying: any QWInferenceEngine
     let driver: QWEngineDriver?
+    private let injectedTrunk: (any QWTrunkExecutor)?
     private let lock = NSLock()
     private let exclusiveCond = NSCondition()
     private let driverWorker = QWDriverWorkerThread()
@@ -41,12 +42,26 @@ public final class QWBatchScheduler: @unchecked Sendable {
     private var pendingQueue: [QWBatchScheduledJob] = []
     private var isDriving: Bool = false
     private var isExclusiveRunning: Bool = false
-    private var cachedHeadScratch: QWEngineDriver.BatchScratchBox?
     private var recordedMaxWaveSize: Int = 0
+
+    private var activeTrunk: (any QWTrunkExecutor)? {
+        injectedTrunk ?? driver?.trunkExecutor
+    }
+
+    private var activeMaxBatchSlots: Int {
+        activeTrunk?.maxBatchSlots ?? 1
+    }
 
     public init(engine: any QWInferenceEngine) {
         self.underlying = engine
         self.driver = Self.resolveDriver(engine)
+        self.injectedTrunk = nil
+    }
+
+    init(engine: any QWInferenceEngine, trunkExecutor: any QWTrunkExecutor) {
+        self.underlying = engine
+        self.driver = nil
+        self.injectedTrunk = trunkExecutor
     }
 
     deinit {
@@ -120,23 +135,33 @@ public final class QWBatchScheduler: @unchecked Sendable {
         }
     }
 
+    public func mountStandalonePrefixCache(from fileURL: URL) throws -> (tokens: [Int], byteCount: Int) {
+        try runExclusive {
+            try underlying.mountStandalonePrefixCache(from: fileURL)
+        }
+    }
+
+    public func unmountSharedBasePrefixes() {
+        runExclusive {
+            underlying.unmountSharedBasePrefixes()
+        }
+    }
+
     public func computePromptLogprobs(
         promptTokens: [Int],
         sampling: QWSamplerConfig,
         topLogprobsCount: Int,
         shouldStop: (@Sendable () -> Bool)? = nil
     ) throws -> [QWTokenLogprob]? {
-        if let driver {
-            return try runExclusive {
-                try driver.computeEchoPromptLogprobs(
-                    prompt: promptTokens,
-                    sampling: sampling,
-                    topLogprobsCount: topLogprobsCount,
-                    shouldStop: shouldStop
-                )
-            }
+        guard let trunk = activeTrunk else { return nil }
+        return try runExclusive {
+            try trunk.computeEchoPromptLogprobs(
+                promptTokens: promptTokens,
+                sampling: sampling,
+                topLogprobsCount: topLogprobsCount,
+                shouldStop: shouldStop
+            )
         }
-        return nil
     }
 
     /// Number of currently executing generation requests on this scheduler.
@@ -144,10 +169,13 @@ public final class QWBatchScheduler: @unchecked Sendable {
         lock.withLock { activeCount }
     }
 
-    /// Step-boundary GPU arbitrator forwarded to the primary driver (`ADR-002`).
+    /// Step-boundary GPU arbitrator forwarded to the active trunk (`ADR-002`).
     public var gpuTurnArbitrator: QWGPUTurnArbitrator? {
-        get { driver?.gpuTurnArbitrator }
-        set { driver?.gpuTurnArbitrator = newValue }
+        get { activeTrunk?.gpuTurnArbitrator }
+        set {
+            driver?.gpuTurnArbitrator = newValue
+            injectedTrunk?.gpuTurnArbitrator = newValue
+        }
     }
 
     /// Evaluates single-pass decision logits at `positions` inside `tokens`.
@@ -157,11 +185,11 @@ public final class QWBatchScheduler: @unchecked Sendable {
         candidateTokenIds: [Int],
         visualSpans: [QWVisualSpan] = []
     ) throws -> [QWDecisionSlotOutput] {
-        guard let driver else {
+        guard let trunk = activeTrunk else {
             throw QWDecisionError.backendFailed("decision logit evaluation requires a loaded QWEngineDriver")
         }
         return try runExclusive {
-            try driver.evaluateDecisionLogits(
+            try trunk.evaluateDecisionLogits(
                 tokens: tokens,
                 positions: positions,
                 candidateTokenIds: candidateTokenIds,
@@ -182,21 +210,15 @@ public final class QWBatchScheduler: @unchecked Sendable {
         acquireGenerationGate()
         defer { releaseGenerationGate() }
 
-        guard let driver else {
+        guard driver != nil || activeTrunk != nil else {
             return try underlying.generate(request: request, onToken: onToken)
         }
-        if let hyper = driver.hyperRuntime {
-            if request.usePrefixCache && !hyper.hasPrefixCacheTier {
+        if let trunk = activeTrunk {
+            if request.usePrefixCache && !trunk.hasPrefixCacheTier {
                 throw QWEngineDriverError.state("the request wants a prefix cache this engine does not have")
             }
-            return try hyper.runGeneration(request: request, onToken: onToken, onStopToken: nil)
-        }
-        if let ink = driver.inkling2Runtime {
-            if request.usePrefixCache && !ink.hasPrefixCacheTier {
-                throw QWEngineDriverError.state("the request wants a prefix cache this engine does not have")
-            }
-            if ink.maxBatchSlots <= 1 {
-                return try ink.runGeneration(request: request, onToken: onToken, onStopToken: nil)
+            if trunk.maxBatchSlots <= 1 {
+                return try trunk.runGeneration(request: request, onToken: onToken, onStopToken: nil)
             }
         }
 
@@ -211,16 +233,13 @@ public final class QWBatchScheduler: @unchecked Sendable {
             return try job.wait()
         }
 
-        coalescePreparingBurst(maxSlots: min(Self.maxSlots, driver.maxBatchSlots))
+        coalescePreparingBurst(maxSlots: min(Self.maxSlots, activeMaxBatchSlots))
         enum FastDecision {
             case solo
             case dispatchBatch
         }
         let canInterleaveSolo = QWInterleavedPrefillGate.isEnabled
-            && driver.inkling2Runtime == nil
-            && driver.hyperRuntime == nil
-            && driver.maxBatchSlots >= 2
-            && driver.gdnPrefillMode != .naive
+            && (activeTrunk?.supportsInterleavedSolo == true)
             && request.visualSpans.isEmpty
         let decision = lock.withLock { () -> FastDecision in
             if !canInterleaveSolo && pendingQueue.count == 1 && pendingQueue[0] === job {
@@ -250,7 +269,7 @@ public final class QWBatchScheduler: @unchecked Sendable {
                     exclusiveCond.unlock()
                 }
             }
-            return try underlying.generate(request: request, onToken: onToken)
+            return try runSolo(request, onToken: onToken)
         }
 
         driverWorker.async { [weak self] in self?.driveLoop() }
@@ -269,9 +288,36 @@ public final class QWBatchScheduler: @unchecked Sendable {
         }
     }
 
+    private func runSolo(_ request: QWGenerationRequest, onToken: ((Int) -> Bool)?) throws -> QWGenerationResult {
+        if let trunk = activeTrunk {
+            return try trunk.runGeneration(request: request, onToken: onToken, onStopToken: nil)
+        }
+        return try underlying.generate(request: request, onToken: onToken)
+    }
+
+    private func pollPendingJobs(freeSlots: Int, maxWave: Int) -> [QWBatchScheduledJob] {
+        guard freeSlots > 0 else { return [] }
+        return lock.withLock {
+            let cap = min(freeSlots, maxWave)
+            let n = min(cap, pendingQueue.count)
+            guard n > 0 else { return [] }
+            let polled = Array(pendingQueue.prefix(n))
+            pendingQueue.removeFirst(n)
+            recordedMaxWaveSize = max(recordedMaxWaveSize, 1 + n)
+            return polled
+        }
+    }
+
+    private func requeueDelayedJobs(_ delayed: [QWBatchScheduledJob]) {
+        guard !delayed.isEmpty else { return }
+        lock.withLock {
+            pendingQueue.insert(contentsOf: delayed, at: 0)
+        }
+    }
+
     private func driveLoop() {
         while true {
-            let maxWave = driver.map { min(Self.maxSlots, $0.maxBatchSlots) } ?? 1
+            let maxWave = min(Self.maxSlots, activeMaxBatchSlots)
             if QWBatchAdmissionTracker.preparingCount > 0 {
                 coalescePreparingBurst(maxSlots: maxWave)
             }
@@ -289,10 +335,7 @@ public final class QWBatchScheduler: @unchecked Sendable {
                 if pendingQueue.count == 1 {
                     let only = pendingQueue[0]
                     let routeSoloViaBatch = QWInterleavedPrefillGate.isEnabled
-                        && driver?.inkling2Runtime == nil
-                        && driver?.hyperRuntime == nil
-                        && (driver?.maxBatchSlots ?? 0) >= 2
-                        && driver?.gdnPrefillMode != .naive
+                        && (activeTrunk?.supportsInterleavedSolo == true)
                         && only.request.visualSpans.isEmpty
                     if !routeSoloViaBatch {
                         recordedMaxWaveSize = max(recordedMaxWaveSize, 1)
@@ -319,84 +362,48 @@ public final class QWBatchScheduler: @unchecked Sendable {
                 return
             case .solo(let solo):
                 do {
-                    let result = try underlying.generate(request: solo.request, onToken: solo.onToken)
-                    solo.complete(.success(result))
+                    solo.complete(.success(try runSolo(solo.request, onToken: solo.onToken)))
                 } catch {
                     solo.complete(.failure(error))
                 }
             case .batch(let jobs):
-                guard let driver else {
+                if let trunk = activeTrunk {
+                    trunk.runScheduledBatch(
+                        initialJobs: jobs,
+                        pollPending: { self.pollPendingJobs(freeSlots: $0, maxWave: maxWave) },
+                        requeueDelayed: { self.requeueDelayedJobs($0) }
+                    )
+                } else {
                     for job in jobs {
                         job.complete(.failure(QWEngineDriverError.state("batch scheduler driver missing")))
                     }
-                    continue
                 }
-                let scratch = ensureHeadScratch(for: driver)
-                driver.runScheduledBatch(
-                    initialJobs: jobs,
-                    headScratch: scratch,
-                    pollPending: { freeSlots in
-                        guard freeSlots > 0 else { return [] }
-                        return self.lock.withLock {
-                            let cap = min(freeSlots, maxWave)
-                            let n = min(cap, self.pendingQueue.count)
-                            guard n > 0 else { return [] }
-                            let polled = Array(self.pendingQueue.prefix(n))
-                            self.pendingQueue.removeFirst(n)
-                            self.recordedMaxWaveSize = max(self.recordedMaxWaveSize, 1 + n)
-                            return polled
-                        }
-                    },
-                    requeueDelayed: { delayed in
-                        guard !delayed.isEmpty else { return }
-                        self.lock.withLock {
-                            self.pendingQueue.insert(contentsOf: delayed, at: 0)
-                        }
-                    }
-                )
             }
         }
-    }
-
-    private func ensureHeadScratch(for driver: QWEngineDriver) -> QWBatchHeadScratch? {
-        if driver.inkling2Runtime != nil { return nil }
-        if let box = cachedHeadScratch { return box.scratch }
-        guard let scratch = try? QWBatchHeadScratch(hal: driver.hal, vocab: driver.geometry.vocab) else {
-            return nil
-        }
-        cachedHeadScratch = QWEngineDriver.BatchScratchBox(scratch: scratch)
-        return scratch
     }
 }
 
 extension QWEngineDriver {
-    final class BatchScratchBox {
-        let scratch: QWBatchHeadScratch
-        init(scratch: QWBatchHeadScratch) { self.scratch = scratch }
-    }
-
     func computeEchoPromptLogprobs(
         prompt: [Int],
         sampling: QWSamplerConfig,
         topLogprobsCount: Int,
         shouldStop: (@Sendable () -> Bool)?
     ) throws -> [QWTokenLogprob] {
-        if let hyper = hyperRuntime {
-            return try hyper.computeEchoPromptLogprobs(
-                promptTokens: prompt,
-                sampling: sampling,
-                topLogprobsCount: topLogprobsCount,
-                shouldStop: shouldStop
-            )
-        }
-        if let ink = inkling2Runtime {
-            return try ink.computeEchoPromptLogprobs(
-                promptTokens: prompt,
-                sampling: sampling,
-                topLogprobsCount: topLogprobsCount,
-                shouldStop: shouldStop
-            )
-        }
+        try trunkExecutor.computeEchoPromptLogprobs(
+            promptTokens: prompt,
+            sampling: sampling,
+            topLogprobsCount: topLogprobsCount,
+            shouldStop: shouldStop
+        )
+    }
+
+    func computeStandardEchoPromptLogprobs(
+        prompt: [Int],
+        sampling: QWSamplerConfig,
+        topLogprobsCount: Int,
+        shouldStop: (@Sendable () -> Bool)?
+    ) throws -> [QWTokenLogprob] {
         guard prompt.count >= 2 else { return [] }
         for t in prompt where t < 0 || t >= geometry.vocab {
             throw QWEngineDriverError.badToken(t)

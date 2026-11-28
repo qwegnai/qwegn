@@ -271,7 +271,8 @@ final class QWStandardMoETests: XCTestCase {
                                             wsub: arena.weightsRegion(), plan: plan,
                                             geometry: geometry)
         _ = try L.q4(Pack.head, n: geometry.vocab, k: geometry.hidden)
-        return try L.loadDecoderWeights(geometry: geometry)
+        let decoded = try L.loadDecoderWeights(geometry: geometry)
+        return (decoded.layers, decoded.finalNorm)
     }
 
     private func bytes(_ t: QWTensorValue, at offset: Int, count: Int) -> [UInt8] {

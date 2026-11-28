@@ -308,17 +308,19 @@ final class QWInkling2DSpark: @unchecked Sendable {
         }
         let wBuf = try alloc(cursor, label: "weights")
         let wBufPtr = wBuf.contents()
-        for name in orderedKeys {
-            guard let off = offsets[name] else { continue }
-            let dstPtr = wBufPtr.advanced(by: off)
-            if name == rnnProjKey && !isRaw(rnnProjKey) {
-                let f32 = try Self.dequantizeMatrixToF32(src: src, name: rnnProjKey, nRows: 3 * R, kCols: 2 * R + 2 * H)
-                let dst = dstPtr.assumingMemoryBound(to: UInt16.self)
-                for i in 0..<f32.count { dst[i] = Self.f32ToBF16(f32[i]) }
-            } else {
-                try src.withBytes(of: name) { bytes in
-                    guard let base = bytes.baseAddress else { return }
-                    memcpy(dstPtr, base, bytes.count)
+        try withExtendedLifetime(wBuf) {
+            for name in orderedKeys {
+                guard let off = offsets[name] else { continue }
+                let dstPtr = wBufPtr.advanced(by: off)
+                if name == rnnProjKey && !isRaw(rnnProjKey) {
+                    let f32 = try Self.dequantizeMatrixToF32(src: src, name: rnnProjKey, nRows: 3 * R, kCols: 2 * R + 2 * H)
+                    let dst = dstPtr.assumingMemoryBound(to: UInt16.self)
+                    for i in 0..<f32.count { dst[i] = Self.f32ToBF16(f32[i]) }
+                } else {
+                    try src.withBytes(of: name) { bytes in
+                        guard let base = bytes.baseAddress else { return }
+                        dstPtr.copyMemory(from: base, byteCount: bytes.count)
+                    }
                 }
             }
         }
@@ -532,11 +534,6 @@ final class QWInkling2DSpark: @unchecked Sendable {
     /// Resolved DSpark global KV capacity for a target engine context `capacity`.
     static func globalKVCapacity(for capacity: Int) -> Int {
         min(max(1, capacity), maxGlobalKVCapacity)
-    }
-
-    static func estimateKVPerTokenBytes(config: QWModelDescriptor.Inkling2DSparkConfig) -> Int {
-        let globalLayers = max(0, config.numLayers - config.localLayerIds.count)
-        return globalLayers * 2 * config.kvHeads * config.headDim * 2
     }
 
     /// Estimates DSpark's total fixed + capped-global KV cache bytes (bounded at <= 16K global tokens).

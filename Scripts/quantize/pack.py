@@ -331,7 +331,7 @@ def is_raw_plane(name: str) -> bool:
                 "conv1d", "q_norm", "k_norm", "patch_embed", "embed_tokens.",
                 ".hc_read.", ".hc_write.", ".hc_attn_", ".hc_ffn_", ".mhc_attn.", ".mhc_ffn.", "block_inject",
                 ".mlp.gate.weight", "e_score_correction_bias", "shared_expert_gate.weight",
-                "f_b_proj", "g_b_proj",
+                "f_b_proj", "g_b_proj", "gate_up_projection", "gate_down_projection",
                 "index_kpool_compress", "indexer.weights_proj"))
             or name.startswith("model.visual."))
 
@@ -426,6 +426,7 @@ def quantize_model(source: Path, destination: Path,
     _ADAPTERS = {
         **dict.fromkeys(("ernie5_5_moe", "ernie5_5_moe_text"), ("ernie55_adapter", "quantize_ernie55_model")),
         "maxwell_moe": ("maxwell_adapter", "quantize_maxwell_model"),
+        "gigachat4": ("gigachat4_adapter", "quantize_gigachat4_model"),
         **dict.fromkeys(("bailing_moe_v3", "bailing_moe_v3_vl", "bailing_moe_v3_text"), ("bailing_adapter", "quantize_bailing_model")),
         **dict.fromkeys(("lfm2", "lfm3", "lfm3_vl"), ("lfm_adapter", "quantize_lfm_model")),
         **dict.fromkeys(("lfm2_encoder", "d1_omni", "modernbert", "deberta_v2"), ("decision_adapter", "quantize_decision_model")),

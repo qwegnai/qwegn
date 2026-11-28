@@ -44,6 +44,7 @@ constant float QW_FC_SITU_BETA    [[function_constant(228)]];
 constant float QW_FC_SITU_LIN_BETA [[function_constant(229)]];
 constant bool  QW_FC_SWIGLU_POST_SILU [[function_constant(233)]];
 constant bool  QW_FC_GDN_NORM_SIGMOID [[function_constant(234)]];
+constant float QW_FC_GDN_GATE_SCALE   [[function_constant(235)]];
 #endif
 constant uint  QW_FC_KV_LORA_RANK [[function_constant(226)]];
 constant bool  QW_FC_INDEX_KPOOL  [[function_constant(227)]];
@@ -79,6 +80,8 @@ constant uint  QW_MHC_ITERS    = QW_FC_MHC_ITERS;
 constant bool  QW_GDN_VEC_DECAY = QW_FC_GDN_VEC_DECAY;
 constant bool  QW_GDN_VECTOR_DECAY = QW_FC_GDN_VEC_DECAY;
 constant bool  QW_GDN_NORM_SIGMOID = QW_FC_GDN_NORM_SIGMOID;
+constant bool  QW_HAS_GDN_GATE_SCALE = is_function_constant_defined(QW_FC_GDN_GATE_SCALE);
+constant float QW_GDN_GATE_SCALE = QW_HAS_GDN_GATE_SCALE ? QW_FC_GDN_GATE_SCALE : 1.0f;
 constant float QW_GDN_GATE_MIN = QW_FC_GDN_GATE_MIN;
 constant float QW_SWIGLU_LIMIT = QW_FC_SWIGLU_LIMIT;
 constant float QW_ROUTED_SCALE = QW_FC_ROUTED_SCALE;

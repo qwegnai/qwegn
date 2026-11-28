@@ -54,7 +54,7 @@ BIN_DIR="$(swift build -c release --show-bin-path)"
 [[ -x "$BIN_DIR/qwg" ]] || { echo "build_app.sh: missing $BIN_DIR/qwg" >&2; exit 1; }
 [[ -x "$BIN_DIR/qwg-menu" ]] || { echo "build_app.sh: missing $BIN_DIR/qwg-menu" >&2; exit 1; }
 [[ -x "$BIN_DIR/qwg-smc-helper" ]] || { echo "build_app.sh: missing $BIN_DIR/qwg-smc-helper" >&2; exit 1; }
-[[ -f "Sources/QWMetal/kernel.metallib" && -f "Sources/QWMetal/kernel_std.metallib" ]] || {
+[[ -f "Sources/QWMetal/kernel.metallib" && -f "Sources/QWMetal/kernel_std.metallib" && -f "Sources/QWMetal/kernel_m3.metallib" && -f "Sources/QWMetal/kernel_m3_std.metallib" ]] || {
   echo "build_app.sh: missing Sources/QWMetal/kernel*.metallib" >&2
   exit 1
 }
@@ -100,7 +100,9 @@ cp "$BIN_DIR/qwg" "$APP/Contents/MacOS/qwg"
 chmod 755 "$APP/Contents/MacOS/qwg"
 cp "$BIN_DIR/qwg-smc-helper" "$APP/Contents/MacOS/qwg-smc-helper"
 chmod 755 "$APP/Contents/MacOS/qwg-smc-helper"
-cp "Sources/QWMetal/kernel.metallib" "Sources/QWMetal/kernel_std.metallib" "$APP/Contents/Resources/"
+cp "Sources/QWMetal/kernel.metallib" "Sources/QWMetal/kernel_std.metallib" \
+  "Sources/QWMetal/kernel_m3.metallib" "Sources/QWMetal/kernel_m3_std.metallib" \
+  "$APP/Contents/Resources/"
 
 cat > "$APP/Contents/Library/LaunchDaemons/ai.qwegn.smc-helper.plist" <<DPLIST
 <?xml version="1.0" encoding="UTF-8"?>

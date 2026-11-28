@@ -130,6 +130,7 @@ extension QWHttpServer {
                 responsesStore.put(queuedEntry)
             }
             let bgAllowInk2 = actor.isInkling2Template() && (!streamPolicy.isJsonResponseFormat || streamPolicy.shouldThink)
+            let bgToolEnvelopes = actor.activeToolEnvelopes()
             let parentNodeId = prevEntry?.sessionNodeId
             let bgTask = Task { [weak self] in
                 guard let self else { return }
@@ -138,6 +139,7 @@ extension QWHttpServer {
                     parentSessionNodeId: parentNodeId,
                     hasActiveTools: streamPolicy.hasActiveTools, allowReasoningTags: streamPolicy.allowReasoningTags,
                     thinkingExplicitlyDisabled: thinkingExplicitlyDisabled, allowInk2Markers: bgAllowInk2,
+                    toolEnvelopes: bgToolEnvelopes,
                     trace: effectiveTrace
                 )
             }
@@ -189,7 +191,8 @@ extension QWHttpServer {
             template: template, req: req, chatReq: chatReq, result: result, baseHistory: conversationMessages,
             hasActiveTools: streamPolicy.hasActiveTools, allowReasoningTags: streamPolicy.allowReasoningTags,
             thinkingExplicitlyDisabled: thinkingExplicitlyDisabled,
-            allowInk2Markers: actor.isInkling2Template()
+            allowInk2Markers: actor.isInkling2Template(),
+            toolEnvelopes: actor.activeToolEnvelopes()
         )
         if shouldStore {
             let node = try? sessionTree.checkpoint(
@@ -240,6 +243,7 @@ extension QWHttpServer {
         allowReasoningTags: Bool,
         thinkingExplicitlyDisabled: Bool,
         allowInk2Markers: Bool,
+        toolEnvelopes: [QWToolCallEnvelope],
         trace: QWRequestTraceContext? = nil
     ) async {
         do {
@@ -251,7 +255,8 @@ extension QWHttpServer {
                 template: template, req: template.req, chatReq: chatReq, result: result, baseHistory: baseHistory,
                 hasActiveTools: hasActiveTools, allowReasoningTags: allowReasoningTags,
                 thinkingExplicitlyDisabled: thinkingExplicitlyDisabled,
-                allowInk2Markers: allowInk2Markers
+                allowInk2Markers: allowInk2Markers,
+                toolEnvelopes: toolEnvelopes
             )
             let node = try? sessionTree.checkpoint(
                 parentId: parentSessionNodeId,
@@ -293,7 +298,8 @@ extension QWHttpServer {
             startsInReasoning: streamPolicy.shouldThink,
             allowToolCalls: streamPolicy.allowToolCalls,
             allowReasoningTags: streamPolicy.allowReasoningTags,
-            allowInk2Markers: actor.isInkling2Template() && (!streamPolicy.isJsonResponseFormat || streamPolicy.shouldThink)
+            allowInk2Markers: actor.isInkling2Template() && (!streamPolicy.isJsonResponseFormat || streamPolicy.shouldThink),
+            toolEnvelopes: actor.activeToolEnvelopes()
         )
         let session = makeSSESession(for: connection, format: .sse, extraHeaders: extraHeaders)
         let emitter = ResponsesSSECoordinator(session: session, template: template)
@@ -317,7 +323,8 @@ extension QWHttpServer {
                     streamParser.setStartsInReasoning(
                         readyPolicy.shouldThink,
                         allowReasoningTags: readyPolicy.allowReasoningTags,
-                        allowInk2Markers: self.actor.isInkling2Template() && (!readyPolicy.isJsonResponseFormat || readyPolicy.shouldThink)
+                        allowInk2Markers: self.actor.isInkling2Template() && (!readyPolicy.isJsonResponseFormat || readyPolicy.shouldThink),
+                        toolEnvelopes: self.actor.activeToolEnvelopes()
                     )
                     session.begin()
                     emitter.emitLifecycleEvent(type: "response.created", status: "in_progress")

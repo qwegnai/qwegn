@@ -85,7 +85,8 @@ extension QWHttpServer {
             let streamParser = QWChatStreamParser(
                 startsInReasoning: streamPolicy.shouldThink,
                 allowToolCalls: streamPolicy.allowToolCalls,
-                allowInk2Markers: actor.isInkling2Template() && (!streamPolicy.isJsonResponseFormat || streamPolicy.shouldThink)
+                allowInk2Markers: actor.isInkling2Template() && (!streamPolicy.isJsonResponseFormat || streamPolicy.shouldThink),
+                toolEnvelopes: actor.activeToolEnvelopes()
             )
 
             final class StreamBlockState: @unchecked Sendable {
@@ -156,7 +157,8 @@ extension QWHttpServer {
                         )
                         streamParser.setStartsInReasoning(
                             readyPolicy.shouldThink,
-                            allowInk2Markers: self.actor.isInkling2Template() && (!readyPolicy.isJsonResponseFormat || readyPolicy.shouldThink)
+                            allowInk2Markers: self.actor.isInkling2Template() && (!readyPolicy.isJsonResponseFormat || readyPolicy.shouldThink),
+                            toolEnvelopes: self.actor.activeToolEnvelopes()
                         )
                         session.begin()
                         sendEvent("message_start", [
@@ -266,7 +268,8 @@ extension QWHttpServer {
                 startsInThinking: result.startsInThinking,
                 truncated: result.truncated,
                 allowToolCalls: streamPolicy.allowToolCalls,
-                allowInk2Markers: actor.isInkling2Template() && (!streamPolicy.isJsonResponseFormat || result.startsInThinking)
+                allowInk2Markers: actor.isInkling2Template() && (!streamPolicy.isJsonResponseFormat || result.startsInThinking),
+                toolEnvelopes: actor.activeToolEnvelopes()
             )
             let effectiveCalls = QWChatPolicyResolver.capToolCalls(
                 parsedResult.toolCalls,
@@ -394,6 +397,9 @@ extension QWHttpServer {
         } else if let ctxErr = error as? QWServerContextLengthError {
             logger.log(.warn, "HTTP POST \(route) context length exceeded\(tag): \(ctxErr.description)")
             sendAnthropicError(connection, status: 400, type: "invalid_request_error", message: ctxErr.description)
+        } else if let swapErr = error as? QWModelSwapRefusedError {
+            logger.log(.warn, "HTTP POST \(route) model swap refused\(tag): \(swapErr.description)")
+            sendAnthropicError(connection, status: 409, type: swapErr.errorCode, message: swapErr.description)
         } else if error is QWMultimodalError || error is QWJSONSchemaError
                     || error is QWMetadataValidationError || error is QWChatTemplateError
                     || error is DecodingError {

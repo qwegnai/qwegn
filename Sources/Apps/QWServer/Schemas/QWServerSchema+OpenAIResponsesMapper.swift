@@ -312,7 +312,8 @@ public enum OpenAIResponsesMapper {
         hasActiveTools: Bool,
         allowReasoningTags: Bool,
         thinkingExplicitlyDisabled: Bool,
-        allowInk2Markers: Bool = false
+        allowInk2Markers: Bool = false,
+        toolEnvelopes: [QWToolCallEnvelope] = QWToolCallEnvelope.knownEnvelopes
     ) -> (OpenAIResponseResource, [ChatMessage]) {
         let isConstrainedJson = (chatReq.responseFormatType == "json_schema" || chatReq.responseFormatType == "json_object") && !hasActiveTools
         let effectiveStartsInThinking = result.startsInThinking && !thinkingExplicitlyDisabled
@@ -323,7 +324,8 @@ public enum OpenAIResponsesMapper {
             startsInThinking: effectiveStartsInThinking,
             truncated: result.truncated, allowToolCalls: hasActiveTools,
             allowReasoningTags: effectiveAllowTags,
-            allowInk2Markers: effectiveAllowInk2
+            allowInk2Markers: effectiveAllowInk2,
+            toolEnvelopes: toolEnvelopes
         )
         let cappedCalls = capToolCalls(
             parsed.toolCalls, parallelToolCalls: req.parallelToolCalls, maxToolCalls: req.maxToolCalls

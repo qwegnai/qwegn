@@ -7,6 +7,7 @@ import QWAlloc
 import QWCore
 import QWGEMM
 import QWHAL
+import QWHead
 import QWKV
 import QWMTP
 
@@ -73,28 +74,15 @@ extension QWEngineDriver {
         resolvedStrategy: QWDraftStrategy
     ) -> [Int] {
         let ctx = pendingHistoryContext(session: session, pending: pending)
-        let minPldTokens = resolvedStrategy == .ngram ? min(4, count) : min(7, count)
-        var cand: [Int] = []
-        if let pld = QWContextCopyDrafter.periodicDrafts(
-            history: session.tokenHistory, extraToken: ctx.extraPending,
-            maxCount: count, minRepeats: 3),
-           pld.count >= minPldTokens {
-            cand = Array(pld.prefix(count))
-        } else if let match = QWContextCopyDrafter.drafts(
-            history: session.tokenHistory, extraToken: ctx.extraPending,
-            maxCount: count, minMatchLen: 6),
-            !match.tokens.isEmpty {
-            var extended = Array(match.tokens.prefix(count))
-            if extended.count < count {
-                session.tokenRecycler.appendDrafts(
-                    into: &extended, maxCount: count,
-                    previousToken: ctx.previousToken, pendingToken: pending,
-                    maxUnigramFallbacks: 0)
-            }
-            if extended.count >= minPldTokens {
-                cand = extended
-            }
-        }
+        var cand = QWContextCopyDrafter.selectHybridPLDDrafts(
+            history: session.tokenHistory,
+            extraToken: ctx.extraPending,
+            previousToken: ctx.previousToken,
+            pendingToken: pending,
+            mode: resolvedStrategy,
+            maxDrafts: count,
+            recycler: session.tokenRecycler
+        )
         if cand.count > 7 && cand.count < 12 {
             cand = Array(cand.prefix(7))
         }
@@ -111,26 +99,16 @@ extension QWEngineDriver {
     ) throws {
         if let draftHead = mtpDraftHead {
             if rows == 1 {
-                try draftHead.encode(enc, hal: hal, x: xRot16, y: yLogits32)
+                try draftHead.encode(enc, hal: hal, x: xRot16, y: yLogits32, vocabRows: vocabRows)
             } else {
-                try draftHead.encodeBatched(enc, hal: hal, x: xRot16, y: yLogits32, m: rows)
+                try draftHead.encodeBatched(enc, hal: hal, x: xRot16, y: yLogits32, m: rows, vocabRows: vocabRows)
             }
             return
         }
-        switch headStorage {
-        case .q4g(let hw):
-            if hal.caps.isMetal4TensorCapable && rows >= 9
-                && vocabRows % 64 == 0 && hw.view.k % 64 == 0 {
-                try QWGemm.encodeNaxF32(
-                    enc, hal: hal, weight: hw.view,
-                    x16: xRot16, y16: xRot16, y32: yLogits32, rows: rows
-                )
-            } else {
-                try head.encode(enc, storage: headStorage, x: xRot16, y: yLogits32, M: rows)
-            }
-        case .f16, .bf16:
-            try head.encode(enc, storage: headStorage, x: xNorm16, y: yLogits32, M: rows)
-        }
+        try QWDFlashDrafter.encodeSlicedHeadLogits(
+            enc, hal: hal, headStorage: headStorage, geometry: geometry,
+            xRot16: xRot16, xNorm16: xNorm16, yLogits32: yLogits32, rows: rows, vocabRows: vocabRows
+        )
     }
 
     func prepareAsyncDFlashOrPLDRound(

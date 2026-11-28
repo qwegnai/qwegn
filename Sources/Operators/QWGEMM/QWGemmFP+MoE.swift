@@ -17,8 +17,9 @@ extension QWGemmFP {
         nOverride: Int? = nil, yStride: Int? = nil, yColOff: Int = 0,
         sortedTok: QWTensorValue? = nil, isDownIndirect: Bool = false
     ) throws {
-        guard hal.caps.isMetal4TensorCapable else {
-            throw QWGemmError.badShape("qwg_moe_nax_gemm_nvfp4_g16 requires Metal 4 NAX tensor support")
+        let useNAX = hal.caps.isMetal4TensorCapable
+        guard hal.caps.supportsSimdgroupMMA else {
+            throw QWGemmError.badShape("qwg_moe_nax_gemm_nvfp4_g16 requires Apple7+ simdgroup or Metal 4 NAX tensor support")
         }
         guard inDtype == .f16 || inDtype == .bf16 else {
             throw QWGemmError.badShape("NVFP4 NAX prefill requires .f16 or .bf16 input activation")
@@ -44,7 +45,7 @@ extension QWGemmFP {
             experts: UInt32(bank.experts), n: UInt32(nProj), k: UInt32(bank.k),
             yStride: UInt32(yStride ?? nProj), yColOff: UInt32(yColOff),
             inDtype: inDtype.rawValue, outDtype: outDtype.rawValue, flags: flags)
-        enc.setComputePipelineState(try hal.pipeline("qwg_moe_nax_gemm_nvfp4_g16"))
+        enc.setComputePipelineState(try hal.pipeline(useNAX ? "qwg_moe_nax_gemm_nvfp4_g16" : "qwg_moe_sg_gemm_nvfp4_g16"))
         bank.weights.bind(enc, index: 0)
         bank.scales.bind(enc, index: 1)
         (bank.scales2 ?? bank.scales).bind(enc, index: 2)
@@ -71,8 +72,9 @@ extension QWGemmFP {
         nOverride: Int? = nil, yStride: Int? = nil, yColOff: Int = 0,
         sortedTok: QWTensorValue? = nil, isDownIndirect: Bool = false
     ) throws {
-        guard hal.caps.isMetal4TensorCapable else {
-            throw QWGemmError.badShape("qwg_moe_nax_gemm_mxfp8_g32 requires Metal 4 NAX tensor support")
+        let useNAX = hal.caps.isMetal4TensorCapable
+        guard hal.caps.supportsSimdgroupMMA else {
+            throw QWGemmError.badShape("qwg_moe_nax_gemm_mxfp8_g32 requires Apple7+ simdgroup or Metal 4 NAX tensor support")
         }
         guard inDtype == .f16 || inDtype == .bf16 else {
             throw QWGemmError.badShape("MXFP8 NAX prefill requires .f16 or .bf16 input activation")
@@ -90,7 +92,7 @@ extension QWGemmFP {
             experts: UInt32(bank.experts), n: UInt32(nProj), k: UInt32(bank.k),
             yStride: UInt32(yStride ?? nProj), yColOff: UInt32(yColOff),
             inDtype: inDtype.rawValue, outDtype: outDtype.rawValue, flags: flags)
-        enc.setComputePipelineState(try hal.pipeline("qwg_moe_nax_gemm_mxfp8_g32"))
+        enc.setComputePipelineState(try hal.pipeline(useNAX ? "qwg_moe_nax_gemm_mxfp8_g32" : "qwg_moe_sg_gemm_mxfp8_g32"))
         bank.weights.bind(enc, index: 0)
         bank.scales.bind(enc, index: 1)
         x.bind(enc, index: 2)

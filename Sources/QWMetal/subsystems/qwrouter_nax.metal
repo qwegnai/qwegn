@@ -1,6 +1,7 @@
 // qwrouter_nax.metal — prefill MoE router logits on NAX/MPP units at f32 precision.
 // Y[t, e] = sum_k X[t, k] * W[e, k]: native FP16 NAX for f16 X (1x BF16 / 2x F32 W);
 // sequential BF16 splits for f32 X. Extra TG column computes sigmoid(X[t] . shGateW).
+#if !defined(QW_DISABLE_NAX)
 #if !defined(__ENVIRONMENT_OS_VERSION_MIN_REQUIRED__) || __ENVIRONMENT_OS_VERSION_MIN_REQUIRED__ < 260200
 #error "qwrouter_nax.metal requires -mmacosx-version-min=26.2 or newer (Apple MPP NAX ABI)."
 #endif
@@ -333,3 +334,4 @@ kernel void qwg_router_nax_f32(device const float* W [[buffer(0)]],
         qw_router_nax_impl<true, false>(W, X, Y, M, N, K, shGateW, shGateOut, hasShGate, tid, simd_gid, simd_lid);
     }
 }
+#endif // !defined(QW_DISABLE_NAX)

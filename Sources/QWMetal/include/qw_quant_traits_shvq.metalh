@@ -60,59 +60,96 @@ struct QWQuantSHVQ {
         return qwg_shvq_slice_dot2_acc_tg<BITS>(gp, byteInGroup, a0.lo, a0.hi, a1.lo, a1.hi, tgLut, acc);
     }
 
-    METAL_FUNC static void slice_dm_m4(device const uchar* p,
-                                       thread device const float* const (&xs)[4],
-                                       uint mCount, threadgroup const TgLut& tgLut,
-                                       thread float4& dm) {
-        if constexpr (BITS == 15) {
-            uint u[4];
-            qwg_shvq15_slice_u12x4(p, u);
-            #pragma unroll
-            for (uint w = 0u; w < 4u; ++w) {
-                const uint2 raw64 = ((constant const uint2*)kShvqLut15PackedI8)[u[w] & 0x07FFu];
-                const float4 fLo = float4(as_type<char4>(raw64.x)), fHi = float4(as_type<char4>(raw64.y));
-                const bool neg = (u[w] & 0x0800u) != 0u;
-                #pragma unroll
-                for (uint m = 0u; m < 4u; ++m) {
-                    if (m < mCount) {
-                        device const float4* pm = (device const float4*)(xs[m] + w * 8u);
-                        const float d = dot(fLo, pm[0]) + dot(fHi, pm[1]);
-                        const float signedD = neg ? -d : d;
-                        if (m == 0u) dm.x += signedD;
-                        else if (m == 1u) dm.y += signedD;
-                        else if (m == 2u) dm.z += signedD;
-                        else dm.w += signedD;
-                    }
-                }
+    template <uint MAX_R>
+    METAL_FUNC static void slice_dot_rowsN_m4_acc(
+        WeightPtr gp0, size_t st1, size_t st2, size_t st3, uint rows, uint byteInGroup,
+        thread device const float* const (&xs)[4], uint mCount,
+        threadgroup const TgLut& tgLut, thread float4 (&dmOut)[MAX_R], thread float (&scOut)[MAX_R]) {
+        const size_t steps[4] = { 0u, st1, st2, st3 };
+        uint u15[4][4];
+        #pragma unroll
+        for (uint r = 0u; r < MAX_R; ++r) {
+            dmOut[r] = float4(0.0f);
+            scOut[r] = (r < rows) ? qwg_shvq_eff_scale<BITS>(gp0 + steps[r]) : 0.0f;
+            if constexpr (BITS == 15) {
+                if (r < rows) qwg_shvq15_slice_u12x4((device const uchar*)(gp0 + steps[r] + 2u + byteInGroup), u15[r]);
+                else { u15[r][0] = 0u; u15[r][1] = 0u; u15[r][2] = 0u; u15[r][3] = 0u; }
             }
-        } else {
+        }
+        #pragma unroll
+        for (uint w = 0u; w < 4u; ++w) {
+            device const float4* p0 = (device const float4*)(xs[0] + w * 8u);
+            device const float4* p1 = (device const float4*)(xs[1] + w * 8u);
+            device const float4* p2 = (device const float4*)(xs[2] + w * 8u);
+            device const float4* p3 = (device const float4*)(xs[3] + w * 8u);
+            const float4 xLo0 = p0[0], xHi0 = p0[1];
+            const float4 xLo1 = (mCount > 1u) ? p1[0] : float4(0.0f), xHi1 = (mCount > 1u) ? p1[1] : float4(0.0f);
+            const float4 xLo2 = (mCount > 2u) ? p2[0] : float4(0.0f), xHi2 = (mCount > 2u) ? p2[1] : float4(0.0f);
+            const float4 xLo3 = (mCount > 3u) ? p3[0] : float4(0.0f), xHi3 = (mCount > 3u) ? p3[1] : float4(0.0f);
             #pragma unroll
-            for (uint w = 0u; w < 4u; ++w) {
-                half4 hLo, hHi;
-                qwg_shvq_unpack_oct8_tg<BITS>(p, w, tgLut, hLo, hHi);
-                const float4 fLo = float4(hLo), fHi = float4(hHi);
-                #pragma unroll
-                for (uint m = 0u; m < 4u; ++m) {
-                    if (m < mCount) {
-                        device const float4* pm = (device const float4*)(xs[m] + w * 8u);
-                        const float d = dot(fLo, pm[0]) + dot(fHi, pm[1]);
-                        if (m == 0u) dm.x += d;
-                        else if (m == 1u) dm.y += d;
-                        else if (m == 2u) dm.z += d;
-                        else dm.w += d;
+            for (uint r = 0u; r < MAX_R; ++r) {
+                if (r < rows) {
+                    float4 fLo, fHi;
+                    bool neg = false;
+                    if constexpr (BITS == 15) {
+                        neg = qwg_shvq15_oct_f4(u15[r][w], fLo, fHi);
+                    } else {
+                        half4 hLo, hHi;
+                        qwg_shvq_unpack_oct8_tg<BITS>((device const uchar*)(gp0 + steps[r] + 2u + byteInGroup), w, tgLut, hLo, hHi);
+                        fLo = float4(hLo); fHi = float4(hHi);
                     }
+                    const float s = neg ? -1.0f : 1.0f;
+                    dmOut[r].x += s * (dot(fLo, xLo0) + dot(fHi, xHi0));
+                    if (mCount > 1u) dmOut[r].y += s * (dot(fLo, xLo1) + dot(fHi, xHi1));
+                    if (mCount > 2u) dmOut[r].z += s * (dot(fLo, xLo2) + dot(fHi, xHi2));
+                    if (mCount > 3u) dmOut[r].w += s * (dot(fLo, xLo3) + dot(fHi, xHi3));
                 }
             }
         }
     }
 
-    METAL_FUNC static float4 slice_dot_m4_acc(WeightPtr gp, uint byteInGroup,
-                                              thread device const float* const (&xs)[4], uint mCount,
-                                              threadgroup const TgLut& tgLut, float4 acc) {
-        const float sc = qwg_shvq_eff_scale<BITS>(gp);
-        float4 dm = float4(0.0f);
-        slice_dm_m4((device const uchar*)(gp + 2u + byteInGroup), xs, mCount, tgLut, dm);
-        return fma(dm, float4(sc), acc);
+    METAL_FUNC static void slice_dot_rows4_m4_acc(
+        WeightPtr gp0, size_t st1, size_t st2, size_t st3, uint rows, uint byteInGroup,
+        thread device const float* const (&xs)[4], uint mCount,
+        threadgroup const TgLut& tgLut, thread float4 (&accM)[4]) {
+        float4 dm[4]; float sc[4];
+        slice_dot_rowsN_m4_acc<4u>(gp0, st1, st2, st3, rows, byteInGroup, xs, mCount, tgLut, dm, sc);
+        if (rows > 0u) {
+            accM[0].x = fma(dm[0].x, sc[0], accM[0].x);
+            if (mCount > 1u) accM[1].x = fma(dm[0].y, sc[0], accM[1].x);
+            if (mCount > 2u) accM[2].x = fma(dm[0].z, sc[0], accM[2].x);
+            if (mCount > 3u) accM[3].x = fma(dm[0].w, sc[0], accM[3].x);
+        }
+        if (rows > 1u) {
+            accM[0].y = fma(dm[1].x, sc[1], accM[0].y);
+            if (mCount > 1u) accM[1].y = fma(dm[1].y, sc[1], accM[1].y);
+            if (mCount > 2u) accM[2].y = fma(dm[1].z, sc[1], accM[2].y);
+            if (mCount > 3u) accM[3].y = fma(dm[1].w, sc[1], accM[3].y);
+        }
+        if (rows > 2u) {
+            accM[0].z = fma(dm[2].x, sc[2], accM[0].z);
+            if (mCount > 1u) accM[1].z = fma(dm[2].y, sc[2], accM[1].z);
+            if (mCount > 2u) accM[2].z = fma(dm[2].z, sc[2], accM[2].z);
+            if (mCount > 3u) accM[3].z = fma(dm[2].w, sc[2], accM[3].z);
+        }
+        if (rows > 3u) {
+            accM[0].w = fma(dm[3].x, sc[3], accM[0].w);
+            if (mCount > 1u) accM[1].w = fma(dm[3].y, sc[3], accM[1].w);
+            if (mCount > 2u) accM[2].w = fma(dm[3].z, sc[3], accM[2].w);
+            if (mCount > 3u) accM[3].w = fma(dm[3].w, sc[3], accM[3].w);
+        }
+    }
+
+    METAL_FUNC static void slice_dot_rows2_m4_acc(
+        WeightPtr gp0, size_t rowStride, uint byteInGroup,
+        thread device const float* const (&xs)[4], uint mCount,
+        threadgroup const TgLut& tgLut, thread float2 (&v)[4]) {
+        float4 dm[2]; float sc[2];
+        slice_dot_rowsN_m4_acc<2u>(gp0, rowStride, 0u, 0u, 2u, byteInGroup, xs, mCount, tgLut, dm, sc);
+        v[0].x = fma(dm[0].x, sc[0], v[0].x); v[0].y = fma(dm[1].x, sc[1], v[0].y);
+        if (mCount > 1u) { v[1].x = fma(dm[0].y, sc[0], v[1].x); v[1].y = fma(dm[1].y, sc[1], v[1].y); }
+        if (mCount > 2u) { v[2].x = fma(dm[0].z, sc[0], v[2].x); v[2].y = fma(dm[1].z, sc[1], v[2].y); }
+        if (mCount > 3u) { v[3].x = fma(dm[0].w, sc[0], v[3].x); v[3].y = fma(dm[1].w, sc[1], v[3].y); }
     }
 
     METAL_FUNC static void unpack_lane4_f32(WeightPtr wrow, uint g, uint dl,

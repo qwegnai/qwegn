@@ -104,12 +104,26 @@ final class QWMTPTDraftHead {
         self.f2plan = QWGemm.plan(QWGemmShape(m: 1, n: n, k: k), dtype: .q4g, epi: .none, vocab: n)
     }
 
+    private func viewForVocabRows(_ vocabRows: Int?) throws -> QWWeightView {
+        guard let vocabRows, vocabRows < n else { return view }
+        guard vocabRows > 0 else {
+            throw QWEngineDriverError.state("draft head vocabRows=\(vocabRows) must be positive")
+        }
+        let sliced = view.blocks.slice(byteOffset: 0, count: (vocabRows * view.rowBytes) / 2, dtype: .f16)
+        guard let sub = view.subview(blocks: sliced, n: vocabRows, k: k) else {
+            throw QWEngineDriverError.state("draft head failed to slice to vocabRows=\(vocabRows)")
+        }
+        return sub
+    }
+
     /// Encode the draft head GEMV (M=1) on the caller's encoder:
     /// x [K] f16 → y [N] f32.
     func encode(_ enc: any MTLComputeCommandEncoder, hal: QWHal,
-                x: QWTensorValue, gs: QWTensorValue? = nil, y: QWTensorValue) throws {
+                x: QWTensorValue, gs: QWTensorValue? = nil, y: QWTensorValue,
+                vocabRows: Int? = nil) throws {
+        let targetView = try viewForVocabRows(vocabRows)
         guard x.shape.dtype == .f16, x.shape.elementCount == k,
-              y.shape.dtype == .f32, y.shape.elementCount >= n else {
+              y.shape.dtype == .f32, y.shape.elementCount >= targetView.n else {
             throw QWEngineDriverError.state("draft head x/y shape mismatch")
         }
         for buf in mappedBuffers {
@@ -117,24 +131,27 @@ final class QWMTPTDraftHead {
                 throw QWEngineDriverError.state("draft head output aliases a mapped plane")
             }
         }
-        if !view.isIncumbentContainer {
-            try QWGemmAQ.encode(enc, hal: hal, blocks: view.blocks, x: x, y: y,
-                                n: n, k: k, bits: view.bits, group: view.groupSize,
-                                isSHVQ: view.isSHVQ)
+        if !targetView.isIncumbentContainer {
+            try QWGemmAQ.encode(enc, hal: hal, blocks: targetView.blocks, x: x, y: y,
+                                n: targetView.n, k: k, bits: targetView.bits, group: targetView.groupSize,
+                                isSHVQ: targetView.isSHVQ)
             return
         }
-        try QWGemm.encode(enc, hal: hal, plan: f2plan, x: x, xGroupSum: gs, wQ4: view, y: y)
+        let plan = targetView.n == n
+            ? f2plan
+            : QWGemm.plan(QWGemmShape(m: 1, n: targetView.n, k: k), dtype: .q4g, epi: .none, vocab: targetView.n)
+        try QWGemm.encode(enc, hal: hal, plan: plan, x: x, xGroupSum: gs, wQ4: targetView, y: y)
     }
 
     func encodeBatched(_ enc: any MTLComputeCommandEncoder, hal: QWHal,
                        x: QWTensorValue, gs: QWTensorValue? = nil, y: QWTensorValue,
-                       m: Int) throws {
-        _ = gs
+                       m: Int, vocabRows: Int? = nil) throws {
         guard (2...16).contains(m) else {
             throw QWEngineDriverError.state("batched draft head m must be 2…16 (got \(m))")
         }
+        let targetView = try viewForVocabRows(vocabRows)
         guard x.shape.dtype == .f16, x.shape.elementCount == m * k,
-              y.shape.dtype == .f32, y.shape.elementCount >= m * n else {
+              y.shape.dtype == .f32, y.shape.elementCount >= m * targetView.n else {
             throw QWEngineDriverError.state("batched draft head x/y shape mismatch")
         }
         for buf in mappedBuffers {
@@ -142,18 +159,6 @@ final class QWMTPTDraftHead {
                 throw QWEngineDriverError.state("draft head output aliases a mapped plane")
             }
         }
-        if !view.isIncumbentContainer && (view.isSHVQ || !(view.bits == 4 && view.groupSize == 32)) {
-            for r in 0..<m {
-                let xRow = QWTensorValue(region: x.region, offset: x.offset + r * k * 2,
-                                         shape: QWTensorShape([k], .f16))
-                let yRow = QWTensorValue(region: y.region, offset: y.offset + r * n * 4,
-                                         shape: QWTensorShape([n], .f32))
-                try QWGemmAQ.encode(enc, hal: hal, blocks: view.blocks, x: xRow, y: yRow,
-                                    n: n, k: k, bits: view.bits, group: view.groupSize,
-                                    isSHVQ: view.isSHVQ)
-            }
-            return
-        }
-        try QWHead.encodeBatchedQ4GKernel(enc, hal: hal, view: view, x: x, y: y, m: m)
+        try QWHead.encodeBatched(enc, hal: hal, view: targetView, x: x, gs: gs, y: y, m: m, preferNAX: true)
     }
 }

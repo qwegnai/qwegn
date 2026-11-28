@@ -109,6 +109,7 @@ extension QWHttpServer {
 
     static func ollamaErrorStatus(for error: any Error) -> Int {
         if error is QWMemoryWorkspaceAccessError { return 403 }
+        if error is QWModelSwapRefusedError { return 409 }
         if error is QWMetadataValidationError
             || error is QWMultimodalError
             || error is QWServerContextLengthError
@@ -285,7 +286,8 @@ extension QWHttpServer {
                 startsInReasoning: policy.shouldThink,
                 allowToolCalls: policy.allowToolCalls,
                 allowReasoningTags: policy.allowReasoningTags,
-                allowInk2Markers: actor.isInkling2Template() && (!policy.isJsonResponseFormat || policy.shouldThink)
+                allowInk2Markers: actor.isInkling2Template() && (!policy.isJsonResponseFormat || policy.shouldThink),
+                toolEnvelopes: actor.activeToolEnvelopes()
             )
             let session = makeSSESession(for: connection, format: .ndjson, enableKeepalive: false)
             defer { session.stopAll() }
@@ -322,7 +324,8 @@ extension QWHttpServer {
                         streamParser.setStartsInReasoning(
                             readyPolicy.shouldThink,
                             allowReasoningTags: readyPolicy.allowReasoningTags,
-                            allowInk2Markers: self.actor.isInkling2Template() && (!readyPolicy.isJsonResponseFormat || readyPolicy.shouldThink)
+                            allowInk2Markers: self.actor.isInkling2Template() && (!readyPolicy.isJsonResponseFormat || readyPolicy.shouldThink),
+                            toolEnvelopes: self.actor.activeToolEnvelopes()
                         )
                         session.begin(startKeepalive: false)
                     },
@@ -389,7 +392,8 @@ extension QWHttpServer {
                 truncated: result.truncated,
                 allowToolCalls: policy.allowToolCalls,
                 allowReasoningTags: policy.allowReasoningTags,
-                allowInk2Markers: actor.isInkling2Template() && (!policy.isJsonResponseFormat || result.startsInThinking)
+                allowInk2Markers: actor.isInkling2Template() && (!policy.isJsonResponseFormat || result.startsInThinking),
+                toolEnvelopes: actor.activeToolEnvelopes()
             )
             let effectiveCalls = QWChatPolicyResolver.capToolCalls(
                 parsed.toolCalls,

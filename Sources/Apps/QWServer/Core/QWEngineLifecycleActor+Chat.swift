@@ -19,6 +19,8 @@ private final class ChatStreamCapture: @unchecked Sendable {
     private static let funcCloseUTF8 = Array("</function>".utf8)
     private static let invokeOpenUTF8 = Array("<invoke ".utf8)
     private static let invokeCloseUTF8 = Array("</invoke>".utf8)
+    private static let gcmlInvokeOpenUTF8 = Array("<｜GCML｜invoke ".utf8)
+    private static let gcmlInvokeCloseUTF8 = Array("</｜GCML｜invoke>".utf8)
 
     private let lock = NSLock()
     let tok: QWTokenizer
@@ -145,6 +147,13 @@ private final class ChatStreamCapture: @unchecked Sendable {
         }
         if let lo = Self.lastOffsetOfBytes(fullUTF8, needle: Self.invokeOpenUTF8) {
             if let lc = Self.lastOffsetOfBytes(fullUTF8, needle: Self.invokeCloseUTF8) {
+                if lo > lc { return true }
+            } else {
+                return true
+            }
+        }
+        if let lo = Self.lastOffsetOfBytes(fullUTF8, needle: Self.gcmlInvokeOpenUTF8) {
+            if let lc = Self.lastOffsetOfBytes(fullUTF8, needle: Self.gcmlInvokeCloseUTF8) {
                 return lo > lc
             }
             return true

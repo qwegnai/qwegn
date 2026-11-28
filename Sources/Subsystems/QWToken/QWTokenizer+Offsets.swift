@@ -97,7 +97,16 @@ extension QWTokenizer {
         var spans: [QWTokenSpan] = []
         spans.reserveCapacity(ids.count)
 
-        for tid in ids {
+        let pfxCount = (addSpecialTokens && ids.starts(with: postProcessorPrefixIds)) ? postProcessorPrefixIds.count : 0
+        let sfxCount = (addSpecialTokens && (ids.count - pfxCount) >= postProcessorSuffixIds.count
+            && ids.suffix(postProcessorSuffixIds.count).elementsEqual(postProcessorSuffixIds))
+            ? postProcessorSuffixIds.count : 0
+        for tid in ids.prefix(pfxCount) {
+            spans.append(QWTokenSpan(tokenId: tid, utf8Range: 0..<0, utf16Range: 0..<0, scalarRange: 0..<0))
+        }
+        let bodyIds = ids[pfxCount..<(ids.count - sfxCount)]
+
+        for tid in bodyIds {
             let emitted = rawTokenBytes(for: tid, addedById: addedById)
             var tokBytes = emitted
             if case .metaspaceByteFallback = mode,
@@ -136,6 +145,17 @@ extension QWTokenizer {
                 utf8Range: origLo..<origHi,
                 utf16Range: u16Lo..<u16Hi,
                 scalarRange: scLo..<scHi
+            ))
+        }
+        let endU8 = origBytes.count
+        let endU16 = text.utf16.count
+        let endSc = text.unicodeScalars.count
+        for tid in ids.suffix(sfxCount) {
+            spans.append(QWTokenSpan(
+                tokenId: tid,
+                utf8Range: endU8..<endU8,
+                utf16Range: endU16..<endU16,
+                scalarRange: endSc..<endSc
             ))
         }
         return QWTokenizedSpanList(text: text, ids: ids, spans: spans)

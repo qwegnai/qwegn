@@ -49,10 +49,29 @@ BASELINE = os.environ.get("QWG_PERF_BASELINE",
 # final logit row. It is regenerated only on purpose (--update-golden).
 FIXTURE = os.path.join(ROOT, "Tests", "QWEngineTests", "Fixtures", "golden_pre_p3.bin")
 
-DENSE = "Qwen3.8-27B-hq4g32"
-FLASH = "Qwen3.8-Flash-Next-hq4g32"
-PACKS = {"dense": os.path.expanduser("~/.qwg/models/%s/model.qwp" % DENSE),
-         "flash": os.path.expanduser("~/.qwg/models/%s/model.qwp" % FLASH)}
+MODELS_DIR = os.path.expanduser(os.environ.get("QWG_MODELS_DIR", "~/.qwg/models"))
+DENSE_PREFIX = "Qwen3.8-27B-"
+FLASH_PREFIX = "Qwen3.8-Flash-Next-"
+DENSE_PREFERRED = ("Qwen3.8-27B-hq4g32",)
+FLASH_PREFERRED = ("Qwen3.8-Flash-Next-hq8g32-hq4g64", "Qwen3.8-Flash-Next-hq4g32")
+
+
+def resolve_pack(prefix, preferred=(), models_dir=MODELS_DIR):
+    """Resolve an installed flagship pack name and model.qwp path under models_dir."""
+    for name in preferred:
+        qwp = os.path.join(models_dir, name, "model.qwp")
+        if os.path.isfile(qwp):
+            return name, qwp
+    if os.path.isdir(models_dir):
+        for name in sorted(os.listdir(models_dir)):
+            if not name.startswith(prefix):
+                continue
+            if "DFlash" in name or "DSpine" in name:
+                continue
+            qwp = os.path.join(models_dir, name, "model.qwp")
+            if os.path.isfile(qwp):
+                return name, qwp
+    return None, None
 
 PROMPT = ("Write a Swift struct Matrix with rows, cols, data and a function that "
           "multiplies two matrices. Explain the time complexity.")
@@ -95,8 +114,8 @@ def metrics(stderr):
 def gen(model, tokens, extra=(), prompt=None):
     cmd = [BIN, "run", "--model", model, "--prompt", prompt or PROMPT,
            "--max-tokens", str(tokens), "--temperature", "0",
-           "--no-thinking", "--no-stream", "--prefill-chunk-size", "512",
-           "--verbose"] + list(extra)
+           "--no-thinking", "--no-stream", "--no-profile",
+           "--prefill-chunk-size", "512", "--verbose"] + list(extra)
     started = time.time()
     rc, out, err = run(cmd)
     if rc != 0:
@@ -161,11 +180,11 @@ def long_prompt(repeats):
     return " ".join([PROMPT] * repeats)
 
 
-def golden(model):
-    cmd = [GOLDEN, PACKS[model]]
+def golden(pack_path):
+    cmd = [GOLDEN, pack_path]
     rc, out, err = run(cmd)
     if rc != 0:
-        raise SystemExit("golden capture failed for %s:\n%s" % (model, err[-2000:]))
+        raise SystemExit("golden capture failed for %s:\n%s" % (pack_path, err[-2000:]))
     return out, err
 
 
@@ -174,22 +193,27 @@ def main():
     for path in (BIN, GOLDEN):
         if not os.path.exists(path):
             raise SystemExit("missing %s — run `make build` first" % path)
-    for name, pack in PACKS.items():
-        if not os.path.exists(pack):
-            raise SystemExit("missing pack %s" % pack)
+    dense_name, dense_pack = resolve_pack(DENSE_PREFIX, preferred=DENSE_PREFERRED)
+    flash_name, flash_pack = resolve_pack(FLASH_PREFIX, preferred=FLASH_PREFERRED)
+    for label, prefix, pack in (
+        ("dense", DENSE_PREFIX, dense_pack),
+        ("flash", FLASH_PREFIX, flash_pack),
+    ):
+        if not pack or not os.path.exists(pack):
+            raise SystemExit("missing %s pack (%s*) under %s" % (label, prefix, MODELS_DIR))
 
     results = {}
 
     # 1. parity — the 27B golden tokens against the committed fixture, and
     # the same prompt through the unified core loop (the module seam).
     if "--update-golden" in sys.argv:
-        rc, out, err = run([GOLDEN, PACKS["dense"], "--fixture", FIXTURE])
+        rc, out, err = run([GOLDEN, dense_pack, "--fixture", FIXTURE])
         if rc != 0:
             raise SystemExit("golden capture failed:\n%s" % err[-2000:])
         print("golden fixture rewritten -> %s" % FIXTURE)
         print("the golden is the byte-parity anchor: commit it only when the change is intended")
         return
-    rc, out, err = run([GOLDEN, PACKS["dense"], "--fixture", FIXTURE, "--check", "--module"])
+    rc, out, err = run([GOLDEN, dense_pack, "--fixture", FIXTURE, "--check", "--module"])
     ok = rc == 0 and "ok tokens" in out
     module_ok = "ok module tokens" in out
     results["golden_tokens"] = ok and module_ok
@@ -200,25 +224,26 @@ def main():
         raise SystemExit(1)
 
     # 2. parity — Flash-Next generated text.
-    flash = gen(FLASH, 64)
+    flash = gen(flash_name, 64)
     results["flash_text"] = flash["text"]
 
     # 3. perf.
-    dense = measure(DENSE, 256, ["--mtp-drafts", "0"])
-    dense_mtp = measure(DENSE, 256, ["--mtp-drafts", "3"])
-    flash_perf = measure(FLASH, 64)
+    dense = measure(dense_name, 256, ["--mtp-drafts", "0"])
+    dense_mtp = measure(dense_name, 256, ["--mtp-drafts", "3"])
+    flash_perf = measure(flash_name, 64)
     results["dense_serial"] = dense
     results["dense_mtp3"] = dense_mtp
     results["flash_perf"] = flash_perf
 
     # 4. prefill throughput at ~4K tokens, comparable to the published floor.
     long_text = long_prompt(120)
-    results["dense_prefill_4k"] = measure(DENSE, 16, ["--mtp-drafts", "3"], prompt=long_text)
-    results["flash_prefill_4k"] = measure(FLASH, 16, prompt=long_text)
+    results["dense_prefill_4k"] = measure(dense_name, 16, ["--mtp-drafts", "3"], prompt=long_text)
+    results["flash_prefill_4k"] = measure(flash_name, 16, prompt=long_text)
 
     if save:
         baseline = {"saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                     "samples": SAMPLES,
+                    "packs": {"dense": dense_name, "flash": flash_name},
                     "load_average": [round(x, 2) for x in os.getloadavg()],
                     "results": results}
         os.makedirs(os.path.dirname(BASELINE), exist_ok=True)

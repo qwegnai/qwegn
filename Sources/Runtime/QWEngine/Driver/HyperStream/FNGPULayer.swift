@@ -140,7 +140,8 @@ public enum FNGPULayerPasses {
                              rows: Int? = nil) throws {
         let T = rows ?? s.T, W = s.width, H = s.hidden, C = s.hc
         let rotOut = rotMixed ?? s.rot32
-        let useNaxDown = T >= 64 && hc.down.n % 64 == 0 && hc.down.k % 64 == 0 && hc.down.k <= s.width
+        let canNax = hal.caps.supportsSimdgroupMMA
+        let useNaxDown = canNax && T >= 64 && hc.down.n % 64 == 0 && hc.down.k % 64 == 0 && hc.down.k <= s.width
         let rot16Pre: QWTensorValue? = useNaxDown ? s.naxX16 : nil
         if T <= 8,
            try QWGemm.encodeFnHCNormDownInjectDecode(enc, hal: hal, downWeight: hc.down, x: injectBase ?? stream,
@@ -173,7 +174,7 @@ public enum FNGPULayerPasses {
                                           mixed: mixed, rotMixed: rotOut, rows: T, hidden: H, hc: C)
             barrier(enc)
         } else {
-            let useNaxUp = T >= 64 && hc.up.n % 64 == 0 && hc.up.k % 64 == 0 && hc.up.k <= s.width
+            let useNaxUp = canNax && T >= 64 && hc.up.n % 64 == 0 && hc.up.k % 64 == 0 && hc.up.k <= s.width
             let gateOut = useNaxUp ? view(s.hcGate, byteOffset: 0, count: T * W, dtype: .f16) : s.hcGate
             if useNaxDown {
                 try denseProj(enc, hal: hal, s: s, weight: hc.down, x: s.hcRotW, y: s.hcLow, rows: T, epi: 0, scale: 1, x16Precast: s.naxX16)
@@ -187,7 +188,7 @@ public enum FNGPULayerPasses {
                 try denseProj(enc, hal: hal, s: s, weight: hc.up, x: s.hcLow, y: gateOut, rows: T, epi: useNaxUp ? 0 : 2, scale: 1)
             }
             barrier(enc)
-            let skipRot32 = T >= 64 && rotMixed == nil && H % 64 == 0 && H <= s.width
+            let skipRot32 = canNax && T >= 64 && rotMixed == nil && H % 64 == 0 && H <= s.width
             try QWGemm.encodeFnHCMixRot(enc, hal: hal, gate: gateOut, xn: s.hcXN, mixed: mixed, rotMixed: rotOut,
                                         rows: T, hidden: H, hc: C, rotMixed16: T > 8 ? s.naxX16 : nil,
                                         applySigmoid: useNaxUp, skipRot32: skipRot32, injWeight: hc.injectBF16, injOut: inj,
@@ -290,14 +291,14 @@ public enum FNGPULayerPasses {
                                               y: s.yDense32, glog: s.glog, beta: s.beta,
                                               rows: T, xStride: xStride, baStride: baStride)
             barrier(enc)
-            let useNaxOut = T >= 64 && g.out.n % 64 == 0 && g.out.k % 64 == 0 && g.out.k <= s.width
+            let useNaxOut = hal.caps.supportsSimdgroupMMA && T >= 64 && g.out.n % 64 == 0 && g.out.k % 64 == 0 && g.out.k <= s.width
             try QWGDNF32.encodeRecurrentSeqF32(enc, hal: hal, y: s.yDense32, betas: s.beta, glog: s.glog,
                                                state: g.state, z: zIn, normWeight: g.normWeight, out: s.outNorm32,
                                                tokens: T, convDim: CONV, vHeads: VH, zStride: zStride,
                                                out16: useNaxOut ? s.naxX16 : nil)
             barrier(enc)
         }
-        let useNaxOut = T >= 64 && g.out.n % 64 == 0 && g.out.k % 64 == 0 && g.out.k <= s.width
+        let useNaxOut = hal.caps.supportsSimdgroupMMA && T >= 64 && g.out.n % 64 == 0 && g.out.k % 64 == 0 && g.out.k <= s.width
         try denseProj(enc, hal: hal, s: s, weight: g.out, x: s.outNorm32, y: out, rows: T,
                       x16Precast: useNaxOut ? s.naxX16 : nil)
         barrier(enc)
@@ -311,7 +312,7 @@ public enum FNGPULayerPasses {
         let hal = ctx.hal, T = s.T
         let NH = a.heads, NKV = a.kvHeads, D = a.headDim, ROT = a.rotaryDim, ID = a.indexHeadDim
         try denseProj(enc, hal: hal, s: s, weight: a.bank, x: s.rot32, y: s.src, rows: T,
-                      x16Precast: T >= 64 ? s.naxX16 : nil)
+                      x16Precast: (hal.caps.supportsSimdgroupMMA && T >= 64) ? s.naxX16 : nil)
         barrier(enc)
         let cos = view(c.cos, byteOffset: pos * ROT * 4, count: T * ROT, dtype: .f32)
         let sin = view(c.sin, byteOffset: pos * ROT * 4, count: T * ROT, dtype: .f32)

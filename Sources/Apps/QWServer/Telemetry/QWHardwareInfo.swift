@@ -135,12 +135,23 @@ public enum QWHardwareBanner {
     ) -> String {
         let line = String(repeating: "=", count: 80)
         let gpuName = caps?.name ?? hardware.cpuBrand
-        let tensorCapable = caps?.isMetal4TensorCapable == true ? "Yes (Apple10+)" : "Standard"
+        let tensorCapable: String
+        if caps?.familyApple11 == true {
+            tensorCapable = "Yes (Apple11)"
+        } else if caps?.familyApple10 == true {
+            tensorCapable = "Yes (Apple10+)"
+        } else if caps?.familyApple9 == true {
+            tensorCapable = "No (Apple9 — simdgroup MMA)"
+        } else if caps?.familyApple8 == true {
+            tensorCapable = "No (Apple8 — Metal 3.2 simdgroup MMA)"
+        } else if caps?.familyApple7 == true {
+            tensorCapable = "No (Apple7 — Metal 3.2 simdgroup MMA)"
+        } else {
+            tensorCapable = "Standard"
+        }
         let maxVramGB = caps.map { String(format: "%.2f GB", Double($0.maxWorkingSetBytes) / (1024 * 1024 * 1024)) } ?? "Unified"
-        // The HAL's bandwidth is a constant from the reference machine,
-        // not a measurement of this one: it says so.
-        let dramBw = caps.map { String(format: "%.1f GB/s (reference)", $0.measuredReadBWBps / 1e9) } ?? "not measured"
-        let l2Bw = caps.map { String(format: "%.1f GB/s (reference)", $0.measuredL2BWBps / 1e9) } ?? "not measured"
+        let dramBw = caps?.measuredReadBWBps.map { String(format: "%.1f GB/s (reference)", $0 / 1e9) } ?? "not measured"
+        let l2Bw = caps?.measuredL2BWBps.map { String(format: "%.1f GB/s (reference)", $0 / 1e9) } ?? "not measured"
 
         var out = ""
         out += "\(line)\n"

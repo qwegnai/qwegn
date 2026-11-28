@@ -331,6 +331,7 @@ extension QWModelDescriptor {
         appendInkling2DigestFields(d, into: &f)
         appendCapabilityV3DigestFields(d, into: &f)
         appendLFMAndDecisionDigestFields(d, into: &f)
+        appendGigaChat4V3DigestFields(d, into: &f)
         return f
     }
 
@@ -585,7 +586,9 @@ extension QWModelDescriptor {
             ropeInterleave: ropeInterleave, role: role,
             shortConvConfig: shortConvConfig, normKind: normKind,
             useSandwichNorm: useSandwichNorm, perKindRoPEConfig: perKindRoPEConfig,
-            attnGateMode: attnGateMode, decisionConfig: decisionConfig
+            attnGateMode: attnGateMode, decisionConfig: decisionConfig,
+            gatedNormConfig: gatedNormConfig, gdnGatingConfig: gdnGatingConfig,
+            finalLogitSoftcapping: finalLogitSoftcapping, v2DigestHeadDim: v2DigestHeadDim
         )
     }
 }

@@ -66,13 +66,16 @@ extension QWKVCache {
                         throw QWKVError.badArgument("invalid private prefix page ID")
                     }
                     var data = Data(count: planeBytes)
-                    data.withUnsafeMutableBytes { (destination: UnsafeMutableRawBufferPointer) in
-                        guard let dstBase = destination.baseAddress else { return }
-                        for page in startPage..<required {
-                            let bytes = validPageBytes(page: page, tokenCount: count)
-                            dstBase.advanced(by: (page - startPage) * bytesPerPage)
-                                .copyMemory(from: region.pointer.advanced(by: Int(table[page]) * bytesPerPage),
-                                            byteCount: bytes)
+                    let srcRegionPtr = UnsafeRawPointer(region.pointer)
+                    withExtendedLifetime(region.buffer) {
+                        data.withUnsafeMutableBytes { (raw: UnsafeMutableRawBufferPointer) in
+                            guard let dstBase = raw.baseAddress else { return }
+                            for page in startPage..<required {
+                                let bytes = validPageBytes(page: page, tokenCount: count)
+                                dstBase.advanced(by: (page - startPage) * bytesPerPage)
+                                    .copyMemory(from: srcRegionPtr.advanced(by: Int(table[page]) * bytesPerPage),
+                                                byteCount: bytes)
+                            }
                         }
                     }
                     planes.append(data)
@@ -286,12 +289,15 @@ extension QWKVCache {
                 for (ki, kind) in QWKVKind.allCases.enumerated() {
                     let table = st.layerPairs[li][kind].ids
                     let region = pool(at: li, kind).pages.region
-                    prefix.planes[li * 2 + ki].withUnsafeBytes { (source: UnsafeRawBufferPointer) in
-                        guard let srcBase = source.baseAddress else { return }
-                        for page in startPage..<required {
-                            let bytes = validPageBytes(page: page, tokenCount: prefix.tokenCount)
-                            region.pointer.advanced(by: Int(table[page]) * bytesPerPage)
-                                .copyMemory(from: srcBase.advanced(by: (page - startPage) * bytesPerPage), byteCount: bytes)
+                    let dstRegionPtr = region.pointer
+                    withExtendedLifetime(region.buffer) {
+                        prefix.planes[li * 2 + ki].withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                            guard let srcBase = raw.baseAddress else { return }
+                            for page in startPage..<required {
+                                let bytes = validPageBytes(page: page, tokenCount: prefix.tokenCount)
+                                dstRegionPtr.advanced(by: Int(table[page]) * bytesPerPage)
+                                    .copyMemory(from: srcBase.advanced(by: (page - startPage) * bytesPerPage), byteCount: bytes)
+                            }
                         }
                     }
                 }

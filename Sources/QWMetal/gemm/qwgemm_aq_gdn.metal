@@ -88,11 +88,13 @@ static inline void qwg_gemv_aq_gdn_inproj_rows4_m_body(device const char* blocks
     const uint simd_per_tg = max(1u, tptg >> 5u);
     const uint simd_id = ti >> 5u;
     const uint lane = ti & 31u;
-    const uint row0 = (tg * simd_per_tg + simd_id) * 4u;
+    const uint realK = K & 0xFFFFu;
+    const uint tgEff = tg + (K >> 16u);
+    const uint row0 = (tgEff * simd_per_tg + simd_id) * 4u;
     if (row0 >= realN) return;
-    const uint nBlocks = K >> 5u;
+    const uint nBlocks = realK >> 5u;
     const uint groupBytes = GROUP * BITS / 8 + 4u;
-    const uint rowBytes = (K / GROUP) * groupBytes;
+    const uint rowBytes = (realK / GROUP) * groupBytes;
     device const char* r0 = blocks + (size_t)row0 * rowBytes;
     device const char* r1 = (row0 + 1u < realN) ? (r0 + rowBytes) : r0;
     device const char* r2 = (row0 + 2u < realN) ? (r0 + 2u * rowBytes) : r0;
@@ -113,8 +115,8 @@ static inline void qwg_gemv_aq_gdn_inproj_rows4_m_body(device const char* blocks
             if (p + 1u < mRows) {
                 half4 xlo0[4], xhi0[4], xlo1[4], xhi1[4];
                 const float2 sumX = float2(
-                    qwg_aq_load_prescaled32<BITS>(x + (size_t)p * K + col, xlo0, xhi0),
-                    qwg_aq_load_prescaled32<BITS>(x + (size_t)(p + 1u) * K + col, xlo1, xhi1));
+                    qwg_aq_load_prescaled32<BITS>(x + (size_t)p * realK + col, xlo0, xhi0),
+                    qwg_aq_load_prescaled32<BITS>(x + (size_t)(p + 1u) * realK + col, xlo1, xhi1));
                 const float2 d0 = qwg_aq_slice_dot2<BITS>(gp0, byteInGroup, xlo0, xhi0, xlo1, xhi1, sumX);
                 const float2 d1 = qwg_aq_slice_dot2<BITS>(gp1, byteInGroup, xlo0, xhi0, xlo1, xhi1, sumX);
                 const float2 d2 = qwg_aq_slice_dot2<BITS>(gp2, byteInGroup, xlo0, xhi0, xlo1, xhi1, sumX);
@@ -123,7 +125,7 @@ static inline void qwg_gemv_aq_gdn_inproj_rows4_m_body(device const char* blocks
                 acc[p + 1u] += float4(d0.y, d1.y, d2.y, d3.y);
             } else if (p < mRows) {
                 half4 xlo0[4], xhi0[4];
-                const float sumX = qwg_aq_load_prescaled32<BITS>(x + (size_t)p * K + col, xlo0, xhi0);
+                const float sumX = qwg_aq_load_prescaled32<BITS>(x + (size_t)p * realK + col, xlo0, xhi0);
                 acc[p].x += qwg_aq_slice_dot<BITS>(gp0, byteInGroup, xlo0, xhi0, sumX);
                 acc[p].y += qwg_aq_slice_dot<BITS>(gp1, byteInGroup, xlo0, xhi0, sumX);
                 acc[p].z += qwg_aq_slice_dot<BITS>(gp2, byteInGroup, xlo0, xhi0, sumX);

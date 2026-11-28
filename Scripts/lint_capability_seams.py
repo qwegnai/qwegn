@@ -18,14 +18,37 @@ ALLOWLIST = {
 GEMM_BUCKET_FAMILY = re.compile(r"\b(?:plan|shape)\s*\.\s*family\b")
 PATTERNS = [
     ("model family comparison", re.compile(r"(?:\b\w+\s*\.\s*)?\.?family\s*(?:==|!=)\s*\.(?!f[1-9]\w*)")),
-    ("family case equality", re.compile(r"\.(?:qwen38\w*|glm5Next|ernie55MoE|maxwellMoE|senseNovaLoop|inkling2Loop|bailingMoeV3|qwen3Dense|qwen3MoE|qwen2Dense|llamaDense|mistralDense|lfm2|lfm3|lfm2Encoder|modernBert)\s*(?:==|!=)")),
+    ("family case equality", re.compile(r"\.(?:qwen38\w*|glm5Next|ernie55MoE|maxwellMoE|senseNovaLoop|inkling2Loop|bailingMoeV3|gigachat4|qwen3Dense|qwen3MoE|qwen2Dense|llamaDense|mistralDense|lfm2|lfm3|lfm2Encoder|modernBert)\s*(?:==|!=)")),
     ("switch on model family", re.compile(r"\bswitch\s+[^\{\n]*\.family\b")),
     ("contains model family", re.compile(r"\.contains\s*\(\s*[^)]*\.family\b")),
     ("modelType comparison", re.compile(r"\.modelType\s*(?:==|!=)")),
+    ("descriptor.family.rawValue", re.compile(r"\bdescriptor\s*\.\s*family\s*\.\s*rawValue\b")),
+    ("modelType string check", re.compile(r"\bmodelType\s*\.\s*(?:contains|hasPrefix)\s*\(")),
 ]
+COMMENT_STRIPPED_PATTERNS = [
+    ('json["model_type"]', re.compile(r"""\bjson\s*\[\s*"model_type"\s*\]""")),
+]
+# Temporary allowlist for pre-existing unowned legacy hits (flagged to @coordinator).
+LEGACY_EXACT_HITS = {
+    (
+        "Sources/Subsystems/QWMTP/DFlash/QWDFlashConfig.swift",
+        'json["model_type"]',
+        'if let mt = (json["model_type"] as? String)?.lowercased(),',
+    ),
+    (
+        "Sources/Runtime/QWEngine/Core/QWUnifiedEngine.swift",
+        "descriptor.family.rawValue",
+        "packPath: descriptor.family.rawValue,",
+    ),
+    (
+        "Sources/Apps/qwg/QwgReplHelpers.swift",
+        "descriptor.family.rawValue",
+        "modelName: runtimeAssets.descriptor.family.rawValue,",
+    ),
+}
 
 
-def strip_comments_and_strings(src: str) -> list[str]:
+def _strip(src: str, strip_strings: bool) -> list[str]:
     out = []
     i, n = 0, len(src)
     in_block = False
@@ -51,12 +74,12 @@ def strip_comments_and_strings(src: str) -> list[str]:
             i += 1
             while i < n and src[i] != '"':
                 if src[i] == "\\" and i + 1 < n:
-                    out.append("  ")
+                    out.append("  " if strip_strings else src[i:i + 2])
                     i += 2
                 elif src[i] == "\n":
                     break
                 else:
-                    out.append(" ")
+                    out.append(" " if strip_strings else src[i])
                     i += 1
             if i < n and src[i] == '"':
                 out.append('"')
@@ -67,6 +90,10 @@ def strip_comments_and_strings(src: str) -> list[str]:
     return "".join(out).splitlines()
 
 
+def strip_comments_and_strings(src: str) -> list[str]:
+    return _strip(src, strip_strings=True)
+
+
 def scan() -> list[str]:
     violations: list[str] = []
     for scan_dir in SCAN_DIRS:
@@ -75,15 +102,26 @@ def scan() -> list[str]:
         for path in sorted(scan_dir.rglob("*.swift")):
             if path.resolve() in ALLOWLIST:
                 continue
-            lines = strip_comments_and_strings(path.read_text(encoding="utf-8"))
-            rel = path.relative_to(ROOT)
+            src = path.read_text(encoding="utf-8")
+            lines = strip_comments_and_strings(src)
+            comment_lines = _strip(src, strip_strings=False)
+            rel = str(path.relative_to(ROOT))
             for lineno, line in enumerate(lines, start=1):
                 sanitized = GEMM_BUCKET_FAMILY.sub("gemm_bucket", line)
-                if "qwg_gemm" in sanitized or "QWGemm" in line and ".family" in line:
-                    pass
+                matched = False
                 for label, pat in PATTERNS:
                     if pat.search(sanitized):
-                        violations.append(f"{rel}:{lineno}: banned {label}: {line.strip()}")
+                        if (rel, label, line.strip()) not in LEGACY_EXACT_HITS:
+                            violations.append(f"{rel}:{lineno}: banned {label}: {line.strip()}")
+                        matched = True
+                        break
+                if matched:
+                    continue
+                cline = comment_lines[lineno - 1]
+                for label, pat in COMMENT_STRIPPED_PATTERNS:
+                    if pat.search(cline):
+                        if (rel, label, cline.strip()) not in LEGACY_EXACT_HITS:
+                            violations.append(f"{rel}:{lineno}: banned {label}: {cline.strip()}")
                         break
     return violations
 

@@ -1,6 +1,11 @@
 // qw_ink2_ctrl_batch.metal — Batched 1..3 branch loop controller kernels for Inkling-2.
 #include <metal_stdlib>
 #include <metal_simdgroup>
+#include "inkling2/qw_ink2_common.metalh"
+
+using namespace metal;
+
+#if !defined(QW_DISABLE_NAX)
 #include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
 #if !defined(__ENVIRONMENT_OS_VERSION_MIN_REQUIRED__) || __ENVIRONMENT_OS_VERSION_MIN_REQUIRED__ < 260200
 #error "NAX cooperative_tensor kernels require -mmacosx-version-min=26.2 or newer (Apple MPP operand_index ABI)."
@@ -8,10 +13,9 @@
 #include "mlx/backend/metal/kernels/steel/defines.h"
 #include "mlx/backend/metal/kernels/steel/utils/integral_constant.h"
 #include "mlx/backend/metal/kernels/steel/gemm/nax.h"
-#include "inkling2/qw_ink2_common.metalh"
 
-using namespace metal;
 using namespace mlx::steel;
+#endif // !defined(QW_DISABLE_NAX)
 
 struct QWInk2CtrlBatchParams {
     uint T, H, rank, thStride;
@@ -591,6 +595,7 @@ inline void qw_ink2_stage_bf16_k32(
     }
 }
 
+#if !defined(QW_DISABLE_NAX)
 kernel void qwg_ink2_ctrl_down_nax_batch(device const bfloat* pairBF16 [[buffer(0)]],
                                           device const bfloat* weightSlab [[buffer(1)]],
                                           device float* hidF32 [[buffer(2)]],
@@ -756,3 +761,4 @@ kernel void qwg_ink2_ctrl_fg_blend_nax_batch(device const float* xF32 [[buffer(0
         }
     });
 }
+#endif // !defined(QW_DISABLE_NAX)

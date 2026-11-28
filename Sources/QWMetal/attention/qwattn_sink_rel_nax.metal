@@ -1,5 +1,6 @@
 // qwattn_sink_rel_nax.metal — Generalized NAX FlashAttention prefill
 // with optional attention sink, banded relative position bias, and output gate (f16/q8/q4 KV).
+#if !defined(QW_DISABLE_NAX)
 #include <metal_stdlib>
 #include <metal_simdgroup>
 #include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
@@ -444,3 +445,4 @@ QW_SINK_REL_PREFILL_ENTRY(_f16, 0u)
 QW_SINK_REL_PREFILL_ENTRY(_q8, 1u)
 QW_SINK_REL_PREFILL_ENTRY(_q4, 2u)
 #undef QW_SINK_REL_PREFILL_ENTRY
+#endif // !defined(QW_DISABLE_NAX)

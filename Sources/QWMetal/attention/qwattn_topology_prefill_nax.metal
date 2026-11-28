@@ -1,4 +1,5 @@
 // qwattn_topology_prefill_nax.metal — Metal 4 NAX FlashAttention for generalized decision topologies.
+#if !defined(QW_DISABLE_NAX)
 #include <metal_stdlib>
 #include <metal_simdgroup>
 #include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
@@ -356,3 +357,4 @@ kernel void qwg_attn_topology_prefill_nax_d128(
     qwg_attn_topology_prefill_nax_body<128u, 7u>(
         q, k, v, groupIds, outp, p, kvblk, qGrpSh, kGrpSh, tgStop, tgSkipBlock, tgAllAllow, tid, sgi, tg);
 }
+#endif // !defined(QW_DISABLE_NAX)

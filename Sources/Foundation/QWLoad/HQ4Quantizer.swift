@@ -245,7 +245,7 @@ public enum QWHQ4Quantizer {
                 guard raw.count >= elemEnd * 2 else {
                     throw QuantizeError.invalidLayout(name: name, reason: "truncated bf16 tensor")
                 }
-                memcpy(dst, base.advanced(by: elemStart * 2), elemCount * 2)
+                UnsafeMutableRawPointer(dst).copyMemory(from: base.advanced(by: elemStart * 2), byteCount: elemCount * 2)
             case .f16:
                 guard raw.count >= elemEnd * 2 else {
                     throw QuantizeError.invalidLayout(name: name, reason: "truncated f16 tensor")

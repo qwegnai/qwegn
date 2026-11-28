@@ -16,7 +16,7 @@ final class QWMLAAttnOperatorTests: XCTestCase {
     override func setUpWithError() throws {
         try XCTSkipUnless(
             ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] != "true"
-                && QWDeviceCaps.current?.familyApple9 == true,
+                && QWDeviceCaps.current?.supportsSimdgroupMMA == true,
             "MLA/DSA GPU operator tests require bare-metal Apple Silicon GPU"
         )
     }

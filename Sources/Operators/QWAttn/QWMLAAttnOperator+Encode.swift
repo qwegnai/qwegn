@@ -99,10 +99,19 @@ extension QWMLAAttnOperator {
 
     public func indexerStateBytes(position: Int) -> Int {
         if isDecoupledDSA {
-            return layers.count * position * (idxDim + ropeDim) * 2
+            var total = 0
+            for ls in layers {
+                if ls.hasIndexer { total += position * idxDim * 2 }
+                if ls.kPeCache != nil { total += position * ropeDim * 2 }
+            }
+            return total
         }
         let rowBytes = idxDim * 2
-        return layers.count * ((position / 4) + 2 * (position % 4)) * rowBytes
+        var total = 0
+        for ls in layers where ls.hasIndexer {
+            total += ((position / 4) + 2 * (position % 4)) * rowBytes
+        }
+        return total
     }
 
     public func captureIndexerState(position: Int) -> Data {

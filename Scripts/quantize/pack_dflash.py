@@ -36,16 +36,24 @@ DSPINE_VERSION_TENSORS = {
 
 def is_dflash_raw_plane(name: str) -> bool:
     """Return True for norm, dynamic-conv, selector, and DSpine bridge planes kept in BF16."""
-    if name in DFLASH_RAW_EXACT or name.startswith("selected_prefix_bridge."):
+    if (
+        name in DFLASH_RAW_EXACT
+        or name.startswith("selected_prefix_bridge.")
+        or name.startswith("candidate_selector.")
+    ):
         return True
     return any(
         token in name
         for token in (
+            "hidden_norm.",
+            "norm.",
             "layernorm",
             "q_norm",
             "k_norm",
             "base_kernel",
             "kernel_projection",
+            "gate_up_projection",
+            "gate_down_projection",
         )
     )
 
@@ -74,6 +82,15 @@ def derive_dflash_model_id(config: dict, source: Path, is_dspine: bool) -> str:
         if source.parent.name == "snapshots" and source.parent.parent.name.startswith("models--"):
             parts = source.parent.parent.name.split("--", 2)
             raw_name = parts[2] if len(parts) >= 3 else parts[-1]
+        elif (
+            source.name in ("dflash_draft", "dflash2_draft", "draft")
+            and source.parent.parent.name == "snapshots"
+            and source.parent.parent.parent.name.startswith("models--")
+        ):
+            parts = source.parent.parent.parent.name.split("--", 2)
+            raw_name = parts[2] if len(parts) >= 3 else parts[-1]
+        elif source.name in ("dflash_draft", "dflash2_draft", "draft") and source.parent.name not in ("", "/", "."):
+            raw_name = source.parent.name
         else:
             raw_name = source.name
     slug = re.sub(r"[^a-z0-9]+", "_", raw_name.lower()).strip("_")
@@ -124,19 +141,43 @@ def quantize_dflash_model(
         raise FileNotFoundError(f"missing config.json in {source}")
     config = json.loads(config_path.read_text())
     archs = config.get("architectures") or []
-    if "DFlash2DraftModel" not in archs and "DFlashDraftModel" not in archs and "dflash_config" not in config:
+    is_draft_arch = any("DraftModel" in str(a) or "DFlash" in str(a) for a in archs)
+    if not is_draft_arch and "dflash_config" not in config:
         raise ValueError(f"not a DFlash2/DSpine DraftModel checkpoint: {archs}")
 
+    q_heads = int(config["num_attention_heads"])
+    kv_heads = int(config.get("num_key_value_heads") or q_heads)
+    q_rank = int(config.get("q_lora_rank") or 0)
+    nope_d = int(config.get("qk_nope_head_dim") or 0)
+    rope_d = int(config.get("qk_rope_head_dim") or 0)
+    split_mla_qb = q_rank > 0 and nope_d > 0 and rope_d > 0
+    raw_hd = config.get("head_dim")
+    if raw_hd is not None and not (nope_d > 0 and rope_d > 0 and int(raw_hd) == rope_d):
+        resolved_hd = int(raw_hd)
+    elif config.get("qk_head_dim"):
+        resolved_hd = int(config["qk_head_dim"])
+    elif nope_d + rope_d > 0:
+        resolved_hd = nope_d + rope_d
+    else:
+        resolved_hd = int(config["hidden_size"]) // q_heads
+
     shard_names, expected_shapes = {}, {}
+    seen_sources = set()
     for path in files:
         with safe_open(path, framework="pt") as sf:
             shard_names[path] = list(sf.keys())
             for name in shard_names[path]:
-                if name in expected_shapes:
+                if name in seen_sources:
                     raise ValueError(f"duplicate source tensor: {name}")
+                seen_sources.add(name)
                 if name in DSPINE_VERSION_TENSORS:
                     continue
-                expected_shapes[name] = list(sf.get_slice(name).get_shape())
+                if split_mla_qb and name.endswith(".self_attn.q_b_proj.weight"):
+                    pfx = name[: -len("q_b_proj.weight")]
+                    expected_shapes[pfx + "q_b_nope_proj.weight"] = [q_heads * nope_d, q_rank]
+                    expected_shapes[pfx + "q_b_rope_proj.weight"] = [q_heads * rope_d, q_rank]
+                else:
+                    expected_shapes[name] = list(sf.get_slice(name).get_shape())
 
     h = hashlib.sha256()
     for path in files:
@@ -159,7 +200,21 @@ def quantize_dflash_model(
                     if val != 1:
                         raise ValueError(f"unsupported {name}={val} (expected 1)")
                     continue
-                raw = is_dflash_raw_plane(name) or arr.ndim != 2 or arr.shape[1] % GROUP != 0
+                if split_mla_qb and name.endswith(".self_attn.q_b_proj.weight"):
+                    pfx = name[: -len("q_b_proj.weight")]
+                    viewed = arr.view(q_heads, nope_d + rope_d, q_rank)
+                    qb_nope = viewed[:, :nope_d, :].reshape(q_heads * nope_d, q_rank).contiguous()
+                    qb_rope = viewed[:, nope_d:, :].reshape(q_heads * rope_d, q_rank).contiguous()
+                    stats[quant_canonical] += 2
+                    yield pfx + "q_b_nope_proj.weight", qb_nope, spec
+                    yield pfx + "q_b_rope_proj.weight", qb_rope, spec
+                    continue
+                raw = (
+                    is_dflash_raw_plane(name)
+                    or arr.ndim != 2
+                    or arr.shape[0] < GROUP
+                    or arr.shape[1] % GROUP != 0
+                )
                 if raw:
                     stats["bf16"] += 1
                     yield name, arr, True
@@ -180,16 +235,16 @@ def quantize_dflash_model(
         geo_str = (
             f"qwg-dspine-v1:{config['hidden_size']}|{config['vocab_size']}|"
             f"{config['intermediate_size']}|{config['num_hidden_layers']}|"
-            f"{config['num_attention_heads']}|{config['num_key_value_heads']}|"
-            f"{config['head_dim']}|{config.get('block_size', dcfg.get('block_size', 16))}|"
+            f"{q_heads}|{kv_heads}|"
+            f"{resolved_hd}|{config.get('block_size', dcfg.get('block_size', 16))}|"
             f"{code_size}|{rank}"
         )
     else:
         geo_str = (
             f"qwg-dflash2-v1:{config['hidden_size']}|{config['vocab_size']}|"
             f"{config['intermediate_size']}|{config['num_hidden_layers']}|"
-            f"{config['num_attention_heads']}|{config['num_key_value_heads']}|"
-            f"{config['head_dim']}|{dcfg.get('block_size', 8)}|"
+            f"{q_heads}|{kv_heads}|"
+            f"{resolved_hd}|{dcfg.get('block_size', 8)}|"
             f"{dcfg.get('selector_rank', 256)}|{dcfg.get('selector_top_k', 16)}"
         )
     model_id = derive_dflash_model_id(config, source, is_dspine)

@@ -64,16 +64,18 @@ public enum QWGemmAQ {
         return "qwg_head_gemv_shvq\(bits)_g\(group)_argmax_m16"
     }
 
-    /// The prefill GEMM for a `(bits, group)` pair.
-    public static func gemmKernelName(bits: Int, group: Int, isSHVQ: Bool = false) -> String? {
+    /// The prefill GEMM for a `(bits, group)` pair (`h16` NAX on Apple10+, `sg` on Apple9).
+    public static func gemmKernelName(bits: Int, group: Int, isSHVQ: Bool = false, useNAX: Bool = true) -> String? {
         guard isSupported(bits: bits, group: group, isSHVQ: isSHVQ) else { return nil }
-        return isSHVQ ? "qwg_gemm_shvq\(bits)_g\(group)_h16" : "qwg_gemm_aq\(bits)_g\(group)_h16"
+        let suffix = useNAX ? "h16" : "sg"
+        return isSHVQ ? "qwg_gemm_shvq\(bits)_g\(group)_\(suffix)" : "qwg_gemm_aq\(bits)_g\(group)_\(suffix)"
     }
 
     /// The fused gate_up + SwiGLU + FWHT-32 prefill GEMM for a `(bits, group)` pair.
-    public static func swigluGemmKernelName(bits: Int, group: Int, isSHVQ: Bool = false) -> String? {
+    public static func swigluGemmKernelName(bits: Int, group: Int, isSHVQ: Bool = false, useNAX: Bool = true) -> String? {
         guard isSupported(bits: bits, group: group, isSHVQ: isSHVQ) else { return nil }
-        return isSHVQ ? "qwg_gemm_shvq\(bits)_g\(group)_h16_swiglu" : "qwg_gemm_aq\(bits)_g\(group)_h16_swiglu"
+        let suffix = useNAX ? "h16_swiglu" : "sg_swiglu"
+        return isSHVQ ? "qwg_gemm_shvq\(bits)_g\(group)_\(suffix)" : "qwg_gemm_aq\(bits)_g\(group)_\(suffix)"
     }
 
     /// The GDN in-projection decode kernel for a `(bits, group)` pair.
@@ -83,9 +85,10 @@ public enum QWGemmAQ {
     }
 
     /// The GDN in-projection prefill kernel for a `(bits, group)` pair.
-    public static func gdnInProjPrefillKernelName(bits: Int, group: Int, isSHVQ: Bool = false) -> String? {
+    public static func gdnInProjPrefillKernelName(bits: Int, group: Int, isSHVQ: Bool = false, useNAX: Bool = true) -> String? {
         guard isSupported(bits: bits, group: group, isSHVQ: isSHVQ) else { return nil }
-        return isSHVQ ? "qwg_gemm_shvq\(bits)_g\(group)_h16_gdn_inproj" : "qwg_gemm_aq\(bits)_g\(group)_h16_gdn_inproj"
+        let suffix = useNAX ? "h16_gdn_inproj" : "sg_gdn_inproj"
+        return isSHVQ ? "qwg_gemm_shvq\(bits)_g\(group)_\(suffix)" : "qwg_gemm_aq\(bits)_g\(group)_\(suffix)"
     }
 
     public static func f32BMKernelName(bits: Int, group: Int, isSHVQ: Bool = false) -> String? {
@@ -108,9 +111,15 @@ public enum QWGemmAQ {
         return isSHVQ ? "qwg_gemv_shvq\(bits)_g\(group)_f32_v4_am2" : "qwg_gemv_aq\(bits)_g\(group)_f32_v4_am2"
     }
 
-    public static func naxF32KernelName(bits: Int, group: Int, isSHVQ: Bool = false) -> String? {
+    public static func naxF32KernelName(bits: Int, group: Int, isSHVQ: Bool = false, useNAX: Bool = true) -> String? {
         guard isSupported(bits: bits, group: group, isSHVQ: isSHVQ) else { return nil }
-        return isSHVQ ? "qwg_gemm_shvq\(bits)_g\(group)_nax_f32" : "qwg_gemm_aq\(bits)_g\(group)_nax_f32"
+        let suffix = useNAX ? "nax_f32" : "sg_f32"
+        return isSHVQ ? "qwg_gemm_shvq\(bits)_g\(group)_\(suffix)" : "qwg_gemm_aq\(bits)_g\(group)_\(suffix)"
+    }
+
+    public static func naxTG16F32KernelName(bits: Int, group: Int, isSHVQ: Bool) -> String? {
+        guard isSHVQ, bits == 4, isSupported(bits: bits, group: group, isSHVQ: true) else { return nil }
+        return "qwg_gemm_shvq4_g\(group)_nax_tg16_f32"
     }
 
     public static func moeGateUpF32R1KernelName(bits: Int, group: Int, isSHVQ: Bool = false, hasSoftcap: Bool = false) -> String? {
@@ -125,25 +134,28 @@ public enum QWGemmAQ {
         return isSHVQ ? "qwg_moe_down_shared_combine_shvq\(bits)_g\(group)_f32" : "qwg_moe_down_shared_combine_aq\(bits)_g\(group)_f32"
     }
 
-    public static func moeNaxGemmKernelName(bits: Int, group: Int, isSHVQ: Bool = false) -> String? {
+    public static func moeNaxGemmKernelName(bits: Int, group: Int, isSHVQ: Bool = false, useNAX: Bool = true) -> String? {
         guard isSupported(bits: bits, group: group, isSHVQ: isSHVQ) else { return nil }
-        return isSHVQ ? "qwg_moe_nax_gemm_shvq\(bits)_g\(group)" : "qwg_moe_nax_gemm_aq\(bits)_g\(group)"
+        let tag = useNAX ? "nax" : "sg"
+        return isSHVQ ? "qwg_moe_\(tag)_gemm_shvq\(bits)_g\(group)" : "qwg_moe_\(tag)_gemm_aq\(bits)_g\(group)"
     }
 
-    public static func moeNaxSplitF32KernelName(bits: Int, group: Int, isSHVQ: Bool = false) -> String? {
+    public static func moeNaxSplitF32KernelName(bits: Int, group: Int, isSHVQ: Bool = false, useNAX: Bool = true) -> String? {
         guard isSupported(bits: bits, group: group, isSHVQ: isSHVQ) else { return nil }
-        return isSHVQ ? "qwg_moe_nax_split_shvq\(bits)_g\(group)_f32" : "qwg_moe_nax_split_aq\(bits)_g\(group)_f32"
+        let tag = useNAX ? "nax" : "sg"
+        return isSHVQ ? "qwg_moe_\(tag)_split_shvq\(bits)_g\(group)_f32" : "qwg_moe_\(tag)_split_aq\(bits)_g\(group)_f32"
     }
 
-    /// The fused grouped-MoE NAX gate_up + SwiGLU + FWHT-32 kernel for a `(bits, group)` pair.
-    public static func moeNaxSwigluKernelName(bits: Int, group: Int, isSHVQ: Bool = false) -> String? {
+    /// The fused grouped-MoE gate_up + SwiGLU + FWHT-32 kernel for a `(bits, group)` pair.
+    public static func moeNaxSwigluKernelName(bits: Int, group: Int, isSHVQ: Bool = false, useNAX: Bool = true) -> String? {
         guard group == 32 || group == 64 else { return nil }
+        let tag = useNAX ? "nax" : "sg"
         if isSHVQ {
             guard QWSHVQBlock.isSupported(bits: bits, group: group) else { return nil }
-            return "qwg_moe_nax_swiglu_shvq\(bits)_g\(group)"
+            return "qwg_moe_\(tag)_swiglu_shvq\(bits)_g\(group)"
         }
         guard bits == 4 || bits == 8, QWAQBlock.isBlockSupported(bits: bits, group: group) else { return nil }
-        return "qwg_moe_nax_swiglu_aq\(bits)_g\(group)"
+        return "qwg_moe_\(tag)_swiglu_aq\(bits)_g\(group)"
     }
 
     public static func hcUpMixH32F32KernelName(bits: Int, group: Int, isSHVQ: Bool = false) -> String? {
@@ -280,19 +292,19 @@ public enum QWGemmAQ {
         }
     }
 
-    /// Encodes one decode GEMV over a bank of `(bits, group)` blocks, in the
-    /// dense path's geometry: four output rows per simdgroup, f16
-    /// activations in, f16 out. The geometry is the incumbent's `dx_h16_t4`.
+    /// Encodes 1+ decode GEMV over a bank of `(bits, group)` blocks, in the
+    /// dense path's geometry: four (or two for SHVQ rows=1 N<=8192 and rows=5..8)
+    /// output rows per simdgroup, f16 activations in, f16 out.
     public static func encodeDecodeT4(_ enc: any MTLComputeCommandEncoder, hal: QWHal,
                                       blocks: QWTensorValue, x: QWTensorValue,
                                       y16: QWTensorValue,
                                       n: Int, k: Int, bits: Int, group: Int,
-                                      isSHVQ: Bool = false) throws {
+                                      rows: Int = 1, isSHVQ: Bool = false) throws {
         guard let name = decodeKernelName(bits: bits, group: group, isSHVQ: isSHVQ) else {
             throw QWGemmError.badWeights("no affine-quantised decode kernel for \(bits)-bit group \(group)")
         }
-        guard k % group == 0, n > 0 else {
-            throw QWGemmError.badWeights("k must be a multiple of \(group) and n positive")
+        guard k % group == 0, n > 0, rows > 0 else {
+            throw QWGemmError.badWeights("k must be a multiple of \(group) and n and rows positive")
         }
         // The row-count encoding reserves bits 24..29 for multi-row alongside bit 30,
         // so rows >= 2^24 would collide with mRows in dx_h16_t4.
@@ -309,29 +321,59 @@ public enum QWGemmAQ {
         guard x.shape.dtype == .f16 else {
             throw QWGemmError.badWeights("activations must be f16, got \(x.shape.dtype)")
         }
-        guard x.shape.elementCount >= k else {
-            throw QWGemmError.badWeights("activations hold \(x.shape.elementCount), \(k) needed")
+        guard x.shape.elementCount >= rows * k else {
+            throw QWGemmError.badWeights("activations hold \(x.shape.elementCount), \(rows * k) needed")
         }
         guard y16.shape.dtype == .f16 else {
             throw QWGemmError.badWeights("output must be f16, got \(y16.shape.dtype)")
         }
-        guard y16.shape.elementCount >= n else {
-            throw QWGemmError.badWeights("output holds \(y16.shape.elementCount), \(n) needed")
+        guard y16.shape.elementCount >= rows * n else {
+            throw QWGemmError.badWeights("output holds \(y16.shape.elementCount), \(rows * n) needed")
         }
         let pso = try hal.pipeline(name)
-        enc.setComputePipelineState(pso)
+        let psoM4 = (isSHVQ && rows >= 2) ? decodeM4KernelName(bits: bits, group: group, isSHVQ: true)
+            .flatMap { try? hal.pipeline($0) } : nil
+        var activeIsM4: Bool? = nil
         blocks.bind(enc, index: 0)
-        x.bind(enc, index: 1)
-        y16.bind(enc, index: 3)
-        var n32 = UInt32(n) | 0x4000_0000
         var k32 = UInt32(k)
-        enc.setBytes(&n32, length: 4, index: 4)
         enc.setBytes(&k32, length: 4, index: 5)
-        y16.bind(enc, index: 8)
-        let groups = (n + decodeRowsPerThreadgroup - 1) / decodeRowsPerThreadgroup
-        enc.dispatchThreadgroups(MTLSize(width: groups, height: 1, depth: 1),
-                                 threadsPerThreadgroup: MTLSize(width: decodeThreadsPerThreadgroup,
-                                                               height: 1, depth: 1))
+        var rowOffset = 0
+        while rowOffset < rows {
+            let rem = rows - rowOffset
+            let chunk = (rem > 8 && rem - 8 == 1) ? 5 : min(8, rem)
+            let useM4 = isSHVQ && (chunk >= 2 && chunk <= 4) && (psoM4 != nil)
+            let useTwoRows = isSHVQ && ((chunk == 1 && n <= 8192) || (chunk >= 5 && chunk <= 8))
+            if useM4 != activeIsM4 {
+                if let m4 = psoM4, useM4 {
+                    enc.setComputePipelineState(m4)
+                } else {
+                    enc.setComputePipelineState(pso)
+                }
+                activeIsM4 = useM4
+            }
+            let xChunk = (rowOffset == 0 && chunk == rows)
+                ? x
+                : x.slice(byteOffset: rowOffset * k * 2, count: chunk * k, dtype: .f16)
+            let yChunk = (rowOffset == 0 && chunk == rows)
+                ? y16
+                : y16.slice(byteOffset: rowOffset * n * 2, count: chunk * n, dtype: .f16)
+            xChunk.bind(enc, index: 1)
+            yChunk.bind(enc, index: 3)
+            yChunk.bind(enc, index: 8)
+            var n32: UInt32
+            if chunk == 1 {
+                n32 = UInt32(n) | (useTwoRows ? 0x8000_0000 : 0x4000_0000)
+            } else {
+                n32 = UInt32(n) | (useTwoRows ? 0xC000_0000 : 0x4000_0000) | (UInt32(chunk) << 24)
+            }
+            enc.setBytes(&n32, length: 4, index: 4)
+            let rowsPerTG = (!useM4 && useTwoRows) ? (decodeRowsPerThreadgroup / 2) : decodeRowsPerThreadgroup
+            let groups = (n + rowsPerTG - 1) / rowsPerTG
+            enc.dispatchThreadgroups(MTLSize(width: groups, height: 1, depth: 1),
+                                     threadsPerThreadgroup: MTLSize(width: decodeThreadsPerThreadgroup,
+                                                                   height: 1, depth: 1))
+            rowOffset += chunk
+        }
     }
 
     /// Encodes 1..8-row SHVQ decode GEMV writing directly to `.bf16` output (`bfloat(float)` single rounding).
@@ -373,9 +415,10 @@ public enum QWGemmAQ {
         enc.setBytes(&k32, length: 4, index: 5)
         var rowOffset = 0
         while rowOffset < rows {
-            let chunk = min(8, rows - rowOffset)
+            let rem = rows - rowOffset
+            let chunk = (rem > 8 && rem - 8 == 1) ? 5 : min(8, rem)
             let useM4 = (chunk >= 2 && chunk <= 4) && (psoM4 != nil)
-            let useTwoRowsM1 = (chunk == 1 && n <= 8192)
+            let useTwoRows = (chunk == 1 && n <= 8192) || (chunk >= 5 && chunk <= 8)
             if useM4 != activeIsM4 {
                 if let m4 = psoM4, useM4 {
                     enc.setComputePipelineState(m4)
@@ -394,10 +437,10 @@ public enum QWGemmAQ {
             yChunk.bind(enc, index: 3)
             yChunk.bind(enc, index: 8)
             var n32 = UInt32(n)
-                | (useTwoRowsM1 ? 0xE000_0000 : 0x6000_0000)
+                | (useTwoRows ? 0xE000_0000 : 0x6000_0000)
                 | (chunk >= 2 ? (UInt32(chunk) << 24) : 0)
             enc.setBytes(&n32, length: 4, index: 4)
-            let rowsPerTG = useTwoRowsM1 ? (decodeRowsPerThreadgroup / 2) : decodeRowsPerThreadgroup
+            let rowsPerTG = (!useM4 && useTwoRows) ? (decodeRowsPerThreadgroup / 2) : decodeRowsPerThreadgroup
             let groups = (n + rowsPerTG - 1) / rowsPerTG
             enc.dispatchThreadgroups(MTLSize(width: groups, height: 1, depth: 1),
                                      threadsPerThreadgroup: MTLSize(width: decodeThreadsPerThreadgroup,
@@ -453,17 +496,17 @@ public enum QWGemmAQ {
 }
 
 extension QWGemm {
-    public static func moeNaxSwigluKernelName(for bank: QWWeightView) -> String? {
+    public static func moeNaxSwigluKernelName(for bank: QWWeightView, useNAX: Bool = true) -> String? {
         bank.isIncumbentContainer
-            ? "qwg_moe_nax_swiglu_q4g"
-            : QWGemmAQ.moeNaxSwigluKernelName(bits: bank.bits, group: bank.groupSize, isSHVQ: bank.isSHVQ)
+            ? (useNAX ? "qwg_moe_nax_swiglu_q4g" : "qwg_moe_sg_swiglu_q4g")
+            : QWGemmAQ.moeNaxSwigluKernelName(bits: bank.bits, group: bank.groupSize, isSHVQ: bank.isSHVQ, useNAX: useNAX)
     }
 
     public static func supportsMoEGateUpNaxSwiglu(_ bank: QWWeightView) -> Bool {
         moeNaxSwigluKernelName(for: bank) != nil
     }
 
-    /// Fused grouped-MoE NAX gate_up + SwiGLU + FWHT-32 emitting rotated FP16 directly into `out16`.
+    /// Fused grouped-MoE gate_up + SwiGLU + FWHT-32 emitting rotated FP16 directly into `out16`.
     public static func encodeMoEGateUpNaxSwiglu(
         _ enc: any MTLComputeCommandEncoder, hal: QWHal, xe: QWTensorValue,
         bank: QWWeightView, expertOff: QWTensorValue, tileE: QWTensorValue,
@@ -483,7 +526,7 @@ extension QWGemm {
         if let cg = coldBank, cg.containerKind != bank.containerKind || cg.k != bank.k {
             throw QWGemmError.badWeights("moe gateup swiglu nax coldBank container/k mismatch")
         }
-        guard let kernelName = moeNaxSwigluKernelName(for: bank) else {
+        guard let kernelName = moeNaxSwigluKernelName(for: bank, useNAX: hal.caps.isMetal4TensorCapable) else {
             throw QWGemmError.badWeights("no moe nax swiglu kernel for \(bank.formatName)")
         }
         let residentE = bank.n / rowsPerExpert
@@ -508,17 +551,17 @@ extension QWGemm {
                            flags: tileFilter.rawValue, flagsIndex: 8)
     }
 
-    public static func denseSwiGLUNaxKernelName(for weight: QWWeightView) -> String? {
+    public static func denseSwiGLUNaxKernelName(for weight: QWWeightView, useNAX: Bool = true) -> String? {
         weight.isIncumbentContainer
-            ? "qwg_gemm_q4g_h16_swiglu"
-            : QWGemmAQ.swigluGemmKernelName(bits: weight.bits, group: weight.groupSize, isSHVQ: weight.isSHVQ)
+            ? (useNAX ? "qwg_gemm_q4g_h16_swiglu" : "qwg_gemm_q4g_sg_swiglu")
+            : QWGemmAQ.swigluGemmKernelName(bits: weight.bits, group: weight.groupSize, isSHVQ: weight.isSHVQ, useNAX: useNAX)
     }
 
     public static func supportsDenseSwiGLUNax(_ weight: QWWeightView) -> Bool {
         denseSwiGLUNaxKernelName(for: weight) != nil
     }
 
-    /// Fused dense NAX gate_up + SwiGLU + FWHT-32 emitting rotated FP16 directly into `out16`.
+    /// Fused dense gate_up + SwiGLU + FWHT-32 emitting rotated FP16 directly into `out16`.
     public static func encodeDenseSwiGLUNax(
         _ enc: any MTLComputeCommandEncoder, hal: QWHal,
         weight: QWWeightView, x16: QWTensorValue, out16: QWTensorValue,
@@ -534,21 +577,21 @@ extension QWGemm {
         guard x16.shape.dtype == .f16, out16.shape.dtype == .f16 else {
             throw QWGemmError.badShape("dense swiglu nax requires f16 input and output")
         }
-        guard let kernelName = denseSwiGLUNaxKernelName(for: weight) else {
+        let useNAX = hal.caps.isMetal4TensorCapable
+        guard let kernelName = denseSwiGLUNaxKernelName(for: weight, useNAX: useNAX) else {
             throw QWGemmError.badWeights("no dense swiglu nax kernel for \(weight.formatName)")
         }
         enc.setComputePipelineState(try hal.pipeline(kernelName, swigluClamp: swigluClamp))
         enc.bindTensors(weight.blocks, x16, out16, startIndex: 0)
         let xs = xStride ?? weight.k, ys = yStride ?? intermediate
-        let useSmallTile = hal.caps.isMetal4TensorCapable
-        let chunk = naxRowChunk(rows: rows, k: weight.k)
+        let chunk = naxRowChunk(rows: rows, k: weight.k, gpuCores: hal.caps.gpuCores)
         var r0 = 0
         while r0 < rows {
             let r = min(chunk, rows - r0)
-            let use64 = useSmallTile && r <= 16 && (intermediate & 63) == 0
-            let bm = useSmallTile ? (use64 ? 16 : (r <= 32 ? 32 : 64)) : 64
+            let use64 = useNAX && r <= 16 && (intermediate & 63) == 0
+            let bm = r <= 16 ? 16 : (r <= 32 ? 32 : 64)
             let bn = use64 ? 64 : 32
-            let modeBits = useSmallTile ? (use64 ? 0x2000_0000 : (r <= 32 ? 0x4000_0000 : 0)) : 0
+            let modeBits = r <= 16 ? 0x2000_0000 : (r <= 32 ? 0x4000_0000 : 0)
             if r0 > 0 {
                 x16.slice(byteOffset: r0 * xs * 2, count: r * xs).bind(enc, index: 1)
                 out16.slice(byteOffset: r0 * ys * 2, count: r * ys).bind(enc, index: 2)

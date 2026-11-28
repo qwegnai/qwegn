@@ -57,8 +57,9 @@ def parse_package_swift(text: str) -> tuple[dict[str, list[str]], dict[str, list
     tests: dict[str, list[str]] = {}
     for mod, test in re.findall(r'\(\s*"([^"]+)"\s*,\s*"([^"]+)"\s*\)', text):
         tdeps = [mod]
-        for blk in re.findall(rf'if mod == "{re.escape(mod)}"(?:\s*\|\|[^)]+)?\s*\{{([^}}]+)\}}', text):
-            tdeps += re.findall(r'\.byName\(\s*name:\s*"([^"]+)"\s*\)', blk)
+        for cond, blk in re.findall(r'if\s+([^{]+)\{([^}]+)\}', text):
+            if re.search(rf'\bmod\s*==\s*"{re.escape(mod)}"', cond):
+                tdeps += re.findall(r'\.byName\(\s*name:\s*"([^"]+)"\s*\)', blk)
         tests[test] = tdeps
     for m in re.finditer(r'\.testTarget\s*\(', text):
         body, _ = extract_balanced(text, m.end() - 1, "(", ")")

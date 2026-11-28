@@ -18,57 +18,45 @@ struct Ink2Slice: @unchecked Sendable {
     }
 }
 
-enum Ink2LinearW: @unchecked Sendable {
-    case bf16(QWGemmFP.BF16Bank)
-    case quant(QWWeightView)
+typealias Ink2LinearW = QWLinearWeight
 
-    var isQuantized: Bool {
-        if case .quant = self { return true }
-        return false
-    }
-
-    var n: Int {
-        switch self {
-        case .bf16(let b): return b.n
-        case .quant(let v): return v.n
-        }
-    }
-
-    var k: Int {
-        switch self {
-        case .bf16(let b): return b.k
-        case .quant(let v): return v.k
-        }
-    }
-}
-
-final class Ink2BumpAllocator {
-    let buffer: any MTLBuffer
-    var used: Int = 0
-
-    init(device: any MTLDevice, capacity: Int) throws {
+extension QWSubAllocator {
+    static func makeWeightAllocator(device: any MTLDevice, capacity: Int) throws -> QWSubAllocator {
         let aligned = max(4096, ((capacity + 4095) / 4096) * 4096)
         guard let buf = device.makeBuffer(length: aligned, options: .storageModeShared) else {
             throw QWInkling2Error.allocationFailed("weights buffer \(aligned) bytes")
         }
-        self.buffer = buf
+        return QWSubAllocator(region: QWMRegion(buffer: buf, base: 0, length: aligned))
+    }
+
+    var slabBuffer: any MTLBuffer { region.buffer }
+
+    func allocateBytes(_ byteCount: Int, label: String) throws -> Ink2Slice {
+        do {
+            let off = try allocate(bytes: byteCount)
+            return Ink2Slice(buffer: region.buffer, offset: off, length: byteCount)
+        } catch {
+            throw QWInkling2Error.allocationFailed("overflow storing \(label)")
+        }
     }
 
     func copy(_ name: String, from st: QWSafeTensorsContainer) throws -> Ink2Slice {
-        let alignedOff = ((used + 255) / 256) * 256
-        let cap = buffer.length
-        let dst = buffer.contents().advanced(by: alignedOff)
-        return try st.withBytes(of: name) { raw in
-            let len = raw.count
-            guard alignedOff + len <= cap else {
-                throw QWInkling2Error.allocationFailed("overflow storing \(name)")
-            }
-            if let src = raw.baseAddress, len > 0 {
-                memcpy(dst, src, len)
-            }
-            used = alignedOff + len
-            return Ink2Slice(buffer: buffer, offset: alignedOff, length: len)
+        guard let info = st.tensor(name) else {
+            throw QWSafeTensorsError.missingTensor(name)
         }
+        let slice = try allocateBytes(info.byteLength, label: name)
+        let dst = slice.buffer.contents().advanced(by: slice.offset)
+        try withExtendedLifetime(slice.buffer) {
+            try st.withBytes(of: name) { raw in
+                guard raw.count == slice.length else {
+                    throw QWInkling2Error.allocationFailed("size mismatch storing \(name)")
+                }
+                if let src = raw.baseAddress, raw.count > 0 {
+                    dst.copyMemory(from: src, byteCount: raw.count)
+                }
+            }
+        }
+        return slice
     }
 }
 
@@ -225,16 +213,20 @@ final class QWInkling2Weights: @unchecked Sendable {
         device: any MTLDevice,
         st: QWSafeTensorsContainer,
         descriptor: QWModelDescriptor,
-        ink2: QWModelDescriptor.Inkling2Config,
-        loadVision: Bool
+        ink2: QWModelDescriptor.Inkling2Config
     ) throws {
         func sumBytes(forPrefix prefix: String?, excludePrefix: String?) -> Int {
             var total = 0
             for (name, t) in st.tensors {
                 if let prefix, !name.hasPrefix(prefix) { continue }
                 if let excludePrefix, name.hasPrefix(excludePrefix) { continue }
-                if name.hasPrefix("vision_tower.") { continue }
-                total += ((t.byteLength + 255) / 256) * 256
+                if name.contains("vision_tower.") || name.hasPrefix("visual.") || name.contains(".visual.") { continue }
+                let aligned = ((t.byteLength + 255) / 256) * 256
+                let isSlabDoubled = ((descriptor.hidden * 2) % 16 != 0 && name.contains(".self_attn.")
+                    && (name.hasSuffix("q_proj.weight") || name.hasSuffix("gate_proj.weight")
+                        || name.hasSuffix("r_proj.weight") || name.hasSuffix("sink_proj.weight")))
+                    || (name.hasSuffix("forget_weight") || name.hasSuffix("gain_weight"))
+                total += isSlabDoubled ? (aligned * 2) : aligned
             }
             return total + 65536
         }
@@ -253,7 +245,7 @@ final class QWInkling2Weights: @unchecked Sendable {
             }
             gCap += ((t.byteLength + 255) / 256) * 256
         }
-        let gBump = try Ink2BumpAllocator(device: device, capacity: gCap)
+        let gBump = try QWSubAllocator.makeWeightAllocator(device: device, capacity: gCap)
         let embedTokens = try gBump.copy(globalNames[0], from: st)
         let embedNorm = try gBump.copy(globalNames[1], from: st)
         let lmHeadSlice = try gBump.copy(globalNames[2], from: st)
@@ -274,13 +266,13 @@ final class QWInkling2Weights: @unchecked Sendable {
         let moeI = descriptor.moeIntermediate ?? 1152
         let nExp = descriptor.numExperts ?? 128
 
-        var buffers: [any MTLBuffer] = [gBump.buffer]
+        var buffers: [any MTLBuffer] = [gBump.slabBuffer]
         var builtLayers: [LayerWeights] = []
         builtLayers.reserveCapacity(descriptor.numLayers)
 
         for l in 0..<descriptor.numLayers {
             let lPfx = "\(mdl)layers.\(l)."
-            let lBump = try Ink2BumpAllocator(device: device, capacity: sumBytes(forPrefix: lPfx, excludePrefix: nil))
+            let lBump = try QWSubAllocator.makeWeightAllocator(device: device, capacity: sumBytes(forPrefix: lPfx, excludePrefix: nil))
             let isSliding = ink2.isSlidingLayer(l)
             let attnQuery = (l > 0) ? try lBump.copy("\(lPfx)attention_input.query", from: st) : nil
             let mlpQuery = try lBump.copy("\(lPfx)mlp_input.query", from: st)
@@ -361,7 +353,7 @@ final class QWInkling2Weights: @unchecked Sendable {
                 throw QWInkling2Error.badState("BF16 switch_mlp not supported in nativeMixedFP loader")
             }
 
-            buffers.append(lBump.buffer)
+            buffers.append(lBump.slabBuffer)
             builtLayers.append(LayerWeights(
                 layerIdx: l, isSliding: isSliding,
                 attnInputQuery: attnQuery, mlpInputQuery: mlpQuery,
@@ -384,7 +376,6 @@ final class QWInkling2Weights: @unchecked Sendable {
             ))
         }
 
-        let _ = loadVision
         let hasVis = st.tensor("vision_tower.embeddings.patch_embedding.weight") != nil
             || st.tensor("model.visual.embeddings.patch_embedding.weight") != nil
         self.init(

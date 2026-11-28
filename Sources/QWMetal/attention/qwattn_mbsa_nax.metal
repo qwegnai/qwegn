@@ -1,20 +1,24 @@
 // qwattn_mbsa_nax.metal — NAX sparse paged prefill and split-K GQA sparse decode for MBSA.
 #include <metal_stdlib>
 #include <metal_simdgroup>
-#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
-#include "mlx/backend/metal/kernels/steel/defines.h"
-#include "mlx/backend/metal/kernels/steel/utils/integral_constant.h"
-#include "mlx/backend/metal/kernels/steel/gemm/nax.h"
 #include "include/qw_geometry_constants.metalh"
 #include "include/qw_dequant.metalh"
 #include "include/qw_kv_paged.metalh"
 using namespace metal;
+
+#if !defined(QW_DISABLE_NAX)
+#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
+#if !defined(__ENVIRONMENT_OS_VERSION_MIN_REQUIRED__) || __ENVIRONMENT_OS_VERSION_MIN_REQUIRED__ < 260200
+#error "NAX cooperative_tensor kernels require -mmacosx-version-min=26.2 or newer (Apple MPP operand_index ABI)."
+#endif
+#include "mlx/backend/metal/kernels/steel/defines.h"
+#include "mlx/backend/metal/kernels/steel/utils/integral_constant.h"
+#include "mlx/backend/metal/kernels/steel/gemm/nax.h"
 using namespace mlx::steel;
 
 #define QW_MBSA_KU       16u
 #define QW_MBSA_BK       32u
 #define QW_MBSA_NAX_HDIM 128u
-#define QW_MBSA_DEC_HDIM 256u
 
 // 1. M5 NAX Cooperative Tensor Sparse Paged Prefill (f16, q8, q4) over tiled32 union blocks + bitmasks.
 template <uint MODE>
@@ -402,6 +406,8 @@ QW_MBSA_NAX_PREFILL_ENTRY(_f16, 0u)
 QW_MBSA_NAX_PREFILL_ENTRY(_q8,  1u)
 QW_MBSA_NAX_PREFILL_ENTRY(_q4,  2u)
 #undef QW_MBSA_NAX_PREFILL_ENTRY
+#endif // !defined(QW_DISABLE_NAX)
+#define QW_MBSA_DEC_HDIM 256u
 
 // 2. Split-K GQA-fused MBSA Sparse Decode & Verify (rows = 1..8) over paged KV pools.
 // Register-only 32-point normalized FWHT across 8 lanes (4 halves/lane); identity in STANDARD basis.

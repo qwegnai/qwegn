@@ -42,4 +42,5 @@ struct MLADSASparseAttnParams {
     uint qRopeOffset;
     uint qFullStride;
     uint hasSink;
+    float softmaxScale;
 };

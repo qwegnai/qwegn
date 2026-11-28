@@ -51,7 +51,12 @@ final class QWAttnSharedKVBatchParityTests: XCTestCase {
 
     private static func synthBF16(count: Int, seed: UInt64, scale: Double) -> [UInt16] {
         var rng = SplitMix64(state: seed)
-        return (0..<count).map { _ in QWBF16.fromFloatRNE(rng.nextSigned(scale)) }
+        return [UInt16](unsafeUninitializedCapacity: count) { dst, initialized in
+            guard let out = dst.baseAddress else { initialized = 0; return }
+            var i = 0
+            while i < count { out[i] = QWBF16.fromFloatRNE(rng.nextSigned(scale)); i += 1 }
+            initialized = count
+        }
     }
 
     private static func makeU16Tensor(_ hal: QWHal, _ bits: [UInt16], dims: [Int], dtype: QWDType) -> QWTensorValue {
@@ -96,37 +101,66 @@ final class QWAttnSharedKVBatchParityTests: XCTestCase {
         memset(vmBuf.contents(), 0, metaBytes)
 
         func write(_ src: [UInt16], pay: any MTLBuffer, meta: any MTLBuffer) {
-            for pos in 0..<totalTokens {
-                let slot = slidingWindow > 0 ? (pos % ringCap) : pos
-                for kvh in 0..<nKV {
-                    let srcOff = (pos * nKV + kvh) * headDim
-                    let rowHead = slot * nKV + kvh
-                    let vals = (0..<headDim).map { Float(Float16(Float(bitPattern: UInt32(src[srcOff + $0]) << 16))) }
-                    switch mode {
-                    case .f16:
-                        let dst = pay.contents().assumingMemoryBound(to: UInt16.self)
-                        for d in 0..<headDim { dst[rowHead * headDim + d] = Float16(vals[d]).bitPattern }
-                    case .q8:
-                        let sc16 = Float16(max((vals.map(abs).max() ?? 0) / 127.0, 6.103515625e-5))
-                        let inv = Float(sc16) > 0 ? 1.0 / Float(sc16) : 0.0
-                        let dst = pay.contents().assumingMemoryBound(to: Int8.self)
-                        meta.contents().assumingMemoryBound(to: UInt16.self)[rowHead] = sc16.bitPattern
-                        for d in 0..<headDim {
-                            dst[rowHead * headDim + d] = Int8(max(-127, min(127, Int((vals[d] * inv).rounded(.toNearestOrEven)))))
+            src.withUnsafeBufferPointer { sBuf in
+                guard let sp = sBuf.baseAddress else { return }
+                withUnsafeTemporaryAllocation(of: Float.self, capacity: headDim) { vTmp in
+                    guard let vp = vTmp.baseAddress else { return }
+                    let dstU16 = pay.contents().assumingMemoryBound(to: UInt16.self)
+                    let dstI8 = pay.contents().assumingMemoryBound(to: Int8.self)
+                    let dstU8 = pay.contents().assumingMemoryBound(to: UInt8.self)
+                    let mPtr = meta.contents().assumingMemoryBound(to: UInt16.self)
+                    var pos = 0
+                    while pos < totalTokens {
+                        let slot = slidingWindow > 0 ? (pos % ringCap) : pos
+                        var kvh = 0
+                        while kvh < nKV {
+                            let srcOff = (pos * nKV + kvh) * headDim
+                            let rowHead = slot * nKV + kvh
+                            var d = 0, minV: Float = .greatestFiniteMagnitude, maxV: Float = -.greatestFiniteMagnitude, maxAbs: Float = 0
+                            while d < headDim {
+                                let fv = Float(Float16(Float(bitPattern: UInt32(sp[srcOff + d]) << 16)))
+                                vp[d] = fv
+                                if fv < minV { minV = fv }
+                                if fv > maxV { maxV = fv }
+                                let av = abs(fv)
+                                if av > maxAbs { maxAbs = av }
+                                d += 1
+                            }
+                            switch mode {
+                            case .f16:
+                                let rowOut = rowHead * headDim
+                                d = 0
+                                while d < headDim { dstU16[rowOut + d] = Float16(vp[d]).bitPattern; d += 1 }
+                            case .q8:
+                                let sc16 = Float16(max(maxAbs / 127.0, 6.103515625e-5))
+                                let inv = Float(sc16) > 0 ? 1.0 / Float(sc16) : 0.0
+                                mPtr[rowHead] = sc16.bitPattern
+                                let rowOut = rowHead * headDim
+                                d = 0
+                                while d < headDim {
+                                    dstI8[rowOut + d] = Int8(max(-127, min(127, Int((vp[d] * inv).rounded(.toNearestOrEven)))))
+                                    d += 1
+                                }
+                            case .q4:
+                                let mn16 = Float16(minV)
+                                let mnF = Float(mn16)
+                                let sc16 = Float16(max((maxV - mnF) / 15.0, 6.103515625e-5))
+                                let inv = 1.0 / max(Float(sc16), 1e-7)
+                                mPtr[rowHead * 2] = sc16.bitPattern
+                                mPtr[rowHead * 2 + 1] = mn16.bitPattern
+                                let halfDim = headDim / 2
+                                let rowOut = rowHead * halfDim
+                                var p = 0
+                                while p < halfDim {
+                                    let q0 = max(0, min(15, Int(((vp[p * 2] - mnF) * inv).rounded(.toNearestOrEven))))
+                                    let q1 = max(0, min(15, Int(((vp[p * 2 + 1] - mnF) * inv).rounded(.toNearestOrEven))))
+                                    dstU8[rowOut + p] = UInt8(q0 | (q1 << 4))
+                                    p += 1
+                                }
+                            }
+                            kvh += 1
                         }
-                    case .q4:
-                        let mn16 = Float16(vals.min() ?? 0)
-                        let sc16 = Float16(max(((vals.max() ?? 0) - Float(mn16)) / 15.0, 6.103515625e-5))
-                        let inv = 1.0 / max(Float(sc16), 1e-7)
-                        let dst = pay.contents().assumingMemoryBound(to: UInt8.self)
-                        let m = meta.contents().assumingMemoryBound(to: UInt16.self)
-                        m[rowHead * 2] = sc16.bitPattern
-                        m[rowHead * 2 + 1] = mn16.bitPattern
-                        for p in 0..<(headDim / 2) {
-                            let q0 = max(0, min(15, Int(((vals[p * 2] - Float(mn16)) * inv).rounded(.toNearestOrEven))))
-                            let q1 = max(0, min(15, Int(((vals[p * 2 + 1] - Float(mn16)) * inv).rounded(.toNearestOrEven))))
-                            dst[rowHead * (headDim / 2) + p] = UInt8(q0 | (q1 << 4))
-                        }
+                        pos += 1
                     }
                 }
             }
@@ -289,7 +323,7 @@ final class QWAttnSharedKVBatchParityTests: XCTestCase {
     }
 
     func testSinkRelSplitsTunedForBatch4SWAAndGlobal() {
-        XCTAssertEqual(QWAttnSinkRel.splitSpan(ringCap: 1024, slidingWindow: 1024), 256)
+        XCTAssertEqual(QWAttnSinkRel.splitSpan(ringCap: 1024, slidingWindow: 1024), 128)
         XCTAssertEqual(QWAttnSinkRel.splitSpan(ringCap: 8192, slidingWindow: 0), 256)
         XCTAssertGreaterThanOrEqual(
             QWAttnSinkRel.splits(forKeys: 1024, kvHeads: 4, batchTokens: 4, slidingWindow: 1024), 2

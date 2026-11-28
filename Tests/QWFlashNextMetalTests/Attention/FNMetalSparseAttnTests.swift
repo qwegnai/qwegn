@@ -112,13 +112,37 @@ final class FNMetalSparseAttnTests: XCTestCase {
             seed = seed &* 1664525 &+ 1013904223
             return Float(Int32(truncatingIfNeeded: seed)) * 1e-9
         }
-        let qs = (0..<(T * NI * DI)).map { _ in rnd() }
-        var ps = (0..<(maxBlocks * DI)).map { _ in Float(Float16(rnd())) }
-        // Force a cluster of zero-score ties so tie-breaking (prefer higher block index) is exercised at 128K+.
-        for b in stride(from: 0, to: min(2048, maxBlocks), by: 2) {
-            for d in 0..<DI { ps[b * DI + d] = 0 }
+        let qs = [Float](unsafeUninitializedCapacity: T * NI * DI) { dst, initCnt in
+            guard let dp = dst.baseAddress else { initCnt = 0; return }
+            var i = 0
+            while i < T * NI * DI { dp[i] = rnd(); i += 1 }
+            initCnt = T * NI * DI
         }
-        let ps16 = ps.map { Float16($0).bitPattern }
+        var ps = [Float](unsafeUninitializedCapacity: maxBlocks * DI) { dst, initCnt in
+            guard let dp = dst.baseAddress else { initCnt = 0; return }
+            var i = 0
+            while i < maxBlocks * DI { dp[i] = Float(Float16(rnd())); i += 1 }
+            initCnt = maxBlocks * DI
+        }
+        // Force a cluster of zero-score ties so tie-breaking (prefer higher block index) is exercised at 128K+.
+        ps.withUnsafeMutableBufferPointer { pBuf in
+            guard let pp = pBuf.baseAddress else { return }
+            var b = 0
+            let cap = min(2048, maxBlocks)
+            while b < cap {
+                var d = 0
+                while d < DI { pp[b * DI + d] = 0; d += 1 }
+                b += 2
+            }
+        }
+        let ps16 = [UInt16](unsafeUninitializedCapacity: ps.count) { dst, initCnt in
+            ps.withUnsafeBufferPointer { src in
+                guard let dp = dst.baseAddress, let sp = src.baseAddress else { initCnt = 0; return }
+                var i = 0
+                while i < src.count { dp[i] = Float16(sp[i]).bitPattern; i += 1 }
+                initCnt = src.count
+            }
+        }
         let idxQ = try act.allocate(QWTensorShape([T * NI * DI], .f32))
         let pooled = try act.allocate(QWTensorShape([maxBlocks * DI], .f16))
         let list = try act.allocate(QWTensorShape([T * topK], .i32))
@@ -134,25 +158,34 @@ final class FNMetalSparseAttnTests: XCTestCase {
         XCTAssertNil(cb.error)
         let got = arena.read(list, as: Int32.self, count: T * topK)
         let invSqrt = 1.0 / Float(DI).squareRoot()
-        for t in 0..<T {
-            let n = (pos0 + t + 1) / 4
-            var scored: [(Int, Float)] = []
-            scored.reserveCapacity(n)
-            for b in 0..<n {
-                var score: Float = 0
-                for h in 0..<NI {
-                    var dot: Float = 0
-                    for d in 0..<DI {
-                        dot += qs[(t * NI + h) * DI + d] * ps[b * DI + d]
+        qs.withUnsafeBufferPointer { qBuf in
+            ps.withUnsafeBufferPointer { pBuf in
+                guard let qp = qBuf.baseAddress, let pp = pBuf.baseAddress else { return }
+                for t in 0..<T {
+                    let n = (pos0 + t + 1) / 4
+                    var scored = [(Int, Float)]()
+                    scored.reserveCapacity(n)
+                    let qRow = qp + (t * NI * DI)
+                    var b = 0
+                    while b < n {
+                        let pRow = pp + (b * DI)
+                        var score: Float = 0, h = 0
+                        while h < NI {
+                            let qHead = qRow + (h * DI)
+                            var dot: Float = 0, d = 0
+                            while d < DI { dot += qHead[d] * pRow[d]; d += 1 }
+                            if dot > 0 { score += dot }
+                            h += 1
+                        }
+                        scored.append((b, score * invSqrt))
+                        b += 1
                     }
-                    score += max(dot, 0)
+                    scored.sort { $0.1 > $1.1 || ($0.1 == $1.1 && $0.0 > $1.0) }
+                    let want = scored.prefix(min(topK, n)).map { Int32($0.0) }.sorted()
+                    let gotRow = Array(got[(t * topK)..<((t + 1) * topK)])
+                    XCTAssertEqual(gotRow, want, "QSA select mismatch at pos0=\(pos0) row=\(t)")
                 }
-                scored.append((b, score * invSqrt))
             }
-            scored.sort { $0.1 > $1.1 || ($0.1 == $1.1 && $0.0 > $1.0) }
-            let want = scored.prefix(min(topK, n)).map { Int32($0.0) }.sorted()
-            let gotRow = Array(got[(t * topK)..<((t + 1) * topK)])
-            XCTAssertEqual(gotRow, want, "QSA select mismatch at pos0=\(pos0) row=\(t)")
         }
     }
 

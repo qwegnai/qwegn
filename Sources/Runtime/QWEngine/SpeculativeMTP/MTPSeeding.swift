@@ -59,9 +59,14 @@ extension QWEngineDriver {
             return
         }
         if dflashDrafter != nil {
-            if let dflashDrafter, let dSlot = session.dflashSlot, let cap = dflashCapture {
-                try dflashDrafter.encodeContextUpdate(
-                    cb, slot: dSlot, startPosition: cap.ctxStartPos, totalCount: cap.captureRows)
+            if let dflashDrafter, let dSlot = session.dflashSlot {
+                if let cap = dflashCapture {
+                    try dflashDrafter.encodeContextUpdate(
+                        cb, slot: dSlot, startPosition: cap.ctxStartPos, totalCount: cap.captureRows)
+                } else if count == 1 {
+                    try dflashDrafter.encodeContextUpdate(
+                        cb, slot: dSlot, startPosition: session.position, totalCount: 1)
+                }
             }
             return
         }
@@ -137,20 +142,41 @@ extension QWEngineDriver {
     ) throws {
         let H = geometry.hidden
         let concatBuf = prefixRows(psc.guRaw16, rows: pairs, cols: 2 * H, dt: .f16)
-        try QWNorm.encodeMTPPreFcNorm(enc, hal: hal,
-                                      embeddings: embeddings, hidden: hidden,
-                                      previous: previous,
-                                      gammaEmb: mtpWeights.preFcNormEmbedding,
-                                      gammaHid: mtpWeights.preFcNormHidden,
-                                      out: concatBuf,
-                                      tStart: tStart, pairs: pairs,
-                                      geometry: geometry)
         let fcOutBuf = prefixRows(psc.o16, rows: pairs, cols: H, dt: .f16)
         let ln1Buf = prefixRows(psc.dn16, rows: pairs, cols: H, dt: .f16)
-        try gemmBatchedH16(enc, m: pairs, n: H, k: 2 * H, x: concatBuf, wQ4: mtpWeights.fc, y16: fcOutBuf)
-        try encodeRMSNormFast(enc, x: fcOutBuf, gamma: mtpWeights.inputNorm, out: ln1Buf, rows: pairs)
+        if let gn = mtpWeights.gatedNorms {
+            for p in 0..<pairs {
+                let embRow = stridedRow(embeddings, row: tStart + p, cols: H, dt: .f16)
+                let hidRow = (tStart == 0 && p == 0)
+                    ? prefixRows(previous, rows: 1, cols: H, dt: .f16)
+                    : stridedRow(hidden, row: tStart + p - 1, cols: H, dt: .f16)
+                let eOut = concatBuf.slice(byteOffset: p * 2 * H * 2, count: H, dtype: .f16)
+                let hOut = concatBuf.slice(byteOffset: (p * 2 * H + H) * 2, count: H, dtype: .f16)
+                try QWNorm.encodeGatedRMSNorm(
+                    enc, hal: hal, x: embRow, weights: gn.enorm,
+                    out: eOut, hidden: H, applyFwht32: mtpWeights.fc.isRotated)
+                try QWNorm.encodeGatedRMSNorm(
+                    enc, hal: hal, x: hidRow, weights: gn.hnorm,
+                    out: hOut, hidden: H, applyFwht32: mtpWeights.fc.isRotated)
+            }
+            try gemmBatchedH16(enc, m: pairs, n: H, k: 2 * H, x: concatBuf, wQ4: mtpWeights.fc, y16: fcOutBuf)
+            try QWNorm.encodeGatedRMSNorm(
+                enc, hal: hal, x: fcOutBuf, weights: gn.input,
+                out: ln1Buf, hidden: H, applyFwht32: mtpWeights.qkvProj.isRotated)
+        } else {
+            try QWNorm.encodeMTPPreFcNorm(enc, hal: hal,
+                                          embeddings: embeddings, hidden: hidden,
+                                          previous: previous,
+                                          gammaEmb: mtpWeights.preFcNormEmbedding,
+                                          gammaHid: mtpWeights.preFcNormHidden,
+                                          out: concatBuf,
+                                          tStart: tStart, pairs: pairs,
+                                          geometry: geometry)
+            try gemmBatchedH16(enc, m: pairs, n: H, k: 2 * H, x: concatBuf, wQ4: mtpWeights.fc, y16: fcOutBuf)
+            try encodeRMSNormFast(enc, x: fcOutBuf, gamma: mtpWeights.inputNorm, out: ln1Buf, rows: pairs)
+        }
         if let mla = mlaOperator, let mlaW = mtpWeights.mla {
-            let latentN = mla.latentStride
+            let latentN = mtpWeights.qkvProj.n
             let latentBuf = prefixRows(mla.mlaLatentScratch, rows: pairs, cols: latentN, dt: .f16)
             try gemmBatchedH16(enc, m: pairs, n: latentN, k: H, x: ln1Buf, wQ4: mtpWeights.qkvProj, y16: latentBuf)
             mla.encodeLatentPrepAndPool(

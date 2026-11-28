@@ -18,7 +18,7 @@ import QWQuant
 
 extension QWEngineDriver {
     public func makeSession(promptTokens: Int) throws -> QWEngineSession {
-        if hyperRuntime != nil || inkling2Runtime != nil {
+        if standardState == nil {
             throw QWEngineDriverError.state("runtime manages sessions via generate(request:)")
         }
         guard flight.try() else { throw QWEngineDriverError.busy }
@@ -28,7 +28,7 @@ extension QWEngineDriver {
     }
 
     public func makeStochasticSession(promptTokens: Int, config: QWSamplerConfig) throws -> QWEngineSession {
-        if hyperRuntime != nil || inkling2Runtime != nil {
+        if standardState == nil {
             throw QWEngineDriverError.state("runtime manages sessions via generate(request:)")
         }
         let owner = try QWStochasticSession(geometry: geometry, config: config)
@@ -128,6 +128,7 @@ extension QWEngineDriver {
         session.sessionFinished = true
         session.mlaIndexerStash = nil
         session.mlaLiveStash = nil
+        session.mlaBatchState = nil
         if let cb = session.lastCommitCB {
             cb.waitUntilCompleted()
             session.lastCommitCB = nil
@@ -310,6 +311,15 @@ extension QWEngineDriver {
             return captureLiveCompositeState(position: session.position)
         }
         if let mla = mlaOperator {
+            if let batchState = session.mlaBatchState {
+                if mla.isDecoupledDSA {
+                    return mla.captureLiveSessionStash(
+                        from: batchState, trunkPosition: session.position,
+                        mtpLayerIndex: mlaMTPLayerIndex ?? -1, mtpPosition: 0)
+                }
+                try? claimMLAIndexerState(session)
+                return mla.captureIndexerState(position: session.position)
+            }
             if mla.stateOwner !== session, let stash = session.mlaIndexerStash, stash.position == session.position {
                 return stash.data
             }
@@ -461,7 +471,22 @@ extension QWEngineDriver {
                 session.mlaLiveStash = nil
             }
             guard restoring, session.position > 0 else {
+                session.mlaBatchState = nil
                 mla.truncatePosition(session.position)
+                return
+            }
+            if let batchState = session.mlaBatchState {
+                let mtpPos = session.roundRecord.mtpPhysicalRows
+                let liveData = mla.captureLiveSessionStash(
+                    from: batchState, trunkPosition: session.position,
+                    mtpLayerIndex: mtpLayer, mtpPosition: mtpPos)
+                session.mlaBatchState = nil
+                guard mla.restoreLiveSessionStash(
+                    liveData, trunkPosition: session.position,
+                    mtpLayerIndex: mtpLayer, mtpPosition: mtpPos) else {
+                    session.stateFailed = true
+                    throw QWEngineDriverError.state("failed to reclaim MLA batch session state")
+                }
                 return
             }
             if let live = session.mlaLiveStash,

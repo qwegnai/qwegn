@@ -24,7 +24,7 @@ final class QWDFlashTests: XCTestCase {
 
         try XCTSkipUnless(
             ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] != "true"
-                && QWDeviceCaps.current?.familyApple9 == true,
+                && QWDeviceCaps.current?.supportsSimdgroupMMA == true,
             "DFlash pipeline check requires bare-metal Apple Silicon GPU"
         )
         let hal = try QWHal(geometry: .qwen38_27b)
@@ -47,10 +47,10 @@ final class QWDFlashTests: XCTestCase {
     func testDFlashDrafterLoadsPackedCheckpoint() throws {
         try XCTSkipUnless(
             ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] != "true"
-                && QWDeviceCaps.current?.familyApple9 == true,
+                && QWDeviceCaps.current?.supportsSimdgroupMMA == true,
             "Local ~/.qwg/models pack check requires bare-metal Apple Silicon GPU"
         )
-        let packPath = QWDFlashDrafter.defaultPackPath
+        let packPath = QWDFlashConfig.defaultPackPath(for: .qwen38_27b)
         try XCTSkipUnless(FileManager.default.fileExists(atPath: packPath),
                           "DFlash 2 pack not installed at \(packPath)")
         let hal = try QWHal(geometry: .qwen38_27b)
@@ -89,10 +89,11 @@ final class QWDFlashTests: XCTestCase {
         let dense27BDesc = QWModelDescriptor.qwen38_27b
 
         // 1. Incompatible primary model (48-layer Flash-Next vs 5120/64-layer or mismatched pack) must fail with QWDFlashError.state
+        let dense27BDrafterPath = QWDFlashConfig.defaultPackPath(for: dense27BDesc)
         let mismatchPackPath: String
         var cleanupMismatchDir: URL?
-        if FileManager.default.fileExists(atPath: QWDFlashDrafter.defaultPackPath) {
-            mismatchPackPath = QWDFlashDrafter.defaultPackPath
+        if FileManager.default.fileExists(atPath: dense27BDrafterPath) {
+            mismatchPackPath = dense27BDrafterPath
         } else {
             let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("qwdflash_mismatch_\(UUID().uuidString)")
             let assets = tmp.appendingPathComponent("assets")
@@ -139,13 +140,13 @@ final class QWDFlashTests: XCTestCase {
 
         // 3. Invalid draft count (> maxDrafts) must fail fast with .state
         if ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] == nil,
-           FileManager.default.fileExists(atPath: QWDFlashDrafter.defaultPackPath) {
-            let cfg = QWDFlashConfig.load(from: URL(fileURLWithPath: QWDFlashDrafter.defaultPackPath))
+           FileManager.default.fileExists(atPath: dense27BDrafterPath) {
+            let cfg = QWDFlashConfig.load(from: URL(fileURLWithPath: dense27BDrafterPath))
             let expectedMax = max(7, cfg.blockSize - 1)
             XCTAssertThrowsError(
                 try QWDFlashConfig.validateDrafter(
                     targetDescriptor: dense27BDesc,
-                    packPath: QWDFlashDrafter.defaultPackPath,
+                    packPath: dense27BDrafterPath,
                     drafts: expectedMax + 1,
                     selectorTopK: 16
                 )
@@ -161,7 +162,7 @@ final class QWDFlashTests: XCTestCase {
             XCTAssertNoThrow(
                 try QWDFlashConfig.validateDrafter(
                     targetDescriptor: dense27BDesc,
-                    packPath: QWDFlashDrafter.defaultPackPath,
+                    packPath: dense27BDrafterPath,
                     drafts: expectedMax,
                     selectorTopK: 16
                 )
@@ -219,7 +220,7 @@ final class QWDFlashTests: XCTestCase {
 
         try XCTSkipUnless(
             ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] != "true"
-                && QWDeviceCaps.current?.familyApple9 == true,
+                && QWDeviceCaps.current?.supportsSimdgroupMMA == true,
             "DSpine pipeline check requires bare-metal Apple Silicon GPU"
         )
         let hal = try QWHal(geometry: .qwen38_27b)
@@ -238,7 +239,7 @@ final class QWDFlashTests: XCTestCase {
     func testDSpineFusedBridgeAndRefinementKernelsParity() throws {
         try XCTSkipUnless(
             ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] != "true"
-                && QWDeviceCaps.current?.familyApple9 == true,
+                && QWDeviceCaps.current?.supportsSimdgroupMMA == true,
             "DSpine kernel parity test requires bare-metal Apple Silicon GPU"
         )
         let hal = try QWHal(geometry: .qwen38_27b)
@@ -619,10 +620,10 @@ final class QWDFlashTests: XCTestCase {
     func testDFlashDrafterAllocatesDisjointSessionSlotsForRequestedCount() throws {
         try XCTSkipUnless(
             ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] != "true"
-                && QWDeviceCaps.current?.familyApple9 == true,
+                && QWDeviceCaps.current?.supportsSimdgroupMMA == true,
             "Local ~/.qwg/models pack check requires bare-metal Apple Silicon GPU"
         )
-        let packPath = QWDFlashDrafter.defaultPackPath
+        let packPath = QWDFlashConfig.defaultPackPath(for: .qwen38_27b)
         try XCTSkipUnless(FileManager.default.fileExists(atPath: packPath),
                           "DFlash 2 pack not installed at \(packPath)")
         let hal = try QWHal(geometry: .qwen38_27b)
@@ -780,7 +781,7 @@ final class QWDFlashTests: XCTestCase {
         XCTAssertEqual(URL(fileURLWithPath: QWDFlashConfig.defaultPackPath(for: targetDesc, modelsDirectory: modelsDir))
             .resolvingSymlinksInPath().path, packDir.resolvingSymlinksInPath().path)
         XCTAssertNoThrow(try QWDFlashConfig.validateDrafter(targetDescriptor: targetDesc, packPath: packDir.path))
-        if QWDeviceCaps.current?.familyApple9 == true {
+        if QWDeviceCaps.current?.supportsSimdgroupMMA == true {
             let hal = try QWHal(geometry: QWModelGeometry(descriptor: targetDesc))
             let drafter = try QWDFlashDrafter(geometry: QWModelGeometry(descriptor: targetDesc), hal: hal, packPath: packDir.path)
             XCTAssertTrue(drafter.usesVirtualLayerCapture)
@@ -788,7 +789,7 @@ final class QWDFlashTests: XCTestCase {
             XCTAssertEqual(drafter.targetLayerSlotMap[41], 0)
             XCTAssertEqual(drafter.targetLayerSlotMap[9], -1)
         }
-        try makeDraftCfg([56]).write(to: assets.appendingPathComponent("config.json"))
+        try makeDraftCfg([57]).write(to: assets.appendingPathComponent("config.json"))
         XCTAssertThrowsError(try QWDFlashConfig.validateDrafter(targetDescriptor: targetDesc, packPath: packDir.path))
     }
 }

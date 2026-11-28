@@ -9,6 +9,7 @@
 import Foundation
 import QWCore
 import QWHead
+import QWHyperPLE
 import QWKV
 @_exported import QWMTP
 
@@ -84,19 +85,101 @@ extension QWInferenceModule {
         _ requested: QWSpeculativeParameters, descriptor: QWModelDescriptor,
         environment: [String: String], modelSwitch: Bool
     ) throws -> QWResolvedSpeculation {
+        let isHyperStream = (descriptor.hcCount ?? 0) > 1
+        if isHyperStream {
+            return try resolveHyperStreamSpeculation(
+                requested, descriptor: descriptor, environment: environment, modelSwitch: modelSwitch)
+        }
+        return try resolveStandardSpeculation(
+            requested, descriptor: descriptor, environment: environment, modelSwitch: modelSwitch)
+    }
+
+    private static func resolveDFlashPackPath(
+        parameters: QWSpeculativeParameters, descriptor: QWModelDescriptor, environment: [String: String]
+    ) -> String {
+        QWDFlashFootprint.resolveDrafterPackPath(
+            targetDescriptor: descriptor,
+            explicitPath: parameters.dflashDraftPackPath,
+            environment: environment
+        )
+    }
+
+    private static func resolveHyperStreamSpeculation(
+        _ requested: QWSpeculativeParameters, descriptor: QWModelDescriptor,
+        environment: [String: String], modelSwitch: Bool
+    ) throws -> QWResolvedSpeculation {
         var parameters = requested
-        let lowerBackend = parameters.mtpBackend?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        parameters.mtpBackend = parameters.mtpBackend?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lowerBackend = parameters.mtpBackend?.lowercased() ?? ""
+        var dflashCap = QWFourSlotRollbackRing.maxVerifyRows - 1
+        if QWDFlashFootprint.isDFlashName(lowerBackend) {
+            let resolvedPack = resolveDFlashPackPath(
+                parameters: parameters, descriptor: descriptor, environment: environment)
+            let inferred = QWDFlashConfig.inferBackendAndMaxDrafts(packPath: resolvedPack)
+            dflashCap = min(QWFourSlotRollbackRing.maxVerifyRows - 1, max(1, inferred.maxDrafts))
+            if modelSwitch {
+                let compatible = (try? QWDFlashConfig.validateDrafter(
+                    targetDescriptor: descriptor, packPath: resolvedPack,
+                    drafts: 1, selectorTopK: parameters.dflashSelectorTopK
+                )) != nil
+                if compatible {
+                    parameters.mtpBackend = inferred.backend
+                    if parameters.mtpDrafts > 0 {
+                        parameters.mtpDrafts = max(1, min(dflashCap, parameters.mtpDrafts))
+                    }
+                } else {
+                    parameters.mtpBackend = "variational"
+                    parameters.mtpDrafts = min(parameters.mtpDrafts, max(1, descriptor.maxSpeculativeDrafts))
+                }
+            }
+        } else if modelSwitch {
+            parameters.mtpDrafts = min(parameters.mtpDrafts, max(1, descriptor.maxSpeculativeDrafts))
+        }
+        if let backend = parameters.mtpBackend, !backend.isEmpty {
+            _ = try QWMTPBackend.resolve(name: backend.lowercased())
+        }
+        let rawStrategy = (parameters.draftStrategyIsResolved != true)
+            ? (environment["FN_DRAFT"].flatMap { $0.isEmpty ? nil : $0 } ?? parameters.mtpDraftStrategy)
+            : parameters.mtpDraftStrategy
+        let mode = try QWDraftStrategy.resolve(rawStrategy)
+        parameters.mtpDraftStrategy = mode.rawValue
+        parameters.draftStrategyIsResolved = true
+        let finalBackend = parameters.mtpBackend?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        if QWDFlashFootprint.isDFlashName(finalBackend) {
+            let drafts = parameters.enabled ? max(0, min(dflashCap, parameters.mtpDrafts)) : 0
+            return QWResolvedSpeculation(
+                parameters: parameters, engineDrafts: drafts,
+                engineBackend: drafts > 0 ? .dflash2 : nil,
+                reportedDrafts: drafts,
+                reportedBackend: finalBackend == "dspine" ? "dspine" : "dflash2")
+        }
+        let supportsMTP = descriptor.capabilities.contains(.mtp)
+        let engineDrafts = parameters.enabled && supportsMTP ? parameters.mtpDrafts : 0
+        return QWResolvedSpeculation(
+            parameters: parameters, engineDrafts: engineDrafts,
+            engineBackend: nil,
+            reportedDrafts: (parameters.enabled && supportsMTP) ? max(0, min(3, parameters.mtpDrafts)) : 0,
+            reportedBackend: mode.rawValue)
+    }
+
+    private static func resolveStandardSpeculation(
+        _ requested: QWSpeculativeParameters, descriptor: QWModelDescriptor,
+        environment: [String: String], modelSwitch: Bool
+    ) throws -> QWResolvedSpeculation {
+        var parameters = requested
+        parameters.mtpBackend = parameters.mtpBackend?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lowerBackend = parameters.mtpBackend?.lowercased() ?? ""
         if lowerBackend == "ngram" {
             parameters.mtpDraftStrategy = "ngram"
             parameters.mtpBackend = "standard"
         }
         let isNgramStrategy = parameters.mtpDraftStrategy.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "ngram"
-        let isDFlashFamily = ["dflash2", "dflash", "dspine"].contains(parameters.mtpBackend?.lowercased() ?? "")
-        let isDSparkRequested = parameters.mtpBackend?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "dspark"
+        let isDFlashFamily = QWDFlashFootprint.isDFlashName(parameters.mtpBackend)
+        let isDSparkRequested = parameters.mtpBackend?.lowercased() == "dspark"
         if modelSwitch {
             if isDFlashFamily {
-                let envPack = environment["QW_DFLASH_DRAFT_PACK"]?.trimmingCharacters(in: .whitespacesAndNewlines)
-                let packPath = (envPack?.isEmpty == false ? envPack : nil) ?? QWDFlashConfig.defaultPackPath(for: descriptor)
+                let packPath = resolveDFlashPackPath(
+                    parameters: parameters, descriptor: descriptor, environment: environment)
                 let compatible = (try? QWDFlashConfig.validateDrafter(
                     targetDescriptor: descriptor, packPath: packPath, drafts: 1
                 )) != nil
@@ -106,17 +189,17 @@ extension QWInferenceModule {
             } else if isDSparkRequested && descriptor.dsparkConfig == nil && (descriptor.hcCount != nil || descriptor.numExperts != nil) {
                 parameters.mtpBackend = "variational"
             }
-            let stillDFlash = ["dflash2", "dflash", "dspine"].contains(parameters.mtpBackend?.lowercased() ?? "")
+            let stillDFlash = QWDFlashFootprint.isDFlashName(parameters.mtpBackend)
             let supportsWeightFreeNgramSwitch = !descriptor.capabilities.contains(.mtp)
                 && Self.capabilities.contains(.speculative) && isNgramStrategy
             let maximum = stillDFlash ? 15 : (supportsWeightFreeNgramSwitch ? 15 : max(1, descriptor.maxSpeculativeDrafts))
             parameters.mtpDrafts = min(parameters.mtpDrafts, maximum)
         }
         let supportsWeightFreeNgram = Self.capabilities.contains(.speculative) && isNgramStrategy
-        let isDSparkActive = parameters.mtpBackend?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "dspark"
+        let isDSparkActive = parameters.mtpBackend?.lowercased() == "dspark"
         let supportsMTP = descriptor.capabilities.contains(.mtp)
             || descriptor.dsparkConfig != nil
-            || ["dflash2", "dflash", "dspine"].contains(parameters.mtpBackend?.lowercased() ?? "")
+            || QWDFlashFootprint.isDFlashName(parameters.mtpBackend)
             || (isDSparkActive && descriptor.dsparkConfig != nil)
             || supportsWeightFreeNgram
         let drafts = parameters.enabled && supportsMTP ? parameters.mtpDrafts : 0

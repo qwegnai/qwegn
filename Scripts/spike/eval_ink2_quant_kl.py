@@ -33,7 +33,7 @@ from inkling2_adapter import (  # noqa: E402
 from pack import resolve_snapshot_dir  # noqa: E402
 from score_teacher_logits import score as score_kl  # noqa: E402
 
-DEFAULT_MODEL_PATH = Path("/Users/andrei/.cache/huggingface/hub/models--thinkingmachines--Inkling-2-Mini")
+DEFAULT_MODEL_PATH = Path.home() / ".cache/huggingface/hub/models--thinkingmachines--Inkling-2-Mini"
 DIVERSE_CALIBRATION_TEXT = (
     "def topk_router_parity(logits: list[float], bias: list[float], k: int = 8) -> list[int]:\n"
     "    scores = [1.0 / (1.0 + math.exp(-v)) for v in logits]\n"

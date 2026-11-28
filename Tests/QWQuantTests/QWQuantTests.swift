@@ -178,6 +178,7 @@ final class QWQuantTests: XCTestCase {
             let cfgData = try Data(contentsOf: cfgURL)
             let name = dir.lastPathComponent.lowercased()
             if name.contains("dflash") || name.contains("dspine") {
+                if Self.hasUnregisteredModelType(in: cfgData) { continue }
                 let d = try QWModelDescriptor.decodeDrafter(configJSON: cfgData)
                 let pk = try QWQuant.Pack(url: dir, descriptor: d)
                 XCTAssertEqual(pk.descriptor.role, .speculativeDrafter, dir.lastPathComponent)

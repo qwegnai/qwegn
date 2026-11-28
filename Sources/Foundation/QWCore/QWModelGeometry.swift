@@ -61,6 +61,10 @@ public struct QWModelGeometry: Sendable, Equatable {
     public var moeLayerFreq: Int { descriptor.moeLayerFreq }
     public var routedScalingFactor: Float { descriptor.routedScalingFactor }
     public var swigluLimit: Float? { descriptor.swigluLimit }
+    public var gatedNormConfig: GatedNormConfig? { descriptor.gatedNormConfig }
+    public var gdnGatingConfig: GDNGatingConfig? { descriptor.gdnGatingConfig }
+    public var useSandwichNorm: Bool { descriptor.useSandwichNorm }
+    public var finalLogitSoftcapping: Float? { descriptor.finalLogitSoftcapping }
     public var hasBiasCorrectedRouter: Bool { descriptor.hasBiasCorrectedRouter }
     public var effectiveResidentExperts: Int { descriptor.effectiveResidentExperts }
     public func withResidentExperts(_ count: Int?) -> QWModelGeometry {
@@ -300,19 +304,6 @@ public struct QWModelGeometry: Sendable, Equatable {
 
     public func verifyInternalConsistency() -> [String] {
         descriptor.verifyInternalConsistency()
-    }
-
-    /// Maps each full-attention visit to its LSA selection leader along `executionPlan`.
-    public func lsaLoopReusePlan(
-        attnLayers: [Int],
-        crossLoopReuse: Bool,
-        stride: Int = 0
-    ) -> QWLSALoopReusePlan {
-        let plan = executionPlan
-        let physLayers = attnLayers.map { v in
-            plan.indices.contains(v) ? plan[v] : v
-        }
-        return QWLSALoopReusePlan.build(physicalLayers: physLayers, enabled: crossLoopReuse, stride: stride)
     }
 }
 

@@ -85,43 +85,16 @@ extension QWEngineDriver {
 
     static func sharedBatchMLPFixedBytes(geometry: QWModelGeometry, mtpDrafts: Int) -> Int {
         guard mtpDrafts == 0,
-              !geometry.usesLatentOrCompressedAttention,
               geometry.hcaConfig == nil,
-              geometry.hybridMLAConfig == nil,
               geometry.blockSparseGQAConfig == nil else {
             return 0
         }
         return QWMTPBatchedMLP.allocationBytes(geometry: geometry, rows: QWBatchHeadScratch.maxBatchRows) + 1024
     }
 
-    private static func dflashScratchEstimate(config: QWDFlashConfig, sessionSlotCount: Int) -> Int {
-        func aligned(_ bytes: Int) -> Int { ((bytes + 4095) / 4096) * 4096 }
-        let maxCtx = config.maxCacheSize
-        let maxB = max(8, config.blockSize), maxD = maxB - 1
-        let H = config.hiddenSize, V = config.vocabSize, I = config.intermediateSize, R = config.selectorRank
-        let qDim = config.numAttentionHeads * config.headDim
-        let kvDim = config.numKeyValueHeads * config.headDim
-        let hasConv = config.convKernelSize > 0
-        let convProjDim = (2 * config.convKernelSize * H) / max(1, config.convGroupSize)
-        var total = aligned(maxCtx * config.targetLayerIds.count * H * 2) + aligned(maxCtx * H * 2)
-        total += aligned(maxCtx * 2 * kvDim * 2) + aligned(maxB * H * 4) * 2 + aligned(maxB * H * 2) * 3
-        total += aligned(maxB * 4) * 2 + (hasConv ? aligned(maxB * convProjDim * 4) : 0)
-        total += aligned(maxB * (qDim + 2 * kvDim) * 2) + aligned(maxB * qDim * 2) + aligned(maxB * I * 2)
-        total += aligned(maxD * V * 4) + aligned(maxD * 256 * 16 * 4) * 2 + aligned(maxD * 16 * 4) * 2
-        if !config.isDSpine { total += aligned(maxD * R * 4) }
-        if config.isDSpine {
-            let bc = config.bridgeCodeSize, br = config.bridgeRank
-            total += aligned(maxB * 4) + aligned(maxD * bc * 4) + aligned(maxB * bc * 2)
-            total += aligned(maxB * 3 * br * 4) + aligned(maxD * br * 2) + aligned(maxD * H * 4)
-            total += aligned(maxD * 16 * br * 2) + aligned(maxD * 16 * H * 4)
-            total += aligned(maxD * 16 * H * 2) * 2 + aligned(maxD * 16 * 16 * 4)
-        }
-        total += (2 * max(1, sessionSlotCount)) * aligned(config.numLayers * maxCtx * kvDim * 2)
-        return max(32 * 1024 * 1024, total + 16 * 1024 * 1024)
-    }
-
     static func dflashFootprintBytes(
         draftPackPath: String?,
+        targetPackPath: String? = nil,
         descriptor: QWModelDescriptor,
         mtpDrafts: Int,
         isDFlash: Bool,
@@ -140,17 +113,13 @@ extension QWEngineDriver {
             } ?? 640_000_000
             return (max(256 << 20, fileBytes), (96 << 20) + slots * (4 << 20))
         }
-        let rawPath = draftPackPath?.isEmpty == false ? draftPackPath! : QWDFlashConfig.defaultPackPath(for: descriptor)
+        let rawPath = QWDFlashFootprint.resolveDrafterPackPath(
+            targetDescriptor: descriptor, explicitPath: draftPackPath, targetPackPath: targetPackPath)
         let url = URL(fileURLWithPath: rawPath)
-        if !rawPath.isEmpty, FileManager.default.fileExists(atPath: url.path),
-           let cfgURL = QWModelRoot(url: url).configURL,
-           let cfgData = try? Data(contentsOf: cfgURL),
-           let dDesc = try? QWModelDescriptor.decodeDrafter(configJSON: cfgData) {
-            let dCfg = QWDFlashConfig.load(from: url, topKOverride: selectorTopK)
-            let weights = (try? QWQuant.Pack(url: url, descriptor: dDesc))
-                .map { QWDFlashDrafter.computeWeightCapacity(pack: $0, isDSpine: dCfg.isDSpine) }
-                ?? (dCfg.isDSpine ? 1_920_000_000 : 1_480_000_000)
-            return (weights, dflashScratchEstimate(config: dCfg, sessionSlotCount: slots))
+        if !rawPath.isEmpty, FileManager.default.fileExists(atPath: url.path) {
+            let dCfg = QWDFlashConfig.load(from: url, topKOverride: selectorTopK, target: descriptor)
+            let weights = QWDFlashFootprint.drafterWeightBytes(packPath: url.path, isDSpine: dCfg.isDSpine)
+            return (weights, QWDFlashFootprint.estimateScratchBytes(config: dCfg, sessionSlotCount: slots))
         }
         let defaultWeights = isDSpineBackend ? 1_920_000_000 : 1_480_000_000
         return (defaultWeights, 256 << 20)
@@ -264,7 +233,7 @@ extension QWEngineDriver {
         physicalMemoryBytes: Int?
     ) -> QWContextMemoryEstimate {
         let clampedContext = max(64, min(1_048_576, contextTokens))
-        let isDFlash = mtpDrafts > 0 && FNGPUDFlash.isDFlashName(mtpBackend)
+        let isDFlash = mtpDrafts > 0 && QWDFlashFootprint.isDFlashName(mtpBackend)
         let qsaBaseLayers = max(1, descriptor.numLayers - descriptor.linearAttentionLayers.count)
         let qsaLayers = qsaBaseLayers + max(1, descriptor.mtpLayers)
         let kvPerLayer: Int = switch kvMode {
@@ -276,7 +245,7 @@ extension QWEngineDriver {
         let compress = max(1, descriptor.indexerCompressRatio ?? 4)
         let idxPerLayer = idxDim > 0 ? (idxDim * 2 + (idxDim * 2) / compress) : 0
         let rawPerTokBytes = qsaLayers * (kvPerLayer + idxPerLayer) + descriptor.rotaryDims * 8
-        let perTokBytes = FNGPUDFlash.adjustedPerTokenKVBytes(rawPerTokBytes, usesDFlash: isDFlash)
+        let perTokBytes = QWDFlashFootprint.adjustedPerTokenKVBytes(rawPerTokBytes, usesDFlash: isDFlash)
 
         let bits = max(2, descriptor.quantization?.bits ?? 4)
         let groupSize = max(16, descriptor.quantization?.groupSize ?? 32)
@@ -303,8 +272,8 @@ extension QWEngineDriver {
             + attnCount * (mlpParams + qsaProjParams) + hcParams) * bytesPerParam)
         let minWeights = max(512 << 20, embedBytes + headBytes + trunkWeightBytes)
 
-        let onDisk = QWResidencyAdmission.flashNextOnDiskFootprint(packPath: packPath, minWeightsBytes: minWeights)
-        let dflashDelta = FNGPUDFlash.estimateFootprint(
+        let onDisk = QWResidencyAdmission.hyperStreamOnDiskFootprint(packPath: packPath, minWeightsBytes: minWeights)
+        let dflashDelta = QWDFlashFootprint.estimateFootprint(
             targetDescriptor: descriptor, targetPackPath: packPath, dflashPackPath: nil, isDFlash: isDFlash)
         let weightsBytes = max(512 << 20, onDisk.weightsBytes - dflashDelta.nativeMTPWeightBytes + dflashDelta.dflashWeightBytes)
             + onDisk.pleBytes
@@ -318,7 +287,8 @@ extension QWEngineDriver {
         let decodeScratch = max(32 << 20, descriptor.vocab * 4 * 8 + hcCount * descriptor.hidden * 4 * 64
             + max(moeInter, denseInter) * 4 * 32)
         let lsaClusterBytes = idxDim > 0 ? (qsaLayers * max(1, (alignedCap + 2047) / 2048) * 64 * idxDim * 2) : 0
-        let scratchBytes = FNGPUBatchScheduler.maxSlots * (gdnStatePerSlot + pleHistoryPerSlot)
+        let hyperStreamBatchSlots = 4
+        let scratchBytes = hyperStreamBatchSlots * (gdnStatePerSlot + pleHistoryPerSlot)
             + prefillScratch + decodeScratch + lsaClusterBytes
             + (isDFlash ? max(0, dflashDelta.dflashScratchBytes - (112 << 20)) : 0)
 
@@ -327,7 +297,7 @@ extension QWEngineDriver {
         let reserveBytes = max(0, Int((reserveGiB * Double(1 << 30)).rounded()))
         let availBytes = max(0, (physicalMemoryBytes ?? 0) - reserveBytes)
         let kvCap = availBytes > 0
-            ? QWHyperStreamRuntime.resolveKVCapacity(
+            ? QWCapacityBudget.resolveKVCapacity(
                 alignedCap: alignedCap,
                 fixedBytes: fixedBytes,
                 perTokenBytes: perTokBytes,

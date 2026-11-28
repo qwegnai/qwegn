@@ -150,26 +150,24 @@ extension QWEngineDriver {
     }
 
     func encodeTargetHead(_ enc: any MTLComputeCommandEncoder, x: QWTensorValue) throws {
+        let softcap = geometry.finalLogitSoftcapping ?? 0.0
         switch headStorage {
         case .f16(let weight):
             encodeFwht32Fast(enc, x: x)
             enc.memoryBarrier(scope: .buffers)
-            enc.setComputePipelineState(psoHeadF16)
-            enc.bindTensors(weight, x, startIndex: 0)
-            sc.logits.bind(enc, index: 3)
-            enc.setUInt32s(geometry.vocab, geometry.hidden, startIndex: 4)
-            enc.dispatchThreadgroups(MTLSize(width: geometry.vocab, height: 1, depth: 1),
-                                     threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1))
+            try QWHead.encodeF16(enc, hal: hal, w: weight, x: x, y: sc.logits,
+                                 geometry: geometry, M: 1, N: geometry.vocab, softcap: softcap)
             enc.memoryBarrier(scope: .buffers)
             encodeFwht32Fast(enc, x: x)
         case .bf16(let weight):
             encodeFwht32Fast(enc, x: x)
             enc.memoryBarrier(scope: .buffers)
-            try head.encodeBF16(enc, w: weight, x: x, y: sc.logits)
+            try QWHead.encodeBF16(enc, hal: hal, w: weight, x: x, y: sc.logits,
+                                  geometry: geometry, M: 1, N: geometry.vocab, softcap: softcap)
             enc.memoryBarrier(scope: .buffers)
             encodeFwht32Fast(enc, x: x)
         case .q4g:
-            try head.encode(enc, storage: headStorage, x: x, gs: sc.gs, y: sc.logits)
+            try head.encode(enc, storage: headStorage, x: x, gs: sc.gs, y: sc.logits, M: 1, softcap: softcap)
         }
         if let mm = multimaxParams {
             enc.memoryBarrier(scope: .buffers)
@@ -179,11 +177,12 @@ extension QWEngineDriver {
 
     func encodeTargetHeadGreedy(_ enc: any MTLComputeCommandEncoder, x: QWTensorValue,
                                 writeLogits: Bool = true) throws {
+        let softcap = geometry.finalLogitSoftcapping ?? 0.0
         if multimaxParams == nil, case .q4g(let weight) = headStorage,
            head.splits == 1 || !weight.view.isIncumbentContainer {
             try head.encodeGreedyQ4g(enc, x: x, w: weight, y: sc.logits,
                                      keysHi: sc.keysHi, keysLo: sc.keysLo, token: sc.token,
-                                     writeLogits: writeLogits)
+                                     writeLogits: writeLogits, softcap: softcap)
         } else {
             try encodeTargetHead(enc, x: x)
             enc.memoryBarrier(scope: .buffers)
@@ -241,13 +240,15 @@ extension QWEngineDriver {
             return
         }
         let isF16 = (embedReader.tensorInfo.dtype == .f16)
-        embedReader.withBytes { rawBuf in
-            guard let base = rawBuf.baseAddress else { return }
-            let src = base.advanced(by: token * H * 2).assumingMemoryBound(to: UInt16.self)
-            if isF16 {
-                memcpy(dstBase, src, H * 2)
-            } else {
-                QWQuant.bf16ToF16Array(src: src, dst: dstBase, count: H)
+        withExtendedLifetime(dst.region.buffer) {
+            embedReader.withBytes { rawBuf in
+                guard let base = rawBuf.baseAddress else { return }
+                let src = base.advanced(by: token * H * 2).assumingMemoryBound(to: UInt16.self)
+                if isF16 {
+                    UnsafeMutableRawPointer(dstBase).copyMemory(from: UnsafeRawPointer(src), byteCount: H * 2)
+                } else {
+                    QWQuant.bf16ToF16Array(src: src, dst: dstBase, count: H)
+                }
             }
         }
     }
@@ -412,26 +413,28 @@ extension QWEngineDriver {
             return
         }
         let isF16 = (embedReader.tensorInfo.dtype == .f16)
-        embedReader.withBytes { rawBuf in
-            guard let base = rawBuf.baseAddress else { return }
-            let baseAddr = Int(bitPattern: base)
-            let dstAddr = Int(bitPattern: dstBase)
-            if count >= 64 && !isF16 {
-                DispatchQueue.concurrentPerform(iterations: count) { t in
-                    let tok = tokens[start + t]
-                    let src = UnsafeRawPointer(bitPattern: baseAddr)!.advanced(by: tok * H * 2).assumingMemoryBound(to: UInt16.self)
-                    let out = UnsafeMutablePointer<UInt16>(bitPattern: dstAddr)!.advanced(by: t * H)
-                    QWQuant.bf16ToF16Array(src: src, dst: out, count: H)
-                }
-            } else {
-                for t in 0..<count {
-                    let tok = tokens[start + t]
-                    let src = base.advanced(by: tok * H * 2).assumingMemoryBound(to: UInt16.self)
-                    let out = dstBase.advanced(by: t * H)
-                    if isF16 {
-                        memcpy(out, src, H * 2)
-                    } else {
+        withExtendedLifetime(dst.region.buffer) {
+            embedReader.withBytes { rawBuf in
+                guard let base = rawBuf.baseAddress else { return }
+                let baseAddr = Int(bitPattern: base)
+                let dstAddr = Int(bitPattern: dstBase)
+                if count >= 64 && !isF16 {
+                    DispatchQueue.concurrentPerform(iterations: count) { t in
+                        let tok = tokens[start + t]
+                        let src = UnsafeRawPointer(bitPattern: baseAddr)!.advanced(by: tok * H * 2).assumingMemoryBound(to: UInt16.self)
+                        let out = UnsafeMutablePointer<UInt16>(bitPattern: dstAddr)!.advanced(by: t * H)
                         QWQuant.bf16ToF16Array(src: src, dst: out, count: H)
+                    }
+                } else {
+                    for t in 0..<count {
+                        let tok = tokens[start + t]
+                        let src = base.advanced(by: tok * H * 2).assumingMemoryBound(to: UInt16.self)
+                        let out = dstBase.advanced(by: t * H)
+                        if isF16 {
+                            UnsafeMutableRawPointer(out).copyMemory(from: UnsafeRawPointer(src), byteCount: H * 2)
+                        } else {
+                            QWQuant.bf16ToF16Array(src: src, dst: out, count: H)
+                        }
                     }
                 }
             }

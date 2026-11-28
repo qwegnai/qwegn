@@ -141,6 +141,7 @@ public enum QWStandardConfigDecoder {
         "mrope_section", "indexer_n_heads", "index_n_heads",
         "compress_ratios", "enable_hyper_connections", "mhc",
         "hc_count", "ple_layer_ids", "ngram_size", "loop_config", "local_layer_ids",
+        "full_attention_layers", "linear_attention_type",
     ]
 
     /// `true` when `data` is a flat standard config (carries no hybrid-only keys).
@@ -155,18 +156,6 @@ public enum QWStandardConfigDecoder {
     static func isAllFullAttention(_ obj: [String: Any]) -> Bool {
         guard let types = obj["layer_types"] as? [String], !types.isEmpty else { return false }
         return types.allSatisfy { $0 == "full_attention" }
-    }
-
-    /// The feature a standard family's config asks for that full-attention layers cannot serve.
-    public static func standardFamilyRefusal(_ data: Data) -> String? {
-        guard let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let types = obj["layer_types"] as? [String], !types.isEmpty else { return nil }
-        let odd = types.filter { $0 != "full_attention" }
-        guard !odd.isEmpty else { return nil }
-        guard let modelType = obj["model_type"] as? String,
-              let spec = QWModelFamilyRegistry.shared.spec(forModelType: modelType),
-              standardFamilies.contains(spec.family) else { return nil }
-        return "layer_types '\(odd[0])'"
     }
 
     public static let standardFamilies: Set<QWModelDescriptor.Family> = [

@@ -523,26 +523,6 @@ public enum QWImageDecoder {
         return (mmPrompt.expandedTokens, mmPrompt.visualSpans, loadedNow, false)
     }
 
-    /// Synchronous CLI helper: loads vision on demand for `imagePath` / `videoInput`, encodes into `QWVisualSpan`s, and unloads immediately.
-    public static func prepareOneShotMultimodalTurn(
-        promptTokens: [Int],
-        imagePath: String? = nil,
-        videoInput: QWVideoInputSpec? = nil,
-        modelPath: String,
-        hiddenDim: Int
-    ) throws -> (tokens: [Int], visualSpans: [QWVisualSpan]) {
-        let controller = try QWCLIVisionController(modelPath: modelPath)
-        let out = try controller.prepareTurn(
-            promptTokens: promptTokens,
-            imagePaths: imagePath.map { [$0] } ?? [],
-            videoInputs: videoInput.map { [$0] } ?? [],
-            currentTurnHasImage: imagePath != nil || videoInput != nil,
-            hiddenDim: hiddenDim
-        )
-        controller.unload()
-        return out
-    }
-
     /// Decodes raw image data (JPEG, PNG, WebP, TIFF) via ImageIO into RGB8 bytes.
     public static func decode(data: Data, policy: QWImageDecodePolicy = .serverDefault) throws -> DecodedImage {
         let (source, orientedW, orientedH, orientation) = try inspectSource(data: data, policy: policy)

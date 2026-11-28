@@ -38,6 +38,8 @@ Run:  python3 Scripts/check_basis.py
 from __future__ import annotations
 
 import concurrent.futures
+import hashlib
+import json
 import os
 import re
 import subprocess
@@ -125,7 +127,46 @@ def shuffles(body: list[str]) -> int:
     return sum(1 for line in body if SHUFFLE in line)
 
 
-def main() -> int:
+def compute_basis_cache_key(metal_root: Path, cc: list[str], script_path: Path | None = None) -> str:
+    h = hashlib.sha256()
+    ver = subprocess.run([*cc, "--version"], capture_output=True, text=True)
+    sdk_ver = subprocess.run(["xcrun", "--sdk", "macosx", "--show-sdk-build-version"],
+                             capture_output=True, text=True)
+    h.update((ver.stdout + ver.stderr + "|" + sdk_ver.stdout).encode("utf-8"))
+    sp = script_path or Path(__file__).resolve()
+    h.update(b"\0script\0")
+    h.update(sp.read_bytes())
+    for p in sorted(
+        p for p in metal_root.rglob("*")
+        if p.is_file() and p.suffix != ".metallib" and p.name != ".DS_Store"
+    ):
+        h.update(b"\0file\0")
+        h.update(p.relative_to(metal_root).as_posix().encode("utf-8"))
+        h.update(b"\0")
+        h.update(hashlib.sha256(p.read_bytes()).digest())
+    return h.hexdigest()
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = argv if argv is not None else sys.argv[1:]
+    force = ("--force" in args) or (os.environ.get("QW_FORCE_METALLIB") == "1")
+    cache_dir = Path(os.environ.get("QW_METALLIB_CACHE_DIR", str(ROOT / ".build" / "metallib_cache")))
+    cc = metal_cc()
+    cache_key = compute_basis_cache_key(METAL_ROOT, cc)
+    cache_file = cache_dir / f"basis_{cache_key}.json"
+    if not force and cache_file.is_file():
+        try:
+            cached = json.loads(cache_file.read_text(encoding="utf-8"))
+            dropped = int(cached["dropped"])
+            total_rot = int(cached["total_rot"])
+            kept = int(cached["kept"])
+            print(f"basis: the standard build drops {dropped} of {total_rot} "
+                  f"{SHUFFLE}(s) — the rotations are compile-time")
+            print(f"basis: {kept} function(s) keep a basis-independent shuffle, identical in both builds")
+            return 0
+        except (KeyError, ValueError, OSError):
+            pass
+
     problems: list[str] = []
     with tempfile.TemporaryDirectory(prefix="qwg-basis-") as td:
         tmp = Path(td)
@@ -175,6 +216,19 @@ def main() -> int:
     if problems:
         print(f"basis: {len(problems)} problem(s)")
         return 1
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        tmp_cache = cache_dir / f".basis_{cache_key}.{os.getpid()}.tmp"
+        tmp_cache.write_text(
+            json.dumps({"dropped": total_rot - total_std, "total_rot": total_rot, "kept": kept}),
+            encoding="utf-8",
+        )
+        tmp_cache.replace(cache_file)
+        old = sorted(cache_dir.glob("basis_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for stale in old[4:]:
+            stale.unlink(missing_ok=True)
+    except OSError:
+        pass
     print(f"basis: the standard build drops {total_rot - total_std} of {total_rot} "
           f"{SHUFFLE}(s) — the rotations are compile-time")
     print(f"basis: {kept} function(s) keep a basis-independent shuffle, identical in both builds")

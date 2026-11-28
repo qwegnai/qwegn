@@ -35,8 +35,15 @@ public struct FNPackLoader {
     /// Dense fp32 tensor: bf16 raw entries verbatim, HQ4 2-D entries or SafeTensors entries dequantized.
     public func tensor(_ name: String) throws -> [Float] {
         if let pack {
-            if try pack.entry(name).isRawBf16 { return try pack.rawBf16(name) }
-            return try pack.dequantQ4g(name)
+            let entry = try pack.entry(name)
+            switch PlaneLayout.resolve(entry) {
+            case .raw:
+                return try pack.rawBf16(name)
+            case .hq4:
+                return try pack.dequantQ4g(name)
+            case nil:
+                throw QWQuantError.notQuantPlane(name)
+            }
         }
         guard let st else { throw QWSafeTensorsError.missingTensor(name) }
         var vals = try st.readFloats(name)

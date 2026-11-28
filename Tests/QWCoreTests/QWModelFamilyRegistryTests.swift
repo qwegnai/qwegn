@@ -89,11 +89,12 @@ final class QWModelFamilyRegistryTests: XCTestCase {
         XCTAssertEqual(QWModelFamilyRegistry.shared.spec(forModelType: "d1_omni")?.family, .lfm2Encoder)
         XCTAssertEqual(QWModelFamilyRegistry.shared.spec(forModelType: "lfm2_encoder")?.family, .lfm2Encoder)
         XCTAssertEqual(QWModelFamilyRegistry.shared.spec(forModelType: "modernbert")?.family, .modernBert)
+        XCTAssertEqual(QWModelFamilyRegistry.shared.spec(forModelType: "gigachat4")?.family, .gigachat4)
 
         let expected: Set<QWModelDescriptor.Family> = [
             .qwen38Dense, .qwen38MoE, .qwen38FlashNext, .senseNovaLoop, .glm5Next,
             .ernie55MoE, .maxwellMoE, .qwen3Dense, .qwen3MoE, .qwen2Dense, .llamaDense, .mistralDense,
-            .inkling2Loop, .bailingMoeV3, .lfm2, .lfm3, .lfm2Encoder, .modernBert,
+            .inkling2Loop, .bailingMoeV3, .lfm2, .lfm3, .lfm2Encoder, .modernBert, .gigachat4,
         ]
         XCTAssertEqual(Set(QWModelDescriptor.Family.allCases), expected)
     }

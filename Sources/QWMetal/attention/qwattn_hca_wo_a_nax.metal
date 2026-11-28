@@ -1,6 +1,7 @@
 // qwattn_hca_wo_a_nax.metal — Apple10+ NAX grouped wo_a kernels.
 // Isolates BM=64 (T>16, BK=64) from BM=16 (T<=16) K-split PSOs.
 
+#if !defined(QW_DISABLE_NAX)
 #if !defined(__ENVIRONMENT_OS_VERSION_MIN_REQUIRED__) || (__ENVIRONMENT_OS_VERSION_MIN_REQUIRED__ < 260200)
 #error "Metal 4 NAX kernels require -mmacosx-version-min=26.2"
 #endif
@@ -340,3 +341,4 @@ QW_HCA_WOA_NAX_KERNEL(qwg_hca_grouped_wo_a_nax_t16_sub2, 16, true)
 QW_HCA_WOA_NAX_MODE_KERNEL(qwg_hca_grouped_wo_a_nax_hq4, 1)
 QW_HCA_WOA_NAX_MODE_KERNEL(qwg_hca_grouped_wo_a_nax_aq8, 8)
 QW_HCA_WOA_NAX_MODE_KERNEL(qwg_hca_grouped_wo_a_nax_aq4, 4)
+#endif // !defined(QW_DISABLE_NAX)

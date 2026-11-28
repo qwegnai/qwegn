@@ -392,7 +392,7 @@ final class QWGemmWave2RegressionTests: XCTestCase {
             &enc, hal: hal, weights: weights, scratch: scratch,
             input: .f32PreRotated(plain: xPlain, rotated: xRot, prefillPrecast16: nil),
             out32: out32, out16: out16, rows: rows,
-            supportsGroupedNaxPrefill: hal.caps.isMetal4TensorCapable,
+            supportsGroupedNaxPrefill: hal.caps.supportsSimdgroupMMA,
             concurrentBarriers: true,
             rotateEncoder: { current in
                 current.endEncoding()

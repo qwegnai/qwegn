@@ -51,7 +51,7 @@ final class QWModuleRegistryTests: XCTestCase {
             XCTAssertEqual(ObjectIdentifier(mod), ObjectIdentifier(DenseModule.self), family.rawValue)
         }
 
-        XCTAssertEqual(QWModuleRegistry.supportedFamilies.count, 18)
+        XCTAssertEqual(QWModuleRegistry.supportedFamilies.count, 19)
         XCTAssertEqual(Set(QWModuleRegistry.supportedFamilies), Set(QWModelDescriptor.Family.allCases))
     }
 

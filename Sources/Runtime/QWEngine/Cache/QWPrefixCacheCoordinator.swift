@@ -175,27 +175,6 @@ public final class QWPrefixCacheCoordinator: @unchecked Sendable {
             && hasReadMTP == hasEngineMTP
     }
 
-    static func computeRetainCharge(
-        stateBytes: Int,
-        trunkWritten: Int,
-        attnLayerCount: Int,
-        kvBytesPerPage: Int,
-        mtpWritten: Int,
-        mtpBytesPerPage: Int,
-        logitsBytes: Int,
-        sharedBaseHit: QWEngineCachedPrefix?
-    ) -> (charge: Int, sharedKVBytes: Int) {
-        let trunkPages = (trunkWritten + QWKVCache.pageTokens - 1) / QWKVCache.pageTokens
-        let trunkBytes = trunkPages * attnLayerCount * 2 * kvBytesPerPage
-        let mtpPages = mtpBytesPerPage > 0 ? (mtpWritten + QWKVCache.pageTokens - 1) / QWKVCache.pageTokens : 0
-        let mtpBytes = mtpPages * 2 * mtpBytesPerPage
-        let sharedKVBytes = (sharedBaseHit?.prefix.trunk.memoryBytes ?? 0) + (sharedBaseHit?.prefix.mtp?.memoryBytes ?? 0)
-        let incrementalKVBytes = QWTwoTierPrefixCache.incrementalCharge(
-            fullBytes: trunkBytes + mtpBytes, sharedBaseBytes: sharedKVBytes
-        )
-        return (stateBytes + incrementalKVBytes + logitsBytes, sharedKVBytes)
-    }
-
     static func buildMetricsSnapshot(
         promptCount: Int,
         output: QWGreedyGenerationLoop.Result,

@@ -7,16 +7,6 @@ public enum PlaneLayout: Sendable, Hashable {
     case raw
     case hq4
 
-    private static let rawDecisionTokens = [
-        ".conv.", ".short_conv.", "decision_head", "classifier",
-        "score_head", "pointer_head", "marker_head", "type_emb", "type_embedding",
-    ]
-
-    /// True when tensor name belongs to a calibration-sensitive decision conv, marker, or head plane.
-    public static func isRawDecisionPlaneName(_ name: String) -> Bool {
-        rawDecisionTokens.contains { name.contains($0) }
-    }
-
     /// Trailer kind of a verbatim plane; nil when absent.
     public static func resolve(_ e: QWQTensorEntry) -> PlaneLayout? {
         if e.rawOff != nil { return .raw }

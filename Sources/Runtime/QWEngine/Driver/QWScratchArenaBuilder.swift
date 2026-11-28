@@ -380,7 +380,7 @@ enum QWScratchArenaBuilder {
             arenaCap: arenaCap0
         )
         let chunk0 = max(32, min(QWPrefillLimits.maxRows, (prefillChunkSize / 32) * 32))
-        let useNax0 = hal.caps.isMetal4TensorCapable
+        let useNax0 = hal.caps.supportsSimdgroupMMA
         let hasMTPDrafter0 = (mtpWeightDrafts > 0 || cfg.mtpBackend == .dflash2 || cfg.mtpBackend == .dspark) && mtpDrafts > 0
         let needsMTPCache = mtpWeightDrafts > 0 && mtpDrafts > 0
         let modelCap0 = raw.maxPositionEmbeddings > 0 ? min(maxTokens, raw.maxPositionEmbeddings) : maxTokens
@@ -457,7 +457,7 @@ enum QWScratchArenaBuilder {
         mtpDrafts: Int, mtpWeightDrafts: Int,
         requestedSessions: Int? = nil
     ) throws -> QWEngineDriver.ArenaBudgetPlan {
-        let useGroupedNAX = hal.caps.isMetal4TensorCapable
+        let useGroupedNAX = hal.caps.supportsSimdgroupMMA
         let actBytes = activationBytes(
             geometry: geometry, prefillChunkRows: prefillChunkSize, mtpDrafts: mtpDrafts,
             maxTokens: maxTokens, useGroupedNAX: useGroupedNAX,
@@ -583,12 +583,12 @@ enum QWScratchArenaBuilder {
         let hasMTPDrafter = (mtpWeightDrafts > 0 || isDFlash) && effDrafts > 0
         let (format, headQ4g, headFormat, moeRouterIsBF16) = resolveFormat(packPath, descriptor, rawGeometry, mtpWeightDrafts)
         let chunkRows = max(32, min(QWPrefillLimits.maxRows, (prefillChunkSize / 32) * 32))
-        let maxBufferCap = MTLCreateSystemDefaultDevice().map { Int($0.maxBufferLength) }
+        let maxBufferCap = QWDeviceCaps.current?.maxBufferLength
         let actBytes = activationBytes(
             geometry: rawGeometry, prefillChunkRows: chunkRows, mtpDrafts: effDrafts,
             maxTokens: clampedContext, useGroupedNAX: true, maxBufferLength: maxBufferCap).actBytes
         let dflashBytes = QWEngineDriver.dflashFootprintBytes(
-            draftPackPath: nil, descriptor: descriptor, mtpDrafts: effDrafts,
+            draftPackPath: nil, targetPackPath: packPath, descriptor: descriptor, mtpDrafts: effDrafts,
             isDFlash: isDFlash, isDSpineBackend: lowerBackend == "dspine",
             isDSparkBackend: lowerBackend == "dspark",
             physicalMemoryBytes: physicalMemoryBytes)

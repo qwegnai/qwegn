@@ -303,12 +303,13 @@ enum Ink2FPSuites {
         }
 
         var rows: [Row] = []
-        let pNax = resolvePipeline(hal, "qwg_gemm_bf16_nax_bm32")
+        let gemmCandName = hal.caps.isMetal4TensorCapable ? "qwg_gemm_bf16_nax_bm32" : "qwg_gemm_bf16_sg_bm32"
+        let pNax = resolvePipeline(hal, gemmCandName)
         let pR2M8 = try requirePipeline(hal, "qwg_gemv_bf16_rows2_m8")
         for m in [8, 64] {
             rows.append(try raceMinOf2(
                 hal: hal, suite: "bf16_gemm", shape: "M=\(m) \(n)x\(k)",
-                baseName: "qwg_gemv_bf16_rows2_m8", candName: "qwg_gemm_bf16_nax_bm32", rounds: rounds, reps: reps,
+                baseName: "qwg_gemv_bf16_rows2_m8", candName: gemmCandName, rounds: rounds, reps: reps,
                 clearOut: { memset(yBuf.contents(), 0, m * n * 2) },
                 encodeBase: { _, enc in
                     var row = 0
@@ -626,7 +627,10 @@ enum Ink2FPSuites {
                     enc.dispatchThreadgroups(MTLSize(width: nH, height: t, depth: 1), threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1))
                 }
             }
-            let candName = isPrefill ? "qwg_attn_prefill_sink_rel_nax_f16" : "qwg_attn_decode_sink_rel_gqa_f16"
+            let prefillAttnName = hal.caps.isMetal4TensorCapable
+                ? "qwg_attn_prefill_sink_rel_nax_f16"
+                : "qwg_attn_prefill_sink_rel_mma_f16"
+            let candName = isPrefill ? prefillAttnName : "qwg_attn_decode_sink_rel_gqa_f16"
             let spInit = Ink2SinkRelAttnP(
                 T: UInt32(t), nH: UInt32(nH), nKV: UInt32(nKV), headDim: UInt32(hd), dRel: UInt32(dRel), sliding: 0,
                 relExtent: UInt32(relExtent), posOffset: UInt32(posOff), ringCap: UInt32(kvLen), kvMode: 0,

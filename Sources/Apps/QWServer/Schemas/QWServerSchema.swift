@@ -5,15 +5,18 @@ import QWToken
 public struct ChatCompletionRequest: Codable, Sendable {
     public struct ChatTemplateKwargs: Codable, Sendable {
         public let enableThinking: Bool?
+        public let reasoning: Bool?
         public let reasoningEffort: String?
 
         enum CodingKeys: String, CodingKey {
             case enableThinking = "enable_thinking"
+            case reasoning
             case reasoningEffort = "reasoning_effort"
         }
 
-        public init(enableThinking: Bool? = nil, reasoningEffort: String? = nil) {
+        public init(enableThinking: Bool? = nil, reasoning: Bool? = nil, reasoningEffort: String? = nil) {
             self.enableThinking = enableThinking
+            self.reasoning = reasoning
             self.reasoningEffort = reasoningEffort
         }
     }
@@ -356,7 +359,8 @@ public struct ChatCompletionRequest: Codable, Sendable {
 
     public var hasExplicitThinkingSetting: Bool {
         enableThinking != nil || reasoningEffort != nil || reasoningBudget != nil
-            || chatTemplateKwargs?.enableThinking != nil || chatTemplateKwargs?.reasoningEffort != nil
+            || chatTemplateKwargs?.enableThinking != nil || chatTemplateKwargs?.reasoning != nil
+            || chatTemplateKwargs?.reasoningEffort != nil
             || reasoning?.enabled != nil || reasoning?.effort != nil
     }
 

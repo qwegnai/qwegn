@@ -1,6 +1,7 @@
 // QWInkling2Weights+Slabs.swift — Contiguous BF16 attention projection slabs and MoE FP bank builders.
 import Foundation
 import Metal
+import QWAlloc
 import QWCore
 import QWGEMM
 import QWQuant
@@ -46,16 +47,7 @@ extension Ink2Slice {
     }
 }
 
-extension Ink2BumpAllocator {
-    func allocateBytes(_ byteCount: Int, alignment: Int = 256, label: String) throws -> Ink2Slice {
-        let alignedOff = ((used + alignment - 1) / alignment) * alignment
-        guard alignedOff + byteCount <= buffer.length else {
-            throw QWInkling2Error.allocationFailed("overflow storing \(label)")
-        }
-        used = alignedOff + byteCount
-        return Ink2Slice(buffer: buffer, offset: alignedOff, length: byteCount)
-    }
-
+extension QWSubAllocator {
     func buildAttnProjSlab(
         sa: String,
         isSliding: Bool,
@@ -90,9 +82,11 @@ extension Ink2BumpAllocator {
             let dst = slab.buffer.contents().advanced(by: slab.offset)
             let parts = [qS, gS, rS, sS]
             var off = 0
-            for p in parts {
-                memcpy(dst.advanced(by: off), p.buffer.contents().advanced(by: p.offset), p.length)
-                off += p.length
+            withExtendedLifetime(slab.buffer) {
+                for p in parts {
+                    dst.advanced(by: off).copyMemory(from: p.buffer.contents().advanced(by: p.offset), byteCount: p.length)
+                    off += p.length
+                }
             }
             return Ink2AttnProjLoad(
                 layout: layout, qProj: qS, gateProj: gS, rProj: rS, sinkProj: sS, kProj: kS, vProj: vS,
@@ -111,21 +105,23 @@ extension Ink2BumpAllocator {
             parts.append((vName, kvDim * rowBytes))
         }
         let totalSlabBytes = parts.reduce(0) { $0 + $1.expectedBytes }
-        let slab = try allocateBytes(totalSlabBytes, alignment: 256, label: "\(sa)qgrsSlab")
+        let slab = try allocateBytes(totalSlabBytes, label: "\(sa)qgrsSlab")
         let dstBase = slab.buffer.contents().advanced(by: slab.offset)
         var subSlices: [Ink2Slice] = []
         subSlices.reserveCapacity(parts.count)
         var cursor = 0
-        for part in parts {
-            try st.withBytes(of: part.name) { raw in
-                guard raw.count == part.expectedBytes else {
-                    throw QWInkling2Error.badState("\(part.name) size \(raw.count) != expected \(part.expectedBytes)")
+        try withExtendedLifetime(slab.buffer) {
+            for part in parts {
+                try st.withBytes(of: part.name) { raw in
+                    guard raw.count == part.expectedBytes else {
+                        throw QWInkling2Error.badState("\(part.name) size \(raw.count) != expected \(part.expectedBytes)")
+                    }
+                    if let src = raw.baseAddress, raw.count > 0 {
+                        dstBase.advanced(by: cursor).copyMemory(from: src, byteCount: raw.count)
+                    }
+                    subSlices.append(Ink2Slice(buffer: slab.buffer, offset: slab.offset + cursor, length: raw.count))
+                    cursor += raw.count
                 }
-                if let src = raw.baseAddress, raw.count > 0 {
-                    memcpy(dstBase.advanced(by: cursor), src, raw.count)
-                }
-                subSlices.append(Ink2Slice(buffer: slab.buffer, offset: slab.offset + cursor, length: raw.count))
-                cursor += raw.count
             }
         }
         let kS = isSliding ? subSlices[4] : try copy(kName, from: st)
@@ -153,19 +149,21 @@ extension Ink2BumpAllocator {
     ) throws -> Ink2Slice {
         let slab = try allocateBytes(experts * 2 * bytesPerExpert, label: label)
         let dst = slab.buffer.contents().advanced(by: slab.offset)
-        try st.withBytes(of: gateName) { gRaw in
-            try st.withBytes(of: upName) { uRaw in
-                guard gRaw.count == experts * bytesPerExpert, uRaw.count == experts * bytesPerExpert else {
-                    throw QWInkling2Error.badState("\(label) byte mismatch")
-                }
-                guard let gPtr = gRaw.baseAddress, let uPtr = uRaw.baseAddress else {
-                    throw QWInkling2Error.badState("\(label) pointer missing")
-                }
-                for e in 0..<experts {
-                    let srcOff = e * bytesPerExpert
-                    let dstOff = e * 2 * bytesPerExpert
-                    memcpy(dst.advanced(by: dstOff), gPtr.advanced(by: srcOff), bytesPerExpert)
-                    memcpy(dst.advanced(by: dstOff + bytesPerExpert), uPtr.advanced(by: srcOff), bytesPerExpert)
+        try withExtendedLifetime(slab.buffer) {
+            try st.withBytes(of: gateName) { gRaw in
+                try st.withBytes(of: upName) { uRaw in
+                    guard gRaw.count == experts * bytesPerExpert, uRaw.count == experts * bytesPerExpert else {
+                        throw QWInkling2Error.badState("\(label) byte mismatch")
+                    }
+                    guard let gPtr = gRaw.baseAddress, let uPtr = uRaw.baseAddress else {
+                        throw QWInkling2Error.badState("\(label) pointer missing")
+                    }
+                    for e in 0..<experts {
+                        let srcOff = e * bytesPerExpert
+                        let dstOff = e * 2 * bytesPerExpert
+                        dst.advanced(by: dstOff).copyMemory(from: gPtr.advanced(by: srcOff), byteCount: bytesPerExpert)
+                        dst.advanced(by: dstOff + bytesPerExpert).copyMemory(from: uPtr.advanced(by: srcOff), byteCount: bytesPerExpert)
+                    }
                 }
             }
         }
@@ -192,17 +190,19 @@ extension Ink2BumpAllocator {
         )
         let guS2 = try allocateBytes(2 * s2Bytes, label: "\(sw)gate_up.scales2")
         let guS2Dst = guS2.buffer.contents().advanced(by: guS2.offset)
-        try st.withBytes(of: "\(sw)gate_proj.weight_scale_2") { gRaw in
-            guard gRaw.count == s2Bytes, let gPtr = gRaw.baseAddress else {
-                throw QWInkling2Error.badState("\(sw)gate scales2 mismatch")
+        try withExtendedLifetime(guS2.buffer) {
+            try st.withBytes(of: "\(sw)gate_proj.weight_scale_2") { gRaw in
+                guard gRaw.count == s2Bytes, let gPtr = gRaw.baseAddress else {
+                    throw QWInkling2Error.badState("\(sw)gate scales2 mismatch")
+                }
+                guS2Dst.copyMemory(from: gPtr, byteCount: s2Bytes)
             }
-            memcpy(guS2Dst, gPtr, s2Bytes)
-        }
-        try st.withBytes(of: "\(sw)up_proj.weight_scale_2") { uRaw in
-            guard uRaw.count == s2Bytes, let uPtr = uRaw.baseAddress else {
-                throw QWInkling2Error.badState("\(sw)up scales2 mismatch")
+            try st.withBytes(of: "\(sw)up_proj.weight_scale_2") { uRaw in
+                guard uRaw.count == s2Bytes, let uPtr = uRaw.baseAddress else {
+                    throw QWInkling2Error.badState("\(sw)up scales2 mismatch")
+                }
+                guS2Dst.advanced(by: s2Bytes).copyMemory(from: uPtr, byteCount: s2Bytes)
             }
-            memcpy(guS2Dst.advanced(by: s2Bytes), uPtr, s2Bytes)
         }
         let dw = try copy("\(sw)down_proj.weight", from: st)
         let ds = try copy("\(sw)down_proj.scales", from: st)
@@ -261,14 +261,16 @@ extension Ink2BumpAllocator {
         let partBytes = hidden * rowBytes
         // Pack [forget; gain] tightly whenever sub-slice byte offset preserves 16-byte vector alignment.
         if (partBytes % 16) == 0 {
-            let fgSlab = try allocateBytes(2 * partBytes, alignment: 256, label: "\(cp)fgSlab")
+            let fgSlab = try allocateBytes(2 * partBytes, label: "\(cp)fgSlab")
             let dst = fgSlab.buffer.contents().advanced(by: fgSlab.offset)
-            for (idx, suffix) in ["forget_weight", "gain_weight"].enumerated() {
-                try st.withBytes(of: "\(cp)\(suffix)") { raw in
-                    guard raw.count == partBytes, let src = raw.baseAddress else {
-                        throw QWInkling2Error.badState("\(cp)\(suffix) byte mismatch \(raw.count) != \(partBytes)")
+            try withExtendedLifetime(fgSlab.buffer) {
+                for (idx, suffix) in ["forget_weight", "gain_weight"].enumerated() {
+                    try st.withBytes(of: "\(cp)\(suffix)") { raw in
+                        guard raw.count == partBytes, let src = raw.baseAddress else {
+                            throw QWInkling2Error.badState("\(cp)\(suffix) byte mismatch \(raw.count) != \(partBytes)")
+                        }
+                        dst.advanced(by: idx * partBytes).copyMemory(from: src, byteCount: partBytes)
                     }
-                    memcpy(dst.advanced(by: idx * partBytes), src, partBytes)
                 }
             }
             let forget = Ink2Slice(buffer: fgSlab.buffer, offset: fgSlab.offset, length: partBytes)
@@ -281,10 +283,12 @@ extension Ink2BumpAllocator {
         }
         let forget = try copy("\(cp)forget_weight", from: st)
         let gain = try copy("\(cp)gain_weight", from: st)
-        let fgSlab = try allocateBytes(2 * partBytes, alignment: 256, label: "\(cp)fgSlab")
+        let fgSlab = try allocateBytes(2 * partBytes, label: "\(cp)fgSlab")
         let dst = fgSlab.buffer.contents().advanced(by: fgSlab.offset)
-        memcpy(dst, forget.buffer.contents().advanced(by: forget.offset), partBytes)
-        memcpy(dst.advanced(by: partBytes), gain.buffer.contents().advanced(by: gain.offset), partBytes)
+        withExtendedLifetime(fgSlab.buffer) {
+            dst.copyMemory(from: forget.buffer.contents().advanced(by: forget.offset), byteCount: partBytes)
+            dst.advanced(by: partBytes).copyMemory(from: gain.buffer.contents().advanced(by: gain.offset), byteCount: partBytes)
+        }
         return QWInkling2Weights.ControllerW(
             down: down, forget: forget, gain: gain,
             downW: .bf16(downBank), forgetGainW: .bf16(fgSlab.bf16Bank(n: 2 * hidden, k: rank))

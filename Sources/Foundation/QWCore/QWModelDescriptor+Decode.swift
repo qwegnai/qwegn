@@ -98,6 +98,8 @@ extension QWModelDescriptor {
             rawLayerTypes = (0..<t.num_hidden_layers).map { l in
                 (l + 1) % gs == 0 ? "full_attention" : "linear_attention"
             }
+        } else if let explicitFA = try resolveExplicitFullAttentionLayers(text: t, inv: inv) {
+            rawLayerTypes = explicitFA
         } else if rawText["local_layer_ids"] != nil || rawText["loop_config"] != nil {
             let localSet = Set((rawText["local_layer_ids"] as? [Int]) ?? [])
             rawLayerTypes = (0..<t.num_hidden_layers).map { localSet.contains($0) ? "sliding_attention" : "full_attention" }
@@ -135,30 +137,44 @@ extension QWModelDescriptor {
             resolvedFAInterval = 1
         }
 
-        let resolvedHeadDim: Int
-        if let hd = t.head_dim ?? t.attention_head_size, hd > 0 {
-            resolvedHeadDim = hd
-        } else if let qkHd = t.qk_head_dim, qkHd > 0 {
-            resolvedHeadDim = qkHd
-        } else if let nope = t.qk_nope_head_dim, let rope = t.qk_rope_head_dim, nope + rope > 0 {
-            resolvedHeadDim = nope + rope
-        } else if t.head_dim == nil && t.attention_head_size == nil
-                    && (familySpec.defaultAllFullAttention || familySpec.defaultHeadDimFromHidden) {
-            try inv(t.hidden_size % t.num_attention_heads == 0,
-                    "hidden_size \(t.hidden_size) is not divisible by num_attention_heads \(t.num_attention_heads)")
-            resolvedHeadDim = t.hidden_size / t.num_attention_heads
-        } else if let badHd = t.head_dim ?? t.attention_head_size {
-            throw DescriptorError.invariant("head_dim \(badHd) <= 0")
-        } else {
-            throw DescriptorError.invariant("flat config missing 'head_dim'")
-        }
-
         let hasCompressed = normalizedLayerTypes.contains("compressed_attention")
         let hasHybridMLA = t.hybrid_mla_kv_lora_rank != nil || t.hybrid_mla_attention != nil
         let isNoPEMLA = (t.mla_use_nope ?? t.use_mla_nope)
             ?? (t.kv_lora_rank != nil && t.use_mla != false && !hasCompressed && !hasHybridMLA && t.qk_rope_head_dim == nil)
         let hasUnprefixedDecoupledMLA = !isNoPEMLA && !hasHybridMLA && !hasCompressed
             && t.kv_lora_rank != nil && t.qk_nope_head_dim != nil
+        let rawExplicitHeadDim = t.head_dim ?? t.attention_head_size
+        let resolvedHeadDim: Int
+        let resolvedV2DigestHeadDim: Int
+        if let hd = rawExplicitHeadDim, hd > 0 {
+            resolvedV2DigestHeadDim = hd
+            if hasUnprefixedDecoupledMLA,
+               let nope = t.qk_nope_head_dim,
+               let rope = t.qk_rope_head_dim,
+               nope + rope > 0,
+               hd == rope {
+                resolvedHeadDim = nope + rope
+            } else {
+                resolvedHeadDim = hd
+            }
+        } else if let qkHd = t.qk_head_dim, qkHd > 0 {
+            resolvedHeadDim = qkHd
+            resolvedV2DigestHeadDim = qkHd
+        } else if let nope = t.qk_nope_head_dim, let rope = t.qk_rope_head_dim, nope + rope > 0 {
+            resolvedHeadDim = nope + rope
+            resolvedV2DigestHeadDim = nope + rope
+        } else if rawExplicitHeadDim == nil
+                    && (familySpec.defaultAllFullAttention || familySpec.defaultHeadDimFromHidden) {
+            try inv(t.hidden_size % t.num_attention_heads == 0,
+                    "hidden_size \(t.hidden_size) is not divisible by num_attention_heads \(t.num_attention_heads)")
+            let derived = t.hidden_size / t.num_attention_heads
+            resolvedHeadDim = derived
+            resolvedV2DigestHeadDim = derived
+        } else if let badHd = rawExplicitHeadDim {
+            throw DescriptorError.invariant("head_dim \(badHd) <= 0")
+        } else {
+            throw DescriptorError.invariant("flat config missing 'head_dim'")
+        }
         if !isNoPEMLA && !hasHybridMLA && !hasUnprefixedDecoupledMLA && !hasCompressed {
             if familySpec.defaultRole == .decisionEncoder {
                 try inv(resolvedHeadDim >= 2 && resolvedHeadDim % 2 == 0 && resolvedHeadDim <= 256,
@@ -429,48 +445,65 @@ extension QWModelDescriptor {
         let mlaSparsity: MLAConfig.Sparsity = (resolvedIdxHeads != nil)
             ? ((t.index_kpool_compress == true) ? .keyPool : .dsa(slidingWindow: t.sliding_window ?? 0))
             : .dense(slidingWindow: t.sliding_window ?? 0)
+        let denseAttnLayerSet = try resolveDenseAttentionLayerSet(text: t, inv: inv)
         let granularity = (t.gated_attention_proj_granularity_type ?? "").lowercased()
         let gateDeclared = (t.output_gate_type != nil) || (granularity == "head_wise" || granularity == "element_wise")
-        let attnGate: Bool = t.attn_output_gate ?? t.use_gated_attn ?? (gateDeclared || familySpec.defaultAttnOutputGate)
+        let attnGate: Bool = t.attn_output_gate ?? t.use_gated_attn ?? t.gated_attention ?? (gateDeclared || familySpec.defaultAttnOutputGate)
         let parsedUnifiedMLA: MLAConfig? = try {
             if let h = parsedHybridMLA {
                 let qProj: MLAConfig.QProjection = h.qLoraRank > 0 ? .factored(rank: h.qLoraRank) : .direct
                 let outMode: MLAConfig.OutputGateMode = attnGate
                     ? (qProj == .direct ? .headWiseFromHidden : .elementWiseFromQLora) : .none
+                let mlaTraits = try resolveMLAScalingAndNormTraits(
+                    text: t, familySpec: familySpec, qLoraRank: h.qLoraRank, kvLoraRank: h.kvLoraRank, inv: inv
+                )
                 return MLAConfig(
                     qHeads: h.qHeads, qProjection: qProj, kvLoraRank: h.kvLoraRank,
                     qkNopeHeadDim: h.qkNopeHeadDim, qkRopeHeadDim: h.qkRopeHeadDim, vHeadDim: h.vHeadDim,
                     rope: h.decoupledRope ? MLARopeConfig(dim: h.qkRopeHeadDim, theta: ropeTheta, interleave: h.ropeInterleave, mropeLayout: mropeLayout, yarn: h.yarn) : nil,
                     sparsity: mlaSparsity, outputGateMode: outMode,
                     useVHA: h.useVHA, hasAttnSinkBias: h.hasAttnSinkBias, splitKvBProj: h.splitKvBProj,
-                    indexerUseFastHadamard: h.indexerUseFastHadamard
+                    indexerUseFastHadamard: h.indexerUseFastHadamard,
+                    alphaQ: mlaTraits.alphaQ, alphaKV: mlaTraits.alphaKV,
+                    indexerKNormIsRMS: mlaTraits.indexerKNormIsRMS, denseAttentionLayers: denseAttnLayerSet
                 )
             }
             if isNoPEMLA, let kvLora = t.kv_lora_rank, kvLora > 0 {
-                let qProj: MLAConfig.QProjection = (t.q_lora_rank ?? 0) > 0 ? .factored(rank: t.q_lora_rank!) : .direct
+                let qRank = t.q_lora_rank ?? 0
+                let qProj: MLAConfig.QProjection = qRank > 0 ? .factored(rank: qRank) : .direct
+                let mlaTraits = try resolveMLAScalingAndNormTraits(
+                    text: t, familySpec: familySpec, qLoraRank: qRank, kvLoraRank: kvLora, inv: inv
+                )
                 return MLAConfig(
                     qHeads: t.num_attention_heads, qProjection: qProj, kvLoraRank: kvLora,
                     qkNopeHeadDim: t.qk_nope_head_dim ?? resolvedHeadDim, qkRopeHeadDim: 0,
                     vHeadDim: t.v_head_dim ?? resolvedHeadDim, rope: nil, sparsity: mlaSparsity,
-                    outputGateMode: attnGate ? .elementWiseFromHidden : .none
+                    outputGateMode: attnGate ? .elementWiseFromHidden : .none,
+                    alphaQ: mlaTraits.alphaQ, alphaKV: mlaTraits.alphaKV,
+                    indexerKNormIsRMS: mlaTraits.indexerKNormIsRMS, denseAttentionLayers: denseAttnLayerSet
                 )
             }
             guard hasUnprefixedDecoupledMLA, let kvLora = t.kv_lora_rank, let nope = t.qk_nope_head_dim else { return nil }
             let rope = t.qk_rope_head_dim ?? 0
             let vDim = t.v_head_dim ?? resolvedHeadDim
             try inv(kvLora > 0 && nope > 0 && vDim > 0, "MLA dimensions must be positive")
-            let qProj: MLAConfig.QProjection = (t.q_lora_rank ?? 0) > 0 ? .factored(rank: t.q_lora_rank!) : .direct
+            let qRank = t.q_lora_rank ?? 0
+            let qProj: MLAConfig.QProjection = qRank > 0 ? .factored(rank: qRank) : .direct
             let outMode: MLAConfig.OutputGateMode = granularity == "head_wise" ? .headWiseFromHidden
-                : (granularity == "element_wise" ? .elementWiseFromHidden
+                : ((granularity == "element_wise" || t.gated_attention == true) ? .elementWiseFromHidden
                     : (attnGate ? (qProj == .direct ? .elementWiseFromHidden : .elementWiseFromQLora) : .none))
-            let mlaYarn: YarnRopeConfig? = parsedYarn
+            let mlaTraits = try resolveMLAScalingAndNormTraits(
+                text: t, familySpec: familySpec, qLoraRank: qRank, kvLoraRank: kvLora, inv: inv
+            )
             return MLAConfig(
                 qHeads: t.num_attention_heads, qProjection: qProj, kvLoraRank: kvLora,
                 qkNopeHeadDim: nope, qkRopeHeadDim: rope, vHeadDim: vDim,
-                rope: rope > 0 ? MLARopeConfig(dim: rope, theta: ropeTheta, interleave: resolvedRopeInterleave, mropeLayout: mropeLayout, yarn: mlaYarn) : nil,
+                rope: rope > 0 ? MLARopeConfig(dim: rope, theta: ropeTheta, interleave: resolvedRopeInterleave, mropeLayout: mropeLayout, yarn: parsedYarn) : nil,
                 sparsity: mlaSparsity, outputGateMode: outMode,
                 useVHA: t.use_vha_attention ?? false, hasAttnSinkBias: t.add_full_attention_sink_bias ?? false,
-                splitKvBProj: t.mqa_split_kv_b_proj ?? false, indexerUseFastHadamard: t.use_fast_hadamard ?? false
+                splitKvBProj: t.mqa_split_kv_b_proj ?? false, indexerUseFastHadamard: t.use_fast_hadamard ?? false,
+                alphaQ: mlaTraits.alphaQ, alphaKV: mlaTraits.alphaKV,
+                indexerKNormIsRMS: mlaTraits.indexerKNormIsRMS, denseAttentionLayers: denseAttnLayerSet
             )
         }()
 
@@ -542,30 +575,12 @@ extension QWModelDescriptor {
             resolvedLayerSlidingWindows = nil
         }
 
-        let parsedBlockSparseGQA: BlockSparseGQAConfig?
-        if t.attention_variant == "block_sparse_gqa" {
-            guard let blk = t.block_sparse_gqa_block_size,
-                  let pfxWin = t.block_sparse_gqa_prefix_window_size,
-                  let locWin = t.block_sparse_gqa_local_window_size,
-                  let remote = t.block_sparse_gqa_num_remote_blocks,
-                  let idxDim = t.block_sparse_gqa_indexer_head_dim,
-                  let idxHeads = t.block_sparse_gqa_indexer_n_heads,
-                  blk > 0, pfxWin > 0, locWin > 0, remote > 0,
-                  pfxWin % blk == 0, locWin % blk == 0,
-                  idxHeads > 0, idxDim > 0, idxDim % 32 == 0 else {
-                throw DescriptorError.invariant("block_sparse_gqa parameters missing or invalid")
-            }
-            parsedBlockSparseGQA = BlockSparseGQAConfig(
-                blockSize: blk,
-                prefixBlocks: pfxWin / blk,
-                localBlocks: locWin / blk,
-                remoteBlocks: remote,
-                indexerHeads: idxHeads,
-                indexerHeadDim: idxDim
-            )
-        } else {
-            parsedBlockSparseGQA = nil
-        }
+        let parsedBlockSparseGQA = try decodeBlockSparseGQAConfig(text: t, inv: inv)
+        let parsedGatedNorm = try decodeGatedNormConfig(text: t, inv: inv)
+        let parsedGDNGating = try decodeGDNGatingConfig(
+            text: t, hasLinearLayers: hasLinearLayers, resolvedNormEps: resolvedNormEps, inv: inv
+        )
+        let parsedSoftcap = try decodeFinalLogitSoftcapping(text: t, inkling2: parsedInk2, inv: inv)
 
         let resolvedGateType = t.scoring_func ?? t.router_score_function ?? t.score_function ?? familySpec.defaultExpertGateType
         let vd = try resolveVisionDims(
@@ -581,11 +596,12 @@ extension QWModelDescriptor {
             text: t, routedLimits: t.expert_swiglu_limit_list,
             sharedLimits: t.share_expert_swiglu_limit_list, inv: inv
         )
-        let resolvedSharedGate = t.moe_shared_expert_gate ?? t.use_shared_expert_gate
+        let resolvedSharedGate = t.moe_shared_expert_gate ?? t.use_shared_expert_gate ?? t.use_shared_expert_sigmoid
             ?? familySpec.defaultSharedExpertHasGate ?? (t.n_shared_experts == nil && t.moe_shared_expert_intermediate_size == nil)
         let resolvedRouteScale = t.routed_scaling_factor ?? dictFloat(rawText, "route_scale") ?? 1.0
         let resolvedNormTopK = t.norm_topk_prob ?? (resolvedNumExperts != nil ? familySpec.defaultNormTopKProb : false)
-        let resolvedEnableExpertBias = t.moe_router_enable_expert_bias ?? (dictBool(rawText, "use_gate_bias") ?? false)
+        let resolvedEnableExpertBias = t.moe_router_enable_expert_bias
+            ?? (dictBool(rawText, "use_gate_bias") ?? familySpec.moeRouterEnableExpertBias)
         let resolvedNGroup = max(1, t.n_group ?? 1)
         let resolvedTopkGroup = min(resolvedNGroup, max(1, t.topk_group ?? resolvedNGroup))
         let resolvedGroupTopM = (resolvedGateType == "sigmoid" || t.topk_method == "noaux_tc" || resolvedNGroup > 1) ? 2 : 1
@@ -597,12 +613,21 @@ extension QWModelDescriptor {
             routedScalingFactorLearnable: t.routed_scaling_factor_learnable ?? false,
             normTopKProb: resolvedNormTopK
         ) : nil
+        let resolvedDenseInter = parsedInk2 != nil ? nil : resolveAdjustedIntermediate(text: t)
+        let mtpDedicatedEmb = t.mtp_use_dedicated_embeddings ?? false
+        let mtpIsMoE = (resolvedNumExperts != nil) && !familySpec.defaultMTPIsDense
+        let mtpHasIndexer = parsedUnifiedMLA?.hasIndexer ?? (resolvedIdxHeads != nil)
         let parsedMTP: MTPConfig? = resolvedMtpLayers > 0 ? MTPConfig(
             layers: resolvedMtpLayers,
             fusionMode: (t.mtp_shared_last_layer == true) ? .sharedLastLayerEcho
                 : ((parsedMHC != nil && familySpec.defaultMTPSplitEProjHProj) ? .splitEProjHProj : .concatEHProj),
-            useDedicatedEmbeddings: t.mtp_use_dedicated_embeddings ?? false,
-            hasFinalNorm: t.num_nextn_predict_layers != nil && !familySpec.defaultMTPSplitEProjHProj
+            useDedicatedEmbeddings: mtpDedicatedEmb,
+            hasFinalNorm: t.num_nextn_predict_layers != nil && !familySpec.defaultMTPSplitEProjHProj,
+            isMoE: mtpIsMoE,
+            intermediateSize: mtpIsMoE ? t.moe_intermediate_size : resolvedDenseInter,
+            attentionIsSparse: t.nextn_is_sparse ?? familySpec.defaultMTPAttentionIsSparse ?? mtpHasIndexer,
+            attentionIsLinear: t.nextn_is_linear ?? false,
+            sharedEmbedAndHead: !mtpDedicatedEmb
         ) : nil
         let parsedDSpark = try decodeDSparkConfig(
             text: t, rawRoot: rawRoot, rawText: rawText,
@@ -664,7 +689,6 @@ extension QWModelDescriptor {
         let resolvedRole: QWModelRole = familySpec.defaultRole == .decisionEncoder
             ? .decisionEncoder
             : (resolvedCaps.contains(.vision) ? .multimodalConditionalLM : .causalLM)
-        let resolvedDenseInter = parsedInk2 != nil ? nil : resolveAdjustedIntermediate(text: t)
         let descriptor = QWModelDescriptor(
             family: family, modelType: resolvedModelType, capabilities: resolvedCaps,
             hidden: t.hidden_size, vocab: t.vocab_size,
@@ -757,7 +781,11 @@ extension QWModelDescriptor {
             useSandwichNorm: lfmTraits.useSandwichNorm,
             perKindRoPEConfig: lfmTraits.perKindRoPE,
             attnGateMode: lfmTraits.attnGateMode,
-            decisionConfig: lfmTraits.decisionConfig)
+            decisionConfig: lfmTraits.decisionConfig,
+            gatedNormConfig: parsedGatedNorm,
+            gdnGatingConfig: parsedGDNGating,
+            finalLogitSoftcapping: parsedSoftcap,
+            v2DigestHeadDim: resolvedV2DigestHeadDim)
         let issues = descriptor.verifyInternalConsistency()
         if !issues.isEmpty {
             throw DescriptorError.invariant(issues.joined(separator: "; "))

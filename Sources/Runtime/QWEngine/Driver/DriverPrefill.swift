@@ -187,7 +187,7 @@ extension QWEngineDriver {
             }
             let seedHidden = echoDrafter != nil
                 ? prefixRows(psc.mhcStream!, rows: T, cols: (geometry.mhcConfig?.streams ?? 4) * H, dt: .f32)
-                : prefixRows(psc.ln1, rows: T, cols: H, dt: .f16)
+                : prefixRows(hasSandwichGatedNorm ? psc.x : psc.ln1, rows: T, cols: H, dt: .f16)
             let seedEmbeddings = mtpPromptEmbeddings.map { prefixRows($0, rows: T, cols: H, dt: .f16) }
                 ?? prefixRows(psc.x, rows: T, cols: H, dt: .f16)
             try encodeMTPSeeding(cb, session: session,

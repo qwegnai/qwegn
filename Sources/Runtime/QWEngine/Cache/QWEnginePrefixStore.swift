@@ -129,14 +129,6 @@ final class QWEnginePrefixStore<Value: Sendable> {
         core.removeSharedBaseEntries()
     }
 
-    func projectedIncrementalPageBytes(for value: Value, tokens: [Int], mode: String) -> Int? {
-        guard QWRadixKVGate.isEnabled, let extract = extractPhysicalPages else { return nil }
-        let pages = extract(value)
-        let key = Key(tokens: tokens, mode: mode)
-        let projected = pageLedger.projectedUniqueBytes(adding: pages, replacing: key)
-        return max(0, projected - pageLedger.uniqueBytes)
-    }
-
     func lookup(tokens: [Int], mode: String) throws -> Hit? {
         try validate(tokens, mode: mode)
         let base = Self.baseMode(of: mode)

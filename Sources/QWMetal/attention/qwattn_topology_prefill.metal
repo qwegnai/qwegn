@@ -56,23 +56,28 @@ kernel void qwg_attn_topology_prefill_f16(
     const size_t kvStride = (size_t)p.kvHeads * p.headDim;
     const size_t kvBase = (size_t)kvHead * p.headDim;
 
-    for (uint kPos = 0u; kPos < p.seqLen; kPos++) {
-        int kGroup = groupIds[kPos];
-        bool allow = (kGroup >= 0);
-        if (allow) {
-            if (p.slidingWindow > 0u) {
-                allow = (kPos <= qPos) && ((qPos - kPos) < p.slidingWindow);
-            } else if (p.topologyMode == 0u) {
-                allow = (kPos <= qPos);
-            } else if (p.topologyMode == 1u) {
-                allow = ((qPos < p.stateEndPos && kPos < p.stateEndPos) || (kPos <= qPos));
-            } else if (p.topologyMode == 3u) {
-                allow = (qGroup == 0) || (kGroup == 0) || (kGroup == qGroup);
-            } else if (p.topologyMode == 4u) {
-                allow = (p.mediaPrefixLen == 0u) || ((qPos < p.mediaPrefixLen) == (kPos < p.mediaPrefixLen));
-            }
+    uint kLoopStart = 0u;
+    uint kLoopEnd = p.seqLen;
+    if (p.slidingWindow > 0u) {
+        kLoopEnd = qPos + 1u;
+        kLoopStart = (qPos + 1u > p.slidingWindow) ? (qPos + 1u - p.slidingWindow) : 0u;
+    } else if (p.topologyMode == 0u) {
+        kLoopEnd = qPos + 1u;
+    } else if (p.topologyMode == 1u) {
+        kLoopEnd = (qPos < p.stateEndPos) ? min(p.seqLen, p.stateEndPos) : (qPos + 1u);
+    } else if (p.topologyMode == 4u && p.mediaPrefixLen > 0u) {
+        if (qPos < p.mediaPrefixLen) {
+            kLoopEnd = min(p.seqLen, p.mediaPrefixLen);
+        } else {
+            kLoopStart = p.mediaPrefixLen;
         }
-        if (!allow) continue;
+    }
+    const bool checkPackedSet = (p.slidingWindow == 0u && p.topologyMode == 3u);
+
+    for (uint kPos = kLoopStart; kPos < kLoopEnd; kPos++) {
+        int kGroup = groupIds[kPos];
+        if (kGroup < 0) continue;
+        if (checkPackedSet && !((qGroup == 0) || (kGroup == 0) || (kGroup == qGroup))) continue;
 
         device const half* kRow = k + (size_t)kPos * kvStride + kvBase;
         device const half* vRow = v + (size_t)kPos * kvStride + kvBase;

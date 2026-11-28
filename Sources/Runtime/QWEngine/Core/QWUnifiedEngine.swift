@@ -143,11 +143,11 @@ public final class QWEngine: QWInferenceEngine, @unchecked Sendable {
     }
 
     public func mountStandalonePrefixCache(from fileURL: URL) throws -> (tokens: [Int], byteCount: Int) {
-        try underlying.mountStandalonePrefixCache(from: fileURL)
+        try batchScheduler.mountStandalonePrefixCache(from: fileURL)
     }
 
     public func unmountSharedBasePrefixes() {
-        underlying.unmountSharedBasePrefixes()
+        batchScheduler.unmountSharedBasePrefixes()
     }
 
     /// Engine-neutral context-memory prediction for sizing UIs and admission

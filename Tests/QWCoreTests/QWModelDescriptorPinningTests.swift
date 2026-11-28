@@ -13,7 +13,7 @@ final class QWModelDescriptorPinningTests: XCTestCase {
     }
 
     func testAll14FamiliesKeepBitIdenticalGeometryDigestV2AndTraitDefaults() throws {
-        XCTAssertEqual(QWModelDescriptor.Family.allCases.count, 18)
+        XCTAssertEqual(QWModelDescriptor.Family.allCases.count, 19)
         XCTAssertEqual(
             QWModelDescriptor.qwen38_27b.geometryDigestV2Hex,
             "9d6adc557a95b06707e353ac6379c9daa0ab1e597a86d779fbe4a0cd9e1b2a36"
@@ -243,7 +243,7 @@ final class QWModelDescriptorPinningTests: XCTestCase {
     func testAllTwelveFamiliesSpecPredicatesHaveConsistentTraits() {
         for fnName in ["qwen3_5", "qwen3_5_moe", "qwen4_exp", "sensenova_loop",
                        "glm5_next", "ernie5_5_moe", "maxwell_moe", "inkling2_loop", "bailing_moe_v3",
-                       "qwen3", "qwen3_moe", "qwen2", "llama", "mistral",
+                       "gigachat4", "qwen3", "qwen3_moe", "qwen2", "llama", "mistral",
                        "lfm2", "lfm3", "d1_omni", "modernbert"] {
             XCTAssertNotNil(QWModelFamilyRegistry.shared.spec(forModelType: fnName), fnName)
         }

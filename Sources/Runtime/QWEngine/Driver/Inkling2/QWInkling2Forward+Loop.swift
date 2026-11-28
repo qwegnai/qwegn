@@ -479,6 +479,55 @@ extension QWInkling2Forward {
         }
     }
 
+    /// Projects DFlash 2 final-normed `[rows, H]` FP16 features through the target LM head with `softcap = 0.0`.
+    func encodeDFlashHeadLogits(
+        _ enc: any MTLComputeCommandEncoder,
+        xNorm16: QWTensorValue,
+        xRot16: QWTensorValue,
+        logitsOut: QWTensorValue,
+        rows: Int,
+        vocabRows: Int
+    ) throws {
+        let H = session.descriptor.hidden
+        let V = min(vocabRows, session.ink2.unpaddedVocabSize)
+        guard rows > 0, V > 0 else { return }
+        switch weights.lmHeadStorage {
+        case .bf16(let headTV):
+            let fullBank = weights.lmHeadBank ?? QWGemmFP.BF16Bank(weights: headTV, n: session.ink2.unpaddedVocabSize, k: H)
+            let bank = (V == fullBank.n) ? fullBank : QWGemmFP.BF16Bank(weights: fullBank.weights, n: V, k: H)
+            try QWGemmFP.encodeBF16(
+                enc, hal: hal, weight: bank,
+                x: QWFPBufferSlice(xNorm16), y: QWFPBufferSlice(logitsOut),
+                m: rows, inDtype: .f16, outDtype: .f32, softcap: 0.0
+            )
+        case .q4g(let hw):
+            let resolvedHead: QWHeadWeight
+            if V == hw.view.n {
+                resolvedHead = hw
+            } else {
+                guard let subView = hw.view.subview(blocks: hw.view.blocks, n: V, k: H),
+                      let subHead = QWHeadWeight(
+                          blocks: subView.blocks, n: V, k: H,
+                          bits: subView.bits, groupSize: subView.groupSize,
+                          isRotated: subView.isRotated,
+                          isIncumbentContainer: subView.isIncumbentContainer,
+                          isSHVQ: subView.isSHVQ
+                      ) else {
+                    throw QWInkling2Error.badState("invalid Inkling-2 Q4G lmHead subview for vocab=\(V)")
+                }
+                resolvedHead = subHead
+            }
+            if rows == 1 {
+                try QWHead.encodeQ4g(enc, hal: hal, weight: resolvedHead, x: xRot16, y: logitsOut)
+            } else {
+                try QWHead.encodeBatched(enc, hal: hal, view: resolvedHead.view, x: xRot16, y: logitsOut,
+                                         m: rows, preferNAX: true)
+            }
+        case .f16:
+            throw QWInkling2Error.badState("unsupported .f16 lmHeadStorage for Inkling-2")
+        }
+    }
+
     /// Recomputes final head logits/argmax from a cached final-norm row on exact prompt cache hits.
     func runHeadFromFinalNorm(
         finalNormRow: Data,
@@ -491,7 +540,7 @@ extension QWInkling2Forward {
         }
         let dst = session.normBuf.contents()
         withExtendedLifetime(session.normBuf) {
-            finalNormRow.withUnsafeBytes { raw in
+            finalNormRow.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
                 guard let base = raw.baseAddress else { return }
                 dst.copyMemory(from: base, byteCount: rowBytes)
             }

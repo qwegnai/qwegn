@@ -53,11 +53,6 @@ public enum QWScreenCaptureHelper {
         }
     }
 
-    /// Checks macOS TCC Screen Recording authorization without triggering a system dialog.
-    public static func hasScreenCapturePermission() -> Bool {
-        CGPreflightScreenCaptureAccess()
-    }
-
     /// Captures the primary active display via `ScreenCaptureKit` when authorized by macOS TCC.
     public static func captureActiveDisplay(
         promptForPermissionIfNeeded: Bool = false,

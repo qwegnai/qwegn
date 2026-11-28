@@ -15,6 +15,7 @@ public enum QWModelCapabilities {
         if case .recurrentLoop(_, let ink) = descriptor.executionTopology, ink != nil {
             var caps: Set<QWKnobCapability> = [.prefixCache, .kvQuantQ8, .kvQuantQ4, .lsa, .mtpAdaptive]
             if ink?.dspark != nil { caps.insert(.speculative) }
+            if descriptor.vocab <= 393_216 && descriptor.hidden > 0 { caps.insert(.dflash) }
             if hasVisionWeights { caps.insert(.vision) }
             return caps
         }

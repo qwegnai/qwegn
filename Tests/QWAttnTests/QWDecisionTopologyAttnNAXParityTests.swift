@@ -10,10 +10,6 @@ import QWAlloc
 final class QWDecisionTopologyAttnNAXParityTests: XCTestCase {
     static let hal: QWHal = { try! QWHal(geometry: .qwen38_27b) }()
 
-    override func setUpWithError() throws {
-        try XCTSkipUnless(Self.hal.caps.isMetal4TensorCapable, "Decision topology NAX requires Metal 4 tensor hardware")
-    }
-
     private struct SplitMix64 {
         var state: UInt64
         mutating func next() -> UInt64 {
@@ -107,7 +103,128 @@ final class QWDecisionTopologyAttnNAXParityTests: XCTestCase {
         return (maxDiff, naxOut)
     }
 
+    private func cpuAllowElem(
+        qPos: Int,
+        kPos: Int,
+        qGroup: Int32,
+        kGroup: Int32,
+        topology: QWDecisionModelConfig.AttentionTopology,
+        stateEndPos: Int,
+        mediaPrefixLen: Int,
+        slidingWindow: Int
+    ) -> Bool {
+        if qGroup < 0 || kGroup < 0 { return false }
+        if slidingWindow > 0 {
+            return (kPos <= qPos) && ((qPos - kPos) < slidingWindow)
+        }
+        switch topology {
+        case .causal:
+            return kPos <= qPos
+        case .prefixBidirectional:
+            return (qPos < stateEndPos && kPos < stateEndPos) || (kPos <= qPos)
+        case .promptBidirectional:
+            return true
+        case .packedSet:
+            return qGroup == 0 || kGroup == 0 || kGroup == qGroup
+        case .bidirectionalEncoder(let isolateMediaPrefix):
+            let effMediaLen = isolateMediaPrefix ? max(0, mediaPrefixLen) : 0
+            return effMediaLen == 0 || ((qPos < effMediaLen) == (kPos < effMediaLen))
+        }
+    }
+
+    private func runScalarVsCPU(
+        op: QWDecisionTopologyAttn,
+        seqLen: Int,
+        qHeads: Int,
+        kvHeads: Int,
+        headDim: Int,
+        topology: QWDecisionModelConfig.AttentionTopology,
+        groupIds: [Int32],
+        stateEndPos: Int = 0,
+        mediaPrefixLen: Int = 0,
+        slidingWindow: Int = 0,
+        seed: UInt64
+    ) throws -> (maxDiff: Float, scalarOut: [Float16]) {
+        var rng = SplitMix64(state: seed)
+        let qRaw = (0..<(seqLen * qHeads * headDim)).map { _ in Float(Float16(rng.nextSigned())) }
+        let kRaw = (0..<(seqLen * kvHeads * headDim)).map { _ in Float(Float16(rng.nextSigned())) }
+        let vRaw = (0..<(seqLen * kvHeads * headDim)).map { _ in Float(Float16(rng.nextSigned())) }
+        let qT = try makeF16Tensor(values: qRaw, shape: [seqLen, qHeads * headDim])
+        let kT = try makeF16Tensor(values: kRaw, shape: [seqLen, kvHeads * headDim])
+        let vT = try makeF16Tensor(values: vRaw, shape: [seqLen, kvHeads * headDim])
+        let gT = try makeI32Tensor(values: groupIds, shape: [seqLen])
+        let outScalar = try makeF16Tensor(values: [Float](repeating: 0, count: seqLen * qHeads * headDim), shape: [seqLen, qHeads * headDim])
+
+        guard let (cb, enc) = Self.hal.begin() else { throw QWAttnError.badShape("cb") }
+        try op.encodePrefill(
+            enc, q: qT, k: kT, v: vT, groupIds: gT, out: outScalar,
+            seqLen: seqLen, qHeads: qHeads, kvHeads: kvHeads, headDim: headDim,
+            topology: topology, stateEndPos: stateEndPos, mediaPrefixLen: mediaPrefixLen,
+            slidingWindow: slidingWindow, forceScalar: true
+        )
+        Self.hal.end(cb, enc)
+        cb.waitUntilCompleted()
+        XCTAssertEqual(cb.status, .completed)
+
+        let gqaRatio = max(1, qHeads / max(1, kvHeads))
+        let scale = 1.0 / sqrtf(Float(headDim))
+        let total = seqLen * qHeads * headDim
+        let sPtr = outScalar.region.pointer.advanced(by: outScalar.offset).assumingMemoryBound(to: Float16.self)
+        var scalarOut = [Float16](repeating: 0, count: total)
+        var maxDiff: Float = 0
+
+        for qPos in 0..<seqLen {
+            let qGroup = groupIds[qPos]
+            for h in 0..<qHeads {
+                let kvHead = min(kvHeads - 1, h / gqaRatio)
+                let qOff = (qPos * qHeads + h) * headDim
+                if qGroup < 0 {
+                    for d in 0..<headDim {
+                        let got = sPtr[qOff + d]
+                        scalarOut[qOff + d] = got
+                        XCTAssertEqual(Float(got), 0.0, accuracy: 0.0)
+                    }
+                    continue
+                }
+                var m: Float = -Float.infinity
+                var scores = [Float](repeating: -Float.infinity, count: seqLen)
+                for kPos in 0..<seqLen {
+                    let allow = cpuAllowElem(
+                        qPos: qPos, kPos: kPos, qGroup: qGroup, kGroup: groupIds[kPos],
+                        topology: topology, stateEndPos: stateEndPos,
+                        mediaPrefixLen: mediaPrefixLen, slidingWindow: slidingWindow
+                    )
+                    if !allow { continue }
+                    let kOff = (kPos * kvHeads + kvHead) * headDim
+                    var dot: Float = 0
+                    for d in 0..<headDim { dot += qRaw[qOff + d] * kRaw[kOff + d] }
+                    let s = dot * scale
+                    scores[kPos] = s
+                    if s > m { m = s }
+                }
+                var l: Float = 0
+                var acc = [Float](repeating: 0, count: headDim)
+                for kPos in 0..<seqLen where scores[kPos].isFinite {
+                    let p = expf(scores[kPos] - m)
+                    l += p
+                    let vOff = (kPos * kvHeads + kvHead) * headDim
+                    for d in 0..<headDim { acc[d] += p * vRaw[vOff + d] }
+                }
+                let invL = (l > 0) ? (1.0 / l) : 0.0
+                for d in 0..<headDim {
+                    let got = sPtr[qOff + d]
+                    scalarOut[qOff + d] = got
+                    XCTAssertTrue(got.isFinite)
+                    let ref = Float(Float16(acc[d] * invL))
+                    maxDiff = max(maxDiff, abs(Float(got) - ref))
+                }
+            }
+        }
+        return (maxDiff, scalarOut)
+    }
+
     func testAllTopologiesGQAAndPaddingParityD64AndD128() throws {
+        try XCTSkipUnless(Self.hal.caps.isMetal4TensorCapable, "Decision topology NAX requires Metal 4 tensor hardware")
         let op = try QWDecisionTopologyAttn(hal: Self.hal)
 
         for headDim in [64, 128] {
@@ -169,6 +286,114 @@ final class QWDecisionTopologyAttnNAXParityTests: XCTestCase {
                 groupIds: gAll0_65, slidingWindow: 16, seed: UInt64(60 + headDim)
             )
             XCTAssertLessThan(sw.maxDiff, 2e-3, "slidingWindow hd=\(headDim)")
+
+            // 7. Partial sgi 1 Q tile (S=55 -> 55 % 32 == 23) causal
+            let c55 = try runPair(
+                op: op, seqLen: 55, qHeads: 8, kvHeads: 2, headDim: headDim,
+                topology: .causal(supportsPrefixCache: false),
+                groupIds: [Int32](repeating: 0, count: 55), seed: UInt64(70 + headDim)
+            )
+            XCTAssertLessThan(c55.maxDiff, 2e-3, "causal S=55 hd=\(headDim)")
+
+            // 8. Partial sgi 1 Q tile (S=55) packedSet with slidingWindow=16 override + -1 padding
+            var g55 = [Int32](repeating: 0, count: 55)
+            for i in 16..<30 { g55[i] = 1 }
+            for i in 30..<48 { g55[i] = 2 }
+            for i in 48..<55 { g55[i] = -1 }
+            g55[10] = -1
+            let psw55 = try runPair(
+                op: op, seqLen: 55, qHeads: 8, kvHeads: 2, headDim: headDim,
+                topology: .packedSet(maxSetSize: 8), groupIds: g55, slidingWindow: 16, seed: UInt64(80 + headDim)
+            )
+            XCTAssertLessThan(psw55.maxDiff, 2e-3, "packedSet+slidingWindow S=55 hd=\(headDim)")
+            for paddedRow in [10, 48, 54] {
+                for d in 0..<rowStride {
+                    XCTAssertEqual(Float(psw55.naxOut[paddedRow * rowStride + d]), 0.0, accuracy: 0.0)
+                }
+            }
+        }
+    }
+
+    func testScalarAnalyticalBoundsMatchesCPUReference() throws {
+        let op = try QWDecisionTopologyAttn(hal: Self.hal)
+        let qHeads = 8
+        let kvHeads = 2
+
+        for headDim in [32, 256] {
+            var gCausal = [Int32](repeating: 0, count: 41)
+            gCausal[0] = -1
+            gCausal[19] = -1
+            gCausal[40] = -1
+            let c = try runScalarVsCPU(
+                op: op, seqLen: 41, qHeads: qHeads, kvHeads: kvHeads, headDim: headDim,
+                topology: .causal(supportsPrefixCache: false), groupIds: gCausal, seed: UInt64(100 + headDim)
+            )
+            XCTAssertLessThan(c.maxDiff, 2e-3, "scalar causal hd=\(headDim)")
+
+            let sw1 = try runScalarVsCPU(
+                op: op, seqLen: 41, qHeads: qHeads, kvHeads: kvHeads, headDim: headDim,
+                topology: .causal(supportsPrefixCache: false), groupIds: gCausal, slidingWindow: 1, seed: UInt64(110 + headDim)
+            )
+            XCTAssertLessThan(sw1.maxDiff, 2e-3, "scalar slidingWindow=1 hd=\(headDim)")
+
+            let sw16 = try runScalarVsCPU(
+                op: op, seqLen: 41, qHeads: qHeads, kvHeads: kvHeads, headDim: headDim,
+                topology: .causal(supportsPrefixCache: false), groupIds: gCausal, slidingWindow: 16, seed: UInt64(120 + headDim)
+            )
+            XCTAssertLessThan(sw16.maxDiff, 2e-3, "scalar slidingWindow=16 hd=\(headDim)")
+
+            for stateEnd in [0, 19, 100] {
+                let pb = try runScalarVsCPU(
+                    op: op, seqLen: 41, qHeads: qHeads, kvHeads: kvHeads, headDim: headDim,
+                    topology: .prefixBidirectional, groupIds: gCausal, stateEndPos: stateEnd, seed: UInt64(130 + stateEnd + headDim)
+                )
+                XCTAssertLessThan(pb.maxDiff, 2e-3, "scalar prefixBidirectional stateEnd=\(stateEnd) hd=\(headDim)")
+            }
+
+            var gPrompt = [Int32](repeating: 0, count: 19)
+            gPrompt[3] = -1
+            gPrompt[18] = -1
+            let pr = try runScalarVsCPU(
+                op: op, seqLen: 19, qHeads: qHeads, kvHeads: kvHeads, headDim: headDim,
+                topology: .promptBidirectional, groupIds: gPrompt, seed: UInt64(240 + headDim)
+            )
+            XCTAssertLessThan(pr.maxDiff, 2e-3, "scalar promptBidirectional hd=\(headDim)")
+
+            // Interleaved/non-monotonic packedSet groups + -1 padding
+            var gPacked = [Int32](repeating: 0, count: 45)
+            for i in 8..<15 { gPacked[i] = 2 }
+            for i in 15..<23 { gPacked[i] = 1 }
+            for i in 23..<30 { gPacked[i] = 2 }
+            for i in 30..<38 { gPacked[i] = 3 }
+            for i in 38..<45 { gPacked[i] = -1 }
+            gPacked[2] = -1
+            let ps = try runScalarVsCPU(
+                op: op, seqLen: 45, qHeads: qHeads, kvHeads: kvHeads, headDim: headDim,
+                topology: .packedSet(maxSetSize: 8), groupIds: gPacked, seed: UInt64(250 + headDim)
+            )
+            XCTAssertLessThan(ps.maxDiff, 2e-3, "scalar packedSet hd=\(headDim)")
+
+            let psw = try runScalarVsCPU(
+                op: op, seqLen: 45, qHeads: qHeads, kvHeads: kvHeads, headDim: headDim,
+                topology: .packedSet(maxSetSize: 8), groupIds: gPacked, slidingWindow: 8, seed: UInt64(260 + headDim)
+            )
+            XCTAssertLessThan(psw.maxDiff, 2e-3, "scalar packedSet+slidingWindow=8 hd=\(headDim)")
+
+            for mediaLen in [0, 17, 60] {
+                let beIso = try runScalarVsCPU(
+                    op: op, seqLen: 41, qHeads: qHeads, kvHeads: kvHeads, headDim: headDim,
+                    topology: .bidirectionalEncoder(isolateMediaPrefix: true),
+                    groupIds: gCausal, mediaPrefixLen: mediaLen, seed: UInt64(300 + mediaLen + headDim)
+                )
+                XCTAssertLessThan(beIso.maxDiff, 2e-3, "scalar bidirEnc(iso=true,len=\(mediaLen)) hd=\(headDim)")
+            }
+
+            let beUniso = try runScalarVsCPU(
+                op: op, seqLen: 41, qHeads: qHeads, kvHeads: kvHeads, headDim: headDim,
+                topology: .bidirectionalEncoder(isolateMediaPrefix: false),
+                groupIds: gCausal, mediaPrefixLen: 17, seed: UInt64(390 + headDim)
+            )
+            XCTAssertLessThan(beUniso.maxDiff, 2e-3, "scalar bidirEnc(iso=false) hd=\(headDim)")
         }
     }
 }

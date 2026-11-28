@@ -74,7 +74,7 @@ class DenseLayerKernel: @unchecked Sendable {
         let plan = geometry.executionPlan
         let p = plan.indices.contains(context.layer) ? plan[context.layer] : context.layer
         let clamp = geometry.routedSwiGLUClamp(layer: p)
-        if (I & 31) == 0 && driver.hal.caps.isMetal4TensorCapable {
+        if (I & 31) == 0 && driver.hal.caps.supportsSimdgroupMMA {
             try driver.gemmBatchedH16SwiGLU(
                 enc, m: T, i: I, k: H,
                 x: driver.prefixRows(psc.ln2, rows: T, cols: H, dt: .f16),
@@ -160,6 +160,10 @@ class DenseLayerKernel: @unchecked Sendable {
                                               hasNextNorm: isLeave)
                 }
             }
+        } else if let gn = lw.gatedNorms, geometry.useSandwichNorm {
+            let nextGated = nextP.flatMap { driver.layersW[$0].gatedNorms?.input } ?? driver.finalGatedNorm
+            try encodeDecodeSandwichGated(context, gatedNorms: gn, nextGatedNorm: nextGated)
+            enc = driver.activeEnc ?? context.enc
         } else {
             // ln1 for layer 0 ONLY: the plain norm. For l ≥ 1 the stream
             // already arrives normalized — rung 2 of layer l−1 emitted
@@ -243,7 +247,7 @@ class DenseLayerKernel: @unchecked Sendable {
             let moeBridge = driver.canFusePreMoENorm(weights: lw, rows: T) ? psc.moe.map {
                 (xRot32: driver.prefixRows($0.xRot32, rows: T, cols: H, dt: .f32),
                  xPlain32: driver.prefixRows($0.xPlain32, rows: T, cols: H, dt: .f32),
-                 skipRot32: false)
+                 skipRot32: driver.canSkipPreMoERot32(weights: lw, scratch: $0, rows: T))
             } : nil
             try driver.encodeMHCRouterNorm(enc, stream: mhcStream, w: mhc.ffnW, b: mhc.ffnB,
                                            gamma: lw.ln2, controls: mhcControls, out: activeLn2,
@@ -273,6 +277,10 @@ class DenseLayerKernel: @unchecked Sendable {
                                               hasNextNorm: isLeave)
                 }
             }
+        } else if let gn = lw.gatedNorms, geometry.useSandwichNorm {
+            let nextGated = nextP.flatMap { driver.layersW[$0].gatedNorms?.input } ?? driver.finalGatedNorm
+            try encodePrefillSandwichGated(context, gatedNorms: gn, nextGatedNorm: nextGated)
+            enc = driver.activeEnc ?? context.enc
         } else {
             if l == 0 {
                 try driver.encodeRMSNormFast(enc,
@@ -286,7 +294,7 @@ class DenseLayerKernel: @unchecked Sendable {
             let moeBridge = driver.canFusePreMoENorm(weights: lw, rows: T) ? psc.moe.map {
                 (xRot32: driver.prefixRows($0.xRot32, rows: T, cols: H, dt: .f32),
                  xPlain32: driver.prefixRows($0.xPlain32, rows: T, cols: H, dt: .f32),
-                 skipRot32: false)
+                 skipRot32: driver.canSkipPreMoERot32(weights: lw, scratch: $0, rows: T))
             } : nil
             try driver.encodeRMSNormResidualFast(enc,
                                       x: driver.prefixRows(psc.o16, rows: T, cols: H, dt: .f16),
@@ -343,6 +351,14 @@ class DenseLayerKernel: @unchecked Sendable {
         let plan = geometry.executionPlan
         let p = plan.indices.contains(l) ? plan[l] : l
         let nextP = (l + 1 < plan.count) ? plan[l + 1] : nil
+        if let gn = lw.gatedNorms, geometry.useSandwichNorm, lw.mhc == nil {
+            let nextGated = nextP.flatMap { driver.layersW[$0].gatedNorms?.input } ?? driver.finalGatedNorm
+            try encodeBatchDecodeSandwichGated(
+                curEnc, driver: driver, sessions: sessions,
+                layer: l, physicalLayer: p, weights: lw,
+                gatedNorms: gn, nextGatedNorm: nextGated)
+            return
+        }
         let nextGamma = nextP.map { driver.layersW[$0].ln1 } ?? driver.finalNorm
 
         let activeX = driver.prefixRows(psc.x, rows: B, cols: H, dt: .f16)
@@ -415,7 +431,8 @@ class DenseLayerKernel: @unchecked Sendable {
                 weight: lw.gu.view,
                 output: activeMlpRows,
                 activeRows: B,
-                fuseFwht32: fuseFwht)
+                fuseFwht32: fuseFwht,
+                swigluClamp: geometry.routedSwiGLUClamp(layer: p))
             if !fuseFwht {
                 driver.encodeFwht32Fast(curEnc, x: activeMlpRows)
                 curEnc.memoryBarrier(scope: .buffers)

@@ -1,4 +1,5 @@
 // qwgemm_swiglu_nax.metal — Paired-tile NAX gate_up + SwiGLU + FWHT-32 for Block_HQ4_G32.
+#if !defined(QW_DISABLE_NAX)
 #if !defined(__ENVIRONMENT_OS_VERSION_MIN_REQUIRED__) || __ENVIRONMENT_OS_VERSION_MIN_REQUIRED__ < 260200
 #error "Metal 4 NAX kernels require -mmacosx-version-min=26.2"
 #endif
@@ -60,3 +61,4 @@ kernel void qwg_moe_nax_swiglu_q4g(
       p, tileBlock, sortedTok, hasGather, (device const char*)coldW,
       tg, lid, simd_gid, simd_lid, tgGU);
 }
+#endif // !defined(QW_DISABLE_NAX)

@@ -7,16 +7,54 @@ import QWHAL
 import QWHead
 
 extension FNGPUBatchScheduler {
-    func driveLoop() {
+    func driveLoop(
+        pollExternalPending: ((_ freeSlots: Int) -> [QWBatchScheduledJob])? = nil,
+        requeueExternalDelayed: (([QWBatchScheduledJob]) -> Void)? = nil
+    ) {
         while true {
-            if coordinator.activeSlotIndices().isEmpty {
+            if pollExternalPending == nil && coordinator.activeSlotIndices().isEmpty {
                 QWBatchAdmissionCounter.coalescePreparingBurst(maxSlots: Self.maxSlots) {
                     coordinator.queuedCount
                 }
             }
 
+            if let pollExternalPending, !externalPollBlocked {
+                let activeNow = coordinator.activeSlotIndices()
+                let slot0Unbatched = activeNow.count == 1
+                    && activeNow[0] == 0
+                    && coordinator.job(at: 0)?.inBatchMode == false
+                let freeSlots = Self.maxSlots - activeNow.count
+                if !activeNow.isEmpty && !slot0Unbatched && freeSlots > 0 && !coordinator.hasPending {
+                    let polled = pollExternalPending(freeSlots)
+                    if !polled.isEmpty {
+                        let converted = convertScheduledJobs(polled)
+                        if !converted.isEmpty {
+                            coordinator.withPendingAndSlots { pending, _ in
+                                pending.append(contentsOf: converted)
+                            }
+                        }
+                    }
+                }
+            }
+
             let sCap4 = slotCapacity(totalSlots: Self.maxSlots)
             let newlyAdmitted = admitWaitingJobs(sCap4: sCap4)
+
+            if let requeueExternalDelayed, coordinator.hasPending {
+                let delayed = coordinator.withPendingAndSlots { pending, _ -> [QWBatchScheduledJob] in
+                    var out: [QWBatchScheduledJob] = []
+                    pending.removeAll { job in
+                        guard let scheduled = job.scheduledJob else { return false }
+                        out.append(scheduled)
+                        return true
+                    }
+                    return out
+                }
+                if !delayed.isEmpty {
+                    externalPollBlocked = true
+                    requeueExternalDelayed(delayed)
+                }
+            }
 
             if !newlyAdmitted.isEmpty {
                 let allActiveSlots = coordinator.activeSlotIndices()

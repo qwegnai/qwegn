@@ -139,19 +139,6 @@ public enum QWModelCatalog {
         return local + hub.filter { !localNames.contains($0.name) }
     }
 
-    /// Scans local `~/.qwg/models` and the Hugging Face hub cache for runnable decision sidecars.
-    public static func scanDecisionSidecars(
-        localDirectory: String = QWPaths.modelsDirectoryPath,
-        hfHubDirectory: String = QWPaths.hfHubCacheDirectoryURL.path,
-        createLocalDirectoryIfMissing: Bool = true
-    ) -> [QWModelCatalogEntry] {
-        scanInstalledPrimaryModels(
-            localDirectory: localDirectory,
-            hfHubDirectory: hfHubDirectory,
-            createLocalDirectoryIfMissing: createLocalDirectoryIfMissing
-        ).filter { $0.supported && ($0.isDecisionCapable || $0.isCoreAIBundle) }
-    }
-
     /// Classifies one installed model folder or snapshot directory from its `config.json` or CoreAI bundle.
     public static func classify(name: String, path: String) -> QWModelCatalogEntry {
         let rootURL = URL(fileURLWithPath: path)

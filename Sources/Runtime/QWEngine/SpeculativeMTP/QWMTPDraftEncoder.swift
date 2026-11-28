@@ -26,6 +26,7 @@ struct QWMTPDraftWeights {
     var mla: QWMLAAttnOperator.LayerWeights? = nil
     var qkvBias: QWTensorValue? = nil
     var oBias: QWTensorValue? = nil
+    var gatedNorms: QWEngineDriver.GatedMTPNorms? = nil
 }
 
 struct QWMTPDraftScratch {
@@ -56,12 +57,16 @@ struct QWMTPDraftScratch {
     init(geometry: QWModelGeometry, allocator: QWSubAllocator, partials: QWMRegion,
          intermediate: Int? = nil, vocabulary: Int? = nil) throws {
         self.geometry = geometry
-        let defaultInter = geometry.intermediate > 0
-            ? geometry.intermediate
-            : max(128, ((geometry.moeIntermediate + 127) / 128) * 128)
+        let mtpCfgInter = (geometry.mtpConfig?.isMoE == false)
+            ? (geometry.mtpConfig?.intermediateSize ?? 0) : 0
+        let defaultInter = mtpCfgInter > 0
+            ? mtpCfgInter
+            : (geometry.intermediate > 0
+                ? geometry.intermediate
+                : max(128, ((geometry.moeIntermediate + 127) / 128) * 128))
         let intermediate = intermediate ?? defaultInter
         let vocabulary = vocabulary ?? geometry.vocab
-        let maxInter = max(geometry.intermediate, defaultInter)
+        let maxInter = max(geometry.intermediate, max(mtpCfgInter, defaultInter))
         let minPartials = geometry.usesLatentOrCompressedAttention
             ? QWEngineDriver.draftHeadArgmaxPartialsBytes(vocab: vocabulary)
             : QWAttnDecode.decodePartialsBytes(geometry: geometry)
@@ -109,7 +114,8 @@ struct QWMTPDraftScratch {
         gsMLP = try allocate(intermediate / 128, .f32)
         gsHead = try allocate(h / 128, .f32)
         self.partials = partials
-        if geometry.numExperts > 0 {
+        let mtpIsMoE = geometry.mtpConfig?.isMoE ?? (geometry.numExperts > 0)
+        if mtpIsMoE && geometry.numExperts > 0 {
             moe = try QWEngineDriver.makeMoEScratch(allocate, rows: 1, geometry: geometry)
         } else {
             moe = nil
@@ -138,6 +144,9 @@ final class QWMTPDraftEncoder {
     private let downPlan: QWGemmPlan
     weak var driver: QWEngineDriver?
     var hasColdMoE: Bool { weights.moe?.coldStreamer != nil }
+    var nextStepHidden: QWTensorValue {
+        (weights.gatedNorms != nil && geometry.useSandwichNorm) ? scratch.fcOut16 : scratch.postNorm
+    }
 
     init(geometry: QWModelGeometry, hal: QWHal, weights: QWMTPDraftWeights, scratch: QWMTPDraftScratch,
          rope: QWRopeApply, ropeRows: Int, kvMode: QWKVMode = .f16,
@@ -149,11 +158,16 @@ final class QWMTPDraftEncoder {
         let i = weights.down.k
         let ropeDim = geometry.usesDecoupledRopeMLA ? geometry.qkRopeHeadDim : 0
         let idxDim = geometry.mlaHasIndexer ? max(32, geometry.indexerHeadDim) : 0
-        let fallbackLatentCols = (geometry.mlaHasDirectQ ? 0 : geometry.qLoraRank)
-            + geometry.kvLoraRank + ropeDim + idxDim
-        let expectedQKVCols = weights.mla != nil
-            ? (mlaOperator?.latentStride ?? fallbackLatentCols)
-            : (geometry.qProjOut + 2 * kv)
+        let expectedQKVCols: Int
+        if let mlaW = weights.mla {
+            let effIdx = (mlaW.denseOnly || !geometry.mlaHasIndexer) ? 0 : idxDim
+            let effGate = mlaW.oGateInQKV ? (geometry.qHeads * geometry.vHeadDim) : 0
+            let fallbackCols = (geometry.mlaHasDirectQ ? 0 : geometry.qLoraRank)
+                + geometry.kvLoraRank + ropeDim + effIdx + effGate
+            expectedQKVCols = mlaOperator?.latentStride(for: mlaW) ?? fallbackCols
+        } else {
+            expectedQKVCols = geometry.qProjOut + 2 * kv
+        }
         let expectedOutK = weights.mla != nil
             ? (geometry.qHeads * geometry.vHeadDim)
             : (geometry.qHeads * geometry.headDim)
@@ -165,10 +179,12 @@ final class QWMTPDraftEncoder {
               (weights.moe != nil || scratch.mlpIntermediate.shape.elementCount == i) else {
             throw QWEngineDriverError.state("MTP projection geometry does not match scratch")
         }
+        let allowBF16Norm = weights.gatedNorms != nil
         for norm in [weights.preFcNormEmbedding, weights.preFcNormHidden, weights.inputNorm,
                      weights.postAttnNorm, weights.norm] {
-            guard norm.shape.dtype == .f16, norm.shape.elementCount == h else {
-                throw QWEngineDriverError.state("MTP norm must be FP16 [hidden]")
+            let validDtype = norm.shape.dtype == .f16 || (allowBF16Norm && norm.shape.dtype == .bf16)
+            guard validDtype, norm.shape.elementCount == h else {
+                throw QWEngineDriverError.state("MTP norm must be FP16/BF16 [hidden]")
             }
         }
         if weights.mla == nil {
@@ -238,11 +254,15 @@ final class QWMTPDraftEncoder {
                 _ = try hal.pipeline(optionalKernel)
             }
         }
+        let mtpSwiGLUClamp = geometry.routedSwiGLUClamp(layer: geometry.numLayers)
+        if let mtpSwiGLUClamp {
+            _ = try hal.pipeline("qwg_gemv_q4g_silu_pair_h16", swigluClamp: mtpSwiGLUClamp)
+        }
         if !weights.gu.view.isIncumbentContainer,
            let siluName = QWGemmAQ.siluPairKernelName(bits: weights.gu.view.bits,
                                                       group: weights.gu.view.groupSize,
                                                       isSHVQ: weights.gu.view.isSHVQ) {
-            _ = try hal.pipeline(siluName)
+            _ = try hal.pipeline(siluName, swigluClamp: mtpSwiGLUClamp)
         }
     }
 
@@ -263,6 +283,20 @@ final class QWMTPDraftEncoder {
             throw QWEngineDriverError.state("MTP KV capacity or dtype is invalid")
         }
         let s = scratch, w = weights
+        if let gn = w.gatedNorms {
+            try QWNorm.encodeGatedRMSNorm(
+                enc, hal: hal, x: embedding, weights: gn.enorm,
+                out: s.enorm, hidden: h, applyFwht32: w.fc.isRotated)
+            try QWNorm.encodeGatedRMSNorm(
+                enc, hal: hal, x: hidden, weights: gn.hnorm,
+                out: s.hnorm, hidden: h, applyFwht32: w.fc.isRotated)
+            try project(enc, x: s.concat, gs: s.gsFc, w: w.fc,
+                        plan: fcPlan, y32: s.fcOut32, y16: s.fcOut16)
+            try QWNorm.encodeGatedRMSNorm(
+                enc, hal: hal, x: s.fcOut16, weights: gn.input,
+                out: s.ln1, hidden: h, applyFwht32: w.qkvProj.isRotated)
+            return
+        }
         if geometry.hidden % 256 == 0 {
             try QWNorm.encodeMTPPreFcNorm(enc, hal: hal, embeddings: embedding, hidden: hidden,
                                           previous: hidden, gammaEmb: w.preFcNormEmbedding,
@@ -407,7 +441,7 @@ final class QWMTPDraftEncoder {
         } else {
             try attention.encode(enc, qgate: s.qRope, kv: kv, knew: s.kRope, vnew: s.v16,
                                  partials: s.partials, out: s.attOut,
-                                 C: cacheRows, splits: QWAttnDecode.splits(forKeys: cacheRows + 1, kvHeads: geometry.kvHeads))
+                                 C: cacheRows, splits: QWAttnDecode.splits(forKeys: cacheRows + 1, kvHeads: geometry.kvHeads, gpuCores: hal.caps.gpuCores))
         }
         try project(enc, x: s.attOut, gs: s.gsAttn, w: w.o,
                     plan: outPlan, y32: s.fcOut32, y16: s.oProjOut)
@@ -415,9 +449,20 @@ final class QWMTPDraftEncoder {
             try QWNorm.encodeAddBiasF16(enc, hal: hal, x: s.oProjOut, bias: oBias,
                                         rows: 1, cols: geometry.hidden)
         }
-        try QWNorm.encode(enc, hal: hal, variant: .rmsnormResidual,
-                          x: s.oProjOut, gamma: w.postAttnNorm, out: s.ln2, residual: s.fcOut16,
-                          geometry: geometry)
+        if let gn = w.gatedNorms, geometry.useSandwichNorm {
+            let emitMoE = w.moe != nil && s.moe != nil
+            try QWNorm.encodeGatedSandwichResidual(
+                enc, hal: hal,
+                branchOut: s.oProjOut, residual: s.fcOut16,
+                postWeights: gn.postSelfAttn, nextPreWeights: gn.postAttn, out: s.ln2,
+                hidden: geometry.hidden, applyFwht32: w.gu.view.isRotated,
+                xRot32: emitMoE ? s.moe?.xRot32 : nil,
+                xPlain32: emitMoE ? s.moe?.xPlain32 : nil)
+        } else {
+            try QWNorm.encode(enc, hal: hal, variant: .rmsnormResidual,
+                              x: s.oProjOut, gamma: w.postAttnNorm, out: s.ln2, residual: s.fcOut16,
+                              geometry: geometry)
+        }
         if let moe = w.moe, let moeScratch = s.moe {
             let activeDriver = driver ?? self.driver
             if moe.coldStreamer != nil && activeDriver == nil {
@@ -428,22 +473,40 @@ final class QWMTPDraftEncoder {
                                   x16: s.ln2, dn32: s.fcOut32, dn16: s.downOut,
                                   rows: 1, geometry: geometry,
                                   driver: moe.coldStreamer != nil ? activeDriver : nil,
-                                  cb: cb, skipOut32: true)
+                                  cb: cb, skipOut32: true,
+                                  preBridgedF32: (w.gatedNorms != nil && geometry.useSandwichNorm)
+                                      ? (plain: moeScratch.xPlain32, rotated: moeScratch.xRot32) : nil)
             if ObjectIdentifier(enc) != prevID {
                 hal.touchKeepAlive(enc)
             }
         } else {
-            try project(enc, x: s.ln2, gs: s.gsHidden, w: w.gu.view,
-                        plan: guPlan, y32: s.mlp32, y16: s.mlpIntermediate)
-            if w.down.isRotated {
+            let fuseMtpFwht = !w.gu.view.isIncumbentContainer
+                && w.down.isRotated
+                && (w.gu.view.n / 2) > 0
+                && ((w.gu.view.n / 2) % 32 == 0)
+            try QWGemm.encodeH16(
+                enc, hal: hal, plan: guPlan, x: s.ln2, wQ4: w.gu.view,
+                y16: s.mlpIntermediate,
+                swigluClamp: geometry.routedSwiGLUClamp(layer: geometry.numLayers),
+                fuseFwht32: fuseMtpFwht
+            )
+            if w.down.isRotated && !fuseMtpFwht {
                 try QWGemm.encodeFwht32(enc, hal: hal, x: s.mlpIntermediate)
             }
             try project(enc, x: s.mlpIntermediate, gs: s.gsMLP, w: w.down,
                         plan: downPlan, y32: s.fcOut32, y16: s.downOut)
         }
-        try QWNorm.encode(enc, hal: hal, variant: .rmsnormResidual,
-                          x: s.downOut, gamma: w.norm, out: s.postNorm, residual: s.fcOut16,
-                          geometry: geometry)
+        if let gn = w.gatedNorms, geometry.useSandwichNorm {
+            try QWNorm.encodeGatedSandwichResidual(
+                enc, hal: hal,
+                branchOut: s.downOut, residual: s.fcOut16,
+                postWeights: gn.postFFN, nextPreWeights: gn.sharedHead, out: s.postNorm,
+                hidden: geometry.hidden, applyFwht32: true)
+        } else {
+            try QWNorm.encode(enc, hal: hal, variant: .rmsnormResidual,
+                              x: s.downOut, gamma: w.norm, out: s.postNorm, residual: s.fcOut16,
+                              geometry: geometry)
+        }
     }
 
     /// A configured q4g sidecar takes precedence; otherwise use the target
@@ -455,23 +518,40 @@ final class QWMTPDraftEncoder {
 
     func encodeHead(_ enc: any MTLComputeCommandEncoder, storage: QWHeadStorage,
                     draftHead: QWMTPTDraftHead? = nil) throws {
+        let softcap = geometry.finalLogitSoftcapping ?? 0.0
+        let count = scratch.draftLogits.shape.elementCount
         if let draftHead {
             try draftHead.encode(enc, hal: hal, x: scratch.postNorm,
                                  gs: scratch.gsHead, y: scratch.draftLogits)
+            if softcap > 0 {
+                enc.memoryBarrier(scope: .buffers)
+                try QWHead.encodeSoftcapF32(enc, hal: hal, logits: scratch.draftLogits,
+                                            count: count, softcap: softcap)
+            }
             return
         }
+        let unrotateF16 = weights.gatedNorms != nil && geometry.useSandwichNorm
+            && hal.weightBasis.rotatesActivations
         switch storage {
         case .f16(let weight):
+            if unrotateF16 {
+                try QWGemm.encodeFwht32(enc, hal: hal, x: scratch.postNorm)
+                enc.memoryBarrier(scope: .buffers)
+            }
             try QWHead.encodeF16(enc, hal: hal, w: weight, x: scratch.postNorm,
                                  y: scratch.draftLogits, geometry: geometry,
-                                 N: scratch.draftLogits.shape.elementCount)
+                                 N: count, softcap: softcap)
         case .bf16(let weight):
+            if unrotateF16 {
+                try QWGemm.encodeFwht32(enc, hal: hal, x: scratch.postNorm)
+                enc.memoryBarrier(scope: .buffers)
+            }
             try QWHead.encodeBF16(enc, hal: hal, w: weight, x: scratch.postNorm,
                                   y: scratch.draftLogits, geometry: geometry,
-                                  N: scratch.draftLogits.shape.elementCount)
+                                  N: count, softcap: softcap)
         case .q4g(let weight):
             try QWHead.encodeQ4g(enc, hal: hal, weight: weight,
-                x: scratch.postNorm, gs: scratch.gsHead, y: scratch.draftLogits)
+                x: scratch.postNorm, gs: scratch.gsHead, y: scratch.draftLogits, softcap: softcap)
         }
     }
 
@@ -481,6 +561,7 @@ final class QWMTPDraftEncoder {
                              destination: QWTensorValue? = nil) throws {
         let vocabulary = scratch.draftLogits.shape.elementCount
         let outToken = destination ?? scratch.greedySelector.token
+        let softcap = geometry.finalLogitSoftcapping ?? 0.0
         let q4View: QWWeightView?
         if let draftHead {
             for buf in draftHead.mappedBuffers {
@@ -497,7 +578,7 @@ final class QWMTPDraftEncoder {
                 q4View = weight.view
             }
         }
-        guard let view = q4View else {
+        guard softcap <= 0, let view = q4View else {
             try encodeHead(enc, storage: storage, draftHead: draftHead)
             enc.memoryBarrier(scope: .buffers)
             try scratch.greedySelector.encode(enc, hal: hal, logits: scratch.draftLogits,

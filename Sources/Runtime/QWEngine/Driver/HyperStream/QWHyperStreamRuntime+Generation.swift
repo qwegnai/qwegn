@@ -38,6 +38,11 @@ extension QWHyperStreamRuntime {
         set { stateLock.withLock { _onCacheEvent = newValue } }
     }
 
+    public var gpuTurnArbitrator: QWGPUTurnArbitrator? {
+        get { stateLock.withLock { _gpuTurnArbitrator } }
+        set { stateLock.withLock { _gpuTurnArbitrator = newValue } }
+    }
+
     public var prefixCacheHit: Bool { stateLock.withLock { _prefixCacheHit } }
     public var prefixCacheMatchedTokens: Int { stateLock.withLock { _prefixCacheMatchedTokens } }
     public var prefixCacheTier: FNPrefixCacheTier? { stateLock.withLock { _prefixCacheTier } }
@@ -58,9 +63,7 @@ extension QWHyperStreamRuntime {
         }
         batchScheduler.onSlot0CacheEvaluated = nil
         batchScheduler.onStepTiming = { gpuMs, wallMs in
-            if gpuMs > 0 && wallMs > 0 {
-                QWTelemetryRegistry.shared.record("gpu.busy_ratio", gpuMs / wallMs, provenance: .measured)
-            }
+            QWTrunkRuntimeSupport.recordGPUBusy(gpuSeconds: gpuMs, wallSeconds: wallMs)
         }
         onCacheRetained = { [weak self] tokens, chargedBytes, storeTotalBytes, warmLimitBytes in
             self?.onCacheEvent?(.retained(tokens: tokens, chargedBytes: chargedBytes,
@@ -106,57 +109,6 @@ extension QWHyperStreamRuntime {
         }
     }
 
-    /// Resolves HyperStream speculation parameters consistently for CLI, server, and runtime.
-    public static func resolveSpeculation(
-        _ requested: QWSpeculativeParameters,
-        descriptor: QWModelDescriptor,
-        environment: [String: String],
-        modelSwitch: Bool
-    ) throws -> QWResolvedSpeculation {
-        var parameters = requested
-        let envPack = environment["QW_DFLASH_DRAFT_PACK"]?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let reqPack = parameters.dflashDraftPackPath?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolvedPack = (reqPack?.isEmpty == false ? reqPack : nil)
-            ?? (envPack?.isEmpty == false ? envPack : nil)
-            ?? QWDFlashConfig.defaultPackPath(for: descriptor)
-        let inferred = QWDFlashConfig.inferBackendAndMaxDrafts(packPath: resolvedPack)
-        let dflashCap = min(FNGPUDFlash.maxDrafts, max(1, inferred.maxDrafts))
-        if modelSwitch {
-            if FNGPUDFlash.isDFlashName(parameters.mtpBackend) {
-                let compatible = (try? QWDFlashConfig.validateDrafter(
-                    targetDescriptor: descriptor, packPath: resolvedPack,
-                    drafts: 1, selectorTopK: parameters.dflashSelectorTopK
-                )) != nil
-                if compatible {
-                    parameters.mtpBackend = inferred.backend
-                    parameters.mtpDrafts = max(1, min(dflashCap, parameters.mtpDrafts))
-                } else {
-                    parameters.mtpBackend = "variational"
-                    parameters.mtpDrafts = min(parameters.mtpDrafts, max(1, descriptor.maxSpeculativeDrafts))
-                }
-            } else {
-                parameters.mtpDrafts = min(parameters.mtpDrafts, max(1, descriptor.maxSpeculativeDrafts))
-            }
-        }
-        let mode = try FNGPUSessionState.draftMode(for: parameters, environment: environment)
-        parameters.mtpDraftStrategy = mode.rawValue
-        parameters.draftStrategyIsResolved = true
-        if FNGPUDFlash.isDFlashName(parameters.mtpBackend) {
-            let drafts = parameters.enabled ? max(0, min(dflashCap, parameters.mtpDrafts)) : 0
-            let backendName = parameters.mtpBackend?.lowercased() == "dspine" ? "dspine" : "dflash2"
-            return QWResolvedSpeculation(
-                parameters: parameters, engineDrafts: drafts,
-                engineBackend: drafts > 0 ? .dflash2 : nil,
-                reportedDrafts: drafts, reportedBackend: backendName)
-        }
-        let engineDrafts = parameters.enabled && descriptor.capabilities.contains(.mtp) ? parameters.mtpDrafts : 0
-        return QWResolvedSpeculation(
-            parameters: parameters, engineDrafts: engineDrafts,
-            engineBackend: nil,
-            reportedDrafts: parameters.enabled ? max(0, min(FNGPUSessionData.defaultMTPDrafts, parameters.mtpDrafts)) : 0,
-            reportedBackend: mode.rawValue)
-    }
-
     func buildCapabilities() -> Set<QWKnobCapability> {
         var caps = QWModelCapabilities.resolve(descriptor: descriptor, hasVisionWeights: hasVisionWeights)
         if !supportsSpeculativeDecode { caps.remove(.speculative) }
@@ -170,6 +122,41 @@ extension QWHyperStreamRuntime {
         return QWPrefixCacheState(
             isConfigured: true, warmBytes: warm?.bytes, ssdBytes: disk?.bytes,
             warmEntries: warm?.entries, ssdEntries: disk?.entries, warmLimitBytes: prefixCacheWarmLimitBytes)
+    }
+
+    public func hasCachedPrefix(tokens: [Int], cacheSalt: String?) -> Bool {
+        guard hasPrefixCacheTier, !tokens.isEmpty,
+              tokens.allSatisfy({ (0..<vocab).contains($0) }) else {
+            return false
+        }
+        let rawHist = tokens.map(Int64.init)
+        let cacheHistory = QWVisualSpan.saltedCacheHistory(history: rawHist, visualSpans: [], cacheSalt: cacheSalt)
+        let mtpFlags: [Bool] = (mtp != nil) ? [true, false] : [false]
+        let hasColdSSD = prefixCacheSSDByteLimit > 0 && prefixCacheDirectory != nil
+        if hasColdSSD {
+            Self.ssdWriteQueue.sync {}
+        }
+        for hasMTP in mtpFlags {
+            let hash = Self.fnPrefixHash(
+                tokens: cacheHistory[...], kvMode: kvMode, hasMTP: hasMTP, dflashMarker: dflashPrefixMarker)
+            let name = String(format: "fn_entry_%016llx_%d.qwcache", hash, cacheHistory.count)
+            if prefixCacheWarmStore?.contains(name: name) == true {
+                return true
+            }
+            if cacheHistory != rawHist, let warm = prefixCacheWarmStore {
+                let rawHash = Self.fnPrefixHash(
+                    tokens: rawHist[...], kvMode: kvMode, hasMTP: hasMTP, dflashMarker: dflashPrefixMarker)
+                let rawName = String(format: "fn_entry_%016llx_%d.qwcache", rawHash, rawHist.count)
+                if warm.isSharedBaseEntry(rawName) && warm.contains(name: rawName) {
+                    return true
+                }
+            }
+            if hasColdSSD, let cacheDir = prefixCacheDirectory,
+               FileManager.default.fileExists(atPath: cacheDir.appendingPathComponent(name).path) {
+                return true
+            }
+        }
+        return false
     }
 
     func buildReport() -> QWEngineReport {
@@ -186,14 +173,26 @@ extension QWHyperStreamRuntime {
         )
     }
 
+    var batchMaxSlots: Int { FNGPUBatchScheduler.maxSlots }
+
     func configurePrefixCache(_ config: QWCacheConfig) throws {
         try batchScheduler.runExclusive {
             let warmBytes = max(0, config.warmByteLimit)
             let ssdBytes = max(0, config.ssdByteLimit)
             let entryLimit = max(1, config.entryLimit)
+            let warmAdmission = QWResidencyAdmission.clampWarmCache(
+                requestedWarmBytes: warmBytes,
+                requestedSessions: entryLimit,
+                wiredEngineBytes: arenaBytes,
+                measuredAfterWire: true,
+                snapshot: QWLiveDeviceMemorySnapshotSource(maxWorkingSetBytes: hal.caps.maxWorkingSetBytes).capture()
+            )
             self.prefixCacheSSDByteLimit = ssdBytes
-            if warmBytes > 0 {
-                self.prefixCacheWarmStore = FNPrefixWarmStore(byteLimit: warmBytes, maxSlots: entryLimit)
+            if warmAdmission.admittedWarmBytes > 0 {
+                self.prefixCacheWarmStore = FNPrefixWarmStore(
+                    byteLimit: warmAdmission.admittedWarmBytes,
+                    maxSlots: warmAdmission.maxConcurrentSessions
+                )
             } else {
                 self.prefixCacheWarmStore = nil
             }
@@ -214,14 +213,14 @@ extension QWHyperStreamRuntime {
         }
     }
 
-    /// Generates tokens for a request through `QWHyperStreamRuntime`'s continuous batch scheduler.
-    func runGeneration(
+    func makeBatchJob(
         request: QWGenerationRequest,
         onToken: ((Int) -> Bool)?,
-        onStopToken: ((Int) -> Void)?
-    ) throws -> QWGenerationResult {
-        guard !request.prompt.isEmpty else {
-            return QWGenerationResult(tokens: [], stepMs: [], stepTokenCounts: [])
+        onStopToken: ((Int) -> Void)?,
+        scheduledJob: QWBatchScheduledJob? = nil
+    ) throws -> FNBatchJob {
+        if request.usePrefixCache && !hasPrefixCacheTier {
+            throw QWEngineDriverError.state("the request wants a prefix cache this engine does not have")
         }
         for token in request.prompt where token < 0 || token >= plan.vocab {
             throw QWModuleError.invalidToken(token)
@@ -245,7 +244,7 @@ extension QWHyperStreamRuntime {
         let specCap = dflash != nil
             ? min(FNGPUDFlash.maxDrafts, dflashMaxDrafts)
             : FNGPUSessionData.defaultMTPDrafts
-        let job = FNBatchJob(
+        return FNBatchJob(
             prompt: request.prompt,
             maxNew: effectiveMaxNew,
             stopIDs: request.stopIDs,
@@ -266,29 +265,33 @@ extension QWHyperStreamRuntime {
             retainPrefixLength: request.retainPrefixLength,
             visualSpans: request.visualSpans,
             usePrefixCache: request.usePrefixCache,
-            cacheSalt: request.cacheSalt
+            cacheSalt: request.cacheSalt,
+            scheduledJob: scheduledJob
         )
-        let out: FNBatchJobOutput
-        do {
-            out = try batchScheduler.submit(job)
-        } catch FNGPUError.invalidToken(let tok) {
-            throw QWModuleError.invalidToken(tok)
-        } catch let error as QWEngineError {
-            throw QWModuleError.from(error)
+    }
+
+    func mapBatchError(_ error: any Error) -> any Error {
+        if case FNGPUError.invalidToken(let tok) = error {
+            return QWModuleError.invalidToken(tok)
         }
+        if let engineErr = error as? QWEngineError {
+            return QWModuleError.from(engineErr)
+        }
+        return error
+    }
+
+    func finalizeGenerationResult(from out: FNBatchJobOutput, promptCount: Int) -> QWGenerationResult {
         let cache = hasPrefixCacheTier
             ? QWCacheAnswer(hit: out.prefixCacheHit, matchedTokens: out.prefixCacheMatchedTokens,
-                            totalTokens: request.prompt.count, tier: out.prefixCacheTier?.rawValue)
+                            totalTokens: promptCount, tier: out.prefixCacheTier?.rawValue)
             : nil
-        var specSummary: String? = nil
-        if out.specProposals > 0 {
-            let rounds = max(1, out.stepTokenCounts.count)
-            let totalTok = out.stepTokenCounts.reduce(0, +)
-            let specLabel = dflash.map { $0.config.isDSpine ? "dspine" : "dflash2" } ?? "mtp"
-            specSummary = String(format: "%@=%d/%d, rounds=%d, mean=%.2f tok/rnd",
-                                 specLabel, out.specAccepted, out.specProposals,
-                                 rounds, Double(totalTok) / Double(rounds))
-        }
+        let specLabel = dflash.map { $0.config.isDSpine ? "dspine" : "dflash2" } ?? "mtp"
+        let specSummary = QWTrunkRuntimeSupport.formatSpeculativeSummary(
+            label: specLabel,
+            accepted: out.specAccepted,
+            proposals: out.specProposals,
+            stepTokenCounts: out.stepTokenCounts
+        )
         let finalResult = QWGenerationResult(
             tokens: out.tokens, stepMs: out.stepMs, stepTokenCounts: out.stepTokenCounts,
             prefillSeconds: out.prefillSeconds, firstTokenSeconds: out.firstTokenSeconds,
@@ -299,36 +302,34 @@ extension QWHyperStreamRuntime {
         return finalResult
     }
 
-    /// Direct generation façade preserving `QWHyperStreamRuntime.generate(...)`.
-    public func generate(
-        prompt: [Int],
-        maxNew: Int,
-        sampling: QWSamplingParameters = QWSamplingParameters(temperature: 0, topP: 1, topK: 1, repetitionPenalty: 1.0),
-        speculative: QWSpeculativeParameters = QWSpeculativeParameters(),
-        stopIds: Set<Int> = [],
-        visualSpans: [QWVisualSpan] = [],
-        onToken: ((Int) -> Bool)? = nil,
-        onStopToken: ((Int) -> Void)? = nil
-    ) throws -> GenerationResult {
-        guard !prompt.isEmpty else {
-            return GenerationResult(tokens: [], prefillSec: nil, prefillGPUSec: nil,
-                                    decodeSec: nil, firstTokenSec: nil,
-                                    stepMs: [], denseNaxLogMessage: "")
+    func runScheduledBatch(
+        initialJobs: [QWBatchScheduledJob],
+        pollPending: (_ freeSlots: Int) -> [QWBatchScheduledJob],
+        requeueDelayed: ([QWBatchScheduledJob]) -> Void
+    ) {
+        batchScheduler.runScheduledBatch(
+            initialJobs: initialJobs,
+            pollPending: pollPending,
+            requeueDelayed: requeueDelayed
+        )
+    }
+
+    /// Generates tokens for a request through `QWHyperStreamRuntime`'s continuous batch scheduler.
+    func runGeneration(
+        request: QWGenerationRequest,
+        onToken: ((Int) -> Bool)?,
+        onStopToken: ((Int) -> Void)?
+    ) throws -> QWGenerationResult {
+        guard !request.prompt.isEmpty else {
+            return QWGenerationResult(tokens: [], stepMs: [], stepTokenCounts: [])
         }
-        let contract = QWSamplerConfig(sampling, vocabulary: plan.vocab)
-        let result = try runGeneration(
-            request: QWGenerationRequest(prompt: prompt, maxNew: maxNew, stopIDs: stopIds,
-                                         sampling: contract, speculative: speculative,
-                                         visualSpans: visualSpans),
-            onToken: onToken, onStopToken: onStopToken)
-        return GenerationResult(tokens: result.tokens,
-                                prefillSec: result.prefillSeconds,
-                                prefillGPUSec: result.prefillGPUSeconds,
-                                decodeSec: result.decodeSeconds,
-                                firstTokenSec: result.firstTokenSeconds,
-                                stepMs: result.stepMs,
-                                denseNaxLogMessage: naxLogMessage,
-                                prefixCacheHit: prefixCacheHit,
-                                prefixCacheMatchedTokens: prefixCacheMatchedTokens)
+        let job = try makeBatchJob(request: request, onToken: onToken, onStopToken: onStopToken)
+        let out: FNBatchJobOutput
+        do {
+            out = try batchScheduler.submit(job)
+        } catch {
+            throw mapBatchError(error)
+        }
+        return finalizeGenerationResult(from: out, promptCount: request.prompt.count)
     }
 }

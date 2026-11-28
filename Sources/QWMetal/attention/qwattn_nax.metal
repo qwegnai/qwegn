@@ -2,9 +2,13 @@
 //   qgate [S][12288] f16 = [q̂(256)‖gate(256)]×24 (norm+rope applied upstream;
 //     gate read ONLY in the epilogue: out = (O/l)·σ(gate), NOT silu)
 // Design note: docs/KERNEL_NOTES.md#qwattn_nax.
+#if !defined(QW_DISABLE_NAX)
 #include <metal_stdlib>
 #include <metal_simdgroup>
 #include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
+#if !defined(__ENVIRONMENT_OS_VERSION_MIN_REQUIRED__) || __ENVIRONMENT_OS_VERSION_MIN_REQUIRED__ < 260200
+#error "NAX cooperative_tensor kernels require -mmacosx-version-min=26.2 or newer (Apple MPP operand_index ABI)."
+#endif
 #include "mlx/backend/metal/kernels/steel/defines.h"
 #include "mlx/backend/metal/kernels/steel/utils/integral_constant.h"
 #include "mlx/backend/metal/kernels/steel/gemm/nax.h"
@@ -692,3 +696,4 @@ kernel void qwg_attn_prefill_nax_quad(const device half* qgate [[buffer(0)]],
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 }
+#endif // !defined(QW_DISABLE_NAX)

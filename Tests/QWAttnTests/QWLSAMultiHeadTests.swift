@@ -102,15 +102,28 @@ final class QWLSAMultiHeadTests: XCTestCase {
         let nibs: [Float]
     }
 
-    private static func quantizeQ4Block(_ mean: [Float]) -> Q4Block {
-        let mnF = mean.min() ?? 0
-        let mxF = mean.max() ?? 0
+    private static func quantizeQ4Block(_ mean: UnsafePointer<Float>, count: Int) -> Q4Block {
+        var mnF: Float = .greatestFiniteMagnitude, mxF: Float = -.greatestFiniteMagnitude
+        var i = 0
+        while i < count {
+            let v = mean[i]
+            if v < mnF { mnF = v }
+            if v > mxF { mxF = v }
+            i += 1
+        }
+        if count == 0 { mnF = 0; mxF = 0 }
         let mnH = Float(Float16(mnF))
         let scH = Float(Float16(max(0, mxF - mnF) / 15.0))
         let invSc: Float = scH > 0 ? (1.0 / scH) : 0
-        let nibs = mean.map { v in
-            let qv = Foundation.rint(Double((v - mnH) * invSc))
-            return Float(min(15.0, max(0.0, qv)))
+        let nibs = [Float](unsafeUninitializedCapacity: count) { dst, initCnt in
+            guard let dp = dst.baseAddress else { initCnt = 0; return }
+            var d = 0
+            while d < count {
+                let qv = Foundation.rint(Double((mean[d] - mnH) * invSc))
+                dp[d] = Float(min(15.0, max(0.0, qv)))
+                d += 1
+            }
+            initCnt = count
         }
         return Q4Block(mnH: mnH, scH: scH, nibs: nibs)
     }
@@ -118,19 +131,38 @@ final class QWLSAMultiHeadTests: XCTestCase {
     private static func buildPooledQ4Blocks(clippedK: [[[Float]]], totalBlocks: Int) -> [[Q4Block]] {
         let kvHeads = clippedK[0].count
         let sliceDim = clippedK[0][0].count
-        var out = [[Q4Block]](repeating: [], count: totalBlocks)
-        var mean4 = [Float](repeating: 0, count: sliceDim)
-        for blk in 0..<totalBlocks {
-            var heads: [Q4Block] = []
-            heads.reserveCapacity(kvHeads)
-            for g in 0..<kvHeads {
-                for d in 0..<sliceDim {
-                    mean4[d] = 0.25 * (clippedK[blk * 4][g][d] + clippedK[blk * 4 + 1][g][d]
-                        + clippedK[blk * 4 + 2][g][d] + clippedK[blk * 4 + 3][g][d])
+        var out = [[Q4Block]]()
+        out.reserveCapacity(totalBlocks)
+        withUnsafeTemporaryAllocation(of: Float.self, capacity: sliceDim) { mTmp in
+            guard let mp = mTmp.baseAddress else { return }
+            var blk = 0
+            while blk < totalBlocks {
+                let k0 = clippedK[blk * 4], k1 = clippedK[blk * 4 + 1], k2 = clippedK[blk * 4 + 2], k3 = clippedK[blk * 4 + 3]
+                var heads = [Q4Block]()
+                heads.reserveCapacity(kvHeads)
+                var g = 0
+                while g < kvHeads {
+                    k0[g].withUnsafeBufferPointer { b0 in
+                        k1[g].withUnsafeBufferPointer { b1 in
+                            k2[g].withUnsafeBufferPointer { b2 in
+                                k3[g].withUnsafeBufferPointer { b3 in
+                                    guard let p0 = b0.baseAddress, let p1 = b1.baseAddress,
+                                          let p2 = b2.baseAddress, let p3 = b3.baseAddress else { return }
+                                    var d = 0
+                                    while d < sliceDim {
+                                        mp[d] = 0.25 * (p0[d] + p1[d] + p2[d] + p3[d])
+                                        d += 1
+                                    }
+                                    heads.append(quantizeQ4Block(mp, count: sliceDim))
+                                }
+                            }
+                        }
+                    }
+                    g += 1
                 }
-                heads.append(quantizeQ4Block(mean4))
+                out.append(heads)
+                blk += 1
             }
-            out[blk] = heads
         }
         return out
     }
@@ -138,21 +170,36 @@ final class QWLSAMultiHeadTests: XCTestCase {
     private static func buildCoarseQ4Blocks(fineQ4: [[Q4Block]], totalCoarse: Int) -> [[Q4Block]] {
         let kvHeads = fineQ4[0].count
         let sliceDim = fineQ4[0][0].nibs.count
-        var out = [[Q4Block]](repeating: [], count: totalCoarse)
-        var mean4 = [Float](repeating: 0, count: sliceDim)
-        for cBlk in 0..<totalCoarse {
-            var heads: [Q4Block] = []
-            heads.reserveCapacity(kvHeads)
-            for g in 0..<kvHeads {
-                for d in 0..<sliceDim { mean4[d] = 0 }
-                for off in 0..<4 {
-                    let b = fineQ4[cBlk * 4 + off][g]
-                    for d in 0..<sliceDim { mean4[d] += b.mnH + b.scH * b.nibs[d] }
+        var out = [[Q4Block]]()
+        out.reserveCapacity(totalCoarse)
+        withUnsafeTemporaryAllocation(of: Float.self, capacity: sliceDim) { mTmp in
+            guard let mp = mTmp.baseAddress else { return }
+            var cBlk = 0
+            while cBlk < totalCoarse {
+                var heads = [Q4Block]()
+                heads.reserveCapacity(kvHeads)
+                var g = 0
+                while g < kvHeads {
+                    var d = 0
+                    while d < sliceDim { mp[d] = 0; d += 1 }
+                    var off = 0
+                    while off < 4 {
+                        let b = fineQ4[cBlk * 4 + off][g]
+                        b.nibs.withUnsafeBufferPointer { nB in
+                            guard let np = nB.baseAddress else { return }
+                            var j = 0
+                            while j < sliceDim { mp[j] += b.mnH + b.scH * np[j]; j += 1 }
+                        }
+                        off += 1
+                    }
+                    d = 0
+                    while d < sliceDim { mp[d] *= 0.25; d += 1 }
+                    heads.append(quantizeQ4Block(mp, count: sliceDim))
+                    g += 1
                 }
-                for d in 0..<sliceDim { mean4[d] *= 0.25 }
-                heads.append(quantizeQ4Block(mean4))
+                out.append(heads)
+                cBlk += 1
             }
-            out[cBlk] = heads
         }
         return out
     }
@@ -204,18 +251,34 @@ final class QWLSAMultiHeadTests: XCTestCase {
         let qSum = qRow.map { $0.reduce(Float(0), +) }
         let scaleInv = 1.0 / sqrt(Float(sliceDim))
 
+        let qFlat = qRow.flatMap { $0 }
         func evalDeq(poolQ4: [[Q4Block]], blkIds: [Int]) -> [[Float]] {
-            var out = [[Float]](repeating: [Float](repeating: 0, count: blkIds.count), count: qHeads)
-            for (i, blk) in blkIds.enumerated() {
-                for g in 0..<kvHeads {
-                    let qb = poolQ4[blk][g]
-                    for sub in 0..<gPerKV {
-                        let qh = g * gPerKV + sub
-                        var dotN: Float = 0
-                        for d in 0..<sliceDim { dotN += qRow[qh][d] * qb.nibs[d] }
-                        let raw = min(60000.0, max(-60000.0, (qb.scH * dotN + qb.mnH * qSum[qh]) * scaleInv))
-                        out[qh][i] = Float(Float16(raw))
+            let nBlks = blkIds.count
+            var out = (0..<qHeads).map { _ in [Float](repeating: 0, count: nBlks) }
+            qFlat.withUnsafeBufferPointer { qB in
+                guard let qp = qB.baseAddress else { return }
+                var i = 0
+                while i < nBlks {
+                    let blkRow = poolQ4[blkIds[i]]
+                    var g = 0
+                    while g < kvHeads {
+                        let qb = blkRow[g]
+                        qb.nibs.withUnsafeBufferPointer { nB in
+                            guard let np = nB.baseAddress else { return }
+                            var sub = 0
+                            while sub < gPerKV {
+                                let qh = g * gPerKV + sub
+                                let qHead = qp + (qh * sliceDim)
+                                var dotN: Float = 0, d = 0
+                                while d < sliceDim { dotN += qHead[d] * np[d]; d += 1 }
+                                let raw = min(60000.0, max(-60000.0, (qb.scH * dotN + qb.mnH * qSum[qh]) * scaleInv))
+                                out[qh][i] = Float(Float16(raw))
+                                sub += 1
+                            }
+                        }
+                        g += 1
                     }
+                    i += 1
                 }
             }
             return out

@@ -1,4 +1,4 @@
-// DriverWeightLoading+GLM5.swift — NoPE MLA + Key-Pool Indexer and KDA linear
+// DriverWeightLoading+MLAKDA.swift — NoPE MLA + Key-Pool Indexer and KDA linear
 // attention weight loaders for QWEngineDriver.WeightLoader.
 import Foundation
 import Metal
@@ -8,6 +8,7 @@ import QWCore
 import QWGEMM
 import QWHAL
 import QWMLP
+import QWNorm
 import QWQuant
 
 extension QWEngineDriver.WeightLoader {
@@ -197,6 +198,7 @@ extension QWEngineDriver.WeightLoader {
         let ehProj: QWWeightView
         let sharedHeadNorm: QWTensorValue
         let layer: QWEngineDriver.LayerW
+        let gatedNorms: QWEngineDriver.GatedMTPNorms?
     }
 
     mutating func loadNextNMTPLayer(geometry: QWModelGeometry) throws -> NextNMTPLayerWeights? {
@@ -207,35 +209,83 @@ extension QWEngineDriver.WeightLoader {
             return nil
         }
         let h = geometry.hidden
-        let eNorm = try f16wNorm(blk + "enorm.weight", h)
-        let hNorm = try f16wNorm(blk + "hnorm.weight", h)
+        let gn = geometry.gatedNormConfig
+        let mtpIsMoE = geometry.mtpConfig?.isMoE ?? (geometry.numExperts > 0)
+        let mtpInter = geometry.mtpConfig?.intermediateSize
+            ?? (geometry.intermediate > 0 ? geometry.intermediate : geometry.moeIntermediate)
+        let mtpDenseOnly = geometry.mtpConfig?.attentionIsSparse == false
+
+        let eGated = try gn.map { try loadGatedNorm(blk + "enorm.", dim: h, config: $0) }
+        let hGated = try gn.map { try loadGatedNorm(blk + "hnorm.", dim: h, config: $0) }
+        let eNorm = try eGated.map(\.weight) ?? f16wNorm(blk + "enorm.weight", h)
+        let hNorm = try hGated.map(\.weight) ?? f16wNorm(blk + "hnorm.weight", h)
         let ehProj = try q4(blk + "eh_proj.weight", n: h, k: 2 * h)
-        let ln1 = try f16wNorm(blk + "input_layernorm.weight", h)
+        let inGated = try gn.map { try loadGatedNorm(blk + "input_layernorm.", dim: h, config: $0) }
+        let ln1 = try inGated.map(\.weight) ?? f16wNorm(blk + "input_layernorm.weight", h)
         let attnOnly = geometry.usesDecoupledRopeMLA
-            ? try loadDecoupledMLAAttnWeights(blk: blk, geometry: geometry)
+            ? try loadDecoupledMLAAttnWeights(blk: blk, geometry: geometry, denseOnly: mtpDenseOnly)
             : try loadMLAAttnWeights(blk: blk, geometry: geometry)
-        let ln2 = try f16wNorm(blk + "post_attention_layernorm.weight", h)
-        let moe = try packedMoE(blk, experts: geometry.numExperts, topK: geometry.expertsPerTok, layer: mtpIdx)
-        let guView = try firstExpert(moe.gateUp, rows: 2 * geometry.moeIntermediate)
-        guard let gu = QWMLPWeight(blocks: guView.blocks, n: 2 * geometry.moeIntermediate, k: h,
-                                   bits: guView.bits, groupSize: guView.groupSize,
-                                   isRotated: guView.isRotated,
-                                   isIncumbentContainer: guView.isIncumbentContainer,
-                                   isSHVQ: guView.isSHVQ) else {
-            throw QWEngineDriverError.weightMissing(blk + "mlp.experts", "mtp gu view invalid")
+        let postSelfGated: QWGatedNormWeights?
+        let postAttnGated: QWGatedNormWeights?
+        let postFFNGated: QWGatedNormWeights?
+        let ln2: QWTensorValue
+        if let gn {
+            postSelfGated = geometry.useSandwichNorm
+                ? try loadGatedNorm(blk + "post_self_attn_layernorm.", dim: h, config: gn) : inGated
+            let pa = try loadGatedNorm(blk + "post_attention_layernorm.", dim: h, config: gn)
+            postAttnGated = pa
+            postFFNGated = geometry.useSandwichNorm
+                ? try loadGatedNorm(blk + "post_feedforward_layernorm.", dim: h, config: gn) : pa
+            ln2 = pa.weight
+        } else {
+            postSelfGated = nil; postAttnGated = nil; postFFNGated = nil
+            ln2 = try f16wNorm(blk + "post_attention_layernorm.weight", h)
         }
-        let down = try firstExpert(moe.down, rows: h)
-        let headNormName = hasTensor(blk + "shared_head.norm.weight")
-            ? (blk + "shared_head.norm.weight")
-            : (blk + "final_layernorm.weight")
-        let sharedHeadNorm = try f16wNorm(headNormName, h)
+        let moe: QWEngineDriver.MoEW?
+        let gu: QWMLPWeight
+        let down: QWWeightView
+        if mtpIsMoE {
+            let m = try packedMoE(blk, experts: geometry.numExperts, topK: geometry.expertsPerTok, layer: mtpIdx)
+            let guView = try firstExpert(m.gateUp, rows: 2 * geometry.moeIntermediate)
+            guard let v = QWMLPWeight(blocks: guView.blocks, n: 2 * geometry.moeIntermediate, k: h,
+                                      bits: guView.bits, groupSize: guView.groupSize,
+                                      isRotated: guView.isRotated,
+                                      isIncumbentContainer: guView.isIncumbentContainer,
+                                      isSHVQ: guView.isSHVQ) else {
+                throw QWEngineDriverError.weightMissing(blk + "mlp.experts", "mtp gu view invalid")
+            }
+            moe = m; gu = v; down = try firstExpert(m.down, rows: h)
+        } else {
+            moe = nil
+            gu = try packedGU(blk, intermediate: mtpInter)
+            let downName = hasTensor(blk + "mlp.down_proj.weight")
+                ? (blk + "mlp.down_proj.weight") : (blk + "block_sparse_moe.w2.weight")
+            down = try q4(downName, n: h, k: mtpInter)
+        }
+        let headNormStem = hasTensor(blk + "shared_head.norm.weight")
+            ? (blk + "shared_head.norm.") : (blk + "final_layernorm.")
+        let headGated = try gn.map { try loadGatedNorm(headNormStem, dim: h, config: $0) }
+        let sharedHeadNorm = try headGated.map(\.weight) ?? f16wNorm(headNormStem + "weight", h)
+        let gatedBundle: QWEngineDriver.GatedMTPNorms? = (eGated != nil) ? QWEngineDriver.GatedMTPNorms(
+            enorm: eGated!, hnorm: hGated!, input: inGated!,
+            postSelfAttn: postSelfGated!, postAttn: postAttnGated!,
+            postFFN: postFFNGated!, sharedHead: headGated!
+        ) : nil
+        let layerGated: QWEngineDriver.GatedLayerNorms? = gatedBundle.map {
+            QWEngineDriver.GatedLayerNorms(
+                input: $0.input, postSelfAttn: $0.postSelfAttn,
+                postAttn: $0.postAttn, postFFN: $0.postFFN)
+        }
         let layer = QWEngineDriver.LayerW(
             ln1: ln1, ln2: ln2, gu: gu, down: down,
-            kind: .moe, gdn: nil, attn: attnOnly, moe: moe, mhc: nil
+            kind: moe == nil ? .fullAttention : .moe,
+            gdn: nil, attn: attnOnly, moe: moe, mhc: nil,
+            gatedNorms: layerGated
         )
         return NextNMTPLayerWeights(
             eNorm: eNorm, hNorm: hNorm, ehProj: ehProj,
-            sharedHeadNorm: sharedHeadNorm, layer: layer
+            sharedHeadNorm: sharedHeadNorm, layer: layer,
+            gatedNorms: gatedBundle
         )
     }
 
@@ -341,11 +391,13 @@ extension QWEngineDriver.WeightLoader {
         return v
     }
 
-    mutating func loadDecoderWeights(geometry: QWModelGeometry) throws -> (layers: [ QWEngineDriver.LayerW], finalNorm: QWTensorValue) {
+    mutating func loadDecoderWeights(
+        geometry: QWModelGeometry
+    ) throws -> (layers: [QWEngineDriver.LayerW], finalNorm: QWTensorValue, finalGatedNorm: QWGatedNormWeights?) {
         let layers = try loadLayers(geometry: geometry)
-        let norm = try finalNorm(geometry.hidden)
+        let finalBundle = try loadFinalNormBundle(geometry: geometry)
         st?.adviseDontNeed()
-        return (layers, norm)
+        return (layers, finalBundle.norm, finalBundle.gated)
     }
 
     mutating func loadMHCBranch(_ blk: String, prefix: String, mhc: QWModelDescriptor.MHCConfig) throws -> (w: QWTensorValue, b: QWTensorValue) {

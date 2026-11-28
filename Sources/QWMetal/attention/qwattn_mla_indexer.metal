@@ -51,6 +51,7 @@ kernel void qwg_mla_latent_prep(
     if (t >= p.T) return;
     threadgroup float sgScratch[8];
     threadgroup float sgMinScratch[8];
+    threadgroup half2 q4Sm[2];
     threadgroup half shX[4096];
 
     const uint pos = p.pos0 + t;
@@ -155,24 +156,23 @@ kernel void qwg_mla_latent_prep(
                 sgScratch[sg] = maxV;
             }
             threadgroup_barrier(mem_flags::mem_threadgroup);
-            if (sg < 2u && lane < 4u) {
-                const uint sgIdx = sg * 4u + lane;
-                float gMin = sgMinScratch[sgIdx];
-                float gMax = sgScratch[sgIdx];
+            if (sg == 0u && lane < 8u) {
+                float gMin = sgMinScratch[lane];
+                float gMax = sgScratch[lane];
                 for (uint off = 2u; off >= 1u; off >>= 1u) {
                     gMin = min(gMin, simd_shuffle_xor(gMin, ushort(off)));
                     gMax = max(gMax, simd_shuffle_xor(gMax, ushort(off)));
                 }
-                if (lane == 0u) {
+                if ((lane & 3u) == 0u) {
                     const half scH = half(max((gMax - gMin) / 15.0f, 6.103515625e-5f));
                     const half mnH = half(gMin);
-                    sgScratch[sg * 2u + 0u] = float(scH);
-                    sgScratch[sg * 2u + 1u] = float(mnH);
+                    q4Sm[lane >> 2u] = half2(scH, mnH);
                 }
             }
             threadgroup_barrier(mem_flags::mem_threadgroup);
-            const half scH = half(sgScratch[grp * 2u + 0u]);
-            const half mnH = half(sgScratch[grp * 2u + 1u]);
+            const half2 smH = q4Sm[grp];
+            const half scH = smH.x;
+            const half mnH = smH.y;
             const float invSc4 = (float(scH) > 0.0f) ? (1.0f / float(scH)) : 0.0f;
             const uint qNib = uint(clamp(round((v - float(mnH)) * invSc4), 0.0f, 15.0f));
             shX[col] = half(qNib);
@@ -189,9 +189,7 @@ kernel void qwg_mla_latent_prep(
                 qRow[tid] = uchar((q0 & 0x0Fu) | ((q1 & 0x0Fu) << 4u));
             }
             if (tid < groupsPerHalf) {
-                const half gSc = half(sgScratch[tid * 2u + 0u]);
-                const half gMn = half(sgScratch[tid * 2u + 1u]);
-                *((device half2*)(pageBase + dataBytes) + (size_t)pageOff * groupsPerHalf + tid) = half2(gSc, gMn);
+                *((device half2*)(pageBase + dataBytes) + (size_t)pageOff * groupsPerHalf + tid) = q4Sm[tid];
             }
             threadgroup_barrier(mem_flags::mem_threadgroup);
         }

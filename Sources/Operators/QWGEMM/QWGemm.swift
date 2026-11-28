@@ -137,7 +137,9 @@ public enum QWGemm {
     public static func encodeH16(_ enc: any MTLComputeCommandEncoder, hal: QWHal,
                                  plan: QWGemmPlan, x: QWTensorValue,
                                  xGroupSum: QWTensorValue? = nil, wQ4: QWWeightView,
-                                 y16: QWTensorValue, y32: QWTensorValue? = nil) throws {
+                                 y16: QWTensorValue, y32: QWTensorValue? = nil,
+                                 swigluClamp: QWSwiGLUClampSpec? = nil,
+                                 fuseFwht32: Bool = false) throws {
         guard plan.backend == .handQ4gV4H16 || plan.backend == .handQ4gSiluPairH16 else {
             throw QWGemmError.badWeights("encodeH16 requires handQ4gV4H16 or handQ4gSiluPairH16")
         }
@@ -159,18 +161,20 @@ public enum QWGemm {
                                                              isSHVQ: wQ4.containerKind.isSHVQ) else {
                     throw QWGemmError.badWeights("no affine-quantised silu_pair kernel for \(bits)-bit group \(group)")
                 }
-                let pso = try hal.pipeline(name)
+                let pso = try hal.pipeline(name, swigluClamp: swigluClamp)
                 enc.setComputePipelineState(pso)
                 wQ4.blocks.bind(enc, index: 0)
                 x.bind(enc, index: 1)
                 y16.bind(enc, index: 3)
-                var nPacked = UInt32(wQ4.n) | 0x8000_0000
+                let intermediate = wQ4.n / 2
+                let useFusedFwht = fuseFwht32 && intermediate > 0 && (intermediate % 32 == 0)
+                var nPacked = UInt32(wQ4.n) | (useFusedFwht ? 0xC000_0000 : 0x8000_0000)
                 var kk = UInt32(wQ4.k)
                 enc.setBytes(&nPacked, length: 4, index: 4)
                 enc.setBytes(&kk, length: 4, index: 5)
                 y16.bind(enc, index: 8)
-                let intermediate = wQ4.n / 2
-                enc.dispatchThreadgroups(MTLSize(width: (intermediate + 7) / 8, height: 1, depth: 1),
+                let tgWidth = useFusedFwht ? (intermediate / 32) : ((intermediate + 7) / 8)
+                enc.dispatchThreadgroups(MTLSize(width: tgWidth, height: 1, depth: 1),
                                          threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
                 return
             } else {
@@ -186,7 +190,7 @@ public enum QWGemm {
         } else {
             kernelName = plan.kernel
         }
-        let pso = try hal.pipeline(kernelName)
+        let pso = try hal.pipeline(kernelName, swigluClamp: plan.epilogue == .siluMulPair ? swigluClamp : nil)
         enc.setComputePipelineState(pso)
         wQ4.blocks.bind(enc, index: 0)
         x.bind(enc, index: 1)

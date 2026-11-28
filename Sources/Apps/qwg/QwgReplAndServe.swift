@@ -31,7 +31,12 @@ struct Repl: ParsableCommand {
     @Flag(name: .customLong("color"), inversion: .prefixedNo, help: "Colorize thinking output and prompts (default: auto).") var color: Bool?
     @Option(name: .customLong("dflash-window"), help: "DFlash 2 / DSpine window B in 2...16 (auto-detects dflash2 vs dspine from drafter pack and sets --mtp-drafts B-1).") var dflashWindow: Int?
     @Flag(name: .customLong("dspark-confidence-schedule"), inversion: .prefixedNo, help: "Enable adaptive confidence-head verification budget for DSpark.") var dsparkConfidenceSchedule: Bool?
-    @Option(name: .customLong("repo"), help: "Repository or knowledge directory root containing .qwg/manifest.json to mount as LSA memory.") var repo: String? = nil
+    @Option(name: .customLong("repo"), help: "Repository or knowledge directory root containing .qwg/manifest.json to mount (repeatable).") var repos: [String] = []
+    @Option(name: .customLong("docs"), help: "Documentation or PDF directory root to mount into Cognitive Vault v2 (repeatable).") var docs: [String] = []
+    var repo: String? {
+        get { repos.first }
+        set { repos = newValue.map { [$0] } ?? [] }
+    }
     @Flag(name: [.customLong("no-memory-pack"), .customLong("no-memory")], help: "Disable automatic mounting of .qwg/manifest.json memory pack.") var noMemory: Bool = false
     @Flag(name: .customLong("no-profile"), help: "Bypass ~/.qwg/settings.json and per-model knob profiles.") var noProfile: Bool = false
 
@@ -452,11 +457,17 @@ struct Serve: AsyncParsableCommand {
     @Option(name: .customLong("api-key"), help: "Bearer / x-api-key token required on HTTP requests (required for non-loopback host binds).") var apiKey: String?
     @Flag(name: .customLong("allow-local-images"), help: "Allow local file:// / filesystem image URLs in server chat requests.") var allowLocalImages: Bool = false
     @Flag(name: .customLong("allow-remote-images"), help: "Allow public http/https remote image URLs in server chat requests.") var allowRemoteImages: Bool = false
+    @Flag(name: .customLong("pin-model"), help: "Pin the active primary model pack against implicit request-driven swaps (explicit POST /v1/models/load still permitted).") var pinModel: Bool = false
     @Option(name: .customLong("model-name"), help: "Model name reported in /v1/models.") var modelName: String?
     @Option(name: .customLong("model-alias"), help: "Model alias accepted in /v1/chat/completions.") var modelAlias: String?
     @Option(name: .customLong("dflash-window"), help: "DFlash 2 / DSpine window B in 2...16 (auto-detects dflash2 vs dspine from drafter pack and sets --mtp-drafts B-1).") var dflashWindow: Int?
     @Flag(name: .customLong("dspark-confidence-schedule"), inversion: .prefixedNo, help: "Enable adaptive confidence-head verification budget for DSpark.") var dsparkConfidenceSchedule: Bool?
-    @Option(name: .customLong("repo"), help: "Mount a repository/knowledge memory pack (<path>/.qwg/manifest.json) at server startup.") var repo: String? = nil
+    @Option(name: .customLong("repo"), help: "Mount repository/knowledge memory packs (<path>/.qwg/manifest.json) at server startup (repeatable).") var repos: [String] = []
+    @Option(name: .customLong("docs"), help: "Mount documentation/PDF directories into Cognitive Vault v2 at server startup (repeatable).") var docs: [String] = []
+    var repo: String? {
+        get { repos.first }
+        set { repos = newValue.map { [$0] } ?? [] }
+    }
     @Option(name: .customLong("parent-pid"), help: "Parent process PID to monitor for automatic termination.") var parentPid: Int32? = nil
     @Flag(name: .customLong("no-profile"), help: "Bypass ~/.qwg/settings.json and per-model knob profiles.") var noProfile: Bool = false
 
@@ -481,6 +492,7 @@ struct Serve: AsyncParsableCommand {
             cliApiKey: apiKey,
             cliAllowLocalImagePaths: allowLocalImages ? true : nil,
             cliAllowRemoteImageURLs: allowRemoteImages ? true : nil,
+            cliPinModel: pinModel ? true : nil,
             cliModelName: modelName, cliModelAlias: modelAlias, cliMaxContext: knobs.contextTokens,
             cliKVMode: knobs.kvMode, cliTemperature: knobs.temperature,
             cliTopP: knobs.topP, cliTopK: knobs.topK,
@@ -615,6 +627,7 @@ struct Serve: AsyncParsableCommand {
             decisionAlwaysEmitBox: resolved.decisionAlwaysEmitBox,
             sourceSummary: resolved.sourceSummary
         )
+        actorConfig.pinModel = resolved.pinModel
         actorConfig.engineTuning = resolved.engineTuning
         let actor = QWEngineLifecycleActor(config: actorConfig, logger: logger, configPath: config)
 
@@ -626,22 +639,40 @@ struct Serve: AsyncParsableCommand {
             throw ExitCode(1)
         }
 
-        let trimmedRepo = repo?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !trimmedRepo.isEmpty {
+        let cleanRepos = repos.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        let cleanDocs = docs.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        actor.configureAllowedWorkspaceRoots(cleanRepos + cleanDocs)
+        if let primaryRepo = cleanRepos.first {
             do {
-                _ = try await actor.mountMemoryPack(at: trimmedRepo)
+                _ = try await actor.mountMemoryPack(at: primaryRepo)
             } catch {
-                logger.log(.warn, "Failed to mount --repo '\(trimmedRepo)' at startup: \(error)")
+                logger.log(.warn, "Primary .qwcache mount skipped for '\(primaryRepo)' (\(error)); mounting as Vault v2 pack.")
+                _ = try? await actor.mountAuxiliaryVaultPack(at: primaryRepo, autoIndexIfMissing: true)
             }
-        } else if resolved.modelPackPath.isEmpty && resolved.decisionModelPackPath.isEmpty {
+            for extraRepo in cleanRepos.dropFirst() {
+                do {
+                    _ = try await actor.mountAuxiliaryVaultPack(at: extraRepo, autoIndexIfMissing: true)
+                } catch {
+                    logger.log(.warn, "Failed to mount auxiliary --repo '\(extraRepo)': \(error)")
+                }
+            }
+        }
+        for docDir in cleanDocs {
+            do {
+                _ = try await actor.mountAuxiliaryVaultPack(at: docDir, autoIndexIfMissing: true)
+            } catch {
+                logger.log(.warn, "Failed to mount --docs '\(docDir)': \(error)")
+            }
+        }
+        if cleanRepos.isEmpty && resolved.modelPackPath.isEmpty && resolved.decisionModelPackPath.isEmpty {
             logger.log(.warn, "No model pack specified. Starting server in idle lifecycle mode (select model via settings or API).")
         } else if !resolved.lazy {
             do {
-                if !resolved.modelPackPath.isEmpty {
+                if !resolved.modelPackPath.isEmpty && !actor.isLoaded() {
                     logger.log(.info, "Eager loading enabled: preloading primary model...")
                     _ = try await actor.loadExplicit()
                 }
-                if !resolved.decisionModelPackPath.isEmpty {
+                if !resolved.decisionModelPackPath.isEmpty && !actor.isDecisionSidecarLoaded() {
                     logger.log(.info, "Eager loading enabled: preloading decision model '\(resolved.decisionModelPackPath)'...")
                     let unit = QWDecisionComputeUnit(rawValue: resolved.decisionComputeUnit.lowercased()) ?? .auto
                     _ = try await actor.loadDecisionSidecar(
@@ -655,7 +686,7 @@ struct Serve: AsyncParsableCommand {
                 FileHandle.standardError.write("qwg serve: failed to eager load model: \(error)\n".data(using: .utf8)!)
                 throw ExitCode(1)
             }
-        } else {
+        } else if cleanRepos.isEmpty {
             let label = resolved.modelPackPath.isEmpty ? resolved.decisionModelPackPath : resolved.modelName
             logger.log(.info, "Lazy loading active: model '\(label)' will load on first request.")
         }

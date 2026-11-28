@@ -9,6 +9,20 @@ import QWHAL
 import QWAlloc
 import QWQuant
 
+private extension QWModelGeometry {
+    func lsaLoopReusePlan(
+        attnLayers: [Int],
+        crossLoopReuse: Bool,
+        stride: Int = 0
+    ) -> QWLSALoopReusePlan {
+        let plan = executionPlan
+        let physLayers = attnLayers.map { v in
+            plan.indices.contains(v) ? plan[v] : v
+        }
+        return QWLSALoopReusePlan.build(physicalLayers: physLayers, enabled: crossLoopReuse, stride: stride)
+    }
+}
+
 final class QWLSALoopReuseTests: XCTestCase {
     private func makeLoopDescriptor(
         numLayers: Int = 24,
@@ -95,12 +109,16 @@ final class QWLSALoopReuseTests: XCTestCase {
         let hal = try QWHal(geometry: geo)
         let inDim = geo.lsaInputDim
         let physSeq = [5, 11, 17, 11, 17, 11, 17, 23]
+        var basisCache: [Int: QWLSAOperator.LayerWeights] = [:]
         let weights = physSeq.map { phys -> QWLSAOperator.LayerWeights in
+            if let cached = basisCache[phys] { return cached }
             let wq = QWLSASidecar.synthesizeDeterministicOrthogonalBasis(
                 inDim: inDim, indexDim: 64, seed: UInt64(phys * 10 + 1))
             let wk = QWLSASidecar.synthesizeDeterministicOrthogonalBasis(
                 inDim: inDim, indexDim: 64, seed: UInt64(phys * 10 + 2))
-            return .init(physicalLayer: phys, wqIdxF16: wq, wkIdxF16: wk)
+            let lw = QWLSAOperator.LayerWeights(physicalLayer: phys, wqIdxF16: wq, wkIdxF16: wk)
+            basisCache[phys] = lw
+            return lw
         }
         let opRef = try QWLSAOperator(
             hal: hal, geometry: geo,
@@ -122,12 +140,30 @@ final class QWLSALoopReuseTests: XCTestCase {
         let totalPos = 2052
         let qElems = totalPos * geo.qProjOut
         let kElems = totalPos * geo.kvChannels
-        var qArr = [UInt16](repeating: 0, count: qElems)
-        var kArr = [UInt16](repeating: 0, count: kElems)
-        for i in 0..<qElems { qArr[i] = Float16(sin(Double(i % 97) * 0.13) * 0.4).bitPattern }
-        for i in 0..<kElems { kArr[i] = Float16(cos(Double(i % 89) * 0.17) * 0.4).bitPattern }
-        let qBuf = hal.device.makeBuffer(bytes: qArr, length: qArr.count * 2, options: .storageModeShared)!
-        let kBuf = hal.device.makeBuffer(bytes: kArr, length: kArr.count * 2, options: .storageModeShared)!
+        let sinLUT = (0..<97).map { Float16(sin(Double($0) * 0.13) * 0.4).bitPattern }
+        let cosLUT = (0..<89).map { Float16(cos(Double($0) * 0.17) * 0.4).bitPattern }
+        let qBuf = hal.device.makeBuffer(length: qElems * 2, options: .storageModeShared)!
+        let kBuf = hal.device.makeBuffer(length: kElems * 2, options: .storageModeShared)!
+        sinLUT.withUnsafeBufferPointer { lut in
+            guard let lp = lut.baseAddress else { return }
+            let qp = qBuf.contents().assumingMemoryBound(to: UInt16.self)
+            var i = 0, m = 0
+            while i < qElems {
+                qp[i] = lp[m]
+                m += 1; if m == 97 { m = 0 }
+                i += 1
+            }
+        }
+        cosLUT.withUnsafeBufferPointer { lut in
+            guard let lp = lut.baseAddress else { return }
+            let kp = kBuf.contents().assumingMemoryBound(to: UInt16.self)
+            var i = 0, m = 0
+            while i < kElems {
+                kp[i] = lp[m]
+                m += 1; if m == 89 { m = 0 }
+                i += 1
+            }
+        }
 
         func runOperator(_ op: QWLSAOperator) throws -> ([Int], Int, [Int], Int) {
             let chunk = 512

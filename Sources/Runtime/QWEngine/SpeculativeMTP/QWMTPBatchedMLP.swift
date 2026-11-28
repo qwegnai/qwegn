@@ -32,13 +32,33 @@ struct QWMTPBatchedMLP {
         usesQ4GMKernel(weight) && activeRows >= rowPairedMinimumRows
     }
 
+    private static func maxMLAChannels(geometry: QWModelGeometry) -> Int {
+        let decMla = geometry.mlaConfig
+        let hMla = geometry.hybridMLAConfig
+        guard decMla != nil || hMla != nil || geometry.usesNoPEMLA else { return 0 }
+        let qHeads = decMla?.qHeads ?? hMla?.qHeads ?? geometry.qHeads
+        let qRank = decMla?.qLoraRank ?? hMla?.qLoraRank ?? geometry.qLoraRank
+        let kvRank = decMla?.kvLoraRank ?? hMla?.kvLoraRank ?? geometry.kvLoraRank
+        let nope = decMla?.qkNopeHeadDim ?? hMla?.qkNopeHeadDim ?? geometry.headDim
+        let rope = decMla?.qkRopeHeadDim ?? hMla?.qkRopeHeadDim ?? geometry.qkRopeHeadDim
+        let vDim = decMla?.vHeadDim ?? hMla?.vHeadDim ?? geometry.vHeadDim
+        let idxH = max(0, geometry.indexerHeads)
+        let idxD = idxH > 0 ? max(32, geometry.indexerHeadDim) : 0
+        let latCols = max(0, qRank) + kvRank + rope + idxD + qHeads * vDim
+        let qbCols = qHeads * (nope + rope + vDim) + idxH * idxD
+        let kvbCols = qHeads * (nope + vDim)
+        return max(latCols, max(qbCols, kvbCols))
+    }
+
     static func sumStride(geometry: QWModelGeometry) -> Int {
         let hcaOut = geometry.hcaConfig.map { max(1, $0.oGroups) * $0.oLoraRank } ?? 0
         let mbsaIdxCols = geometry.mbsaIdxCols
+        let mlaOut = maxMLAChannels(geometry: geometry)
         let maxOut = max(geometry.intermediate,
                          max(geometry.gdnZChannels,
                              max(geometry.qHeads * geometry.headDim,
-                                 max(geometry.qHeads * geometry.vHeadDim, max(hcaOut, mbsaIdxCols)))))
+                                 max(geometry.qHeads * geometry.vHeadDim,
+                                     max(hcaOut, max(mbsaIdxCols, mlaOut))))))
         return max(1, maxOut / 128)
     }
 
@@ -77,9 +97,11 @@ struct QWMTPBatchedMLP {
         let sumStorage = sums
         let hcaOutCols = geometry.hcaConfig.map { max(1, $0.oGroups) * $0.oLoraRank } ?? 0
         let mbsaIdxCols = geometry.mbsaIdxCols
+        let mlaOutCols = Self.maxMLAChannels(geometry: geometry)
         let outChannels = max(geometry.gdnZChannels,
                               max(geometry.qHeads * geometry.headDim,
-                                  max(geometry.qHeads * geometry.vHeadDim, max(hcaOutCols, mbsaIdxCols))))
+                                  max(geometry.qHeads * geometry.vHeadDim,
+                                      max(hcaOutCols, max(mbsaIdxCols, mlaOutCols)))))
         sumViews = (0..<rows).map { row in
             QWTensorValue(region: sumStorage.region, offset: sumStorage.offset + row * Self.sumStride(geometry: geometry) * 4,
                           shape: QWTensorShape([max(1, outChannels / 128)], .f32))
@@ -120,13 +142,26 @@ struct QWMTPBatchedMLP {
         let dMlaQHeads = decMla?.qHeads ?? hMla?.qHeads ?? geometry.qHeads
         let dMlaInlineGate = (decMla?.outputGateMode ?? (geometry.attnOutputGate ? .elementWiseFromQLora : .none))
             == .elementWiseFromQLora
-        let dMlaLatCols = (decMla != nil || hMla != nil)
-            ? ((dMlaDirectQ ? 0 : dMlaQRank) + dMlaKvRank + dMlaRope + dMlaIdxD) : 0
-        let dMlaQBCols = (decMla != nil || hMla != nil)
-            ? (dMlaQHeads * (dMlaNope + dMlaRope + (dMlaInlineGate ? dMlaV : 0)) + dMlaIdxH * dMlaIdxD) : 0
+        let dMlaHiddenGateCols = (decMla?.outputGateMode == .elementWiseFromHidden)
+            ? (dMlaQHeads * dMlaV) : 0
+        let hasDecMla = (decMla != nil || hMla != nil)
+        let dMlaLatDense = hasDecMla ? ((dMlaDirectQ ? 0 : dMlaQRank) + dMlaKvRank + dMlaRope) : 0
+        let dMlaLatSparse = hasDecMla ? (dMlaLatDense + dMlaIdxD) : 0
+        let dMlaQBDense = hasDecMla ? (dMlaQHeads * (dMlaNope + dMlaRope + (dMlaInlineGate ? dMlaV : 0))) : 0
+        let dMlaQBSparse = hasDecMla ? (dMlaQBDense + dMlaIdxH * dMlaIdxD) : 0
+        let dMlaKVBCols = hasDecMla ? (dMlaQHeads * (dMlaNope + dMlaV)) : 0
         let dMlaQBInCols = dMlaDirectQ ? geometry.hidden : dMlaQRank
         let kdaFgbCols = geometry.kdaFgbChannels
         let mbsaIdxCols = geometry.mbsaIdxCols
+        let validDecMlaLat = hasDecMla && weight.k == geometry.hidden
+            && (weight.n == dMlaLatDense || weight.n == dMlaLatSparse
+                || weight.n == dMlaLatDense + dMlaHiddenGateCols
+                || weight.n == dMlaLatSparse + dMlaHiddenGateCols)
+        let validDecMlaQB = hasDecMla && weight.k == dMlaQBInCols
+            && (weight.n == dMlaQBDense || weight.n == dMlaQBSparse)
+        let validDecMlaKVB = hasDecMla && weight.k == dMlaKvRank && weight.n == dMlaKVBCols
+        let validNoPEKVB = geometry.usesNoPEMLA && weight.k == geometry.kvLoraRank
+            && weight.n == attnOutCols + vOutCols
         let validProj = (weight.n == geometry.hidden
                 && (weight.k == geometry.gdnZChannels || weight.k == attnOutCols
                     || weight.k == vOutCols || weight.k == hcaOutCols))
@@ -136,22 +171,29 @@ struct QWMTPBatchedMLP {
             || (weight.n == kdaFgbCols && weight.k == geometry.hidden)
             || (weight.n == mlaLatentCols && weight.k == geometry.hidden)
             || (weight.n == mlaQBCols && weight.k == mlaQBInCols)
-            || (weight.n == dMlaLatCols && weight.k == geometry.hidden)
-            || (weight.n == dMlaQBCols && weight.k == dMlaQBInCols)
+            || validDecMlaLat
+            || validDecMlaQB
+            || validDecMlaKVB
+            || validNoPEKVB
             || (weight.n == hcaInCols && weight.k == geometry.hidden)
             || (weight.n == hcaQUpCols && weight.k == (geometry.hcaConfig?.qLoraRank ?? -1))
         guard validProj else {
             throw QWEngineDriverError.state("unsupported batched trunk projection")
         }
         guard Self.usesQ4GMKernel(weight) else {
+            let minSimdRows = hal.caps.isMetal4TensorCapable ? 5 : 12
             if verifyAqNaxEnabled,
-               hal.caps.isMetal4TensorCapable,
-               count >= 12,
+               hal.caps.supportsSimdgroupMMA,
+               count >= minSimdRows,
                (2...rows).contains(count),
-               !weight.isSHVQ,
+               (hal.caps.isMetal4TensorCapable || !weight.isSHVQ),
+               weight.n >= 4096,
                weight.n % 64 == 0,
                weight.k % 64 == 0,
-               QWGemmAQ.naxF32KernelName(bits: weight.bits, group: weight.groupSize, isSHVQ: false) != nil,
+               QWGemmAQ.naxF32KernelName(
+                   bits: weight.bits, group: weight.groupSize,
+                   isSHVQ: weight.isSHVQ, useNAX: hal.caps.isMetal4TensorCapable
+               ) != nil,
                input.shape.dtype == .f16,
                input.shape.dims.count == 1,
                input.shape.dims[0] == count * weight.k,
@@ -353,6 +395,31 @@ struct QWMTPBatchedMLP {
               !overlaps(activeOutput, input), !overlaps(activeOutput, weight.blocks) else {
             throw QWEngineDriverError.state("batched AQ GEMV geometry mismatch")
         }
+        if verifyAqNaxEnabled,
+           hal.caps.isMetal4TensorCapable,
+           activeRows >= 5,
+           n >= 4096,
+           n % 64 == 0,
+           k % 64 == 0,
+           QWGemmAQ.naxF32KernelName(bits: weight.bits, group: weight.groupSize, isSHVQ: weight.isSHVQ) != nil {
+            enc.memoryBarrier(scope: .buffers)
+            try QWGemm.encodeNaxF32(
+                enc, hal: hal, weight: weight,
+                x16: input, y16: input, y32: activeOutput, rows: activeRows
+            )
+            enc.memoryBarrier(scope: .buffers)
+            return
+        }
+        if weight.isSHVQ {
+            enc.memoryBarrier(scope: .buffers)
+            try QWGemmAQ.encodeDecodeT4(
+                enc, hal: hal, blocks: weight.blocks, x: input, y16: activeOutput,
+                n: n, k: k, bits: weight.bits, group: weight.groupSize,
+                rows: activeRows, isSHVQ: true
+            )
+            enc.memoryBarrier(scope: .buffers)
+            return
+        }
         guard let kernelName = QWGemmAQ.decodeKernelName(bits: weight.bits, group: weight.groupSize,
                                                          isSHVQ: weight.isSHVQ) else {
             throw QWEngineDriverError.state("no AQ decode kernel for \(weight.bits)-bit group \(weight.groupSize)")
@@ -398,6 +465,21 @@ struct QWMTPBatchedMLP {
               !overlaps(activeOutput, input), !overlaps(activeOutput, weight.blocks) else {
             throw QWEngineDriverError.state("batched AQ gate/up geometry mismatch")
         }
+        if verifyAqNaxEnabled,
+           hal.caps.isMetal4TensorCapable,
+           activeRows >= 5,
+           intermediate % 64 == 0,
+           k % 64 == 0,
+           (fuseFwht32 || !weight.isRotated),
+           QWGemm.supportsDenseSwiGLUNax(weight) {
+            enc.memoryBarrier(scope: .buffers)
+            try QWGemm.encodeDenseSwiGLUNax(
+                enc, hal: hal, weight: weight, x16: input, out16: activeOutput,
+                rows: activeRows, intermediate: intermediate, swigluClamp: swigluClamp
+            )
+            enc.memoryBarrier(scope: .buffers)
+            return
+        }
         guard let kernelName = QWGemmAQ.siluPairKernelName(bits: weight.bits, group: weight.groupSize,
                                                            isSHVQ: weight.isSHVQ) else {
             throw QWEngineDriverError.state("no AQ silu_pair kernel for \(weight.bits)-bit group \(weight.groupSize)")
@@ -409,10 +491,11 @@ struct QWMTPBatchedMLP {
         var kU = UInt32(k)
         enc.setBytes(&kU, length: 4, index: 5)
         let tgWidth = (intermediate + 31) / 32
+        let maxChunk = weight.isSHVQ ? 4 : 8
         var r0 = 0
         while r0 < activeRows {
             let rem = activeRows - r0
-            let chunkRows = (rem > 8 && rem - 8 == 1) ? 5 : min(8, rem)
+            let chunkRows = (rem > maxChunk && rem - maxChunk == 1) ? (maxChunk - 1) : min(maxChunk, rem)
             let xChunk = input.slice(byteOffset: r0 * k * 2, count: chunkRows * k)
             let yChunk = activeOutput.slice(byteOffset: r0 * intermediate * 2, count: chunkRows * intermediate)
             xChunk.bind(enc, index: 1)
@@ -436,17 +519,39 @@ struct QWMTPBatchedMLP {
         }
         let pso = try hal.pipeline(kernelName)
         let ctrlStride = 2 * geometry.gdnVHeads
+        let aRow0 = geometry.gdnQKVChannels + geometry.gdnZChannels
+        let activeOutput = QWTensorValue(region: output.region, offset: output.offset,
+                                         shape: QWTensorShape([activeRows * n], .f16))
+        let useNaxMain = verifyAqNaxEnabled
+            && hal.caps.isMetal4TensorCapable
+            && activeRows >= 5
+            && n % 64 == 0
+            && k % 64 == 0
+            && k <= 0xFFFF
+            && aRow0 >= 0 && aRow0 <= n && aRow0 % 16 == 0 && (aRow0 / 16) <= 0xFFFF
+            && QWGemmAQ.naxF32KernelName(bits: weight.bits, group: weight.groupSize, isSHVQ: weight.isSHVQ) != nil
         enc.memoryBarrier(scope: .buffers)
+        if useNaxMain {
+            try QWGemm.encodeNaxF32(
+                enc, hal: hal, weight: weight,
+                x16: input, y16: input, y32: activeOutput, rows: activeRows
+            )
+            enc.memoryBarrier(scope: .buffers)
+        }
+        let tgOffset = useNaxMain ? (aRow0 / 16) : 0
+        let gridWidth = useNaxMain ? max(1, ((n - aRow0) + 15) / 16) : ((n + 15) / 16)
+        guard !useNaxMain || n > aRow0 else { return }
         enc.setComputePipelineState(pso)
         weight.blocks.bind(enc, index: 0)
         controls.aLog.bind(enc, index: 9)
         controls.bias.bind(enc, index: 10)
-        var kU = UInt32(k)
+        var kU = UInt32(k) | (UInt32(tgOffset) << 16)
         enc.setBytes(&kU, length: 4, index: 5)
+        let maxChunk = weight.isSHVQ ? 4 : 8
         var r0 = 0
         while r0 < activeRows {
             let rem = activeRows - r0
-            let chunkRows = (rem > 8 && rem - 8 == 1) ? 5 : min(8, rem)
+            let chunkRows = (rem > maxChunk && rem - maxChunk == 1) ? (maxChunk - 1) : min(maxChunk, rem)
             let xChunk = input.slice(byteOffset: r0 * k * 2, count: chunkRows * k)
             let yChunk = output.slice(byteOffset: r0 * n * 2, count: chunkRows * n)
             let cChunk = controls.output.slice(byteOffset: r0 * ctrlStride * 4, count: chunkRows * ctrlStride)
@@ -457,7 +562,7 @@ struct QWMTPBatchedMLP {
             cChunk.bind(enc, index: 12)
             var nU = UInt32(n) | 0x4000_0000 | (UInt32(chunkRows) << 24)
             enc.setBytes(&nU, length: 4, index: 4)
-            enc.dispatchThreadgroups(MTLSize(width: (n + 15) / 16, height: 1, depth: 1),
+            enc.dispatchThreadgroups(MTLSize(width: gridWidth, height: 1, depth: 1),
                                      threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
             r0 += chunkRows
         }

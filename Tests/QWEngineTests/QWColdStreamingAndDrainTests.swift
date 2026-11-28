@@ -469,7 +469,10 @@ final class QWColdStreamingAndDrainTests: XCTestCase {
         let device = MTLCreateSystemDefaultDevice()
         try XCTSkipIf(device == nil, "No Metal device available")
         let hal = try QWHal(geometry: .qwen38_27b)
-        let defaultPSO = try hal.pipeline("qwg_gemm_q4g_h16")
+        let nax = hal.caps.isMetal4TensorCapable
+        let gemmName = nax ? "qwg_gemm_q4g_h16" : "qwg_gemm_q4g_sg"
+        let swigluName = nax ? "qwg_gemm_q4g_h16_swiglu" : "qwg_gemm_q4g_sg_swiglu"
+        let defaultPSO = try hal.pipeline(gemmName)
         let dummyBuf = try XCTUnwrap(hal.device.makeBuffer(length: 8192, options: .storageModeShared))
         let blocks = QWTensorValue(region: QWMRegion(buffer: dummyBuf, base: 0, length: 8192),
                                    offset: 0, shape: QWTensorShape([4096], .f16))
@@ -480,21 +483,21 @@ final class QWColdStreamingAndDrainTests: XCTestCase {
         let resolvedAQ = try QWEngineDriver.resolveWeightPSO(
             for: mismatchedAQ, weightFormat: .hq4G32, hal: hal,
             defaultPSO: defaultPSO, opName: "prefill GEMM",
-            incumbentKernel: "qwg_gemm_q4g_h16",
-            aqKernel: { QWGemmAQ.gemmKernelName(bits: mismatchedAQ.bits, group: mismatchedAQ.groupSize) }
+            incumbentKernel: gemmName,
+            aqKernel: { QWGemmAQ.gemmKernelName(bits: mismatchedAQ.bits, group: mismatchedAQ.groupSize, useNAX: nax) }
         )
         XCTAssertTrue(resolvedAQ !== defaultPSO)
 
         XCTAssertThrowsError(try QWEngineDriver.resolveWeightPSO(
             for: mismatchedAQ, weightFormat: .hq4G32, hal: hal,
             defaultPSO: defaultPSO, opName: "prefill GEMM",
-            incumbentKernel: "qwg_gemm_q4g_h16",
+            incumbentKernel: gemmName,
             aqKernel: { nil }
         ))
         XCTAssertThrowsError(try QWEngineDriver.resolveWeightPSO(
             for: mismatchedAQ, weightFormat: .hq4G32, hal: hal,
             defaultPSO: defaultPSO, opName: "fused SwiGLU GEMM",
-            incumbentKernel: "qwg_gemm_q4g_h16_swiglu",
+            incumbentKernel: swigluName,
             aqKernel: { "missing_swiglu_test_kernel" }
         ))
         XCTAssertThrowsError(try QWEngineDriver.resolveWeightPSO(

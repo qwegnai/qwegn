@@ -72,7 +72,7 @@ metallib: ## Compile Sources/QWMetal/*.metal into kernel.metallib
 
 test: ## Run the XCTest suite (serial: parallel GPU bundles are unsafe)
 ifeq ($(GITHUB_ACTIONS),true)
-	@swift test --no-parallel --filter QWCoreTests --filter QWQuantTests --filter QWTokenTests --filter QWCliTests --filter QWServerTests --filter QWMenuBarTests
+	@swift test --no-parallel --filter QWCoreTests --filter QWQuantTests --filter QWTokenTests --filter QWDecisionTests --filter QWCliTests --filter QWServerTests --filter QWMenuBarTests
 else
 	@swift test --no-parallel
 endif
@@ -84,8 +84,10 @@ lint: ## Style, geometry, DAG, capability-seam, skill, and kernel-reachability g
 	@python3 Scripts/lint_geometry_defaults.py Sources
 	@python3 Scripts/lint_package_dag.py
 	@python3 Scripts/lint_capability_seams.py
+	@python3 Scripts/lint_metal_constant_luts.py
 	@python3 Scripts/test_kernel_inventory.py
 	@./Scripts/build_metallib.sh >/dev/null
+	@python3 Scripts/check_metallib_target.py
 	@python3 Scripts/lint_kernels.py
 
 ci: ## The full pipeline: build, lint, test, CLI smoke
@@ -112,5 +114,5 @@ release: ci ## Release gate: ci must pass on a clean tree
 # ---------------------------------------------------------------- clean --
 
 clean: ## Remove regenerable build outputs (keeps the venv)
-	@rm -rf .build dist Sources/QWMetal/kernel.metallib Sources/QWMetal/kernel_std.metallib Scripts/spike/out
+	@rm -rf .build dist Sources/QWMetal/kernel.metallib Sources/QWMetal/kernel_std.metallib Sources/QWMetal/kernel_m3.metallib Sources/QWMetal/kernel_m3_std.metallib Scripts/spike/out
 	@echo "clean: done (run 'make init' to regenerate)"

@@ -247,17 +247,21 @@ public final class QWLSAOperator: @unchecked Sendable {
         let basePtr = reg.pointer
         let wBytes = mhDirect ? 0 : (indexDim * inDim * 2)
         if wBytes > 0 {
-            for i in layout.uniqueWeightIndices {
-                let offs = layerOffsets[i]
-                let lw = layerWeights[i]
-                lw.wqIdxF16.withUnsafeBytes { (src: UnsafeRawBufferPointer) in
-                    if let ptr = src.baseAddress {
-                        memcpy(basePtr.advanced(by: offs.wqOff), ptr, min(src.count, wBytes))
+            withExtendedLifetime(buf) {
+                for i in layout.uniqueWeightIndices {
+                    let offs = layerOffsets[i]
+                    let lw = layerWeights[i]
+                    let wqDst = basePtr.advanced(by: offs.wqOff)
+                    lw.wqIdxF16.withUnsafeBytes { (src: UnsafeRawBufferPointer) in
+                        if let ptr = src.baseAddress {
+                            wqDst.copyMemory(from: ptr, byteCount: min(src.count, wBytes))
+                        }
                     }
-                }
-                lw.wkIdxF16.withUnsafeBytes { (src: UnsafeRawBufferPointer) in
-                    if let ptr = src.baseAddress {
-                        memcpy(basePtr.advanced(by: offs.wkOff), ptr, min(src.count, wBytes))
+                    let wkDst = basePtr.advanced(by: offs.wkOff)
+                    lw.wkIdxF16.withUnsafeBytes { (src: UnsafeRawBufferPointer) in
+                        if let ptr = src.baseAddress {
+                            wkDst.copyMemory(from: ptr, byteCount: min(src.count, wBytes))
+                        }
                     }
                 }
             }

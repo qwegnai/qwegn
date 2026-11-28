@@ -382,8 +382,10 @@ enum SHVQSuites {
                                          m: Int, rows: Int, cols: Int, samples: Int, repeats: Int) throws -> Row {
         let ab = aqBits ?? bits
         let device = hal.device
-        let sName = "qwg_gemm_shvq\(bits)_g\(group)_nax_f32"
-        let aName = "qwg_gemm_aq\(ab)_g\(group)_nax_f32"
+        let useNAX = hal.caps.isMetal4TensorCapable
+        let sfx = useNAX ? "nax_f32" : "sg_f32"
+        let sName = "qwg_gemm_shvq\(bits)_g\(group)_\(sfx)"
+        let aName = "qwg_gemm_aq\(ab)_g\(group)_\(sfx)"
         let sBank = makeSHVQBank(bits: bits, group: group, rows: rows, cols: cols)
         let aBank = AQBanks.make(bits: ab, group: group, rows: rows, cols: cols)
         let sW = try BenchRunner.buffer(device, bytes: sBank.count)
@@ -446,7 +448,7 @@ enum SHVQSuites {
             aqRun: { try BenchRunner.time(hal: hal, name: aName, warm: { encodeOne($0, pso: aPso, w: aW) },
                                           timed: { encodeOne($0, pso: aPso, w: aW) }, repeats: repeats) }
         )
-        return Row(suite: "prefill_nax_f32", shape: "m=\(m) \(rows)x\(cols)", bits: bits, group: group,
+        return Row(suite: useNAX ? "prefill_nax_f32" : "prefill_sg_f32", shape: "m=\(m) \(rows)x\(cols)", bits: bits, group: group,
                    shvqKernel: sName, aqKernel: aName,
                    shvqMs: sT[sT.count / 2], aqMs: aT[aT.count / 2],
                    shvqRange: (sT.first!, sT.last!), aqRange: (aT.first!, aT.last!),

@@ -560,7 +560,7 @@ extension QWDecisionPackEngine {
 
     private func encodeLinearF32(
         _ enc: any MTLComputeCommandEncoder,
-        w: QWDecisionLinearW,
+        w: QWLinearWeight,
         x16: QWTensorValue,
         y32: QWTensorValue,
         rows: Int
@@ -572,7 +572,7 @@ extension QWDecisionPackEngine {
                 m: rows, inDtype: .f16, outDtype: .f32
             )
         case .quant(let view):
-            if hal.caps.isMetal4TensorCapable && (view.n % 64 == 0 || !view.isIncumbentContainer) && view.k % 64 == 0 {
+            if hal.caps.supportsSimdgroupMMA && (view.n % 64 == 0 || !view.isIncumbentContainer) && view.k % 64 == 0 {
                 let yTmp16 = y32.slice(byteOffset: 0, count: rows * view.n, dtype: .f16)
                 try QWGemm.encodeNaxF32(enc, hal: hal, weight: view, x16: x16, y16: yTmp16, y32: y32, rows: rows)
             } else {
@@ -587,7 +587,7 @@ extension QWDecisionPackEngine {
 
     private func encodeLinear(
         _ enc: any MTLComputeCommandEncoder,
-        w: QWDecisionLinearW,
+        w: QWLinearWeight,
         x16: QWTensorValue,
         y16: QWTensorValue,
         scratch32: QWTensorValue,
@@ -600,7 +600,7 @@ extension QWDecisionPackEngine {
                 m: rows, inDtype: .f16, outDtype: .f16
             )
         case .quant(let view):
-            if hal.caps.isMetal4TensorCapable && (view.n % 64 == 0 || !view.isIncumbentContainer) && view.k % 64 == 0 {
+            if hal.caps.supportsSimdgroupMMA && (view.n % 64 == 0 || !view.isIncumbentContainer) && view.k % 64 == 0 {
                 try QWGemm.encodeNaxF32(enc, hal: hal, weight: view, x16: x16, y16: y16, y32: y16, rows: rows)
             } else {
                 let y32 = scratch32.slice(byteOffset: 0, count: rows * view.n, dtype: .f32)
@@ -617,7 +617,7 @@ extension QWDecisionPackEngine {
 
     private func encodeOutAndResidual(
         enc: any MTLComputeCommandEncoder,
-        w: QWDecisionLinearW,
+        w: QWLinearWeight,
         bias: QWTensorValue?,
         in16: QWTensorValue,
         branch16: QWTensorValue,

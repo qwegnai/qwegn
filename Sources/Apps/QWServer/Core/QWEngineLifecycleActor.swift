@@ -70,6 +70,7 @@ public actor QWEngineLifecycleActor {
         var loadedParams: QWEngineParametersInfo?
         var supportsThinkingTags: Bool = true
         var isInkling2Template: Bool = false
+        var toolCallEnvelope: QWToolCallEnvelope = .standard
         var lastLoggedSamplingMessage: String?
         var mountedMemoryPack: QWEngineInfoResponse.MountedMemoryPackInfo? = nil
 
@@ -89,6 +90,7 @@ public actor QWEngineLifecycleActor {
             var nextParams: QWEngineParametersInfo? = nil
             var nextSupportsThinkingTags = true
             var nextIsInkling2Template = false
+            var nextToolCallEnvelope: QWToolCallEnvelope = .standard
             switch state {
             case .unloaded:
                 nextPhase = .unloaded
@@ -100,6 +102,7 @@ public actor QWEngineLifecycleActor {
                 nextParams = loaded.params
                 nextSupportsThinkingTags = loaded.chatTemplate.supportsThinkingTags
                 nextIsInkling2Template = loaded.chatTemplate.isInkling2Template
+                nextToolCallEnvelope = loaded.chatTemplate.toolCallEnvelope
             case .unloading:
                 nextPhase = .unloading
             case .failed(let message):
@@ -115,6 +118,7 @@ public actor QWEngineLifecycleActor {
             self.loadedParams = nextParams
             self.supportsThinkingTags = nextSupportsThinkingTags
             self.isInkling2Template = nextIsInkling2Template
+            self.toolCallEnvelope = nextToolCallEnvelope
             lock.unlock()
         }
 
@@ -193,6 +197,10 @@ public actor QWEngineLifecycleActor {
 
         func getIsInkling2Template() -> Bool {
             lock.withLock { isInkling2Template }
+        }
+
+        func getToolCallEnvelope() -> QWToolCallEnvelope {
+            lock.withLock { toolCallEnvelope }
         }
 
         func shouldLogSamplingMessage(_ message: String) -> Bool {
@@ -409,6 +417,7 @@ public actor QWEngineLifecycleActor {
 
     let tokenPrefixCache = TokenPrefixCacheBox()
     let memoryDeltaCache = MemoryDeltaCacheBox()
+    let vaultSetBox = QWMountedVaultSetBox()
     let visionCoordinator = VisionAccessLock()
     var modelTransitionActive: Bool = false
     var modelTransitionWaiters: [CheckedContinuation<Void, Never>] = []
@@ -591,6 +600,10 @@ public actor QWEngineLifecycleActor {
     nonisolated public func getConfig() -> Config { statusBox.getConfig() }
     nonisolated public func supportsThinkingTags() -> Bool { statusBox.getSupportsThinkingTags() }
     nonisolated public func isInkling2Template() -> Bool { statusBox.getIsInkling2Template() }
+    nonisolated public func toolCallEnvelope() -> QWToolCallEnvelope { statusBox.getToolCallEnvelope() }
+    nonisolated public func activeToolEnvelopes() -> [QWToolCallEnvelope] {
+        QWToolCallEnvelope.envelopes(prioritizing: statusBox.getToolCallEnvelope())
+    }
     nonisolated public func getMountedMemoryPackInfo() -> QWEngineInfoResponse.MountedMemoryPackInfo? {
         statusBox.getMountedMemoryPackInfo()
     }

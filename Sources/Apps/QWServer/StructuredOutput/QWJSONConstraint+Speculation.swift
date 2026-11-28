@@ -355,7 +355,8 @@ extension QWStructuredOutputConstraint {
     public var speculationBoundaryToken: Int? {
         switch phase {
         case .thinking: return endThinkToken
-        case .choosing: return toolCallToken
+        case .choosing:
+            return toolPrefixMatched < toolCallOpenTokens.count ? toolCallOpenTokens[toolPrefixMatched] : nil
         case .json, .free: return nil
         }
     }
@@ -365,7 +366,11 @@ extension QWStructuredOutputConstraint {
     }
 
     public func proposeCanonicalDrafts(maxCount: Int) -> [Int] {
-        guard QWConstrainedSpeculationGate.isEnabled, maxCount > 0, phase == .json else { return [] }
+        guard QWConstrainedSpeculationGate.isEnabled, maxCount > 0 else { return [] }
+        if phase == .choosing && toolPrefixMatched > 0 && toolPrefixMatched < toolCallOpenTokens.count {
+            return Array(toolCallOpenTokens[toolPrefixMatched...].prefix(maxCount))
+        }
+        guard phase == .json else { return [] }
         let probe = QWStructuredOutputConstraint(cloning: self)
         let targetBytes = probe.state.canonicalStructuralBytes(
             style: probe.style,

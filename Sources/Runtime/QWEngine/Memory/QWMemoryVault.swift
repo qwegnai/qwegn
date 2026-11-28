@@ -3,6 +3,7 @@
 
 import Foundation
 import QWCore
+import QWDecision
 
 public enum QWMemoryVault {
 
@@ -89,13 +90,21 @@ public enum QWMemoryVault {
             if !symbols.isEmpty { return symbols }
         }
 
-        let isMarkupDoc = ext == "md" || ext == "mdx" || ext == "rst" || ext == "adoc" || ext == "tex" || ext == "txt"
+        let isMarkupDoc = ext == "md" || ext == "mdx" || ext == "rst" || ext == "adoc" || ext == "tex" || ext == "txt" || ext == "pdf"
 
         for lineSub in lines {
             if symbols.count >= maxSymbols { break }
             let rawLine = String(lineSub)
             let trimmed = rawLine.trimmingCharacters(in: .whitespaces)
             if trimmed.isEmpty || trimmed.hasPrefix("//") || trimmed.hasPrefix("/*") || trimmed.hasPrefix("*") || trimmed.hasPrefix("--") {
+                continue
+            }
+            if trimmed.hasPrefix("[PDF: "), let hashIdx = trimmed.firstIndex(of: "#"), let endBracket = trimmed.lastIndex(of: "]"), hashIdx < endBracket {
+                let pageTag = String(trimmed[hashIdx..<endBracket])
+                if !seen.contains(pageTag) {
+                    seen.insert(pageTag)
+                    symbols.append(pageTag)
+                }
                 continue
             }
 
@@ -106,6 +115,13 @@ public enum QWMemoryVault {
                 if !short.isEmpty && !seen.contains(short) {
                     seen.insert(short)
                     symbols.append(short)
+                }
+                for tok in heading.split(whereSeparator: { !$0.isLetter && !$0.isNumber && $0 != "_" && $0 != "-" }) {
+                    let s = String(tok)
+                    if s.count >= 5, (s.first?.isUppercase == true || s.contains("_") || s.contains("-")) {
+                        appendSymbol(s)
+                        if symbols.count >= maxSymbols { break }
+                    }
                 }
                 continue
             }
@@ -120,7 +136,16 @@ public enum QWMemoryVault {
                 }
                 continue
             }
-            if isMarkupDoc { continue }
+            if isMarkupDoc {
+                for tok in trimmed.split(whereSeparator: { !$0.isLetter && !$0.isNumber && $0 != "_" && $0 != "-" }) {
+                    let s = String(tok)
+                    if s.count >= 5, (s.first?.isUppercase == true || s.contains("_") || s.contains("-")) {
+                        appendSymbol(s)
+                        if symbols.count >= maxSymbols { break }
+                    }
+                }
+                continue
+            }
 
             // 2. TOML / INI section headers: [section.name]
             if trimmed.hasPrefix("[") && trimmed.hasSuffix("]") && !trimmed.contains(" ") {
@@ -392,8 +417,9 @@ public enum QWMemoryVault {
                     continue
                 }
             }
-            let fileURL = rootURL.appendingPathComponent(cand.entry.relativePath, isDirectory: false)
-            guard let text = try? String(contentsOf: fileURL, encoding: .utf8), !text.isEmpty else {
+            guard let text = QWDocumentIngestor.readFormattedText(
+                for: cand.entry, rootURL: rootURL, fileManager: fileManager
+            ), !text.isEmpty, !QWCognitiveRails.hasPromptInjectionPattern(text) else {
                 continue
             }
             let normalized = text.hasSuffix("\n") ? text : (text + "\n")
@@ -484,7 +510,88 @@ public enum QWMemoryVault {
         )
     }
 
-    private static func resolveSemanticIndex(
+    internal static func scoreLexicalEntry(
+        query: String,
+        entry: QWMemoryManifest.FileEntry,
+        rootURL: URL? = nil
+    ) -> Int {
+        _ = rootURL
+        let lowerQuery = query.lowercased()
+        let queryWords = Set(
+            lowerQuery
+                .split { !$0.isLetter && !$0.isNumber && $0 != "_" && $0 != "." && $0 != "-" && $0 != "/" && $0 != "#" }
+                .map(String.init)
+                .filter { $0.count >= 3 }
+        )
+        let queryIdentifiers = Set(
+            query
+                .split { !$0.isLetter && !$0.isNumber && $0 != "_" }
+                .map(String.init)
+                .filter { $0.count >= 4 }
+        )
+        let lowerRel = entry.relativePath.lowercased()
+        let fileNameSub = lowerRel.lastIndex(of: "/").map { lowerRel[lowerRel.index(after: $0)...] } ?? lowerRel[...]
+        let stemSub: Substring
+        let extSub: Substring
+        if let dot = fileNameSub.lastIndex(of: "."), dot > fileNameSub.startIndex {
+            stemSub = fileNameSub[..<dot]
+            extSub = fileNameSub[fileNameSub.index(after: dot)...]
+        } else {
+            stemSub = fileNameSub
+            extSub = ""
+        }
+        let fileName = String(fileNameSub)
+        let stem = String(stemSub)
+
+        var score = 0
+        if lowerQuery.contains(lowerRel) {
+            score += 100
+        } else if fileName.count >= 4 && lowerQuery.contains(fileName) {
+            score += 85
+        } else if stem.count >= 5 && queryWords.contains(stem) {
+            score += 65
+        }
+        for sym in entry.symbols {
+            let isCompound = (sym != sym.lowercased() && sym != sym.uppercased()) || sym.contains("_") || sym.hasPrefix("#p")
+            if sym.count >= 3 && sym.hasPrefix("#p") && lowerQuery.contains(sym.lowercased()) {
+                score += 55
+            } else if sym.count >= 5 && isCompound && queryIdentifiers.contains(sym) {
+                score += 45
+            } else if sym.count >= 5 && queryWords.contains(sym.lowercased()) {
+                score += 28
+            } else if sym.count >= 6 && queryIdentifiers.contains(sym) {
+                score += 12
+            }
+        }
+        for anchor in entry.spanAnchors {
+            let lowLabel = anchor.label.lowercased()
+            if queryWords.contains(lowLabel) || (lowLabel.count >= 4 && lowerQuery.contains(lowLabel)) {
+                score += 35
+            } else {
+                var headingHits = 0
+                for tok in lowLabel.split(whereSeparator: { !$0.isLetter && !$0.isNumber && $0 != "_" }) where tok.count >= 4 {
+                    if queryWords.contains(String(tok)) { headingHits += 1 }
+                }
+                if headingHits > 0 {
+                    score += min(35, headingHits * 15)
+                }
+            }
+        }
+        var matchedPathTokens = 0
+        for ptSub in lowerRel.split(whereSeparator: { !$0.isLetter && !$0.isNumber }) {
+            if ptSub.count >= 4 && ptSub != extSub && queryWords.contains(String(ptSub)) {
+                matchedPathTokens += 1
+            }
+        }
+        if matchedPathTokens >= 2 {
+            score += matchedPathTokens * 10
+        } else if matchedPathTokens == 1 && score > 0 {
+            score += 8
+        }
+        return score
+    }
+
+    internal static func resolveSemanticIndex(
         manifest: QWMemoryManifest,
         includeCortexFiles: Bool
     ) -> QWMemorySemanticIndex? {

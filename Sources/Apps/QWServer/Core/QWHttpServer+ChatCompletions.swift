@@ -101,7 +101,8 @@ extension QWHttpServer {
                 startsInReasoning: streamPolicy.shouldThink,
                 allowToolCalls: streamPolicy.allowToolCalls,
                 allowReasoningTags: streamPolicy.allowReasoningTags,
-                allowInk2Markers: actor.isInkling2Template() && (!streamPolicy.isJsonResponseFormat || streamPolicy.shouldThink)
+                allowInk2Markers: actor.isInkling2Template() && (!streamPolicy.isJsonResponseFormat || streamPolicy.shouldThink),
+                toolEnvelopes: actor.activeToolEnvelopes()
             )
 
             final class StreamLogprobBox: @unchecked Sendable {
@@ -132,7 +133,8 @@ extension QWHttpServer {
                         streamParser.setStartsInReasoning(
                             readyPolicy.shouldThink,
                             allowReasoningTags: readyPolicy.allowReasoningTags,
-                            allowInk2Markers: self.actor.isInkling2Template() && (!readyPolicy.isJsonResponseFormat || readyPolicy.shouldThink)
+                            allowInk2Markers: self.actor.isInkling2Template() && (!readyPolicy.isJsonResponseFormat || readyPolicy.shouldThink),
+                            toolEnvelopes: self.actor.activeToolEnvelopes()
                         )
                         session.begin()
                         sendChunk(ChatCompletionChunk(id: reqId, model: returnModelName, role: "assistant"))
@@ -235,7 +237,8 @@ extension QWHttpServer {
                 truncated: result.truncated,
                 allowToolCalls: streamPolicy.allowToolCalls,
                 allowReasoningTags: !streamPolicy.isJsonResponseFormat || result.startsInThinking,
-                allowInk2Markers: actor.isInkling2Template() && (!streamPolicy.isJsonResponseFormat || result.startsInThinking)
+                allowInk2Markers: actor.isInkling2Template() && (!streamPolicy.isJsonResponseFormat || result.startsInThinking),
+                toolEnvelopes: actor.activeToolEnvelopes()
             )
             let effectiveCalls = QWChatPolicyResolver.capToolCalls(
                 parsed.toolCalls,
@@ -266,6 +269,7 @@ extension QWHttpServer {
               req.enableThinking != false,
               req.reasoning?.enabled != false,
               req.chatTemplateKwargs?.enableThinking != false,
+              req.chatTemplateKwargs?.reasoning != false,
               let promptText = req.messages.last(where: { $0.role.lowercased() == "user" })?.extractTextContent(),
               !promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return (req, nil)
@@ -302,6 +306,10 @@ extension QWHttpServer {
         } else if let mmErr = error as? QWMultimodalError {
             logger.log(.warn, "HTTP POST \(path) bad multimodal request\(tag): \(mmErr)")
             sendOpenAIError(connection, status: 400, message: "\(mmErr)", type: "invalid_request_error")
+        } else if let swapErr = error as? QWModelSwapRefusedError {
+            logger.log(.warn, "HTTP POST \(path) model swap refused\(tag): \(swapErr.description)")
+            sendOpenAIError(connection, status: 409, message: swapErr.description,
+                            type: "conflict_error", code: swapErr.errorCode)
         } else if error is QWJSONSchemaError || error is QWMetadataValidationError || error is QWChatTemplateError {
             logger.log(.warn, "HTTP POST \(path) invalid request\(tag): \(error)")
             sendOpenAIError(connection, status: 400, message: "\(error)", type: "invalid_request_error")

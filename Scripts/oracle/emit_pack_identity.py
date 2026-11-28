@@ -40,6 +40,12 @@ def geo_v2(tc: dict, parent_mt: str | None = None) -> str:
             "full_attention" if (i + 1) % gs == 0 else "linear_attention"
             for i in range(num_layers)
         ]
+    elif tc.get("full_attention_layers") is not None or tc.get("linear_attention_type") is not None:
+        fa_set = {int(x) for x in (tc.get("full_attention_layers") or [])}
+        raw_layer_types = [
+            "full_attention" if i in fa_set else "linear_attention"
+            for i in range(num_layers)
+        ]
     else:
         raw_layer_types = ["full_attention"] * num_layers
     layer_kinds = "".join(
@@ -86,6 +92,8 @@ def geo_v2(tc: dict, parent_mt: str | None = None) -> str:
         gate_on = bool(tc["attn_output_gate"])
     elif "use_gated_attn" in tc and tc["use_gated_attn"] is not None:
         gate_on = bool(tc["use_gated_attn"])
+    elif "gated_attention" in tc and tc["gated_attention"] is not None:
+        gate_on = bool(tc["gated_attention"])
     else:
         gran = (tc.get("gated_attention_proj_granularity_type") or "").lower()
         gate_on = (tc.get("output_gate_type") is not None
@@ -146,6 +154,7 @@ def geo_v2(tc: dict, parent_mt: str | None = None) -> str:
             "qwen4_exp", "qwen4_exp_text", "glm5_next", "glm5_next_text",
             "ernie5_5_moe", "ernie5_5_moe_text", "maxwell_moe",
             "bailing_moe_v3", "bailing_moe_v3_vl", "bailing_moe_v3_text",
+            "gigachat4",
         ) else "-"
     )
     num_exp = tc.get("num_experts") if tc.get("num_experts") is not None else (tc.get("n_routed_experts") or 0)
@@ -208,6 +217,7 @@ MODEL_ID = {
     "d1_omni": "d1_omni",
     "modernbert": "modernbert",
     "deberta_v2": "deberta_v2",
+    "gigachat4": "gigachat4",
 }
 
 def main() -> int:

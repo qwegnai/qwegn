@@ -60,6 +60,9 @@ extension QWEngineLifecycleActor.Config {
             loadVision: loadVision,
             sourceSummary: sourceSummary ?? self.sourceSummary
         )
+        copy.pinModel = pinModel
+        copy.allowLocalImagePaths = allowLocalImagePaths
+        copy.allowRemoteImageURLs = allowRemoteImageURLs
         copy.engineTuning = engineTuning
         return copy
     }
@@ -96,6 +99,27 @@ extension QWEngineLifecycleActor.Config {
             maxConcurrentSessions: maxConcurrentSessions,
             tuning: engineTuning
         )
+    }
+}
+
+public enum QWModelSwapRefusedError: Error, CustomStringConvertible, Sendable, Equatable {
+    case pinned(activeModel: String, requestedModel: String)
+    case busyInFlight(activeModel: String, requestedModel: String)
+
+    public var errorCode: String {
+        switch self {
+        case .pinned: return "model_pinned"
+        case .busyInFlight: return "model_busy_in_flight"
+        }
+    }
+
+    public var description: String {
+        switch self {
+        case .pinned(let active, let requested):
+            return "Primary model slot is pinned to '\(active)'; implicit switch to '\(requested)' refused. Use '\(active)' or call POST /v1/models/load explicitly."
+        case .busyInFlight(let active, let requested):
+            return "Active inference is running on '\(active)'; concurrent implicit switch to '\(requested)' refused."
+        }
     }
 }
 
@@ -155,7 +179,11 @@ extension QWEngineLifecycleActor {
 
     /// Switches to a different installed model in `~/.qwg/models` if `requestedModel` (by alias or model name)
     /// resolves to a different valid model pack than `config.packPath`.
-    public func selectModelIfNeeded(_ requestedModel: String?, allowSameFamilyQuantSwitch: Bool = true) async throws {
+    public func selectModelIfNeeded(
+        _ requestedModel: String?,
+        allowSameFamilyQuantSwitch: Bool = true,
+        isExplicitLoadRoute: Bool = false
+    ) async throws {
         guard let rawReq = requestedModel?.trimmingCharacters(in: .whitespacesAndNewlines), !rawReq.isEmpty else {
             return
         }
@@ -236,8 +264,44 @@ extension QWEngineLifecycleActor {
                 return
             }
         }
+        let catalogEntry = QWModelCatalog.classify(name: ref.modelName, path: ref.packPath)
+        if catalogEntry.isCoreAIBundle {
+            throw QWMetadataValidationError(
+                "Model '\(ref.modelName)' is a System-1 decision/embedding model, not a chat completion model."
+            )
+        }
+        let targetRoot = QWModelRoot(url: URL(fileURLWithPath: ref.packPath))
+        let quickDesc: QWModelDescriptor? = targetRoot.configURL
+            .flatMap { try? Data(contentsOf: $0) }
+            .flatMap { try? QWModelDescriptor.decode(configJSON: $0) }
+        if let desc = quickDesc {
+            if Self.isNonCausalDecisionDescriptor(desc)
+                || (!isExplicitLoadRoute && (desc.decisionConfig != nil || catalogEntry.isDecisionCapable)) {
+                throw QWMetadataValidationError(
+                    "Model '\(ref.modelName)' is a System-1 decision/embedding model, not a chat completion model."
+                )
+            }
+        } else if !isExplicitLoadRoute && catalogEntry.isDecisionCapable {
+            throw QWMetadataValidationError(
+                "Model '\(ref.modelName)' is a System-1 decision/embedding model, not a chat completion model."
+            )
+        }
+        if !isExplicitLoadRoute, !config.packPath.isEmpty {
+            if config.pinModel {
+                throw QWModelSwapRefusedError.pinned(activeModel: config.modelName, requestedModel: ref.modelName)
+            }
+            if inFlightRequests > 0 || modelTransitionActive {
+                throw QWModelSwapRefusedError.busyInFlight(activeModel: config.modelName, requestedModel: ref.modelName)
+            }
+        }
         let targetAssets = try QWModelRuntimeAssets.load(packPath: ref.packPath)
         let targetDesc = targetAssets.descriptor
+        if Self.isNonCausalDecisionDescriptor(targetDesc)
+            || (!isExplicitLoadRoute && (targetDesc.decisionConfig != nil || catalogEntry.isDecisionCapable)) {
+            throw QWMetadataValidationError(
+                "Model '\(ref.modelName)' is a System-1 decision/embedding model, not a chat completion model."
+            )
+        }
         guard let module = QWModuleRegistry.moduleType(for: targetDesc.family) else {
             throw QWEngineError.unsupportedModel(targetDesc.modelType)
         }
@@ -302,6 +366,9 @@ extension QWEngineLifecycleActor {
             loadVision: effectiveSettings.loadVision,
             sourceSummary: config.sourceSummary
         )
+        newConfig.pinModel = config.pinModel
+        newConfig.allowLocalImagePaths = config.allowLocalImagePaths
+        newConfig.allowRemoteImageURLs = config.allowRemoteImageURLs
         newConfig.engineTuning = effectiveSettings.resolvedEngineTuning
         logger.log(.info, "Switching active model to '\(ref.modelName)' (pack: '\(ref.packPath)')...")
         try await withExclusiveTransition {
@@ -313,6 +380,7 @@ extension QWEngineLifecycleActor {
             self.activeMemoryPack = nil
             self.preMountKVMode = nil
             self.preMountMaxContext = nil
+            self.vaultSetBox.unmountPrimaryOnly()
             self.statusBox.updateMountedMemoryPack(nil)
             self.config = newConfig
             self.configRevision &+= 1
@@ -453,6 +521,12 @@ extension QWEngineLifecycleActor {
             tokens: effectiveTokens,
             byteCount: effectiveBytes
         )
+        self.vaultSetBox.upsert(QWMountedVaultSet.PackMount(
+            packName: manifest.packName,
+            rootURL: rootURL,
+            manifest: manifest,
+            isPrimaryCortex: true
+        ))
         self.statusBox.updateMountedMemoryPack(info)
         logger.log(.info, String(
             format: "[MemoryPack] Mounted '%@' (%d tokens, %.2f MiB, kv=%@, lsa=%@, delta=%d files)",
@@ -462,8 +536,21 @@ extension QWEngineLifecycleActor {
         return info
     }
 
-    /// Unmounts the active codebase/knowledge memory pack and unlocks `kvMode`.
-    public func unmountMemoryPack() async {
+    /// Unmounts the active codebase/knowledge memory pack (or a named auxiliary pack) and unlocks `kvMode`.
+    public func unmountMemoryPack(packIdentifier: String? = nil) async {
+        if let rawId = packIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !rawId.isEmpty, rawId.lowercased() != "all" {
+            let isPrimaryMatch: Bool = if let active = activeMemoryPack {
+                active.manifest.packName.caseInsensitiveCompare(rawId) == .orderedSame
+                    || active.rootURL.standardizedFileURL.path == URL(fileURLWithPath: rawId.expandingTildePath).standardizedFileURL.path
+            } else {
+                false
+            }
+            if !isPrimaryMatch {
+                _ = vaultSetBox.unmount(matching: rawId)
+                return
+            }
+        }
         await withExclusiveTransition {
             await waitForInFlightRequests()
             memoryDeltaCache.invalidate()
@@ -479,6 +566,11 @@ extension QWEngineLifecycleActor {
             }
             let oldName = activeMemoryPack?.manifest.packName
             activeMemoryPack = nil
+            if packIdentifier == nil || packIdentifier?.lowercased() == "all" {
+                vaultSetBox.unmountAll()
+            } else {
+                vaultSetBox.unmountPrimaryOnly()
+            }
             statusBox.updateMountedMemoryPack(nil)
             if let savedKV = preMountKVMode {
                 let savedCtx = preMountMaxContext ?? config.maxContext
@@ -559,5 +651,17 @@ extension QWEngineLifecycleActor {
             _ = try? await mountMemoryPack(at: root.path, waitForInFlight: true, skipIfAlreadyMounted: true)
         }
         return activeMemoryPack
+    }
+
+    static func isNonCausalDecisionDescriptor(_ desc: QWModelDescriptor) -> Bool {
+        if desc.role == .decisionEncoder { return true }
+        guard let dc = desc.decisionConfig else { return false }
+        if case .bidirectionalEncoder = dc.topology { return true }
+        switch dc.head {
+        case .vocabVerbalizer:
+            return false
+        default:
+            return true
+        }
     }
 }

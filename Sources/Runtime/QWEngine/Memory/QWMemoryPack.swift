@@ -11,6 +11,28 @@ public enum QWMemoryPack {
         public let mtimeEpochSec: Int64
         public let byteCount: Int
         public let content: String
+        public let sourceKind: QWMemoryManifest.SourceKind
+        public let spanAnchors: [QWMemoryManifest.SpanAnchor]
+
+        public init(
+            relativePath: String,
+            tier: Int,
+            sha256: String,
+            mtimeEpochSec: Int64,
+            byteCount: Int,
+            content: String,
+            sourceKind: QWMemoryManifest.SourceKind? = nil,
+            spanAnchors: [QWMemoryManifest.SpanAnchor] = []
+        ) {
+            self.relativePath = relativePath
+            self.tier = tier
+            self.sha256 = sha256
+            self.mtimeEpochSec = mtimeEpochSec
+            self.byteCount = byteCount
+            self.content = content
+            self.sourceKind = sourceKind ?? QWMemoryManifest.SourceKind.infer(from: relativePath)
+            self.spanAnchors = spanAnchors
+        }
     }
 
     public struct BuiltEnvelope: Sendable {
@@ -72,9 +94,14 @@ public enum QWMemoryPack {
     public static func discoverFiles(
         in rootURL: URL,
         includeTests: Bool = false,
+        includePDFs: Bool = true,
         maxFileBytes: Int = maxSingleFileBytes
     ) throws -> [DiscoveredFile] {
         let root = rootURL.standardizedFileURL
+        var rootIsDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: root.path, isDirectory: &rootIsDir), rootIsDir.boolValue else {
+            return []
+        }
         let ignoreMatcher = QWMemoryIgnoreMatcher(rootURL: root)
         let candidateRelPaths = listCandidateRelativePaths(in: root, ignoreMatcher: ignoreMatcher)
         let churnEpochByPath = queryGitLastCommitEpochs(in: root)
@@ -82,31 +109,58 @@ public enum QWMemoryPack {
 
         var rawItems: [(file: DiscoveredFile, commitEpoch: Int64)] = []
         for relPath in candidateRelPaths {
-            if shouldIgnore(relativePath: relPath, ignoreMatcher: ignoreMatcher) { continue }
+            if shouldIgnore(relativePath: relPath, ignoreMatcher: ignoreMatcher, includePDFs: includePDFs) { continue }
             if !includeTests && isConventionalTestFile(relativePath: relPath) { continue }
             let depth = structuralDepth(relativePath: relPath)
             let fileURL = root.appendingPathComponent(relPath, isDirectory: false)
-            guard let attrs = try? fm.attributesOfItem(atPath: fileURL.path),
+            guard let containedURL = QWDocumentIngestor.validateContainedURL(fileURL, inside: root, fileManager: fm) else {
+                continue
+            }
+            if relPath.lowercased().hasSuffix(".pdf") {
+                guard includePDFs,
+                      let pdfDoc = QWDocumentIngestor.ingestPDF(
+                          at: containedURL, relativePath: relPath, rootURL: root, fileManager: fm
+                      ) else {
+                    continue
+                }
+                let discovered = DiscoveredFile(
+                    relativePath: relPath,
+                    tier: max(depth, 2),
+                    sha256: pdfDoc.sha256,
+                    mtimeEpochSec: pdfDoc.mtimeEpochSec,
+                    byteCount: pdfDoc.byteCount,
+                    content: pdfDoc.content,
+                    sourceKind: .pdfPageSpan,
+                    spanAnchors: pdfDoc.spanAnchors
+                )
+                rawItems.append((discovered, churnEpochByPath[relPath] ?? pdfDoc.mtimeEpochSec))
+                continue
+            }
+            guard let attrs = try? fm.attributesOfItem(atPath: containedURL.path),
                   let fileType = attrs[.type] as? FileAttributeType,
                   fileType == .typeRegular,
                   let size = (attrs[.size] as? NSNumber)?.intValue,
                   size > 0, size <= maxFileBytes else {
                 continue
             }
-            guard let data = try? Data(contentsOf: fileURL),
+            guard let data = try? Data(contentsOf: containedURL),
                   !data.contains(0),
                   let text = String(data: data, encoding: .utf8) else {
                 continue
             }
             let mtime = Int64((attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0)
             let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            let kind = QWMemoryManifest.SourceKind.infer(from: relPath)
+            let spans = kind == .markdown ? QWDocumentIngestor.extractMarkdownSpans(content: text) : []
             let discovered = DiscoveredFile(
                 relativePath: relPath,
                 tier: depth,
                 sha256: digest,
                 mtimeEpochSec: mtime,
                 byteCount: size,
-                content: text
+                content: text,
+                sourceKind: kind,
+                spanAnchors: spans
             )
             let commitEpoch = churnEpochByPath[relPath] ?? mtime
             rawItems.append((discovered, commitEpoch))
@@ -232,8 +286,9 @@ public enum QWMemoryPack {
         for item in prepared {
             let file = item.file
             let sectionTokens = item.sectionTokens
+            let isPDF = file.sourceKind == .pdfPageSpan
             let exceedsPerFileCap = (tokenCap ?? 0) >= 4096 && sectionTokens > max(2048, (tokenCap ?? 0) / 5)
-            if let tokenCap, !cortexPaths.isEmpty, (runningTokens + sectionTokens + 96 > tokenCap || exceedsPerFileCap) {
+            if let tokenCap, (!cortexPaths.isEmpty || isPDF), (isPDF || runningTokens + sectionTokens + 96 > tokenCap || exceedsPerFileCap) {
                 entries.append(
                     QWMemoryManifest.FileEntry(
                         relativePath: file.relativePath,
@@ -244,7 +299,9 @@ public enum QWMemoryPack {
                         tokenOffset: -1,
                         tokenCount: sectionTokens,
                         inCortex: false,
-                        symbols: item.symbols
+                        symbols: item.symbols,
+                        sourceKind: file.sourceKind,
+                        spanAnchors: file.spanAnchors
                     )
                 )
                 continue
@@ -279,7 +336,9 @@ public enum QWMemoryPack {
                     tokenOffset: startToken,
                     tokenCount: sectionTokens,
                     inCortex: true,
-                    symbols: item.symbols
+                    symbols: item.symbols,
+                    sourceKind: file.sourceKind,
+                    spanAnchors: file.spanAnchors
                 )
             )
         }

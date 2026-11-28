@@ -22,12 +22,16 @@ public enum QWWeightBasis: String, Sendable, Hashable, Codable {
 
     /// The metallib that carries this basis: the basis is a build-time
     /// property of the library, not a runtime switch (specs/02-qwhal.md).
-    public var metallibFileName: String {
-        switch self {
-        case .rotated: return "kernel.metallib"
-        case .standard: return "kernel_std.metallib"
+    public func metallibFileName(metal4: Bool) -> String {
+        switch (self, metal4) {
+        case (.rotated, true): return "kernel.metallib"
+        case (.standard, true): return "kernel_std.metallib"
+        case (.rotated, false): return "kernel_m3.metallib"
+        case (.standard, false): return "kernel_m3_std.metallib"
         }
     }
+
+    public var metallibFileName: String { metallibFileName(metal4: true) }
 }
 
 /// The container the engine holds a model's weights in. The two differ in

@@ -30,7 +30,7 @@ final class FNBatchRecurrentResetTests: XCTestCase {
     func testWipeRecurrentLayerAndExtraSlotResetAtZeroHighWaterPos() throws {
         try XCTSkipUnless(
             ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] != "true"
-                && QWDeviceCaps.current?.familyApple9 == true,
+                && QWDeviceCaps.current?.supportsSimdgroupMMA == true,
             "Metal buffer zeroing check requires bare-metal Apple Silicon GPU"
         )
         let hal = try QWHal(geometry: .qwen38_27b)

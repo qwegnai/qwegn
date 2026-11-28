@@ -22,53 +22,46 @@ final class QWErnie55AttnOptTests: XCTestCase {
     }
 
     private static func makeF16Tensor(_ hal: QWHal, shape: [Int], values: [Float]) -> QWTensorValue {
-        let h = values.map { Float16($0) }
-        let bytes = max(256, (h.count * 2 + 255) & ~255)
+        let h = values.map { Float16($0) }, bytes = max(256, (h.count * 2 + 255) & ~255)
         let buf = hal.device.makeBuffer(length: bytes, options: .storageModeShared)!
-        h.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-            if let src = raw.baseAddress, !raw.isEmpty { buf.contents().copyMemory(from: src, byteCount: raw.count) }
-        }
-        return QWTensorValue(region: QWMRegion(buffer: buf, base: 0, length: bytes),
-                             offset: 0, shape: QWTensorShape(shape, .f16))
+        h.withUnsafeBytes { (r: UnsafeRawBufferPointer) in if let s = r.baseAddress, !r.isEmpty { buf.contents().copyMemory(from: s, byteCount: r.count) } }
+        return QWTensorValue(region: QWMRegion(buffer: buf, base: 0, length: bytes), offset: 0, shape: QWTensorShape(shape, .f16))
     }
-
     private static func makeF32Tensor(_ hal: QWHal, shape: [Int], values: [Float]) -> QWTensorValue {
-        let bytes = max(256, (values.count * 4 + 255) & ~255)
-        let buf = hal.device.makeBuffer(length: bytes, options: .storageModeShared)!
-        values.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-            if let src = raw.baseAddress, !raw.isEmpty { buf.contents().copyMemory(from: src, byteCount: raw.count) }
-        }
-        return QWTensorValue(region: QWMRegion(buffer: buf, base: 0, length: bytes),
-                             offset: 0, shape: QWTensorShape(shape, .f32))
+        let bytes = max(256, (values.count * 4 + 255) & ~255), buf = hal.device.makeBuffer(length: bytes, options: .storageModeShared)!
+        values.withUnsafeBytes { (r: UnsafeRawBufferPointer) in if let s = r.baseAddress, !r.isEmpty { buf.contents().copyMemory(from: s, byteCount: r.count) } }
+        return QWTensorValue(region: QWMRegion(buffer: buf, base: 0, length: bytes), offset: 0, shape: QWTensorShape(shape, .f32))
     }
-
     private static func makeI32Tensor(_ hal: QWHal, shape: [Int], values: [Int32]) -> QWTensorValue {
-        let bytes = max(256, (values.count * 4 + 255) & ~255)
-        let buf = hal.device.makeBuffer(length: bytes, options: .storageModeShared)!
-        values.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-            if let src = raw.baseAddress, !raw.isEmpty { buf.contents().copyMemory(from: src, byteCount: raw.count) }
-        }
-        return QWTensorValue(region: QWMRegion(buffer: buf, base: 0, length: bytes),
-                             offset: 0, shape: QWTensorShape(shape, .i32))
+        let bytes = max(256, (values.count * 4 + 255) & ~255), buf = hal.device.makeBuffer(length: bytes, options: .storageModeShared)!
+        values.withUnsafeBytes { (r: UnsafeRawBufferPointer) in if let s = r.baseAddress, !r.isEmpty { buf.contents().copyMemory(from: s, byteCount: r.count) } }
+        return QWTensorValue(region: QWMRegion(buffer: buf, base: 0, length: bytes), offset: 0, shape: QWTensorShape(shape, .i32))
     }
 
     private static func readF16(_ t: QWTensorValue, count: Int) -> [Float] {
-        let p = t.region.buffer.contents().advanced(by: t.region.base + t.offset)
-            .assumingMemoryBound(to: Float16.self)
-        return (0..<count).map { Float(p[$0]) }
+        let p = t.region.buffer.contents().advanced(by: t.region.base + t.offset).assumingMemoryBound(to: UInt16.self)
+        return [Float](unsafeUninitializedCapacity: count) { dst, initCnt in
+            guard let dp = dst.baseAddress else { initCnt = 0; return }
+            var i = 0; while i < count { dp[i] = Float(Float16(bitPattern: p[i])); i += 1 }
+            initCnt = count
+        }
     }
 
     private static func readF32(_ t: QWTensorValue, count: Int) -> [Float] {
-        let p = t.region.buffer.contents().advanced(by: t.region.base + t.offset)
-            .assumingMemoryBound(to: Float.self)
-        return (0..<count).map { p[$0] }
+        let p = t.region.buffer.contents().advanced(by: t.region.base + t.offset).assumingMemoryBound(to: Float.self)
+        return Array(UnsafeBufferPointer(start: p, count: count))
     }
 
     private static func maxAbsDiff(_ a: [Float], _ b: [Float]) -> Float {
         precondition(a.count == b.count)
-        var m: Float = 0
-        for i in 0..<a.count { m = max(m, abs(a[i] - b[i])) }
-        return m
+        return a.withUnsafeBufferPointer { aB in
+            b.withUnsafeBufferPointer { bB -> Float in
+                guard let ap = aB.baseAddress, let bp = bB.baseAddress else { return 0 }
+                var m: Float = 0, i = 0
+                while i < aB.count { if !(ap[i].isFinite && bp[i].isFinite) { return .infinity }; let d = abs(ap[i] - bp[i]); if d > m { m = d }; i += 1 }
+                return m
+            }
+        }
     }
 
     private static func packTestWeights(hal: QWHal, inc: Int, bits: Int, group: Int,
@@ -251,7 +244,7 @@ final class QWErnie55AttnOptTests: XCTestCase {
                            topK: UInt32(topK), windowTokens: UInt32(window),
                            listStride: UInt32(listStride), kvMode: kvMode,
                            ropeDim: UInt32(ropeDim), qRopeOffset: UInt32(qRopeOffset),
-                           qFullStride: UInt32(qFullStride), hasSink: UInt32(1))
+                           qFullStride: UInt32(qFullStride), hasSink: UInt32(1), softmaxScale: Float(0.0))
             guard let (cb1, e1) = hal.begin() else { throw XCTSkip("no cmdbuf") }
             e1.setComputePipelineState(psoMMA)
             qAbs.bind(e1, index: 0); kv.k.pool.bindTo(e1, index: 1); kv.v.pool.bindTo(e1, index: 2)
@@ -758,7 +751,12 @@ final class QWErnie55AttnOptTests: XCTestCase {
             if let s0 = seed {
                 let lut = Self.detRand(4096, seed: s0, scale: 0.25).map { Float16($0) }
                 let dst = buf.contents().assumingMemoryBound(to: Float16.self)
-                for i in 0..<count { dst[i] = lut[i & 4095] }
+                lut.withUnsafeBufferPointer { lB in
+                    guard let lp = lB.baseAddress else { return }
+                    var i = 0
+                    while i + 4096 <= count { memcpy(dst + i, lp, 8192); i += 4096 }
+                    while i < count { dst[i] = lp[i & 4095]; i += 1 }
+                }
             }
             return QWTensorValue(region: QWMRegion(buffer: buf, base: 0, length: bytes), offset: 0, shape: QWTensorShape([count], .f16))
         }
@@ -781,12 +779,20 @@ final class QWErnie55AttnOptTests: XCTestCase {
             let gMMA = MTLSize(width: oGroups, height: (T + 31) / 32, depth: oRank / 128)
             let gNAX = MTLSize(width: oRank / 64, height: (T + 63) / 64, depth: oGroups)
             _ = try launch(pMMA, dst: zgRef, grid: gMMA); _ = try launch(pNAX, dst: zgNAX, grid: gNAX)
-            let pA = zgRef.region.pointer.assumingMemoryBound(to: Float16.self), pB = zgNAX.region.pointer.assumingMemoryBound(to: Float16.self)
-            var maxDiff: Float = 0
-            for i in 0..<(T * outCols) { maxDiff = max(maxDiff, abs(Float(pA[i]) - Float(pB[i]))) }
+            let pA = zgRef.region.pointer.assumingMemoryBound(to: UInt16.self), pB = zgNAX.region.pointer.assumingMemoryBound(to: UInt16.self)
+            var maxDiff: Float = 0, i = 0, lim = T * outCols
+            while i < lim {
+                let ua = pA[i], ub = pB[i]
+                if ua != ub || (ua & 0x7C00) == 0x7C00 {
+                    let fa = Float(Float16(bitPattern: ua)), fb = Float(Float16(bitPattern: ub))
+                    if !(fa.isFinite && fb.isFinite) { maxDiff = .infinity; break }
+                    maxDiff = max(maxDiff, abs(fa - fb))
+                }
+                i += 1
+            }
             XCTAssertLessThan(maxDiff, 5e-3, "T=4087 wo_a \(lbl) parity diff=\(maxDiff)")
             var minMs = Double.greatestFiniteMagnitude
-            for iter in 0..<7 { let ms = try launch(pNAX, dst: zgNAX, grid: gNAX); if iter >= 2 { minMs = min(minMs, ms) } }
+            for iter in 0..<3 { let ms = try launch(pNAX, dst: zgNAX, grid: gNAX); if iter >= 1 { minMs = min(minMs, ms) } }
             best[lbl] = minMs
         }
         print(String(format: "[QWErnie55AttnOptTests] T=4087 wo_a minGPU: AQ8=%.3f ms vs HQ4=%.3f ms", best["AQ8"]!, best["HQ4"]!))

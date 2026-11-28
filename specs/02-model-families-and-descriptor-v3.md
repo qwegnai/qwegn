@@ -2,7 +2,7 @@
 
 > Normative specification for `QWModelDescriptor`, `QWModelRole`, `QWModelFamilyRegistry`, config-sourced geometry, and digest versioning (`Sources/Foundation/QWCore/`).
 
-## 1. Zero-Overload 18-Family Contract
+## 1. Zero-Overload 19-Family Contract
 Every HuggingFace `model_type` maps 1:1 through `QWModelFamilyRegistry` to an explicit `QWModelDescriptor.Family` case; no family case may be overloaded onto another architecture's traits or kernels. Unknown `model_type` strings throw `QWModelDescriptorError.unsupportedModelType`.
 
 | `QWModelDescriptor.Family` | `model_type` keys in `builtinSpecs` | Role / Key Architectural Traits |
@@ -25,6 +25,7 @@ Every HuggingFace `model_type` maps 1:1 through `QWModelFamilyRegistry` to an ex
 | `.lfm3` | `lfm3`, `lfm3_text`, `lfm3_vl` | Sandwich RMSNorm + ShortConv-7 + SWA-256 + `full_attention` + nested `PerKindRoPEConfig` + optional `LFM3-VL` vision & packed-set decision config (`d1-2B`) |
 | `.lfm2Encoder` | `d1_omni`, `lfm2_encoder` | Bidirectional ShortConv (`isCentered: true`) + full encoder attention + `.optionMarkers` / multi-chain `.markerScorer` (`d1-omni-600M`, `.aimodel` CoreAI) |
 | `.modernBert` | `modernbert`, `bert`, `roberta`, `deberta`, `deberta-v2`, `xlm-roberta` | Bidirectional `LayerNorm` encoder (`global`/`local` RoPE) + `.pooledClassifier` / `.markerScorer` (`SequenceClassification` & cross-encoder rerankers) |
+| `.gigachat4` | `gigachat4` | Hybrid GDN (`GDNGatingConfig` sigmoid `*2.0`) + decoupled-RoPE MLA-DSA (`alphaQ`/`alphaKV` + YaRN `softmaxScale`), `GatedNormConfig` rank-16 `pre_post` sandwich norms, sigmoid bias-corrected MoE, `finalLogitSoftcapping = 30.0`, heterogeneous dense NextN MTP |
 
 ## 2. Explicit Execution Roles (`QWModelRole`)
 `QWModelDescriptor.role` (`typealias Role = QWModelRole`) separates execution semantics:

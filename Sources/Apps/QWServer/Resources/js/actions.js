@@ -313,6 +313,11 @@ async function revealLogsInFinder() {
 }
 
 function handleDelegatedActionClick(event) {
+  const unmountVaultBtn = event.target && event.target.closest ? event.target.closest("[data-unmount-vault-pack]") : null;
+  if (unmountVaultBtn) {
+    unmountVaultPackFromModal(unmountVaultBtn.getAttribute("data-unmount-vault-pack") || "");
+    return;
+  }
   const loadDecBtn = event.target && event.target.closest ? event.target.closest("[data-load-decision-path]") : null;
   if (loadDecBtn && typeof loadDecisionSidecarFromWeb === "function") {
     const p = loadDecBtn.getAttribute("data-load-decision-path") || "";
@@ -326,6 +331,52 @@ function handleDelegatedActionClick(event) {
   const packPath = btn.getAttribute("data-select-model-path") || "";
   selectAndApplyModel(name, packPath);
   if (btn.getAttribute("data-close-switch-modal") === "true") closeSwitchModelModal();
+}
+
+async function refreshMountedVaultPacksInModal() {
+  if (typeof document === "undefined") return;
+  const sec = document.getElementById("mempack-mounted-section");
+  const list = document.getElementById("mempack-mounted-list");
+  if (!sec || !list) return;
+  try {
+    const res = await fetch(`${API_BASE}/v1/memory/packs`);
+    if (!res.ok) return;
+    const data = await res.json();
+    const packs = Array.isArray(data.packs) ? data.packs : [];
+    sec.hidden = packs.length === 0;
+    list.innerHTML = packs.map((p) => {
+      const name = String(p.pack_name || "pack");
+      const root = String(p.root_path || "");
+      const role = p.is_primary_cortex ? "Primary Cortex" : "Vault Pack";
+      const pdfInfo = p.pdf_file_count ? ` · ${p.pdf_file_count} PDF` : "";
+      const astInfo = p.ast_declaration_count ? ` · ${p.ast_declaration_count} AST` : "";
+      return `<div class="mempack-artifact-row">
+        <div class="mempack-artifact-meta">
+          <strong class="mono" style="font-size:12px;">${escapeHtml(name)} (${role})</strong>
+          <span class="panel-sub mono">${p.file_count || 0} files${pdfInfo}${astInfo} · ${escapeHtml(middleTruncate(root, 44))}</span>
+        </div>
+        <div><button type="button" class="btn btn-sm" data-unmount-vault-pack="${escapeHtml(name)}">Unmount</button></div>
+      </div>`;
+    }).join("");
+  } catch (_) {}
+}
+
+async function unmountVaultPackFromModal(packId) {
+  if (!packId) return;
+  try {
+    const res = await fetch(`${API_BASE}/v1/memory/unmount`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pack_id: packId })
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    showToast(`Unmounted '${packId}'.`);
+    await refreshMountedVaultPacksInModal();
+    if (typeof fetchEngineInfo === "function") fetchEngineInfo();
+    if (typeof fetchDashboard === "function") fetchDashboard();
+  } catch (err) {
+    showToast("Unmount failed: " + err.message, true);
+  }
 }
 
 function wireModernWebPlatformControls() {

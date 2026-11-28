@@ -30,7 +30,7 @@ final class QWMTPTests: XCTestCase {
     static func load(_ name: String) throws -> Data {
         let p = out.appendingPathComponent(name)
         guard let d = FileManager.default.contents(atPath: p.path) else {
-            throw NSError(domain: "fixture", code: 2, userInfo: [NSLocalizedDescriptionKey: "missing \(name)"])
+            throw XCTSkip("missing spike fixture \(name)")
         }
         return d
     }

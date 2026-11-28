@@ -67,13 +67,24 @@ struct Mcp: AsyncParsableCommand {
         guard let url = URL(string: baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/mcp") else {
             throw ValidationError("Invalid --server URL: '\(baseURL)'")
         }
+        var cachedClientName: String? = nil
         for try await line in FileHandle.standardInput.bytes.lines {
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { continue }
+            let bodyData = Data(trimmed.utf8)
+            if let root = try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any],
+               (root["method"] as? String) == "initialize",
+               let params = root["params"] as? [String: Any],
+               let clientInfo = params["clientInfo"] as? [String: Any],
+               let cname = clientInfo["name"] as? String,
+               !cname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                cachedClientName = cname.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
             var req = URLRequest(url: url)
             req.httpMethod = "POST"
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            req.httpBody = Data(trimmed.utf8)
+            req.setValue(cachedClientName ?? "qwg-mcp", forHTTPHeaderField: "X-Qwegn-Client")
+            req.httpBody = bodyData
             let (data, resp) = try await URLSession.shared.data(for: req)
             if let http = resp as? HTTPURLResponse, http.statusCode == 202 {
                 continue

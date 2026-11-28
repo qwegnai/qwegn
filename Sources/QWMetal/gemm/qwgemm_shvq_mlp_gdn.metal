@@ -228,60 +228,35 @@ static inline void qwg_gemv_shvq_gdn_rows4_m_body(device const char* blocks,
     const uint simdPerTG = max(1u, tptg >> 5u);
     const uint simdId = ti >> 5u;
     const uint lane = ti & 31u;
-    const uint row0 = (tg * simdPerTG + simdId) * 4u;
+    const uint realK = K & 0xFFFFu;
+    const uint tgEff = tg + (K >> 16u);
+    const uint row0 = (tgEff * simdPerTG + simdId) * 4u;
     if (row0 >= realN) return;
-    const uint nBlocks = K >> 5u;
-    constexpr uint groupBytes = qwg_shvq_group_bytes(BITS, GROUP);
-    const uint rowBytes = (K / uint(GROUP)) * groupBytes;
-    device const char* r0 = blocks + (size_t)row0 * rowBytes;
-    device const char* r1 = (row0 + 1u < realN) ? (r0 + rowBytes) : r0;
-    device const char* r2 = (row0 + 2u < realN) ? (r0 + 2u * rowBytes) : r0;
-    device const char* r3 = (row0 + 3u < realN) ? (r0 + 3u * rowBytes) : r0;
-    float4 acc[8];
-    #pragma unroll
-    for (uint m = 0u; m < 8u; ++m) acc[m] = float4(0.0f);
-    for (uint g = lane; g < nBlocks; g += 32u) {
-        const uint col = g << 5u;
-        const size_t groupOff = size_t(col / uint(GROUP)) * groupBytes;
-        const uint byteInGroup = qwg_shvq_byte_in_group<BITS, GROUP>(col);
-        device const char* gp0 = r0 + groupOff;
-        device const char* gp1 = r1 + groupOff;
-        device const char* gp2 = r2 + groupOff;
-        device const char* gp3 = r3 + groupOff;
-        #pragma unroll
-        for (uint p = 0u; p < 8u; p += 2u) {
-            if (p + 1u < mRows) {
-                half4 xlo0[4], xhi0[4], xlo1[4], xhi1[4];
-                qwg_shvq_load_half32(x + (size_t)p * K + col, xlo0, xhi0);
-                qwg_shvq_load_half32(x + (size_t)(p + 1u) * K + col, xlo1, xhi1);
-                const float2 d0 = qwg_shvq_slice_dot2_tg<BITS>(gp0, byteInGroup, xlo0, xhi0, xlo1, xhi1, tgLut);
-                const float2 d1 = qwg_shvq_slice_dot2_tg<BITS>(gp1, byteInGroup, xlo0, xhi0, xlo1, xhi1, tgLut);
-                const float2 d2 = qwg_shvq_slice_dot2_tg<BITS>(gp2, byteInGroup, xlo0, xhi0, xlo1, xhi1, tgLut);
-                const float2 d3 = qwg_shvq_slice_dot2_tg<BITS>(gp3, byteInGroup, xlo0, xhi0, xlo1, xhi1, tgLut);
-                acc[p] += float4(d0.x, d1.x, d2.x, d3.x);
-                acc[p + 1u] += float4(d0.y, d1.y, d2.y, d3.y);
-            } else if (p < mRows) {
-                half4 xlo0[4], xhi0[4];
-                qwg_shvq_load_half32(x + (size_t)p * K + col, xlo0, xhi0);
-                acc[p].x += qwg_shvq_slice_dot_tg<BITS>(gp0, byteInGroup, xlo0, xhi0, tgLut);
-                acc[p].y += qwg_shvq_slice_dot_tg<BITS>(gp1, byteInGroup, xlo0, xhi0, tgLut);
-                acc[p].z += qwg_shvq_slice_dot_tg<BITS>(gp2, byteInGroup, xlo0, xhi0, tgLut);
-                acc[p].w += qwg_shvq_slice_dot_tg<BITS>(gp3, byteInGroup, xlo0, xhi0, tgLut);
+    const uint ctrlStride = 2u * QW_GDN_V_HEADS;
+    if (mRows <= 4u) {
+        float4 acc4[4];
+        qwg_gemv_shvq_rows4_m_acc<BITS, GROUP, 4u>(blocks, x, row0, realN, realK, mRows, lane, tgLut, acc4);
+        if (lane == 0u) {
+            #pragma unroll
+            for (uint m = 0u; m < 4u; ++m) {
+                if (m < mRows) {
+                    device half* ym = y16 + (size_t)m * realN;
+                    device float* bm = controls + (size_t)m * ctrlStride;
+                    device float* gm = bm + QW_GDN_V_HEADS;
+                    #pragma unroll
+                    for (uint r = 0u; r < 4u; ++r) {
+                        if (row0 + r < realN) {
+                            qwg_shvq_gdn_store_row(row0 + r, acc4[m][r], ym, nullptr, aLog, dtBias, bm, gm);
+                        }
+                    }
+                }
             }
         }
+        return;
     }
-    #pragma unroll
-    for (uint m = 0u; m < 8u; ++m) {
-        if (m < mRows) {
-            acc[m] += simd_shuffle_down(acc[m], 16);
-            acc[m] += simd_shuffle_down(acc[m], 8);
-            acc[m] += simd_shuffle_down(acc[m], 4);
-            acc[m] += simd_shuffle_down(acc[m], 2);
-            acc[m] += simd_shuffle_down(acc[m], 1);
-        }
-    }
+    float4 acc[8];
+    qwg_gemv_shvq_rows4_m_acc<BITS, GROUP, 8u>(blocks, x, row0, realN, realK, mRows, lane, tgLut, acc);
     if (lane == 0u) {
-        const uint ctrlStride = 2u * QW_GDN_V_HEADS;
         #pragma unroll
         for (uint m = 0u; m < 8u; ++m) {
             if (m < mRows) {

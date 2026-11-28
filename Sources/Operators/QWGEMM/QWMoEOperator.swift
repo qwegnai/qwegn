@@ -345,9 +345,8 @@ public enum QWMoEOperator {
     public static func canUseNaxDenseProj(
         hal: QWHal, weight: QWWeightView?, rows: Int, maxTileWidth: Int, minNaxRows: Int = 64
     ) -> Bool {
-        guard let weight else { return false }
-        let effectiveMinNax = hal.caps.isMetal4TensorCapable ? minNaxRows : max(64, minNaxRows)
-        return rows >= effectiveMinNax
+        guard let weight, hal.caps.supportsSimdgroupMMA else { return false }
+        return rows >= minNaxRows
             && weight.n % 64 == 0
             && weight.k % 64 == 0
             && weight.k <= maxTileWidth
@@ -359,8 +358,9 @@ public enum QWMoEOperator {
     private static let envDenseSwigluNax: String? =
         ProcessInfo.processInfo.environment["QW_DENSE_SWIGLU_NAX"]
 
-    static func canFuseMoEGateUpNaxSwiglu(weights w: Weights, intermediate I: Int) -> Bool {
-        envMoENaxSwigluEnabled
+    static func canFuseMoEGateUpNaxSwiglu(hal: QWHal, weights w: Weights, intermediate I: Int) -> Bool {
+        hal.caps.supportsSimdgroupMMA
+            && envMoENaxSwigluEnabled
             && I > 0 && I % 32 == 0
             && w.gateSoftcap == 0 && w.upSoftcap == 0
             && QWGemm.supportsMoEGateUpNaxSwiglu(w.gateUp)
@@ -368,17 +368,17 @@ public enum QWMoEOperator {
     }
 
     static func canFuseSharedSwiGLUNax(
+        hal: QWHal,
         weights w: Weights,
         shPrecast16: QWTensorValue?,
         shAct16: QWTensorValue?
     ) -> Bool {
-        if envDenseSwigluNax == "0" { return false }
+        if !hal.caps.supportsSimdgroupMMA || envDenseSwigluNax == "0" { return false }
         guard let shGU = w.sharedGateUp else { return false }
         let widthOK = envDenseSwigluNax == "1" || shGU.bits <= 8 || shGU.bits == 15
         let ISh = w.sharedIntermediate
         return widthOK
             && ISh > 0 && ISh % 64 == 0
-            && w.sharedSwigluClamp == nil
             && shPrecast16 != nil && shAct16 != nil
             && QWGemm.supportsDenseSwiGLUNax(shGU)
     }
@@ -400,7 +400,7 @@ public enum QWMoEOperator {
         sortedTok: QWTensorValue,
         barrier: () -> Void
     ) throws {
-        if canFuseMoEGateUpNaxSwiglu(weights: w, intermediate: I) {
+        if canFuseMoEGateUpNaxSwiglu(hal: hal, weights: w, intermediate: I) {
             try QWGemm.encodeMoEGateUpNaxSwiglu(
                 enc, hal: hal, xe: xe, bank: w.gateUp, expertOff: expOff,
                 tileE: tileE, tileR: tileR, tileCount: tileCount,
@@ -474,8 +474,8 @@ public enum QWMoEOperator {
         }
         let H = w.hidden, E = w.experts, K = w.topK, I = w.intermediate, ISh = w.sharedIntermediate
         let routerCols = w.splitFeatureRouting ? (2 * E) : E
-        let useFusedMoE = Self.canFuseMoEGateUpNaxSwiglu(weights: w, intermediate: I)
-        let isGroupedNax = T > 8 && supportsGroupedNaxPrefill && hal.caps.isMetal4TensorCapable
+        let useFusedMoE = Self.canFuseMoEGateUpNaxSwiglu(hal: hal, weights: w, intermediate: I)
+        let isGroupedNax = T > 8 && supportsGroupedNaxPrefill && hal.caps.supportsSimdgroupMMA
             && s.expOff != nil && s.sortedPair != nil && s.sortedTok != nil
             && s.invPerm != nil && s.tileE != nil && s.tileR != nil
             && s.tileCount != nil && (useFusedMoE || s.gu16 != nil)
@@ -522,7 +522,7 @@ public enum QWMoEOperator {
             let shAct16 = canAliasShAct16
                 ? naxX16.slice(byteOffset: T * H * 2, count: T * ISh, dtype: .f16)
                 : nil
-            let useFusedSh = Self.canFuseSharedSwiGLUNax(weights: w, shPrecast16: shPrecast16, shAct16: shAct16)
+            let useFusedSh = Self.canFuseSharedSwiGLUNax(hal: hal, weights: w, shPrecast16: shPrecast16, shAct16: shAct16)
             let dnAcc16 = s.dnAcc.slice(byteOffset: 0, count: T * K * H, dtype: .f16)
             try QWGemm.encodeFnRouterGemm(enc, hal: hal, weight: w.router, x: xPlain, y: s.logits,
                                           rows: T, n: routerCols, k: H,
@@ -531,7 +531,7 @@ public enum QWMoEOperator {
             if concurrentBarriers, let shGU = w.sharedGateUp, ISh > 0 {
                 if useFusedSh, let x16Sh = shPrecast16, let out16Sh = shAct16 {
                     try QWGemm.encodeDenseSwiGLUNax(enc, hal: hal, weight: shGU, x16: x16Sh, out16: out16Sh,
-                                                    rows: T, intermediate: ISh)
+                                                    rows: T, intermediate: ISh, swigluClamp: w.sharedSwigluClamp)
                 } else if let guSh = s.guSh32 {
                     let naxY = s.naxY16 ?? naxX16
                     try QWGemm.encodeDenseProjF32(enc, hal: hal, weight: shGU, x: xRot, y: guSh,
@@ -549,7 +549,7 @@ public enum QWMoEOperator {
             if !concurrentBarriers, let shGU = w.sharedGateUp, let shDown = w.sharedDown, ISh > 0 {
                 if useFusedSh, let x16Sh = shPrecast16, let out16Sh = shAct16 {
                     try QWGemm.encodeDenseSwiGLUNax(enc, hal: hal, weight: shGU, x16: x16Sh, out16: out16Sh,
-                                                    rows: T, intermediate: ISh)
+                                                    rows: T, intermediate: ISh, swigluClamp: w.sharedSwigluClamp)
                     try QWGemm.encodeDenseProjF32(enc, hal: hal, weight: shDown, x: s.actSh32 ?? s.shared,
                                                   y: s.shared, naxX16: out16Sh, naxY16: out16Sh,
                                                   maxTileWidth: s.maxTileWidth, rows: T, x16Precast: out16Sh)
@@ -619,9 +619,28 @@ public enum QWMoEOperator {
                                           shGateWeight: ISh > 0 ? w.sharedGateScalar : nil,
                                           shGateOut: ISh > 0 ? s.gate : nil)
         }
-        let fuseSh = ISh > 0 && ISh <= 4096 && (ISh % 8 == 0) && w.sharedGateUp != nil && s.guSh32 != nil && s.actSh32 != nil
-        if let shGU = w.sharedGateUp, let guSh = s.guSh32, ISh > 0 {
-            try QWGemm.encodeHQ4F32V4(enc, hal: hal, weight: shGU, x: xRot, y: guSh, rows: T)
+        let smallShNaxAct16: QWTensorValue? = {
+            guard T >= 4, hal.caps.isMetal4TensorCapable, H >= 512, H % 64 == 0, ISh >= 512, ISh % 64 == 0,
+                  let xe16 = xe16ForNax, xe16.shape.dtype == .f16, xe16.shape.elementCount >= T * H,
+                  let shGU = w.sharedGateUp, let shDown = w.sharedDown,
+                  let guSh = s.guSh32, guSh.bytes >= T * ISh * 2,
+                  QWGemm.supportsDenseSwiGLUNax(shGU),
+                  shDown.isIncumbentContainer
+                      || QWGemmAQ.naxF32KernelName(bits: shDown.bits, group: shDown.groupSize, isSHVQ: shDown.isSHVQ) != nil else {
+                return nil
+            }
+            return QWTensorValue(region: guSh.region, offset: guSh.offset, shape: QWTensorShape([T * ISh], .f16))
+        }()
+        let fuseSh = smallShNaxAct16 == nil && ISh > 0 && ISh <= 4096 && (ISh % 8 == 0)
+            && w.sharedGateUp != nil && s.guSh32 != nil && s.actSh32 != nil
+        if let shGU = w.sharedGateUp, ISh > 0 {
+            if let shAct16 = smallShNaxAct16, let xe16 = xe16ForNax {
+                let x16Sh = xe16.shape.elementCount == T * H ? xe16 : xe16.slice(byteOffset: 0, count: T * H, dtype: .f16)
+                try QWGemm.encodeDenseSwiGLUNax(enc, hal: hal, weight: shGU, x16: x16Sh, out16: shAct16,
+                                                rows: T, intermediate: ISh, swigluClamp: w.sharedSwigluClamp)
+            } else if let guSh = s.guSh32 {
+                try QWGemm.encodeHQ4F32V4(enc, hal: hal, weight: shGU, x: xRot, y: guSh, rows: T)
+            }
         }
         barrier()
         try QWGemm.encodeFnMoeRoute(enc, hal: hal, logits: s.logits, idx: s.idx, wts: s.wts,
@@ -656,14 +675,19 @@ public enum QWMoEOperator {
            sortedPair.shape.elementCount >= T * K,
            sortedTok.shape.elementCount >= T * K {
             if !concurrentBarriers, let nextEnc = profileStage?("moe.shared_down") { enc = nextEnc }
-            if let shDown = w.sharedDown, let guSh = s.guSh32, let actSh = s.actSh32, ISh > 0 {
-                if !fuseSh {
-                    try QWGemm.encodeSiluMulF32(enc, hal: hal, gu: guSh, act: actSh, rows: T,
-                                                intermediate: ISh, swigluClamp: w.sharedSwigluClamp)
+            if let shDown = w.sharedDown, ISh > 0 {
+                if let shAct16 = smallShNaxAct16 {
+                    try QWGemm.encodeNaxF32(enc, hal: hal, weight: shDown, x16: shAct16, y16: shAct16, y32: s.shared, rows: T)
+                    barrier()
+                } else if let guSh = s.guSh32, let actSh = s.actSh32 {
+                    if !fuseSh {
+                        try QWGemm.encodeSiluMulF32(enc, hal: hal, gu: guSh, act: actSh, rows: T,
+                                                    intermediate: ISh, swigluClamp: w.sharedSwigluClamp)
+                        barrier()
+                    }
+                    try QWGemm.encodeHQ4F32V4(enc, hal: hal, weight: shDown, x: actSh, y: s.shared, rows: T)
                     barrier()
                 }
-                try QWGemm.encodeHQ4F32V4(enc, hal: hal, weight: shDown, x: actSh, y: s.shared, rows: T)
-                barrier()
             }
             if !concurrentBarriers, let nextEnc = profileStage?("moe.experts_gate_up") { enc = nextEnc }
             try QWGemm.encodeMoEQWPCompactRoutedCombine(
@@ -693,13 +717,17 @@ public enum QWMoEOperator {
                                             coldBank: w.coldGateUp,
                                             reuseExpertsAcrossTokens: w.reuseExpertsAcrossTokens,
                                             swigluClamp: w.routedSwigluClamp)
-            if let shDown = w.sharedDown, let guSh = s.guSh32, let actSh = s.actSh32, ISh > 0 {
-                if !fuseSh {
-                    try QWGemm.encodeSiluMulF32(enc, hal: hal, gu: guSh, act: actSh, rows: T,
-                                                intermediate: ISh, swigluClamp: w.sharedSwigluClamp)
-                    barrier()
+            if let shDown = w.sharedDown, ISh > 0 {
+                if let shAct16 = smallShNaxAct16 {
+                    try QWGemm.encodeNaxF32(enc, hal: hal, weight: shDown, x16: shAct16, y16: shAct16, y32: s.shared, rows: T)
+                } else if let guSh = s.guSh32, let actSh = s.actSh32 {
+                    if !fuseSh {
+                        try QWGemm.encodeSiluMulF32(enc, hal: hal, gu: guSh, act: actSh, rows: T,
+                                                    intermediate: ISh, swigluClamp: w.sharedSwigluClamp)
+                        barrier()
+                    }
+                    try QWGemm.encodeHQ4F32V4(enc, hal: hal, weight: shDown, x: actSh, y: s.shared, rows: T)
                 }
-                try QWGemm.encodeHQ4F32V4(enc, hal: hal, weight: shDown, x: actSh, y: s.shared, rows: T)
             }
             barrier()
             if !fuseRoutedGU {
@@ -716,12 +744,16 @@ public enum QWMoEOperator {
             barrier()
         } else {
             if let nextEnc = profileStage?("moe.shared_down") { enc = nextEnc }
-            if let shDown = w.sharedDown, let guSh = s.guSh32, let actSh = s.actSh32, ISh > 0 {
-                if !fuseSh {
-                    try QWGemm.encodeSiluMulF32(enc, hal: hal, gu: guSh, act: actSh, rows: T,
-                                                intermediate: ISh, swigluClamp: w.sharedSwigluClamp)
+            if let shDown = w.sharedDown, ISh > 0 {
+                if let shAct16 = smallShNaxAct16 {
+                    try QWGemm.encodeNaxF32(enc, hal: hal, weight: shDown, x16: shAct16, y16: shAct16, y32: s.shared, rows: T)
+                } else if let guSh = s.guSh32, let actSh = s.actSh32 {
+                    if !fuseSh {
+                        try QWGemm.encodeSiluMulF32(enc, hal: hal, gu: guSh, act: actSh, rows: T,
+                                                    intermediate: ISh, swigluClamp: w.sharedSwigluClamp)
+                    }
+                    try QWGemm.encodeHQ4F32V4(enc, hal: hal, weight: shDown, x: actSh, y: s.shared, rows: T)
                 }
-                try QWGemm.encodeHQ4F32V4(enc, hal: hal, weight: shDown, x: actSh, y: s.shared, rows: T)
             }
             if let nextEnc = profileStage?("moe.experts_gate_up") { enc = nextEnc }
             try QWGemm.encodeMoEGateUpF32R1(enc, hal: hal, x: xRot, bank: w.gateUp, ids: s.idx,

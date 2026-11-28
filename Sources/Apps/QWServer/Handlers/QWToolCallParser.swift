@@ -472,8 +472,8 @@ public final class QWChatStreamParser: @unchecked Sendable {
     let allowToolCalls: Bool
     private var allowReasoningTags: Bool
     private var allowInk2Markers: Bool
-    private let toolEnvelopes: [QWToolCallEnvelope]
-    private let toolOpenTags: [String]
+    private var toolEnvelopes: [QWToolCallEnvelope]
+    private var toolOpenTags: [String]
     private let thinkOpenTags: [String]
     private let thinkCloseTags: [String]
     var buffer = ""
@@ -504,10 +504,19 @@ public final class QWChatStreamParser: @unchecked Sendable {
         self.thinkCloseTags = thinkTags.map(\.close)
     }
 
-    public func setStartsInReasoning(_ startsInReasoning: Bool, allowReasoningTags: Bool? = nil, allowInk2Markers: Bool? = nil) {
+    public func setStartsInReasoning(
+        _ startsInReasoning: Bool,
+        allowReasoningTags: Bool? = nil,
+        allowInk2Markers: Bool? = nil,
+        toolEnvelopes: [QWToolCallEnvelope]? = nil
+    ) {
         guard buffer.isEmpty && reasoning.isEmpty && content.isEmpty && toolText.isEmpty else { return }
         if let allowReasoningTags { self.allowReasoningTags = allowReasoningTags }
         if let allowInk2Markers { self.allowInk2Markers = allowInk2Markers }
+        if let toolEnvelopes, !toolEnvelopes.isEmpty {
+            self.toolEnvelopes = toolEnvelopes
+            self.toolOpenTags = toolEnvelopes.map(\.openTag)
+        }
         mode = (startsInReasoning && self.allowReasoningTags) ? .reasoning : .content
     }
 

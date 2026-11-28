@@ -96,7 +96,8 @@ METAL_FUNC void qw_mla_dsa_nax_shared_attend(
     const uint denseLim = p.topK + p.windowTokens;
     const bool isDensePrefix = !isDenseStream && (seqLen <= denseLim);
     const uint slots = isDenseStream ? (seqLen - startTok) : min(min(seqLen, denseLim), 2560u);
-    const float scale2 = rsqrt(float(p.headDim)) * 1.4426950408889634f;
+    const float baseScale = (p.softmaxScale > 0.0f) ? p.softmaxScale : rsqrt(float(p.headDim));
+    const float scale2 = baseScale * 1.4426950408889634f;
     device const int* rowList = (!isDenseStream && !isDensePrefix)
         ? (blockList + (size_t)t * p.listStride)
         : nullptr;

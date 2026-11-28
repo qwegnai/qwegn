@@ -474,7 +474,7 @@ kernel void qwg_mla_dsa_sparse_attn_mma(
         : 0u;
     const uint denseLim = p.topK + p.windowTokens;
     const uint slots = isDenseStream ? (seqLen - startTok) : min(min(seqLen, denseLim), 2560u);
-    const float scale = rsqrt(float(p.headDim));
+    const float scale = (p.softmaxScale > 0.0f) ? p.softmaxScale : rsqrt(float(p.headDim));
 
     if (!isDenseStream) {
         if (seqLen <= denseLim) {

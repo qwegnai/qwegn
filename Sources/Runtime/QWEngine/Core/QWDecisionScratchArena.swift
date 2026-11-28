@@ -55,9 +55,13 @@ final class QWDecisionScratchArena: @unchecked Sendable {
         let tv = try tensor(key: key, shape: shape, dtype: .i32)
         let byteLen = values.count * MemoryLayout<Int32>.stride
         if byteLen > 0 {
-            let dst = tv.region.pointer.advanced(by: tv.offset)
-            values.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-                if let base = raw.baseAddress { memcpy(dst, base, byteLen) }
+            let dst = tv.region.buffer.contents().advanced(by: tv.region.base + tv.offset)
+            withExtendedLifetime(tv.region.buffer) {
+                values.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                    if let base = raw.baseAddress {
+                        dst.copyMemory(from: base, byteCount: byteLen)
+                    }
+                }
             }
         }
         return tv
@@ -83,9 +87,16 @@ final class QWDecisionScratchArena: @unchecked Sendable {
             guard let buf = hal.device.makeBuffer(length: aligned, options: .storageModeShared) else {
                 throw QWDecisionError.backendFailed("failed to allocate RoPE Metal buffer")
             }
-            if aligned > byteLen { memset(buf.contents(), 0, aligned) }
-            values.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-                if let base = raw.baseAddress, byteLen > 0 { memcpy(buf.contents(), base, byteLen) }
+            let dst = buf.contents()
+            withExtendedLifetime(buf) {
+                if aligned > byteLen { memset(dst, 0, aligned) }
+                if byteLen > 0 {
+                    values.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                        if let base = raw.baseAddress {
+                            dst.copyMemory(from: base, byteCount: byteLen)
+                        }
+                    }
+                }
             }
             bufs.append(buf)
             return QWTensorValue(region: QWMRegion(buffer: buf, base: 0, length: aligned), offset: 0, shape: tShape)

@@ -46,14 +46,22 @@ public enum QWModuleRegistry {
         family(forPackModelId: modelId).flatMap(moduleType(for:))
     }
 
+    private static func familySpec(forPackModelId modelId: String) -> QWModelFamilySpec? {
+        if let spec = QWModelFamilyRegistry.shared.spec(forModelType: modelId),
+           modulesByFamily[spec.family] != nil {
+            return spec
+        }
+        return family(forPackModelId: modelId).flatMap(QWModelFamilyRegistry.shared.spec(for:))
+    }
+
     /// True when the pack's declared model id maps to a hyper-stream multi-lane family.
     public static func isHyperStreamPackModelId(_ modelId: String) -> Bool {
-        family(forPackModelId: modelId) == .qwen38FlashNext
+        familySpec(forPackModelId: modelId)?.isHyperStreamTrunk == true
     }
 
     /// True when the pack's declared model id maps to a recurrent loop Inkling family.
     public static func isRecurrentLoopPackModelId(_ modelId: String) -> Bool {
-        family(forPackModelId: modelId) == .inkling2Loop
+        familySpec(forPackModelId: modelId)?.isRecurrentLoopTrunk == true
     }
 
     /// The capabilities the module that serves a family offers.

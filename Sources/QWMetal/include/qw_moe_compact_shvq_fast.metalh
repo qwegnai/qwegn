@@ -102,12 +102,7 @@ METAL_FUNC void qwg_moe_compact_shvq_gateup_impl(
                 device const float* xsCol[4];
                 #pragma unroll
                 for (uint m = 0u; m < 4u; ++m) xsCol[m] = (m < mCount) ? (x + size_t(tokIds[m]) * p.K + col) : x;
-                const float4 d0 = Traits::slice_dot_m4_acc(gp, byteInGroup, xsCol, mCount, tgLut, float4(accM[0].x, accM[1].x, accM[2].x, accM[3].x));
-                const float4 d1 = Traits::slice_dot_m4_acc(gp + st1, byteInGroup, xsCol, mCount, tgLut, float4(accM[0].y, accM[1].y, accM[2].y, accM[3].y));
-                const float4 d2 = Traits::slice_dot_m4_acc(gp + st2, byteInGroup, xsCol, mCount, tgLut, float4(accM[0].z, accM[1].z, accM[2].z, accM[3].z));
-                const float4 d3 = Traits::slice_dot_m4_acc(gp + st3, byteInGroup, xsCol, mCount, tgLut, float4(accM[0].w, accM[1].w, accM[2].w, accM[3].w));
-                accM[0] = float4(d0.x, d1.x, d2.x, d3.x); accM[1] = float4(d0.y, d1.y, d2.y, d3.y);
-                accM[2] = float4(d0.z, d1.z, d2.z, d3.z); accM[3] = float4(d0.w, d1.w, d2.w, d3.w);
+                Traits::slice_dot_rows4_m4_acc(gp, st1, st2, st3, rows, byteInGroup, xsCol, mCount, tgLut, accM);
             }
         }
         for (uint m = 0u; m < mCount; ++m) {
@@ -135,6 +130,84 @@ METAL_FUNC void qwg_moe_compact_shvq_gateup_impl(
             if (rBase + lane < I) actOut[size_t(pairSlots[sgi]) * I + rBase + lane] = v;
         }
         if (base + 4u < uint(cnt)) threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+}
+
+template <typename Traits>
+METAL_FUNC void qwg_moe_down_rows4_m4(typename Traits::WeightPtr wSrc,
+                                      thread device const float* const (&xs)[4],
+                                      uint mCount, uint wExp, uint r0, uint rowsLeft,
+                                      uint N, uint K, uint nSlices, uint lane,
+                                      threadgroup const typename Traits::TgLut& tgLut,
+                                      thread float4 (&vx)[4]) {
+    const size_t rowStride = Traits::row_stride(K);
+    #pragma unroll
+    for (uint m = 0u; m < 4u; ++m) vx[m] = float4(0.0f);
+    if ((nSlices & 7u) == 0u && nSlices < 32u && rowsLeft >= 4u) {
+        const uint rowSub = lane >> 3u, ql = lane & 7u;
+        typename Traits::WeightPtr rSub = Traits::row_ptr(wSrc, (size_t)wExp * N + r0 + rowSub, rowStride);
+        float4 vm = float4(0.0f);
+        for (uint s = ql; s < nSlices; s += 8u) {
+            device const float* xsCol[4];
+            #pragma unroll
+            for (uint m = 0u; m < 4u; ++m) xsCol[m] = (m < mCount) ? (xs[m] + (s << 5u)) : xs[0];
+            const uint byteInGroup = Traits::byte_in_group(s);
+            typename Traits::WeightPtr gp = Traits::group_ptr(rSub, s);
+            float4 dm1[1]; float sc1[1];
+            Traits::template slice_dot_rowsN_m4_acc<1u>(gp, 0u, 0u, 0u, 1u, byteInGroup, xsCol, mCount, tgLut, dm1, sc1);
+            vm.x = fma(dm1[0].x, sc1[0], vm.x);
+            if (mCount > 1u) vm.y = fma(dm1[0].y, sc1[0], vm.y);
+            if (mCount > 2u) vm.z = fma(dm1[0].z, sc1[0], vm.z);
+            if (mCount > 3u) vm.w = fma(dm1[0].w, sc1[0], vm.w);
+        }
+        vm = qwg_simd_reduce_down<8u>(vm);
+        const float4 c0 = simd_shuffle(vm, 0u);
+        const float4 c1 = simd_shuffle(vm, 8u);
+        const float4 c2 = simd_shuffle(vm, 16u);
+        const float4 c3 = simd_shuffle(vm, 24u);
+        vx[0] = float4(c0.x, c1.x, c2.x, c3.x);
+        if (mCount > 1u) vx[1] = float4(c0.y, c1.y, c2.y, c3.y);
+        if (mCount > 2u) vx[2] = float4(c0.z, c1.z, c2.z, c3.z);
+        if (mCount > 3u) vx[3] = float4(c0.w, c1.w, c2.w, c3.w);
+        return;
+    }
+    if (nSlices > 32u && rowsLeft >= 4u) {
+        const uint upHalf = lane >> 4u, hl = lane & 15u;
+        typename Traits::WeightPtr r0p = Traits::row_ptr(
+            wSrc, (size_t)wExp * N + r0 + upHalf * 2u, rowStride);
+        float2 v[4] = {float2(0.0f), float2(0.0f), float2(0.0f), float2(0.0f)};
+        for (uint s = hl; s < nSlices; s += 16u) {
+            device const float* xsCol[4];
+            #pragma unroll
+            for (uint m = 0u; m < 4u; ++m) xsCol[m] = (m < mCount) ? (xs[m] + (s << 5u)) : xs[0];
+            const uint byteInGroup = Traits::byte_in_group(s);
+            typename Traits::WeightPtr gp = Traits::group_ptr(r0p, s);
+            Traits::slice_dot_rows2_m4_acc(gp, rowStride, byteInGroup, xsCol, mCount, tgLut, v);
+        }
+        #pragma unroll
+        for (uint m = 0u; m < 4u; ++m) {
+            if (m < mCount) {
+                v[m] = qwg_simd_reduce_down<16u>(v[m]);
+                const float2 vHi = simd_shuffle_down(v[m], 16);
+                vx[m] = float4(v[m].x, v[m].y, vHi.x, vHi.y);
+            }
+        }
+        return;
+    }
+    const uint rows = min(4u, rowsLeft);
+    typename Traits::WeightPtr a0 = Traits::row_ptr(wSrc, (size_t)wExp * N + r0, rowStride);
+    for (uint s = lane; s < nSlices; s += 32u) {
+        device const float* xsCol[4];
+        #pragma unroll
+        for (uint m = 0u; m < 4u; ++m) xsCol[m] = (m < mCount) ? (xs[m] + (s << 5u)) : xs[0];
+        const uint byteInGroup = Traits::byte_in_group(s);
+        typename Traits::WeightPtr gp = Traits::group_ptr(a0, s);
+        Traits::slice_dot_rows4_m4_acc(gp, rowStride, 2u * rowStride, 3u * rowStride, rows,
+                                       byteInGroup, xsCol, mCount, tgLut, vx);
+    }
+    #pragma unroll
+    for (uint m = 0u; m < 4u; ++m) {
+        if (m < mCount) vx[m] = qwg_simd_reduce_down<32u>(vx[m]);
     }
 }
 

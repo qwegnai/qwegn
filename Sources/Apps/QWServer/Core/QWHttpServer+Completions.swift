@@ -209,7 +209,14 @@ extension QWHttpServer {
     ) {
         let route = trace?.route ?? "/v1/completions"
         let tag = trace.map { " | \($0.logTag)" } ?? ""
-        if let ctxErr = error as? QWServerContextLengthError {
+        if let swapErr = error as? QWModelSwapRefusedError {
+            logger.log(.warn, "HTTP POST \(route) model swap refused\(tag): \(swapErr.description)")
+            sendOpenAIError(connection, status: 409, message: swapErr.description,
+                            type: "conflict_error", code: swapErr.errorCode)
+        } else if let metaErr = error as? QWMetadataValidationError {
+            logger.log(.warn, "HTTP POST \(route) metadata validation failed\(tag): \(metaErr.description)")
+            sendOpenAIError(connection, status: 400, message: metaErr.description, type: "invalid_request_error")
+        } else if let ctxErr = error as? QWServerContextLengthError {
             logger.log(.warn, "HTTP POST \(route) context length exceeded\(tag): \(ctxErr.description)")
             sendOpenAIError(connection, status: 400, message: ctxErr.description,
                             type: "invalid_request_error", code: "context_length_exceeded")

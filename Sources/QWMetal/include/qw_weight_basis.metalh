@@ -45,6 +45,7 @@ constant float QW_FC_SITU_BETA    [[function_constant(228)]];
 constant float QW_FC_SITU_LIN_BETA [[function_constant(229)]];
 constant bool  QW_FC_SWIGLU_POST_SILU [[function_constant(233)]];
 constant bool  QW_FC_GDN_NORM_SIGMOID [[function_constant(234)]];
+constant float QW_FC_GDN_GATE_SCALE   [[function_constant(235)]];
 #endif
 
 /// Generalized gated FFN activation: specializes at PSO creation time to bounded `SituAndMul`

@@ -95,6 +95,9 @@ extension QWHyperStreamRuntime {
     /// runs on the last chunk, and its token is the first generated one.
     private func prefillChunk(_ session: inout FNGPUSessionData, history: [Int64], cacheHistory: [Int64],
                               chunkSize: Int, targetEnd: Int? = nil, gpuSec: inout Double) throws {
+        let arb = gpuTurnArbitrator
+        arb?.acquirePrimaryStepSync()
+        defer { arb?.releasePrimaryStep() }
         let pos = session.prefillPos
         let limitPos = FNGPUDFlash.prefillWindowEnd(historyCount: history.count, targetEnd: targetEnd)
         let subchunk = FNGPUPrefillStack.resolveSubchunk(pos: pos, limitPos: limitPos, chunkSize: chunkSize,
@@ -374,6 +377,9 @@ extension QWHyperStreamRuntime {
             throw FNGPUError.contextDoesNotFit(requested: session.history.count + 1,
                                                 maxFitting: FNGPUDFlash.maxFittingContext(activeCapacity: activeCap))
         }
+        let arb = gpuTurnArbitrator
+        arb?.acquirePrimaryStepSync()
+        defer { arb?.releasePrimaryStep() }
         let canSpecConstraint = session.constraint.map {
             $0.isUnconstrainedNow || (QWConstrainedSpeculationGate.isEnabled && $0.allowsSpeculation)
         } ?? true

@@ -43,7 +43,7 @@ extension QWMoEOperator {
         let H = w.hidden, L = latent.latentDim, E = w.experts, K = w.topK
         let I = w.intermediate, ISh = w.sharedIntermediate
         let routerCols = w.splitFeatureRouting ? (2 * E) : E
-        let allowDenseNax = supportsGroupedNaxPrefill && hal.caps.isMetal4TensorCapable
+        let allowDenseNax = supportsGroupedNaxPrefill && hal.caps.supportsSimdgroupMMA
         let minNax = allowDenseNax ? 8 : Int.max
         let neededGU32 = T * K * 2 * I
         let neededAct32 = T * K * I
@@ -51,8 +51,8 @@ extension QWMoEOperator {
             || (s.gu32.shape.elementCount >= neededGU32 && s.act32.shape.elementCount >= neededAct32)
             || ((s.gu16?.bytes ?? 0) >= neededGU32 * 4 && (s.dnHi?.bytes ?? 0) >= neededAct32 * 4)
         let minGroupedRows = hasFallbackF32Scratch ? Self.groupedNaxMinRows(experts: E, topK: K) : 9
-        let useFusedMoE = Self.canFuseMoEGateUpNaxSwiglu(weights: w, intermediate: I)
-        let canGroupedNax = supportsGroupedNaxPrefill && hal.caps.isMetal4TensorCapable
+        let useFusedMoE = Self.canFuseMoEGateUpNaxSwiglu(hal: hal, weights: w, intermediate: I)
+        let canGroupedNax = supportsGroupedNaxPrefill && hal.caps.supportsSimdgroupMMA
             && L % 64 == 0 && (2 * I) % 64 == 0
             && s.expOff != nil && s.sortedPair != nil && s.sortedTok != nil
             && s.invPerm != nil && s.tileE != nil && s.tileR != nil
@@ -124,7 +124,7 @@ extension QWMoEOperator {
             && (s.guSh32?.bytes ?? 0) >= T * ISh * 2
         let candShAct16 = prefShAct16
             ?? (canAliasGuShForShAct16 ? s.guSh32!.slice(byteOffset: 0, count: T * ISh, dtype: .f16) : nil)
-        let canFusedShNax = Self.canFuseSharedSwiGLUNax(weights: w, shPrecast16: shPrecast16, shAct16: candShAct16)
+        let canFusedShNax = Self.canFuseSharedSwiGLUNax(hal: hal, weights: w, shPrecast16: shPrecast16, shAct16: candShAct16)
         let shAct16 = canFusedShNax ? candShAct16 : prefShAct16
 
         if isGroupedNax,
@@ -159,7 +159,7 @@ extension QWMoEOperator {
                                               rows: T, latent: L, skipOut32: true)
             if !concurrentBarriers, let nextEnc = profileStage?("moe.shared_down") { enc = nextEnc }
             if let shGU = w.sharedGateUp, let shDown = w.sharedDown, ISh > 0 {
-                if Self.canFuseSharedSwiGLUNax(weights: w, shPrecast16: shPrecast16, shAct16: shAct16),
+                if Self.canFuseSharedSwiGLUNax(hal: hal, weights: w, shPrecast16: shPrecast16, shAct16: shAct16),
                    let x16Sh = shPrecast16, let out16Sh = shAct16 {
                     try QWGemm.encodeDenseSwiGLUNax(enc, hal: hal, weight: shGU, x16: x16Sh, out16: out16Sh,
                                                     rows: T, intermediate: ISh)
@@ -254,7 +254,7 @@ extension QWMoEOperator {
         let naxScratchH = hasNaxHScratch ? s.naxX16!.slice(byteOffset: 0, count: T * H, dtype: .f16) : nil
         try encodeDenseFallback(weight: latent.fc1, x: xRot, y: ls.bufA32, rows: T,
                                 naxScratch: naxScratchH ?? fc1Precast16, precast16: fc1Precast16)
-        let useFusedShFallback = Self.canFuseSharedSwiGLUNax(weights: w, shPrecast16: shPrecast16, shAct16: shAct16)
+        let useFusedShFallback = Self.canFuseSharedSwiGLUNax(hal: hal, weights: w, shPrecast16: shPrecast16, shAct16: shAct16)
         let fuseSh = !useFusedShFallback && T <= 8 && ISh > 0 && ISh <= 4096 && (ISh % 8 == 0)
             && w.sharedGateUp != nil && s.guSh32 != nil && s.actSh32 != nil
         if let shGU = w.sharedGateUp, ISh > 0 {

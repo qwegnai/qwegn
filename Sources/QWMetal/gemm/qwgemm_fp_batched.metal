@@ -2,18 +2,22 @@
 // active-bucket compact decode/verify, softcap SwiGLU, and BF16 combine kernels.
 #include <metal_stdlib>
 #include <metal_simdgroup>
+#include "qw_dequant_fp.metalh"
+#include "qw_moe_compact_fp.metalh"
+#include "qw_moe_tile.metalh"
+
+using namespace metal;
+
+#if !defined(QW_DISABLE_NAX)
 #include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
 #if !defined(__ENVIRONMENT_OS_VERSION_MIN_REQUIRED__) || __ENVIRONMENT_OS_VERSION_MIN_REQUIRED__ < 260200
 #error "NAX cooperative_tensor kernels require -mmacosx-version-min=26.2 or newer (Apple MPP operand_index ABI)."
 #endif
 #include "mlx/backend/metal/kernels/steel/gemm/nax.h"
-#include "qw_dequant_fp.metalh"
-#include "qw_moe_compact_fp.metalh"
 #include "qw_moe_fp_nax.metalh"
-#include "qw_moe_tile.metalh"
 
-using namespace metal;
 using namespace mlx::steel;
+#endif // !defined(QW_DISABLE_NAX)
 
 struct QWGemmFPMoENaxParams {
     uint experts, n, k, yStride, yColOff, inDtype, outDtype, flags;
@@ -29,6 +33,7 @@ struct QWGemmFPCombineParams {
     uint hidden, topK, tokens, inDtype, outDtype, sharedDtype, flags;
 };
 
+#if !defined(QW_DISABLE_NAX)
 template <int BM, int BN, int BK, int WM, int WN>
 METAL_FUNC void qwg_gemm_bf16_nax_body(
     device const bfloat* W, device const bfloat* xBF16, device const float* xF32,
@@ -208,6 +213,7 @@ kernel void qwg_gemm_bf16_nax_bm64(device const bfloat* W [[buffer(0)]],
     }
     qwg_gemm_bf16_nax_body<64, 64, 32, 2, 2>(W, xBF16, xF32, yBF16, yF32, p, tg, simd_gid);
 }
+#endif // !defined(QW_DISABLE_NAX)
 
 #define QW_GEMV_BF16_INST(R, MVAL)                                                                \
     kernel void qwg_gemv_bf16_rows##R##_m##MVAL(                                                  \
@@ -225,6 +231,7 @@ QW_GEMV_BF16_INST(2, 5) QW_GEMV_BF16_INST(2, 6) QW_GEMV_BF16_INST(2, 7) QW_GEMV_
 QW_GEMV_BF16_INST(4, 1) QW_GEMV_BF16_INST(4, 2) QW_GEMV_BF16_INST(4, 3) QW_GEMV_BF16_INST(4, 4)
 QW_GEMV_BF16_INST(4, 5) QW_GEMV_BF16_INST(4, 6) QW_GEMV_BF16_INST(4, 7) QW_GEMV_BF16_INST(4, 8)
 
+#if !defined(QW_DISABLE_NAX)
 template <bool IS_MXFP8, typename ActT, typename WT, int BM, int WM, int WN>
 METAL_FUNC void qwg_moe_nax_fp_tile_impl(
     device const uint32_t* wExp, device const uchar* scExp, float s2Gate, float s2Up,
@@ -443,6 +450,7 @@ kernel void qwg_moe_nax_gemm_mxfp8_g32(
     threadgroup ushort4 bShU4[64 * 9];
     qwg_moe_nax_fp_dispatch<true>(w, sc, nullptr, x, y, expertOff, tileE, tileR, tileCount, p, tileBlock, sortedTok, tgLut, bShU4, tg, lid, simd_gid);
 }
+#endif // !defined(QW_DISABLE_NAX)
 
 kernel void qwg_moe_build_active_buckets(
     device const int32_t* expertOff [[buffer(0)]], device int32_t* activeExperts [[buffer(1)]],

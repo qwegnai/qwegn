@@ -56,8 +56,9 @@ extension QWGemmFP {
         gateCap: Float = 0, upCap: Float = 0,
         sortedTok: QWTensorValue? = nil
     ) throws {
-        guard hal.caps.isMetal4TensorCapable else {
-            throw QWGemmError.badShape("qwg_moe_nax_gemm_nvfp4_g16_swiglu requires Metal 4 NAX tensor support")
+        let useNAX = hal.caps.isMetal4TensorCapable
+        guard hal.caps.supportsSimdgroupMMA else {
+            throw QWGemmError.badShape("qwg_moe_nax_gemm_nvfp4_g16_swiglu requires Apple7+ simdgroup or Metal 4 NAX tensor support")
         }
         guard inDtype == .f16 || inDtype == .bf16 else {
             throw QWGemmError.badShape("NVFP4 NAX SwiGLU requires .f16 or .bf16 input activation")
@@ -85,7 +86,7 @@ extension QWGemmFP {
             wRows: UInt32(bank.rowsPerExpert),
             inDtype: inDtype.rawValue, outDtype: outDtype.rawValue,
             flags: flags, gateCap: gateCap, upCap: upCap)
-        enc.setComputePipelineState(try hal.pipeline("qwg_moe_nax_gemm_nvfp4_g16_swiglu"))
+        enc.setComputePipelineState(try hal.pipeline(useNAX ? "qwg_moe_nax_gemm_nvfp4_g16_swiglu" : "qwg_moe_sg_gemm_nvfp4_g16_swiglu"))
         bank.weights.bind(enc, index: 0)
         bank.scales.bind(enc, index: 1)
         (bank.scales2 ?? bank.scales).bind(enc, index: 2)
@@ -110,8 +111,9 @@ extension QWGemmFP {
         gateCap: Float = 0, upCap: Float = 0,
         sortedTok: QWTensorValue? = nil
     ) throws {
-        guard hal.caps.isMetal4TensorCapable else {
-            throw QWGemmError.badShape("qwg_moe_nax_gemm_mxfp8_g32_swiglu requires Metal 4 NAX tensor support")
+        let useNAX = hal.caps.isMetal4TensorCapable
+        guard hal.caps.supportsSimdgroupMMA else {
+            throw QWGemmError.badShape("qwg_moe_nax_gemm_mxfp8_g32_swiglu requires Apple7+ simdgroup or Metal 4 NAX tensor support")
         }
         guard inDtype == .f16 || inDtype == .bf16 else {
             throw QWGemmError.badShape("MXFP8 NAX SwiGLU requires .f16 or .bf16 input activation")
@@ -132,7 +134,7 @@ extension QWGemmFP {
             wRows: UInt32(bank.rowsPerExpert),
             inDtype: inDtype.rawValue, outDtype: outDtype.rawValue,
             flags: flags, gateCap: gateCap, upCap: upCap)
-        enc.setComputePipelineState(try hal.pipeline("qwg_moe_nax_gemm_mxfp8_g32_swiglu"))
+        enc.setComputePipelineState(try hal.pipeline(useNAX ? "qwg_moe_nax_gemm_mxfp8_g32_swiglu" : "qwg_moe_sg_gemm_mxfp8_g32_swiglu"))
         bank.weights.bind(enc, index: 0)
         bank.scales.bind(enc, index: 1)
         x.bind(enc, index: 2)

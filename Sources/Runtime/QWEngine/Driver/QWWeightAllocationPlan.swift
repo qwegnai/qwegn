@@ -38,6 +38,12 @@ struct QWWeightAllocationPlan {
         func q4ExpertDown(_ n: Int, _ k: Int) {
             tensor(n * (format.expertDownRowBytes(k: k) / 2), .f16)
         }
+        func appendGatedNorm(_ dim: Int, _ gn: QWModelDescriptor.GatedNormConfig) {
+            tensor(dim, .bf16)
+            tensor(gn.rank * dim, .bf16)
+            tensor(dim * gn.rank, .bf16)
+        }
+        let gn = geometry.gatedNormConfig
         let h = geometry.hidden, i = geometry.intermediate
         let kv = geometry.kvHeads * geometry.headDim
         if headQ4g {
@@ -100,7 +106,7 @@ struct QWWeightAllocationPlan {
                 tensor(geometry.mbsaIndexerHeadDim, .f16)
             }
         }
-        func appendDecoupledMLAWeights() {
+        func appendDecoupledMLAWeights(denseOnly: Bool = false) {
             let mla = geometry.mlaConfig
             let hmla = geometry.hybridMLAConfig
             let qHeads = mla?.qHeads ?? hmla?.qHeads ?? geometry.qHeads
@@ -110,23 +116,26 @@ struct QWWeightAllocationPlan {
             let ropeDim = mla?.qkRopeHeadDim ?? hmla?.qkRopeHeadDim ?? geometry.qkRopeHeadDim
             let vDim = mla?.vHeadDim ?? hmla?.vHeadDim ?? geometry.vHeadDim
             let isDirectQ = mla?.isDirectQ ?? (qRank <= 0)
-            let hasIndexer = mla?.hasIndexer ?? (geometry.indexerHeads > 0)
+            let hasIndexer = !denseOnly && (mla?.hasIndexer ?? (geometry.indexerHeads > 0))
             let gateMode = mla?.outputGateMode
                 ?? (geometry.attnOutputGate ? .elementWiseFromQLora : .none)
             let hasInlineGate = gateMode == .elementWiseFromQLora
+            let fuseOGateInQKV = (hmla == nil && gateMode == .elementWiseFromHidden)
             let idxH = hasIndexer ? max(1, geometry.indexerHeads) : 0
             let idxD = hasIndexer ? max(32, geometry.indexerHeadDim) : 0
             let qCh = qHeads * (nopeDim + ropeDim + (hasInlineGate ? vDim : 0))
             let useVHA = mla?.useVHA ?? hmla?.useVHA ?? false
             let hasAttnSink = mla?.hasAttnSinkBias ?? hmla?.hasAttnSinkBias ?? false
-            q4((isDirectQ ? 0 : qRank) + kvRank + ropeDim + idxD, h)
+            q4((isDirectQ ? 0 : qRank) + kvRank + ropeDim + idxD + (fuseOGateInQKV ? qHeads * vDim : 0), h)
             if !isDirectQ {
-                tensor(qRank, .f16)
+                if let gn { appendGatedNorm(qRank, gn) } else { tensor(qRank, .f16) }
             }
-            tensor(kvRank, .f16)
+            if let gn { appendGatedNorm(kvRank, gn) } else { tensor(kvRank, .f16) }
             if hasIndexer {
                 tensor(idxD, .f16)
-                tensor(idxD, .f16)
+                if mla?.indexerKNormIsRMS != true {
+                    tensor(idxD, .f16)
+                }
                 tensor(idxH * h, .f16)
             }
             q4(qCh + idxH * idxD, isDirectQ ? h : qRank)
@@ -134,7 +143,7 @@ struct QWWeightAllocationPlan {
             q4(h, qHeads * vDim)
             if gateMode == .headWiseFromHidden {
                 tensor(qHeads * h, .f16)
-            } else if gateMode == .elementWiseFromHidden {
+            } else if gateMode == .elementWiseFromHidden && !fuseOGateInQKV {
                 tensor(qHeads * vDim * h, .f16)
             }
             if useVHA {
@@ -152,8 +161,15 @@ struct QWWeightAllocationPlan {
             tensor(routerRows, .f32)
         }
         for layer in 0..<geometry.numLayers {
-            tensor(h, .f16)
-            tensor(h, .f16)
+            if let gn {
+                appendGatedNorm(h, gn)
+                if geometry.useSandwichNorm { appendGatedNorm(h, gn) }
+                appendGatedNorm(h, gn)
+                if geometry.useSandwichNorm { appendGatedNorm(h, gn) }
+            } else {
+                tensor(h, .f16)
+                tensor(h, .f16)
+            }
             if geometry.isMoELayer(layer) {
                 // A sparse MoE layer: the router (the pack's raw plane,
                 // widened to f32) and the two banks — ONE contiguous view
@@ -204,7 +220,9 @@ struct QWWeightAllocationPlan {
                     q4(qTotal + vTotal, kvRank)
                     q4(h, vTotal)
                 } else if geometry.usesDecoupledRopeMLA {
-                    appendDecoupledMLAWeights()
+                    appendDecoupledMLAWeights(
+                        denseOnly: geometry.mlaConfig?.denseAttentionLayers.contains(layer) == true
+                    )
                 } else {
                     appendGQAWeights(includeMBSA: true)
                 }
@@ -240,7 +258,11 @@ struct QWWeightAllocationPlan {
                 appendMHCWeights(mhc)
             }
         }
-        tensor(h, .f16)
+        if let gn {
+            appendGatedNorm(h, gn)
+        } else {
+            tensor(h, .f16)
+        }
         if let mhc = geometry.mhcConfig, mhc.hasExitHead {
             tensor(mhc.streams * mhc.streams * h, .f32)
             tensor(mhc.streams, .f32)
@@ -284,16 +306,22 @@ struct QWWeightAllocationPlan {
             tensor(c, .f32)
             tensor(h, .f16)
         } else if mtpDrafts > 0 {
-            // MTP Layer weights (Qwen3.5 mtp.* or NextN layers.<numLayers>.*):
-            // 1. pre_fc_norm_embedding / enorm
-            tensor(h, .f16)
-            // 2. pre_fc_norm_hidden / hnorm
-            tensor(h, .f16)
-            // 3. fc / eh_proj [H, 2*H]
+            let mtpIsMoE = geometry.mtpConfig?.isMoE ?? (geometry.numExperts > 0)
+            let mtpInter = geometry.mtpConfig?.intermediateSize ?? i
+            let mtpDenseOnly = geometry.mtpConfig?.attentionIsSparse == false
+            if let gn {
+                appendGatedNorm(h, gn)
+                appendGatedNorm(h, gn)
+            } else {
+                tensor(h, .f16)
+                tensor(h, .f16)
+            }
             q4(h, 2 * h)
-            // 4. input_layernorm
-            tensor(h, .f16)
-            // 5-8. self_attn (NoPE MLA or GQA)
+            if let gn {
+                appendGatedNorm(h, gn)
+            } else {
+                tensor(h, .f16)
+            }
             if geometry.usesNoPEMLA {
                 let qRank = geometry.qLoraRank
                 let kvRank = geometry.kvLoraRank
@@ -312,7 +340,7 @@ struct QWWeightAllocationPlan {
                 q4(qTotal + vTotal, kvRank)
                 q4(h, vTotal)
             } else if geometry.usesDecoupledRopeMLA {
-                appendDecoupledMLAWeights()
+                appendDecoupledMLAWeights(denseOnly: mtpDenseOnly)
             } else {
                 q4(geometry.qProjOut + 2 * kv, h)
                 q4(h, geometry.qHeads * geometry.headDim)
@@ -325,17 +353,24 @@ struct QWWeightAllocationPlan {
                 tensor(geometry.headDim, .f16)
                 tensor(kv, .f16)
             }
-            // 9. post_attention_layernorm
-            tensor(h, .f16)
-            // 10. mlp gate_up / down_proj (or sparse MoE bank + shared expert)
-            if geometry.numExperts > 0 {
+            if let gn {
+                if geometry.useSandwichNorm { appendGatedNorm(h, gn) }
+                appendGatedNorm(h, gn)
+                if geometry.useSandwichNorm { appendGatedNorm(h, gn) }
+            } else {
+                tensor(h, .f16)
+            }
+            if mtpIsMoE {
                 appendMoEWeights()
             } else {
-                q4(2 * i, h)
-                q4(h, i)
+                q4(2 * mtpInter, h)
+                q4(h, mtpInter)
             }
-            // 12. norm / shared_head.norm
-            tensor(h, .f16)
+            if let gn {
+                appendGatedNorm(h, gn)
+            } else {
+                tensor(h, .f16)
+            }
         }
         var total = 0
         for shape in requests {

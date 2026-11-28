@@ -72,6 +72,12 @@ public struct QWModelFamilySpec: Sendable, Hashable, Equatable {
     public let allowsAutoMap: Bool
     public let allowsOptionalEosTokenId: Bool
     public let usesLayerNormByDefault: Bool
+    public let isHyperStreamTrunk: Bool
+    public let isRecurrentLoopTrunk: Bool
+    public let moeRouterEnableExpertBias: Bool
+    public let defaultMTPIsDense: Bool
+    public let defaultMTPAttentionIsSparse: Bool?
+    public let defaultIndexerKNormIsRMS: Bool
 
     public init(
         modelType: String,
@@ -102,7 +108,13 @@ public struct QWModelFamilySpec: Sendable, Hashable, Equatable {
         defaultPartialRotaryOne: Bool = false,
         allowsAutoMap: Bool = false,
         allowsOptionalEosTokenId: Bool = false,
-        usesLayerNormByDefault: Bool = false
+        usesLayerNormByDefault: Bool = false,
+        isHyperStreamTrunk: Bool? = nil,
+        isRecurrentLoopTrunk: Bool? = nil,
+        moeRouterEnableExpertBias: Bool = false,
+        defaultMTPIsDense: Bool = false,
+        defaultMTPAttentionIsSparse: Bool? = nil,
+        defaultIndexerKNormIsRMS: Bool = false
     ) {
         self.modelType = modelType
         self.family = family
@@ -111,11 +123,11 @@ public struct QWModelFamilySpec: Sendable, Hashable, Equatable {
         self.usesPlusOneRMSNorm = usesPlusOneRMSNorm ?? [.qwen38Dense, .qwen38MoE, .senseNovaLoop].contains(family)
         self.usesQwenChatTemplateIds = usesQwenChatTemplateIds
             ?? [.qwen38Dense, .qwen38MoE, .qwen38FlashNext, .senseNovaLoop].contains(family)
-        self.defaultHasQKNorm = defaultHasQKNorm ?? ![.qwen2Dense, .llamaDense, .mistralDense].contains(family)
+        self.defaultHasQKNorm = defaultHasQKNorm ?? ![.qwen2Dense, .llamaDense, .mistralDense, .gigachat4].contains(family)
         self.defaultAllFullAttention = defaultAllFullAttention
             ?? [.qwen3Dense, .qwen3MoE, .qwen2Dense, .llamaDense, .mistralDense].contains(family)
         self.defaultNormTopKProb = defaultNormTopKProb
-            ?? [.qwen38MoE, .qwen38FlashNext, .glm5Next, .ernie55MoE, .maxwellMoE, .bailingMoeV3].contains(family)
+            ?? [.qwen38MoE, .qwen38FlashNext, .glm5Next, .ernie55MoE, .maxwellMoE, .bailingMoeV3, .gigachat4].contains(family)
         self.requiresSparseMoEConfig = requiresSparseMoEConfig ?? (family == .qwen3MoE)
         self.disallowsMoEConfig = disallowsMoEConfig
             ?? [.qwen3Dense, .qwen2Dense, .llamaDense, .mistralDense, .qwen38Dense, .senseNovaLoop].contains(family)
@@ -137,6 +149,12 @@ public struct QWModelFamilySpec: Sendable, Hashable, Equatable {
         self.allowsAutoMap = allowsAutoMap
         self.allowsOptionalEosTokenId = allowsOptionalEosTokenId
         self.usesLayerNormByDefault = usesLayerNormByDefault
+        self.isHyperStreamTrunk = isHyperStreamTrunk ?? (family == .qwen38FlashNext)
+        self.isRecurrentLoopTrunk = isRecurrentLoopTrunk ?? (family == .inkling2Loop)
+        self.moeRouterEnableExpertBias = moeRouterEnableExpertBias
+        self.defaultMTPIsDense = defaultMTPIsDense
+        self.defaultMTPAttentionIsSparse = defaultMTPAttentionIsSparse
+        self.defaultIndexerKNormIsRMS = defaultIndexerKNormIsRMS
     }
 }
 
@@ -289,7 +307,8 @@ public final class QWModelFamilyRegistry: @unchecked Sendable {
             defaultAttnOutputGate: true,
             defaultExpertGateType: "sigmoid",
             maxSpeculativeDrafts: 3,
-            supportsExpertStreaming: false
+            supportsExpertStreaming: false,
+            isHyperStreamTrunk: true
         ),
         QWModelFamilySpec(
             modelType: "qwen4_exp_text",
@@ -297,7 +316,8 @@ public final class QWModelFamilyRegistry: @unchecked Sendable {
             defaultAttnOutputGate: true,
             defaultExpertGateType: "sigmoid",
             maxSpeculativeDrafts: 3,
-            supportsExpertStreaming: false
+            supportsExpertStreaming: false,
+            isHyperStreamTrunk: true
         ),
         QWModelFamilySpec(
             modelType: "inkling2_loop",
@@ -311,7 +331,8 @@ public final class QWModelFamilyRegistry: @unchecked Sendable {
             defaultNormTopKProb: false,
             maxSpeculativeDrafts: 15,
             supportsExpertStreaming: false,
-            isOfficialSupported: true
+            isOfficialSupported: true,
+            isRecurrentLoopTrunk: true
         ),
         QWModelFamilySpec(
             modelType: "inkling2_loop_text",
@@ -325,7 +346,8 @@ public final class QWModelFamilyRegistry: @unchecked Sendable {
             defaultNormTopKProb: false,
             maxSpeculativeDrafts: 15,
             supportsExpertStreaming: false,
-            isOfficialSupported: true
+            isOfficialSupported: true,
+            isRecurrentLoopTrunk: true
         ),
         // The standard HF/MLX families. None packs an attention output gate.
         QWModelFamilySpec(
@@ -471,6 +493,34 @@ public final class QWModelFamilyRegistry: @unchecked Sendable {
             isOfficialSupported: true, defaultRole: .decisionEncoder,
             defaultHeadDimFromHidden: true, defaultPartialRotaryOne: true,
             allowsAutoMap: true, allowsOptionalEosTokenId: true, usesLayerNormByDefault: true
+        ),
+        QWModelFamilySpec(
+            modelType: "gigachat4",
+            family: .gigachat4,
+            defaultAttnOutputGate: false,
+            defaultExpertGateType: "sigmoid",
+            usesPlusOneRMSNorm: false,
+            usesQwenChatTemplateIds: false,
+            defaultHasQKNorm: false,
+            defaultAllFullAttention: false,
+            defaultNormTopKProb: true,
+            isOfficialSupported: true,
+            defaultSharedExpertHasGate: false,
+            defaultRopeInterleave: true,
+            defaultSpecialTokens: QWModelSpecialTokens(
+                eosTokenId: 2,
+                imStartTokenId: 128000,
+                imEndTokenId: 128001,
+                thinkTokenId: 128014,
+                endThinkTokenId: 128015,
+                extraStopTokenIds: [2, 128001],
+                usesChatTemplateIds: true
+            ),
+            allowsAutoMap: true,
+            moeRouterEnableExpertBias: true,
+            defaultMTPIsDense: true,
+            defaultMTPAttentionIsSparse: false,
+            defaultIndexerKNormIsRMS: true
         ),
     ]
 

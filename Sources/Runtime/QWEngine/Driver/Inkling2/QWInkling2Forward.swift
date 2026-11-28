@@ -11,7 +11,6 @@ import QWHead
 final class QWInkling2Forward: @unchecked Sendable {
     struct EmbedP { var T, H, V: UInt32; var eps: Float }
     struct NormP { var rows, dim, inIsF32: UInt32; var eps: Float }
-    struct GemmP { var M, N, K, strideX, strideY, inIsF32, outIsF32, addRes: UInt32; var softcap: Float }
     struct RouterP {
         var T, H, numE, topK: UInt32
         var routeScale: Float
@@ -288,6 +287,7 @@ final class QWInkling2Forward: @unchecked Sendable {
         let needFinalNorm = runHeadRows > 0 || finalTapSlot != nil
 
         let hostStartNs = profiler?.beginHostTimer() ?? 0
+        let wallStartNs = DispatchTime.now().uptimeNanoseconds
         func nextCB() -> (any MTLCommandBuffer)? {
             (profiler == nil)
                 ? (hal.queue.makeCommandBufferWithUnretainedReferences() ?? hal.queue.makeCommandBuffer())
@@ -483,16 +483,21 @@ final class QWInkling2Forward: @unchecked Sendable {
         encOpt?.endEncoding()
         profiler?.endHostTimer(hostStartNs)
         cb.commit()
+        var gpuSeconds = 0.0
         for prev in pendingCBs {
             prev.waitUntilCompleted()
             if let err = prev.error {
                 throw QWInkling2Error.badState("Metal execution failed: \(err.localizedDescription)")
             }
+            gpuSeconds += max(0.0, prev.gpuEndTime - prev.gpuStartTime)
         }
         cb.waitUntilCompleted()
         if let err = cb.error {
             throw QWInkling2Error.badState("Metal execution failed: \(err.localizedDescription)")
         }
+        gpuSeconds += max(0.0, cb.gpuEndTime - cb.gpuStartTime)
+        let wallSeconds = Double(DispatchTime.now().uptimeNanoseconds &- wallStartNs) * 1e-9
+        QWTrunkRuntimeSupport.recordGPUBusy(gpuSeconds: gpuSeconds, wallSeconds: wallSeconds)
         profiler?.finishCommandBuffer(cb, tokens: t)
     }
 }

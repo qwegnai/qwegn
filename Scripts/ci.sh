@@ -27,6 +27,7 @@ python3 Scripts/test_kernel_inventory.py || { echo "FAIL: kernel inventory tests
 python3 Scripts/check_metallib_target.py || { echo "FAIL: metallib target gate"; exit 1; }
 python3 Scripts/lint_kernels.py || { echo "FAIL: kernel reachability gate"; exit 1; }
 python3 Scripts/check_basis.py || { echo "FAIL: basis gate"; exit 1; }
+python3 Scripts/lint_metal_constant_luts.py || { echo "FAIL: metal constant LUT gate"; exit 1; }
 echo "== geometry defaults, capability seams & package DAG gates"
 python3 Scripts/lint_geometry_defaults.py Sources || { echo "FAIL: geometry-default gate"; exit 1; }
 python3 Scripts/lint_capability_seams.py || { echo "FAIL: capability-seam gate"; exit 1; }
@@ -87,12 +88,34 @@ if [ "$bbstatus" -ne 0 ]; then
 fi
 tail -1 "$CI_TMP_DIR/bench_build.log"
 python3 Scripts/check_swifterror_abi.py ./.build/release/qwg-bench-kernels || { echo "FAIL: swifterror ABI gate"; exit 1; }
+set +e
+swift build -c release --product qwg > "$CI_TMP_DIR/qwg_release.log" 2>&1
+qbstatus=$?
+set -e
+if [ "$qbstatus" -ne 0 ]; then
+  echo "FAIL: swift build qwg release exit $qbstatus"
+  cat "$CI_TMP_DIR/qwg_release.log"
+  exit "$qbstatus"
+fi
+tail -1 "$CI_TMP_DIR/qwg_release.log"
+python3 Scripts/check_swifterror_abi.py ./.build/release/qwg || { echo "FAIL: swifterror ABI gate (qwg)"; exit 1; }
+set +e
+swift build -c release --product qwg-menu > "$CI_TMP_DIR/qwg_menu_release.log" 2>&1
+mbstatus=$?
+set -e
+if [ "$mbstatus" -ne 0 ]; then
+  echo "FAIL: swift build qwg-menu release exit $mbstatus"
+  cat "$CI_TMP_DIR/qwg_menu_release.log"
+  exit "$mbstatus"
+fi
+tail -1 "$CI_TMP_DIR/qwg_menu_release.log"
+python3 Scripts/check_swifterror_abi.py ./.build/release/qwg-menu || { echo "FAIL: swifterror ABI gate (qwg-menu)"; exit 1; }
 if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
   echo "skipping qwg-bench-kernels execution on GitHub Actions paravirtual GPU"
 else
   BENCH_OUT_DIR="$CI_TMP_DIR/bench_out"
   mkdir -p "$BENCH_OUT_DIR"
-  ./.build/release/qwg-bench-kernels --out "$BENCH_OUT_DIR" >/dev/null
+  ./.build/release/qwg-bench-kernels --samples 2 --out "$BENCH_OUT_DIR" >/dev/null
   python3 Scripts/check_bench_report.py "$BENCH_OUT_DIR/bench_kernels_report.json" \
     || { echo "FAIL: the winner map"; exit 1; }
 fi

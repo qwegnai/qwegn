@@ -96,9 +96,11 @@ extension QWDFlashDrafter {
         let partBytes = R * C * 2
         let dstBase = packedGatePrev.region.buffer.contents()
             .advanced(by: packedGatePrev.region.base + packedGatePrev.offset)
-        for (idx, part) in [gateW, predGateW, prevW].enumerated() {
-            let srcPtr = part.region.buffer.contents().advanced(by: part.region.base + part.offset)
-            memcpy(dstBase.advanced(by: idx * partBytes), srcPtr, partBytes)
+        withExtendedLifetime(packedGatePrev.region.buffer) {
+            for (idx, part) in [gateW, predGateW, prevW].enumerated() {
+                let srcPtr = part.region.buffer.contents().advanced(by: part.region.base + part.offset)
+                dstBase.advanced(by: idx * partBytes).copyMemory(from: srcPtr, byteCount: partBytes)
+            }
         }
 
         let gateBias = try loadF16("selected_prefix_bridge.gate.bias", R)
@@ -229,7 +231,8 @@ extension QWDFlashDrafter {
         }
         let H = config.hiddenSize
         let I = config.intermediateSize
-        if isMetal4TensorCapable && rows >= 9 && canUseNAXGateUpScratch(rows: rows, h: H, i: I) {
+        if (config.swigluLimit > 0 && draftLogits.bytes >= rows * 2 * I * 2)
+            || (supportsSimdgroupGemm && rows >= 9 && canUseNAXGateUpScratch(rows: rows, h: H, i: I)) {
             let guScratch = QWTensorValue(region: draftLogits.region, offset: draftLogits.offset,
                                           shape: QWTensorShape([rows * 2 * I], .f16))
             try encodeQ4Matmul(enc, weight: weight, input: input, output: guScratch, rows: rows)

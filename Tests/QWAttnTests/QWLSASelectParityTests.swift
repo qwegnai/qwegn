@@ -11,13 +11,22 @@ import QWQuant
 /// The multi-threadgroup selector (`qwg_lsa_select_score/_hist2/_expand/_finalize`)
 /// must emit exactly the block lists of the single-threadgroup `qwg_lsa_select_blocks`.
 final class QWLSASelectParityTests: XCTestCase {
+    private static let sharedBasis101: [UInt16] = QWLSASidecar.synthesizeDeterministicOrthogonalBasis(
+        inDim: QWLSATests.geometry.lsaInputDim, indexDim: 64, seed: 101
+    )
+    private static let precomputedChunks: [(q: [UInt16], k: [UInt16])] = (0..<12).map { s in
+        (
+            QWAttnPagedPrefillTests.synthQGate(n: 512, seed: UInt64(0x1000 + s)),
+            QWAttnPagedPrefillTests.synthKV(n: 512, seed: UInt64(0x2000 + s))
+        )
+    }
+
     private func runParity(distinctChunks: Int, T: Int, budget: Int) throws {
         let hal = QWLSATests.hal
         try XCTSkipUnless(hal.caps.isMetal4TensorCapable, "Multi-TG LSA selector requires bare-metal Apple Silicon GPU")
         let geometry = QWLSATests.geometry
         let cfg = QWLSAConfig(mode: .svd, budget: budget, clusterBlock: 512)
-        let basis = QWLSASidecar.synthesizeDeterministicOrthogonalBasis(
-            inDim: geometry.lsaInputDim, indexDim: 64, seed: 101)
+        let basis = Self.sharedBasis101
         let op = try QWLSAOperator(
             hal: hal, geometry: geometry, config: cfg, indexDim: 64,
             layerWeights: [.init(physicalLayer: 3, wqIdxF16: basis, wkIdxF16: basis)],
@@ -27,8 +36,7 @@ final class QWLSASelectParityTests: XCTestCase {
         var qBufs: [QWTensorValue] = []
         var kBufs: [QWTensorValue] = []
         for s in 0..<distinctChunks {
-            let q = QWAttnPagedPrefillTests.synthQGate(n: chunk, seed: UInt64(0x1000 + s))
-            let k = QWAttnPagedPrefillTests.synthKV(n: chunk, seed: UInt64(0x2000 + s))
+            let (q, k) = Self.precomputedChunks[s]
             let qb = hal.device.makeBuffer(bytes: q, length: q.count * 2, options: .storageModeShared)!
             let kb = hal.device.makeBuffer(bytes: k, length: k.count * 2, options: .storageModeShared)!
             qBufs.append(QWTensorValue(region: QWMRegion(buffer: qb, base: 0, length: qb.length),

@@ -6,17 +6,20 @@
 #include <metal_stdlib>
 #include <metal_simdgroup>
 #include <metal_simdgroup_matrix>
+#include "../include/qw_mla_dequant.metalh"
+using namespace metal;
+
+#if !defined(QW_DISABLE_NAX)
 #include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
 #include "mlx/backend/metal/kernels/steel/defines.h"
 #include "mlx/backend/metal/kernels/steel/utils/integral_constant.h"
 #include "mlx/backend/metal/kernels/steel/gemm/nax.h"
-#include "../include/qw_mla_dequant.metalh"
-using namespace metal;
 using namespace mlx::steel;
 
 #if !defined(__ENVIRONMENT_OS_VERSION_MIN_REQUIRED__) || (__ENVIRONMENT_OS_VERSION_MIN_REQUIRED__ < 260200)
 #error "Metal 4 NAX kernels require -mmacosx-version-min=26.2 (SDK MPPTensorOpsAvailability)"
 #endif
+#endif // !defined(QW_DISABLE_NAX)
 
 struct HCAVhaInvRopeParams {
     uint T;
@@ -155,6 +158,7 @@ METAL_FUNC void qw_hca_nax_fwht32_pair(thread float (&e)[4], thread float (&f)[4
     for (short k = 0; k < 4; ++k) { e[k] *= invSqrt32; f[k] *= invSqrt32; }
 }
 
+#if !defined(QW_DISABLE_NAX)
 // 5b. Apple10+ NAX VHA head mixing + GPT-J Inverse YaRN RoPE + optional H_32 (BLOCK=128).
 // Grid: ((headDim + 127) / 128, T, 1), Threadgroup: (256, 1, 1).
 kernel void qwg_hca_vha_invrope_nax(
@@ -234,6 +238,7 @@ kernel void qwg_hca_vha_invrope_nax(
         }
     }
 }
+#endif // !defined(QW_DISABLE_NAX)
 
 template <bool SUB2 = false>
 METAL_FUNC void qw_hca_unpack_wo_a_32(device const char* woABlocks,

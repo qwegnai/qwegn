@@ -69,6 +69,7 @@ extension QWInkling2Runtime {
         lsaConfig: QWLSAConfig,
         lsaIndexDim: Int = QWLSAConfig.defaultIndexDim,
         lsaMultiHeadDirect: Bool? = nil,
+        extraFixedScratchBytes: Int = 0,
         availableBytes: Int
     ) throws -> AdmissionSizing {
         let elemsPerRow = desc.kvHeads * desc.headDim
@@ -114,7 +115,8 @@ extension QWInkling2Runtime {
             indexDim: lsaIndexDim,
             isMultiHeadDirect: lsaMultiHeadDirect
         )
-        let fixedScratchEst = slidingVisits * slidingCap * kvRowTotal + convBytes + dsparkFixedEst + lsaBytes + (640 << 20)
+        let fixedScratchEst = slidingVisits * slidingCap * kvRowTotal + convBytes
+            + dsparkFixedEst + extraFixedScratchBytes + lsaBytes + (640 << 20)
 
         let capPlan = try QWCapacityPlan.plan(
             nativeWindow: desc.maxPositionEmbeddings,
@@ -125,7 +127,7 @@ extension QWInkling2Runtime {
             yarnAllowed: false
         )
         let alignedCap = QWCapacityPlan.steppedCapacity(capPlan.context)
-        let resolvedCap = QWHyperStreamRuntime.resolveKVCapacity(
+        let resolvedCap = QWCapacityBudget.resolveKVCapacity(
             alignedCap: alignedCap,
             fixedBytes: weightsEst + fixedScratchEst,
             perTokenBytes: perTokBytes,

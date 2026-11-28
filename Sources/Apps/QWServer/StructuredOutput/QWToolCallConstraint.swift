@@ -1,15 +1,14 @@
 // QWToolCallConstraint.swift — request-local token constraint that restricts
-// tool-call function and parameter names inside <tool_call> blocks across
-// Qwen XML (<function=NAME> / <parameter=NAME>), GLM XML (NAME<arg_key>NAME</arg_key>),
-// and JSON (<tool_call>{"name": "NAME", ...}) formats to the request's tool schemas.
+// tool-call function and parameter names inside tool blocks across Qwen XML,
+// GCML (<｜GCML｜tool_calls>), GLM XML, and JSON formats to declared schemas.
 
 import Foundation
 import QWCore
 import QWHead
 import QWToken
 
-/// Constrains tool and parameter names inside `<tool_call>` blocks to the
-/// request's declared tool names and parameter schemas.
+/// Constrains tool and parameter names inside `<tool_call>` / `<｜GCML｜tool_calls>` blocks
+/// to the request's declared tool names and parameter schemas.
 public final class QWToolCallConstraint: QWTokenConstraint, @unchecked Sendable {
     private enum TagKind {
         case header
@@ -20,9 +19,13 @@ public final class QWToolCallConstraint: QWTokenConstraint, @unchecked Sendable 
     }
 
     private static let endThinkUTF8 = Array("</think>".utf8)
+    private static let gcmlInvokePrefix = "<｜GCML｜invoke name=\""
+    private static let gcmlInvokeOpenUTF8 = Array("<｜GCML｜invoke".utf8)
+    private static let gcmlInvokeCloseUTF8 = Array("</｜GCML｜invoke>".utf8)
+    private static let gcmlParamOpenUTF8 = Array("<｜GCML｜parameter".utf8)
 
     private let table: QWJSONTokenTable
-    private let toolCallToken: Int?
+    private let toolCallOpenTokens: [Int]
     private let toolCallEndToken: Int?
     private let requireToolCall: Bool
     private let endThinkToken: Int?
@@ -36,10 +39,12 @@ public final class QWToolCallConstraint: QWTokenConstraint, @unchecked Sendable 
     private let xmlInvokeTargets: [[UInt8]]
     private let jsonToolTargets: [[UInt8]]
     private let parameterTargetsByTool: [String: [[UInt8]]]
+    private let gcmlParameterTargetsByTool: [String: [[UInt8]]]
     private let argKeyTargetsByTool: [String: [[UInt8]]]
 
     private var inThinking: Bool
     private var hasStartedToolCall = false
+    private var openPrefixMatched = 0
     private var recentThinkBytes: [UInt8] = []
     private var inToolCall = false
     private var currentToolName: String?
@@ -47,7 +52,7 @@ public final class QWToolCallConstraint: QWTokenConstraint, @unchecked Sendable 
     private var activeTag: (kind: TagKind, targets: [[UInt8]], prefix: [UInt8])?
 
     private var mustEmitToolCallNow: Bool {
-        requireToolCall && !hasStartedToolCall && !inThinking && toolCallToken != nil
+        requireToolCall && !hasStartedToolCall && !inThinking && !toolCallOpenTokens.isEmpty
     }
 
     public var allowsSpeculation: Bool {
@@ -55,12 +60,15 @@ public final class QWToolCallConstraint: QWTokenConstraint, @unchecked Sendable 
     }
     public var isUnconstrainedNow: Bool { !inToolCall && activeTag == nil && !mustEmitToolCallNow }
     public var speculationBoundaryToken: Int? {
-        (requireToolCall && !hasStartedToolCall && inThinking) ? endThinkToken : toolCallToken
+        if requireToolCall && !hasStartedToolCall && inThinking {
+            return endThinkToken
+        }
+        return openPrefixMatched < toolCallOpenTokens.count ? toolCallOpenTokens[openPrefixMatched] : toolCallOpenTokens.first
     }
 
     private init(cloning other: QWToolCallConstraint) {
         self.table = other.table
-        self.toolCallToken = other.toolCallToken
+        self.toolCallOpenTokens = other.toolCallOpenTokens
         self.toolCallEndToken = other.toolCallEndToken
         self.requireToolCall = other.requireToolCall
         self.endThinkToken = other.endThinkToken
@@ -74,9 +82,11 @@ public final class QWToolCallConstraint: QWTokenConstraint, @unchecked Sendable 
         self.xmlInvokeTargets = other.xmlInvokeTargets
         self.jsonToolTargets = other.jsonToolTargets
         self.parameterTargetsByTool = other.parameterTargetsByTool
+        self.gcmlParameterTargetsByTool = other.gcmlParameterTargetsByTool
         self.argKeyTargetsByTool = other.argKeyTargetsByTool
         self.inThinking = other.inThinking
         self.hasStartedToolCall = other.hasStartedToolCall
+        self.openPrefixMatched = other.openPrefixMatched
         self.recentThinkBytes = other.recentThinkBytes
         self.inToolCall = other.inToolCall
         self.currentToolName = other.currentToolName
@@ -92,8 +102,10 @@ public final class QWToolCallConstraint: QWTokenConstraint, @unchecked Sendable 
         guard QWConstrainedSpeculationGate.isEnabled, maxCount > 0 else { return [] }
         let probe = QWToolCallConstraint(cloning: self)
         var out: [Int] = []
-        if probe.mustEmitToolCallNow, let startTok = probe.toolCallToken {
-            guard (try? probe.accept(startTok)) != nil else { return [] }
+        while out.count < maxCount && probe.mustEmitToolCallNow,
+              probe.openPrefixMatched < probe.toolCallOpenTokens.count {
+            let startTok = probe.toolCallOpenTokens[probe.openPrefixMatched]
+            guard (try? probe.accept(startTok)) != nil else { return out }
             out.append(startTok)
         }
         while out.count < maxCount, probe.inToolCall, let tag = probe.activeTag {
@@ -134,12 +146,15 @@ public final class QWToolCallConstraint: QWTokenConstraint, @unchecked Sendable 
     }
 
     public init?(tools: [QWJson], forcedToolName: String?,
-                 table: QWJSONTokenTable, toolCallToken: Int?, toolCallEndToken: Int?,
+                 table: QWJSONTokenTable, toolCallToken: Int? = nil,
+                 toolCallOpenTokens: [Int]? = nil,
+                 toolCallEndToken: Int?,
                  toolCallCloseTag: String? = nil,
                  requireToolCall: Bool = false, startsInThinking: Bool = false,
                  endThinkToken: Int? = nil, endThinkCloseTag: String? = nil) {
         var names: [String] = []
         var paramsByTool: [String: [[UInt8]]] = [:]
+        var gcmlParamsByTool: [String: [[UInt8]]] = [:]
         var argKeysByTool: [String: [[UInt8]]] = [:]
         for item in tools {
             let fn = item.get("function").isUndefined ? item : item.get("function")
@@ -158,18 +173,26 @@ public final class QWToolCallConstraint: QWTokenConstraint, @unchecked Sendable 
             if !allowExtra, case .object(let props) = params.get("properties"), !props.isEmpty {
                 var pList = props.map { Array(("=" + $0.0 + ">").utf8) }
                 pList.append(contentsOf: props.map { Array((" name=\"" + $0.0 + "\">").utf8) })
+                pList.append(contentsOf: props.map { Array((" name=\"" + $0.0 + "\" string=\"true\">").utf8) })
+                pList.append(contentsOf: props.map { Array((" name=\"" + $0.0 + "\" string=\"false\">").utf8) })
                 paramsByTool[name] = pList
+                var gcmlList = props.map { Array((" name=\"" + $0.0 + "\" string=\"true\">").utf8) }
+                gcmlList.append(contentsOf: props.map { Array((" name=\"" + $0.0 + "\" string=\"false\">").utf8) })
+                gcmlList.append(contentsOf: props.map { Array((" name=\"" + $0.0 + "\">").utf8) })
+                gcmlParamsByTool[name] = gcmlList
                 argKeysByTool[name] = props.map { Array(($0.0 + "</arg_key>").utf8) }
             }
         }
         guard !names.isEmpty else { return nil }
+        let resolvedOpen = toolCallOpenTokens ?? (toolCallToken.map { [$0] } ?? [])
+        let firstOpenId = resolvedOpen.count == 1 ? resolvedOpen[0] : nil
         let derivedCloseTag: String = {
             if let explicit = toolCallCloseTag, !explicit.isEmpty { return explicit }
             if let endId = toolCallEndToken, endId >= 0, endId < table.bytes.count, let eb = table.bytes[endId],
                let s = String(bytes: eb, encoding: .utf8), !s.isEmpty {
                 return s
             }
-            if let openId = toolCallToken, openId >= 0, openId < table.bytes.count, let ob = table.bytes[openId],
+            if let openId = firstOpenId, openId >= 0, openId < table.bytes.count, let ob = table.bytes[openId],
                let s = String(bytes: ob, encoding: .utf8),
                let env = QWToolCallEnvelope.fromOpenTag(s) {
                 return env.closeTag
@@ -189,14 +212,14 @@ public final class QWToolCallConstraint: QWTokenConstraint, @unchecked Sendable 
         }
 
         self.table = table
-        self.toolCallToken = toolCallToken
+        self.toolCallOpenTokens = resolvedOpen
         self.toolCallEndToken = toolCallEndToken
         self.requireToolCall = requireToolCall
         self.endThinkToken = endThinkToken
         self.toolCloseBytesList = closeTags.map { Array($0.utf8) }
         self.toolClosePrefixes = closeTags.map { $0.hasSuffix(">") ? String($0.dropLast()) : $0 }
         self.endThinkBytesList = thinkTags
-        self.recentCap = max(24, closeTags.map(\.utf8.count).max() ?? 12)
+        self.recentCap = max(48, closeTags.map(\.utf8.count).max() ?? 12)
         self.recentThinkCap = max(24, thinkTags.map(\.count).max() ?? 8)
         self.inThinking = startsInThinking && requireToolCall
         self.toolTargets = names.map { Array(("=" + $0 + ">").utf8) }
@@ -206,6 +229,7 @@ public final class QWToolCallConstraint: QWTokenConstraint, @unchecked Sendable 
         for name in names {
             hdr.append(Array(("<function=" + name + ">").utf8))
             hdr.append(Array(("<invoke name=\"" + name + "\">").utf8))
+            hdr.append(Array((Self.gcmlInvokePrefix + name + "\">").utf8))
             hdr.append(Array((name + "<arg_key>").utf8))
             for closeTag in closeTags {
                 hdr.append(Array((name + closeTag).utf8))
@@ -214,6 +238,7 @@ public final class QWToolCallConstraint: QWTokenConstraint, @unchecked Sendable 
         }
         self.headerTargets = hdr
         self.parameterTargetsByTool = paramsByTool
+        self.gcmlParameterTargetsByTool = gcmlParamsByTool
         self.argKeyTargetsByTool = argKeysByTool
     }
 
@@ -222,8 +247,21 @@ public final class QWToolCallConstraint: QWTokenConstraint, @unchecked Sendable 
         b == 0x20 || b == 0x0A || b == 0x0D || b == 0x09
     }
 
+    private func enterToolCall() {
+        hasStartedToolCall = true
+        inThinking = false
+        openPrefixMatched = 0
+        recentThinkBytes.removeAll(keepingCapacity: false)
+        inToolCall = true
+        currentToolName = nil
+        recentBytes.removeAll(keepingCapacity: true)
+        activeTag = (.header, headerTargets, [])
+    }
+
     public func allowedTokens() throws -> [Int]? {
-        if mustEmitToolCallNow, let startTok = toolCallToken { return [startTok] }
+        if mustEmitToolCallNow, openPrefixMatched < toolCallOpenTokens.count {
+            return [toolCallOpenTokens[openPrefixMatched]]
+        }
         guard inToolCall, let tag = activeTag else { return nil }
         let trie = table.fullTrie
         let targets = tag.targets
@@ -276,7 +314,7 @@ public final class QWToolCallConstraint: QWTokenConstraint, @unchecked Sendable 
                         if b == 0x2C || b == 0x7D || Self.isWhitespace(b) {
                             nextActive.append(idx)
                         }
-                    } else if b == 0x0A || b == 0x0D || b == UInt8(ascii: "<") {
+                    } else if kind == .parameter || b == 0x0A || b == 0x0D || b == UInt8(ascii: "<") {
                         nextActive.append(idx)
                     }
                 }
@@ -308,18 +346,26 @@ public final class QWToolCallConstraint: QWTokenConstraint, @unchecked Sendable 
     }
 
     public func accept(_ token: Int) throws {
-        if let startTok = toolCallToken, token == startTok {
-            hasStartedToolCall = true
-            inThinking = false
-            recentThinkBytes.removeAll(keepingCapacity: false)
-            inToolCall = true
-            currentToolName = nil
-            recentBytes.removeAll(keepingCapacity: true)
-            activeTag = (.header, headerTargets, [])
+        if !inToolCall && !(requireToolCall && !hasStartedToolCall && inThinking) && !toolCallOpenTokens.isEmpty {
+            if mustEmitToolCallNow {
+                guard token == toolCallOpenTokens[openPrefixMatched] else {
+                    throw QWTokenConstraintError.rejectedToken(token)
+                }
+                openPrefixMatched += 1
+                if openPrefixMatched >= toolCallOpenTokens.count { enterToolCall() }
+                return
+            }
+            if token == toolCallOpenTokens[openPrefixMatched] {
+                openPrefixMatched += 1
+                if openPrefixMatched >= toolCallOpenTokens.count { enterToolCall() }
+                return
+            }
+            openPrefixMatched = (token == toolCallOpenTokens[0]) ? 1 : 0
             return
         }
         if let endTok = toolCallEndToken, token == endTok {
             inToolCall = false
+            openPrefixMatched = 0
             currentToolName = nil
             recentBytes.removeAll(keepingCapacity: true)
             activeTag = nil
@@ -328,6 +374,7 @@ public final class QWToolCallConstraint: QWTokenConstraint, @unchecked Sendable 
         if requireToolCall && !hasStartedToolCall && inThinking {
             if let et = endThinkToken, token == et {
                 inThinking = false
+                openPrefixMatched = 0
                 recentThinkBytes.removeAll(keepingCapacity: false)
                 return
             }
@@ -338,9 +385,14 @@ public final class QWToolCallConstraint: QWTokenConstraint, @unchecked Sendable 
                 }
                 if endThinkBytesList.contains(where: { recentThinkBytes.suffix($0.count).elementsEqual($0) }) {
                     inThinking = false
+                    openPrefixMatched = 0
                     recentThinkBytes.removeAll(keepingCapacity: false)
                 }
             }
+            return
+        }
+        if inToolCall && toolCallOpenTokens.count == 1 && token == toolCallOpenTokens[0] {
+            enterToolCall()
             return
         }
         guard inToolCall, token >= 0, token < table.vocabulary,
@@ -385,6 +437,9 @@ public final class QWToolCallConstraint: QWTokenConstraint, @unchecked Sendable 
                         } else if str.hasPrefix("<invoke name=\""), str.hasSuffix("\"") {
                             currentToolName = String(str.dropFirst(14).dropLast(1))
                             activeTag = nil
+                        } else if str.hasPrefix(Self.gcmlInvokePrefix), str.hasSuffix("\"") {
+                            currentToolName = String(str.dropFirst(Self.gcmlInvokePrefix.count).dropLast(1))
+                            activeTag = nil
                         } else if str.hasSuffix("<arg_key") {
                             let tool = str.dropLast(8).trimmingCharacters(in: .whitespacesAndNewlines)
                             currentToolName = tool
@@ -419,10 +474,17 @@ public final class QWToolCallConstraint: QWTokenConstraint, @unchecked Sendable 
                 }
                 if recentBytes.suffix(9).elementsEqual("<function".utf8) {
                     activeTag = (.function, toolTargets, [])
-                } else if recentBytes.suffix(7).elementsEqual("<invoke".utf8) {
+                } else if recentBytes.suffix(7).elementsEqual("<invoke".utf8)
+                    || recentBytes.suffix(Self.gcmlInvokeOpenUTF8.count).elementsEqual(Self.gcmlInvokeOpenUTF8) {
                     activeTag = (.function, xmlInvokeTargets, [])
-                } else if recentBytes.suffix(9).elementsEqual("</invoke>".utf8) {
+                } else if recentBytes.suffix(9).elementsEqual("</invoke>".utf8)
+                    || recentBytes.suffix(Self.gcmlInvokeCloseUTF8.count).elementsEqual(Self.gcmlInvokeCloseUTF8) {
                     currentToolName = nil
+                } else if recentBytes.suffix(Self.gcmlParamOpenUTF8.count).elementsEqual(Self.gcmlParamOpenUTF8),
+                          let tool = currentToolName,
+                          let pTargets = gcmlParameterTargetsByTool[tool],
+                          !pTargets.isEmpty {
+                    activeTag = (.parameter, pTargets, [])
                 } else if recentBytes.suffix(10).elementsEqual("<parameter".utf8),
                           let tool = currentToolName,
                           let pTargets = parameterTargetsByTool[tool],

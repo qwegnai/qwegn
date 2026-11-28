@@ -1,6 +1,12 @@
 // qwattn_mbsa.metal — Maxwell Block-Sparse GQA indexer prep, NAX top-k selector & scalar fallback attention.
 #include <metal_stdlib>
 #include <metal_simdgroup>
+#include "include/qw_geometry_constants.metalh"
+#include "include/qw_dequant.metalh"
+#include "include/qw_kv_paged.metalh"
+using namespace metal;
+
+#if !defined(QW_DISABLE_NAX)
 #include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
 #if !defined(__ENVIRONMENT_OS_VERSION_MIN_REQUIRED__) || __ENVIRONMENT_OS_VERSION_MIN_REQUIRED__ < 260200
 #error "NAX cooperative_tensor kernels require -mmacosx-version-min=26.2 or newer (Apple MPP operand_index ABI)."
@@ -8,11 +14,8 @@
 #include "mlx/backend/metal/kernels/steel/defines.h"
 #include "mlx/backend/metal/kernels/steel/utils/integral_constant.h"
 #include "mlx/backend/metal/kernels/steel/gemm/nax.h"
-#include "include/qw_geometry_constants.metalh"
-#include "include/qw_dequant.metalh"
-#include "include/qw_kv_paged.metalh"
-using namespace metal;
 using namespace mlx::steel;
+#endif // !defined(QW_DISABLE_NAX)
 
 struct MBSAH8 { half v[8]; } __attribute__((__packed__, __aligned__(16)));
 static inline MBSAH8 mbsa_asH8(uint4 w) { return *(thread MBSAH8*)&w; }
@@ -333,6 +336,7 @@ QW_MBSA_ATTN_ENTRY(_q8,  1u)
 QW_MBSA_ATTN_ENTRY(_q4,  2u)
 #undef QW_MBSA_ATTN_ENTRY
 
+#if !defined(QW_DISABLE_NAX)
 // Prefill 32-query-tile MBSA block-max selector using NAX 16x16 MMA + union bitmask compaction (128T).
 kernel void qwg_mbsa_select_blocks_tiled32(const device half* idxQ           [[buffer(0)]],
                                            const device half* idxKCache      [[buffer(1)]],
@@ -585,3 +589,4 @@ kernel void qwg_mbsa_select_blocks_tiled32(const device half* idxQ           [[b
     }
     if (tid == 0u) tileBlockCount[(size_t)tileIdx * kvHeads + kvh] = outCount;
 }
+#endif // !defined(QW_DISABLE_NAX)

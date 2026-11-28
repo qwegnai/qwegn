@@ -292,9 +292,10 @@ enum MoESuites {
         }
 
         // --- the pipelines ---
+        let groupedKernel = hal.caps.isMetal4TensorCapable ? "qwg_moe_nax_gemm" : "qwg_moe_sg_gemm"
         let psoPerPair = try hal.pipeline("qwg_moe_gateup_q4g_f32_r1")
         let psoSort = try hal.pipeline("qwg_moe_group_pairs_f32")
-        let psoNAX = try hal.pipeline("qwg_moe_nax_gemm")
+        let psoNAX = try hal.pipeline(groupedKernel)
 
         // --- the candidates ---
         // The counting sort: which pair went to which expert, and the tile
@@ -372,7 +373,7 @@ enum MoESuites {
         let racers = [
             OperatorSuites.Racer(name: "qwg_moe_gateup_q4g_f32_r1", dispatches: 1,
                                  encode: { enc in encodePerPair(enc) }),
-            OperatorSuites.Racer(name: "qwg_moe_group_pairs_f32 + qwg_moe_nax_gemm",
+            OperatorSuites.Racer(name: "qwg_moe_group_pairs_f32 + \(groupedKernel)",
                                  dispatches: 2, publishable: naxIsRunnable,
                                  encode: { enc in encodeNAX(enc) }),
             OperatorSuites.Racer(name: "qwg_moe_group_pairs_f32", dispatches: 1,

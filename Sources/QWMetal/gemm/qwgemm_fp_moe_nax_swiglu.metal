@@ -1,6 +1,12 @@
 // qwgemm_fp_moe_nax_swiglu.metal — Fused BN=32 grouped-NAX MoE gate+up+softcap SwiGLU and sorted gather.
 #include <metal_stdlib>
 #include <metal_simdgroup>
+#include "qw_dequant_fp.metalh"
+#include "qw_moe_tile.metalh"
+
+using namespace metal;
+
+#if !defined(QW_DISABLE_NAX)
 #include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
 #if !defined(__ENVIRONMENT_OS_VERSION_MIN_REQUIRED__) || __ENVIRONMENT_OS_VERSION_MIN_REQUIRED__ < 260200
 #error "NAX cooperative_tensor kernels require -mmacosx-version-min=26.2 or newer (Apple MPP operand_index ABI)."
@@ -8,12 +14,10 @@
 #include "mlx/backend/metal/kernels/steel/defines.h"
 #include "mlx/backend/metal/kernels/steel/utils/integral_constant.h"
 #include "mlx/backend/metal/kernels/steel/gemm/nax.h"
-#include "qw_dequant_fp.metalh"
 #include "qw_moe_fp_nax.metalh"
-#include "qw_moe_tile.metalh"
 
-using namespace metal;
 using namespace mlx::steel;
+#endif // !defined(QW_DISABLE_NAX)
 
 struct QWGemmFPMoENaxSwigluParams {
     uint experts, n, k, wRows, inDtype, outDtype, flags;
@@ -65,6 +69,7 @@ kernel void qwg_moe_gather_x(
     }
 }
 
+#if !defined(QW_DISABLE_NAX)
 template <bool IS_MXFP8, typename ActT, typename WT, int BM, int BN, int WM, int WN>
 METAL_FUNC void qwg_moe_nax_fp_swiglu_tile_impl(
     device const uint32_t* wExp, device const uchar* scExp, float s2Gate, float s2Up,
@@ -304,3 +309,4 @@ kernel void qwg_moe_nax_gemm_mxfp8_g32_swiglu(
     qwg_moe_nax_fp_swiglu_dispatch<true>(
         w, sc, nullptr, x, y, expertOff, tileE, tileR, tileCount, p, tileBlock, sortedTok, tgLut, bShU4, tg, lid, simd_gid);
 }
+#endif // !defined(QW_DISABLE_NAX)

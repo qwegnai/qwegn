@@ -7,12 +7,43 @@ may change CLI flags, pack formats or profile files.
 
 The single source of the version is `QWVersion.current` in
 `Sources/Foundation/QWCore/QWVersion.swift`; release tags are `vMAJOR.MINOR.PATCH`.
-Merges to `master` record changes under `## [Unreleased]` without touching
+Merges to `master` record changes under `[Unreleased]` without touching
 `QWVersion.current` or any release artifact; the version is bumped only in the
 release-preparation commit, which renames `[Unreleased]` to the new
 `[X.Y.Z] - YYYY-MM-DD` heading.
 
 ## [Unreleased]
+
+## [0.44.0] - 2026-11-28
+
+Adds end-to-end support for `GigaChat4-37B-A4B` with 5-layer Matrix-Absorbed MLA `DFlash 2` speculation, a unified M1–M6 (`Apple7`–`Apple11`) Metal 3.2/4 runtime, `Inkling-2-Mini` `DFlash 2` drafting, Cognitive Vault v2 with native cross-encoder `/v1/rerank`, and a unified `QWTrunkExecutor` control plane.
+
+### Performance Improvements
+
+| Workload (Apple M5 Max, 128 GB UMA, `q4` KV) | Baseline | v0.44.0 | Gain / Impact |
+| :--- | :--- | :--- | :--- |
+| `GigaChat4-37B-A4B-shvq4g32` `code128` & `QWServer` decode | `98.8 tok/s` (serial) | **`137.2 tok/s`** CLI · **`164.4 tok/s`** SSE | **`+38.8%` CLI** · **`323.8 tok/s`** pred (`7.38 tok/step`) |
+| `GigaChat4-37B-A4B-shvq4g32` `4K` prefill & `16K`/`32K`/`1M` ctx | — | **`4,770 tok/s`** (`4,833` `hq8g32`) · **`124.9` / `130.2 tok/s`** | **`28.4x` cache** (`15 ms`) · **`1M` ctx in `< 27 GiB`** (`3/3` at `300K`) |
+| `Inkling-2-Mini-QWP-Fast` + `DFlash 2` (`2K` / `8K` decode) | `61.3` / `66.3 tok/s` | **`79.5` / `103.3 tok/s`** (up to `5.08 tok/rnd`) | **`+29.6%` to `+55.8%`** (`-41.8%` `denseAttnProj`, `128`-key Split-KV) |
+| `Qwen3.6-35B-A3B` & `Apex-35B-V1.0` decode | `201.6` / `150.2 tok/s` | **`208.6` / `154.4 tok/s`** | **`+3.5%` / `+2.7%`** (`SHVQ`/MLA/head improvements) |
+| Warm `.metallib` build & `-Onone` test suite (`QWStateTests`) | `42.0 s` / `65.3 s` | **`0.34 s` / `2.66 s`** | **`123x` faster** Metal cache · **`24.5x` faster** Debug tests |
+
+- **Apple10 Metal 4 & Unified `SHVQ` Kernels**: Added `TG16` (`M <= 16`) `16 KiB` SRAM-LUT `SHVQ` NAX `lm_head`, `rows2_m` (`2 <= M <= 8`) & quarter-warp `SHVQ` GEMV/MoE kernels, single-CB verify+propose `DFlash 2` fusion (`+4.5%–6.0%`), `10 KiB` direct-register grouped MoE `_sg` prefill (`~10%` faster on M1–M4), and analytical loop bounds in scalar decision topology attention.
+
+### Added
+- **`GigaChat4-37B-A4B` (`gigachat4`) & Matrix-Absorbed MLA `DFlash 2`**: Hybrid 24-GDN + 8-MLA-DSA + 56-MoE (`192` experts, `topK = 8`, `SwiGLU` clamp `10.0`) + fused BF16 sandwich `GatedNorm` + recurrent Layer-32 `NextN` MTP + 5-layer MLA `DFlash 2` drafter + GCML `<|thought|>` / `<|function call|>` protocol + QWP1/DFlash2 packers (`291/291` `llmprobe` conformance, `100%` fidelity).
+- **Unified M1–M6 (`Apple7`–`Apple11`) Runtime**: Capability-routed `simdgroup_half8x8` (`_sg`/`_mma`) GEMM, SwiGLU, GDN, MoE, Paged, Sink+Rel, and MLA Split-K kernels on M1–M4 alongside Metal 4 NAX on M5+, dual macOS `15.0` Metal 3.2 (`kernel_m3*.metallib`) + macOS `26.2` Metal 4 (`kernel*.metallib`) packaging, and `QW_SIMULATE_GPU_FAMILY` processor simulation.
+- **`Inkling-2-Mini` `DFlash 2` Speculative Decoding**: Dual-format QWP1 (`SHVQ4_G32`) and drop-in Hugging Face `BF16` SafeTensors block-diffusion drafting with prefix-cache `QWDFlashPrefixState` persistence (`100%` greedy parity).
+- **Cognitive Vault v2 & Native Cross-Encoder `/v1/rerank`**: `.sequencePair` cross-encoder batch rerank (`1x` sequence/doc), PDF (`#p<N>`) & multi-language AST symbol-graph ingestion, `256d` Matryoshka `.qvec` + 3-way Hybrid RRF (`POST /v1/memory/{mount,unmount,query}`, MCP `qwg_vault_mount` / `qwg_vault_query` with prompt-injection screening), and `--pin-model` swap protection.
+- **Batched `grid.z = B` GDN/KDA Decode & Core-Scaling Bench**: Pointer-table batched recurrent decode (`qwg_gdn_conv_headnorm_batch`, `qwg_gdn_recurrent_batch`) and `qwg-bench-kernels --only-core-scaling`.
+
+### Changed
+- **Unified `QWTrunkExecutor` Control Plane**: Collapsed Standard, HyperStream, and Inkling-2 runtimes onto non-optional `QWTrunkExecutor` (`QWStandardTrunkExecutor`, `QWBatchScheduler`, `QWSlotPinnedLRUStore`, `QWTrunkRuntimeSupport`, `QWLinearWeight`) with unified `gpu.busy_ratio` telemetry and trait-driven module registration.
+
+### Fixed
+- **Deterministic `q4` MLA KV Reduction & Apple9 DSA Scaling**: Eliminated a cross-SIMDgroup threadgroup-SRAM race in `q4` MLA KV scale reduction (`qwattn_mla_dsa_prep.metal`, `qwattn_mla_indexer.metal`, restoring `0.000000000` logprob variance) and honored `p.softmaxScale` in `qwattn_mla_mma_split.metal`.
+- **`DFlash 2`, Loader `PlaneLayout`, & AArch64 `swifterror` Hardening**: Isolated `DFlash 2` rotation/function-constant flags and `vocabRows` slicing from target basis, enforced `PlaneLayout.resolve(e)` precedence across weight loaders, and hoisted `MTLBuffer.contents()` pointers outside throwing closures (`Law 25`).
+- **MCP Streamable HTTP Session Retention**: Returned `405 Method Not Allowed` (`Allow: POST, OPTIONS`) on `GET` and `DELETE /mcp` so MCP 2025-03-26 clients retain stateless `POST /mcp` sessions cleanly.
 
 ## [0.43.2] - 2026-11-26
 

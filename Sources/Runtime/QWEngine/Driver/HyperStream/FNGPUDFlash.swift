@@ -14,100 +14,40 @@ import QWQuant
 import QWAttn
 import QWHyperPLE
 
-struct FNGPUDFlashPrefixHeader {
-    var magic: UInt32
-    var numLayers: UInt32
-    var geometryHash: UInt64
-    var cacheOffset: UInt64
-    var activeRows: UInt32
-    var rowBytes: UInt32
-}
-
 public enum FNGPUDFlash {
     public static let maxDrafts = QWFourSlotRollbackRing.maxVerifyRows - 1
-    public static let prefixMagic: UInt32 = 0x4446_4C31
-    public static let defaultMTPPackSavingsBytes = 1_440 << 20
-    public static let defaultDFlashWeightBytes = 576 << 20
-    public static let defaultDFlashScratchBytes = 112 << 20
+    public static let defaultMTPPackSavingsBytes = QWDFlashFootprint.defaultMTPPackSavingsBytes
+    public static let defaultDFlashWeightBytes = QWDFlashFootprint.defaultDFlashWeightBytes
+    public static let defaultDFlashScratchBytes = QWDFlashFootprint.defaultDFlashScratchBytes
 
     public static func isDFlashName(_ raw: String?) -> Bool {
-        guard let lower = raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else { return false }
-        return lower == "dflash2" || lower == "dflash" || lower == "dspine"
+        QWDFlashFootprint.isDFlashName(raw)
     }
 
     public static func adjustedPerTokenKVBytes(_ perTokenBytes: Int, usesDFlash: Bool) -> Int {
-        usesDFlash ? (512 + (((max(0, perTokenBytes - 512) * 12) + 12) / 13)) : perTokenBytes
+        QWDFlashFootprint.adjustedPerTokenKVBytes(perTokenBytes, usesDFlash: usesDFlash)
     }
 
     static func resolveDrafterPackPath(targetDescriptor: QWModelDescriptor?, explicitPath: String?) -> String {
-        let trimmed = (explicitPath ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty { return trimmed.expandingTildePath }
-        let env = (ProcessInfo.processInfo.environment["QW_DFLASH_DRAFT_PACK"] ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return !env.isEmpty ? env.expandingTildePath : QWDFlashConfig.defaultPackPath(for: targetDescriptor)
+        QWDFlashFootprint.resolveDrafterPackPath(targetDescriptor: targetDescriptor, explicitPath: explicitPath)
     }
 
     /// Draft vocab rows for DFlash proposals (`QWG_DRAFT_VOCAB`, default 98304, 0 = full vocab).
     static func resolveDraftVocab(fullVocab: Int) -> Int? {
-        if let raw = ProcessInfo.processInfo.environment["QWG_DRAFT_VOCAB"]?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-           let value = Int(raw) {
-            return (value > 0 && value < fullVocab) ? value : nil
-        }
-        return fullVocab > 98_304 ? 98_304 : nil
+        QWDFlashDrafter.resolveDraftVocab(fullVocab: fullVocab, defaultCap: 98_304)
     }
 
     public static func drafterWeightBytes(packPath: String?, isDSpine: Bool) -> Int {
-        guard let raw = packPath?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return defaultDFlashWeightBytes }
-        let url = raw.expandingTildePath.canonicalFileURL
-        guard FileManager.default.fileExists(atPath: url.path) else { return defaultDFlashWeightBytes }
-        if let cfgURL = QWModelRoot(url: url).configURL, let data = try? Data(contentsOf: cfgURL),
-           let desc = try? QWModelDescriptor.decodeDrafter(configJSON: data),
-           let pack = try? QWQuant.Pack(url: url, descriptor: desc, skipIdentityCheck: true) {
-            return QWDFlashDrafter.computeWeightCapacity(pack: pack, isDSpine: isDSpine)
-        }
-        let fileBytes = (try? FileManager.default.attributesOfItem(atPath: QWModelRoot(url: url).weights.path)[.size] as? Int) ?? 0
-        return max(64 << 20, fileBytes + (32 << 20))
-    }
-
-    static func estimateScratchBytes(config: QWDFlashConfig) -> Int {
-        func aligned(_ bytes: Int) -> Int { ((bytes + 4095) / 4096) * 4096 }
-        let h = config.hiddenSize, v = config.vocabSize, i = config.intermediateSize
-        let maxCtx = config.maxCacheSize, maxB = max(8, config.blockSize), maxD = maxB - 1
-        let qDim = config.numAttentionHeads * config.headDim, kvDim = config.numKeyValueHeads * config.headDim
-        let hasConv = config.convKernelSize > 0
-        let convProj = hasConv ? (2 * config.convKernelSize * (h / max(1, config.convGroupSize))) : 0
-        var total = aligned(maxCtx * config.targetLayerIds.count * h * 2) + aligned(maxCtx * h * 2)
-        total += aligned(maxCtx * 2 * kvDim * 2) + aligned(maxB * h * 4) * 2 + aligned(maxB * h * 2) * 3
-        total += aligned(maxB * 4) * 2 + (hasConv ? aligned(maxB * convProj * 4) : 0)
-        total += aligned(maxB * (qDim + 2 * kvDim) * 2) + aligned(maxB * qDim * 2) + aligned(maxB * i * 2)
-        total += aligned(maxD * v * 4) + aligned(maxD * 256 * 16 * 4) * 2 + aligned(maxD * 16 * 4) * 2
-        total += aligned(config.isDSpine ? (maxD * config.bridgeCodeSize * 4) : (maxD * config.selectorRank * 4))
-        total += 4 * aligned(config.numLayers * maxCtx * kvDim * 2)
-        return max(32 << 20, total + (16 << 20))
+        QWDFlashFootprint.drafterWeightBytes(packPath: packPath, isDSpine: isDSpine)
     }
 
     public static func estimateFootprint(
         targetDescriptor: QWModelDescriptor, targetPackPath: String?, dflashPackPath: String?, isDFlash: Bool
     ) -> (nativeMTPWeightBytes: Int, dflashWeightBytes: Int, dflashScratchBytes: Int) {
-        guard isDFlash else { return (0, 0, 0) }
-        var nativeMTP = defaultMTPPackSavingsBytes
-        if let tPath = targetPackPath?.trimmingCharacters(in: .whitespacesAndNewlines), !tPath.isEmpty,
-           let pack = try? QWQuant.Pack(url: tPath.expandingTildePath.canonicalFileURL,
-                                        descriptor: targetDescriptor, skipIdentityCheck: true) {
-            let summed = pack.tensors.reduce(0) { acc, kv in
-                guard kv.key.hasPrefix("mtp.") else { return acc }
-                return acc + (PlaneLayout.resolve(kv.value)?.byteCount(kv.value)
-                    ?? ((kv.value.hq8PayloadBytes ?? 0) + (kv.value.hq8ScaleBytes ?? 0)))
-            }
-            if summed > 0 { nativeMTP = summed }
-        }
-        let resolved = resolveDrafterPackPath(targetDescriptor: targetDescriptor, explicitPath: dflashPackPath)
-        guard FileManager.default.fileExists(atPath: resolved.canonicalFileURL.path) else {
-            return (nativeMTP, defaultDFlashWeightBytes, defaultDFlashScratchBytes)
-        }
-        let cfg = QWDFlashConfig.load(from: resolved.canonicalFileURL)
-        return (nativeMTP, drafterWeightBytes(packPath: resolved, isDSpine: cfg.isDSpine), estimateScratchBytes(config: cfg))
+        QWDFlashFootprint.estimateFootprint(
+            targetDescriptor: targetDescriptor, targetPackPath: targetPackPath,
+            dflashPackPath: dflashPackPath, isDFlash: isDFlash
+        )
     }
 
     static func prefillWindowEnd(historyCount: Int, targetEnd: Int?) -> Int {
@@ -135,27 +75,18 @@ public enum FNGPUDFlash {
     }
 
     static func dflashGeometryMarker(config: QWDFlashConfig) -> String {
-        let layers = config.targetLayerIds.map(String.init).joined(separator: ",")
-        return "df:\(config.hiddenSize):\(config.numLayers):\(config.numAttentionHeads):"
-            + "\(config.numKeyValueHeads):\(config.headDim):\(config.maxCacheSize):"
-            + "\(config.isDSpine ? 1 : 0):\(layers)"
-    }
-
-    static func dflashGeometryHash(_ marker: String) -> UInt64 {
-        marker.utf8.reduce(0xcbf2_9ce4_8422_2325) { ($0 ^ UInt64($1)) &* 0x1000_0000_01b3 }
+        QWDFlashDrafter.prefixGeometryMarker(config: config)
     }
 
     static func prefixPayloadBytes(config: QWDFlashConfig, tokenCount: Int) -> Int {
-        let activeRows = min(max(0, tokenCount), config.maxCacheSize)
-        return MemoryLayout<FNGPUDFlashPrefixHeader>.size + 2 * config.numLayers * activeRows * config.numKeyValueHeads * config.headDim * 2
+        QWDFlashDrafter.prefixPayloadBytes(config: config, tokenCount: tokenCount)
     }
 
     static func appendPrefixPayload(
         to dstBase: UnsafeMutableRawPointer, at writeOffset: inout Int,
         dflash: QWDFlashDrafter, marker: String, tokenCount: Int
     ) {
-        let cfg = dflash.config
-        appendPrefixKV(to: dstBase, at: &writeOffset, slots: dflash.sessionSlots.first, config: cfg,
+        appendPrefixKV(to: dstBase, at: &writeOffset, slots: dflash.sessionSlots.first, config: dflash.config,
                        marker: marker, tokenCount: tokenCount)
     }
 
@@ -163,21 +94,9 @@ public enum FNGPUDFlash {
         to dstBase: UnsafeMutableRawPointer, at writeOffset: inout Int,
         slots: QWDFlashSessionSlot?, config cfg: QWDFlashConfig, marker: String, tokenCount: Int
     ) {
-        let activeRows = min(max(0, tokenCount), cfg.maxCacheSize)
-        let rowBytes = cfg.numKeyValueHeads * cfg.headDim * 2, layerBytes = activeRows * rowBytes
-        var ph = FNGPUDFlashPrefixHeader(
-            magic: prefixMagic, numLayers: UInt32(cfg.numLayers), geometryHash: dflashGeometryHash(marker),
-            cacheOffset: UInt64(tokenCount), activeRows: UInt32(activeRows), rowBytes: UInt32(rowBytes))
-        withUnsafeBytes(of: &ph) { (buf: UnsafeRawBufferPointer) in
-            if let p = buf.baseAddress { memcpy(dstBase.advanced(by: writeOffset), p, buf.count); writeOffset += buf.count }
-        }
-        guard layerBytes > 0, let slot = slots else { return }
-        for l in 0..<cfg.numLayers {
-            for t in [slot.kLayers[l], slot.vLayers[l]] {
-                memcpy(dstBase.advanced(by: writeOffset), t.region.buffer.contents().advanced(by: t.region.base + t.offset), layerBytes)
-                writeOffset += layerBytes
-            }
-        }
+        QWDFlashDrafter.appendPrefixKV(
+            to: dstBase, at: &writeOffset, slot: slots, config: cfg, marker: marker, tokenCount: tokenCount
+        )
     }
 
     static func restorePrefixPayload(
@@ -192,37 +111,16 @@ public enum FNGPUDFlash {
         from base: UnsafeRawPointer, dataCount: Int, offset: inout Int,
         slots: QWDFlashSessionSlot?, config cfg: QWDFlashConfig, expectedMarker: String, expectedTokens: Int
     ) -> Int? {
-        let hdrSize = MemoryLayout<FNGPUDFlashPrefixHeader>.size
-        guard offset + hdrSize <= dataCount else { return nil }
-        var ph = FNGPUDFlashPrefixHeader(magic: 0, numLayers: 0, geometryHash: 0, cacheOffset: 0, activeRows: 0, rowBytes: 0)
-        memcpy(&ph, base.advanced(by: offset), hdrSize); offset += hdrSize
-        let active = min(max(0, expectedTokens), cfg.maxCacheSize)
-        let rowBytes = cfg.numKeyValueHeads * cfg.headDim * 2, layerBytes = active * rowBytes
-        guard ph.magic == prefixMagic, ph.geometryHash == dflashGeometryHash(expectedMarker),
-              Int(ph.numLayers) == cfg.numLayers, Int(ph.cacheOffset) == expectedTokens,
-              Int(ph.activeRows) == active, Int(ph.rowBytes) == rowBytes,
-              offset + 2 * cfg.numLayers * layerBytes <= dataCount, let slot = slots else { return nil }
-        if layerBytes > 0 {
-            for l in 0..<cfg.numLayers {
-                for t in [slot.kLayers[l], slot.vLayers[l]] {
-                    memcpy(t.region.buffer.contents().advanced(by: t.region.base + t.offset), base.advanced(by: offset), layerBytes)
-                    offset += layerBytes
-                }
-            }
-        }
-        return Int(ph.cacheOffset)
+        QWDFlashDrafter.restorePrefixKV(
+            from: base, dataCount: dataCount, offset: &offset, slot: slots, config: cfg,
+            expectedMarker: expectedMarker, expectedTokens: expectedTokens
+        )
     }
 
     static func validatePrefixBlob(data: Data, expectedMarker: String, expectedTokens: Int, config: QWDFlashConfig) -> Bool {
-        let start = data.count - prefixPayloadBytes(config: config, tokenCount: expectedTokens)
-        guard start >= 0 else { return false }
-        return data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Bool in
-            guard let base = raw.baseAddress else { return false }
-            var ph = FNGPUDFlashPrefixHeader(magic: 0, numLayers: 0, geometryHash: 0, cacheOffset: 0, activeRows: 0, rowBytes: 0)
-            memcpy(&ph, base.advanced(by: start), MemoryLayout<FNGPUDFlashPrefixHeader>.size)
-            return ph.magic == prefixMagic && ph.geometryHash == dflashGeometryHash(expectedMarker)
-                && Int(ph.cacheOffset) == expectedTokens
-        }
+        QWDFlashDrafter.validatePrefixBlob(
+            data: data, expectedMarker: expectedMarker, expectedTokens: expectedTokens, config: config
+        )
     }
 
     static func encodeHeadLogits(
@@ -230,50 +128,35 @@ public enum FNGPUDFlash {
         xRot16: QWTensorValue, xNorm16: QWTensorValue, xRot32: QWTensorValue?,
         yLogits32: QWTensorValue, rows: Int, vocabRows: Int
     ) throws {
-        let w: QWWeightView
-        if vocabRows < headWeight.n {
-            let sliced = headWeight.blocks.slice(byteOffset: 0, count: (vocabRows * headWeight.rowBytes) / 2, dtype: .f16)
-            guard let sub = headWeight.subview(blocks: sliced, n: vocabRows, k: headWeight.k) else {
-                throw QWDFlashError.state("FNGPUDFlash: failed to slice lm_head to vocabRows=\(vocabRows)")
-            }
-            w = sub
-        } else {
-            w = headWeight
+        guard let hw = QWHeadWeight(
+            blocks: headWeight.blocks, n: headWeight.n, k: headWeight.k,
+            bits: headWeight.bits, groupSize: headWeight.groupSize,
+            isRotated: headWeight.isRotated,
+            isIncumbentContainer: headWeight.isIncumbentContainer,
+            isSHVQ: headWeight.isSHVQ
+        ) else {
+            throw QWDFlashError.state("FNGPUDFlash: invalid head weight for vocabRows=\(vocabRows)")
         }
-        if hal.caps.isMetal4TensorCapable && w.n % 64 == 0 && w.k % 64 == 0 && (!w.isRotated || rows >= 5) {
-            let x16 = w.isRotated ? xRot16 : xNorm16
-            try QWGemm.encodeNaxF32(enc, hal: hal, weight: w, x16: x16, y16: x16, y32: yLogits32, rows: rows)
-            return
-        }
-        guard let xRot32 else { throw QWDFlashError.state("FNGPUDFlash: missing xRot32 for v4 head projection") }
-        try QWGemm.encodeHQ4F32V4(enc, hal: hal, weight: w, x: xRot32, y: yLogits32, rows: rows)
+        try QWDFlashDrafter.encodeSlicedHeadLogits(
+            enc, hal: hal, headStorage: .q4g(hw), geometry: hal.geometry,
+            xRot16: xRot16, xNorm16: xNorm16, xRot32: xRot32,
+            yLogits32: yLogits32, rows: rows, vocabRows: vocabRows
+        )
     }
 
     static func selectHybridBypassDrafts(
         history: [Int64], pendingToken: Int, mode: QWDraftStrategy, maxDrafts: Int, recycler: QWTokenRecycler
     ) -> [Int] {
-        guard maxDrafts > 0, mode != .mtp else { return [] }
-        let minPld = (mode == .ngram) ? min(4, maxDrafts) : min(7, maxDrafts)
-        if let pld = QWContextCopyDrafter.periodicDrafts(
-            history: history.suffix(256).map(Int.init), extraToken: pendingToken, maxCount: maxDrafts, minRepeats: 3
-        ), pld.count >= minPld { return Array(pld.prefix(maxDrafts)) }
-        var drafts: [Int] = []
-        if let match = QWContextCopyDrafter.drafts(
-            history: history, appendedToken: Int64(pendingToken), maxCount: maxDrafts, minMatchLen: 6
-        ), !match.tokens.isEmpty {
-            drafts = Array(match.tokens.prefix(maxDrafts)).map { Int($0) }
-        }
-        if !drafts.isEmpty || mode == .ngram {
-            recycler.appendDrafts(into: &drafts, maxCount: maxDrafts,
-                                  previousToken: history.last.map(Int.init), pendingToken: pendingToken,
-                                  maxUnigramFallbacks: 0)
-            if drafts.count >= minPld { return drafts }
-        }
-        return []
+        QWContextCopyDrafter.selectHybridPLDDrafts(
+            history: history, extraToken: Int64(pendingToken),
+            previousToken: history.last.map(Int.init),
+            pendingToken: pendingToken, mode: mode,
+            maxDrafts: maxDrafts, recycler: recycler
+        )
     }
 
     static func maxFittingContext(activeCapacity: Int) -> Int {
-        max(0, activeCapacity - 1)
+        QWDFlashFootprint.maxFittingContext(activeCapacity: activeCapacity)
     }
 
     static func consumePendingContextUpdate(

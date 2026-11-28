@@ -129,7 +129,9 @@ extension QWEngineDriver {
             activeEnc = nil
             enc.endEncoding()
             let seedEmbeddings = mtpScratch?.embedding ?? sc.x
-            let seedHidden: QWTensorValue = echoDrafter != nil ? sc.mhcStream! : sc.ln1
+            let seedHidden: QWTensorValue = echoDrafter != nil
+                ? sc.mhcStream!
+                : (hasSandwichGatedNorm ? sc.x : sc.ln1)
             try encodeMTPSeeding(cb, session: session, embeddings: seedEmbeddings,
                                  hidden: seedHidden, count: 1, cacheRows: mtpRows)
             activeCB = nil
@@ -189,9 +191,7 @@ extension QWEngineDriver {
         // wall time the step took. A ratio, not a percentage the host had to
         // guess at.
         let wallUs = Date().timeIntervalSince(tStep0) * 1e6
-        if gpuUs.isFinite, gpuUs > 0, wallUs > 0 {
-            QWTelemetryRegistry.shared.record("gpu.busy_ratio", gpuUs / wallUs, provenance: .measured)
-        }
+        QWTrunkRuntimeSupport.recordGPUBusy(gpuSeconds: gpuUs, wallSeconds: wallUs)
         if let n = stepCBs?.count, n > 1 {
             QWTelemetryRegistry.shared.record("decode.cb_per_step", Double(n), provenance: .measured)
             QWTelemetryRegistry.shared.record("decode.cold_stage_host_us", decodeTel.coldStageUs, provenance: .measured)

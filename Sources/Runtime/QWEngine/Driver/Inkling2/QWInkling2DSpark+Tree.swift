@@ -478,52 +478,6 @@ extension QWInkling2DSpark {
         return (0..<template.plan.nodesCount).map { Int(ptr[$0]) }
     }
 
-    func finishTreeSpeculativeRound(
-        session: QWInkling2Session,
-        oldPos: Int,
-        rowStride: Int,
-        keptNodes: [Int],
-        ingestTaps: Bool,
-        nextAnchor: Int,
-        nextTemplate: DSparkTreeTemplate?,
-        profiler: QWInkling2Profiler? = nil
-    ) throws -> [Int] {
-        let hostStartNs = profiler?.beginHostTimer() ?? 0
-        let cbOpt = (profiler == nil) ? (hal.queue.makeCommandBufferWithUnretainedReferences() ?? hal.queue.makeCommandBuffer())
-                                      : hal.queue.makeCommandBuffer()
-        guard let cb = cbOpt else {
-            throw QWInkling2Error.badState("failed to create tree round CB")
-        }
-        var encOpt: (any MTLComputeCommandEncoder)? = nil
-        let commitEnc = try beginStage(.sconv, on: cb, encoder: &encOpt, profiler: profiler)
-        encodeSConvVerifyCommitTree(commitEnc, session: session, keptNodes: keptNodes)
-        encodeTreeKVCompact(commitEnc, session: session, oldPos: oldPos, keptNodes: keptNodes)
-        if ingestTaps {
-            try encodeIngestContextTaps(
-                count: keptNodes.count, posOffset: oldPos, rowStride: rowStride,
-                rowMap: keptNodes, on: cb, encoder: &encOpt, profiler: profiler
-            )
-            if let tpl = nextTemplate {
-                try encodeDraftTree(
-                    anchor: nextAnchor, template: tpl,
-                    on: cb, encoder: &encOpt, profiler: profiler
-                )
-            }
-        }
-        profiler?.endActiveStage(encoder: &encOpt)
-        encOpt?.endEncoding()
-        profiler?.endHostTimer(hostStartNs)
-        cb.commit()
-        cb.waitUntilCompleted()
-        if let err = cb.error {
-            throw QWInkling2Error.badState("DSpark tree round CB failed: \(err.localizedDescription)")
-        }
-        profiler?.finishCommandBuffer(cb, tokens: ingestTaps ? keptNodes.count : 0)
-        guard ingestTaps, let tpl = nextTemplate else { return [] }
-        let ptr = treeTokBuf.contents().assumingMemoryBound(to: Int32.self)
-        return (0..<tpl.plan.nodesCount).map { Int(ptr[$0]) }
-    }
-
     enum NextDraft: Equatable {
         case none
         case linear(Int)

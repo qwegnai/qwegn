@@ -16,26 +16,37 @@ public enum QWAttnPagedPrefillError: Error, CustomStringConvertible {
 public final class QWAttnPagedPrefill: Sendable {
     public let geometry: QWModelGeometry
     private let hal: QWHal
-    private let psoF16: any MTLComputePipelineState
-    private let psoQ8: any MTLComputePipelineState
-    private let psoQ4: any MTLComputePipelineState
-    private let psoSparseF16: any MTLComputePipelineState
-    private let psoSparseQ8: any MTLComputePipelineState
-    private let psoSparseQ4: any MTLComputePipelineState
+    private let psoF16: (any MTLComputePipelineState)?
+    private let psoQ8: (any MTLComputePipelineState)?
+    private let psoQ4: (any MTLComputePipelineState)?
+    private let psoSparseF16: (any MTLComputePipelineState)?
+    private let psoSparseQ8: (any MTLComputePipelineState)?
+    private let psoSparseQ4: (any MTLComputePipelineState)?
 
     public init(hal: QWHal, geometry: QWModelGeometry) throws {
         self.geometry = geometry
         self.hal = hal
-        self.psoF16 = try hal.pipeline("qwg_attn_prefill_paged_nax_pair")
-        self.psoQ8 = try hal.pipeline("qwg_attn_prefill_paged_nax_pair_q8")
-        self.psoQ4 = try hal.pipeline("qwg_attn_prefill_paged_nax_pair_q4")
-        let hd128 = geometry.headDim <= 128
-        self.psoSparseF16 = try hal.pipeline(
-            hd128 ? "qwg_attn_prefill_paged_nax_sparse_pair_hd128" : "qwg_attn_prefill_paged_nax_sparse_pair")
-        self.psoSparseQ8 = try hal.pipeline(
-            hd128 ? "qwg_attn_prefill_paged_nax_sparse_pair_hd128_q8" : "qwg_attn_prefill_paged_nax_sparse_pair_q8")
-        self.psoSparseQ4 = try hal.pipeline(
-            hd128 ? "qwg_attn_prefill_paged_nax_sparse_pair_hd128_q4" : "qwg_attn_prefill_paged_nax_sparse_pair_q4")
+        let useNAX = hal.caps.isMetal4TensorCapable
+        if useNAX || hal.caps.supportsSimdgroupMMA {
+            let tag = useNAX ? "nax" : "mma"
+            self.psoF16 = try hal.pipeline("qwg_attn_prefill_paged_\(tag)_pair")
+            self.psoQ8 = try hal.pipeline("qwg_attn_prefill_paged_\(tag)_pair_q8")
+            self.psoQ4 = try hal.pipeline("qwg_attn_prefill_paged_\(tag)_pair_q4")
+            let hd128 = geometry.headDim <= 128
+            self.psoSparseF16 = try hal.pipeline(
+                hd128 ? "qwg_attn_prefill_paged_\(tag)_sparse_pair_hd128" : "qwg_attn_prefill_paged_\(tag)_sparse_pair")
+            self.psoSparseQ8 = try hal.pipeline(
+                hd128 ? "qwg_attn_prefill_paged_\(tag)_sparse_pair_hd128_q8" : "qwg_attn_prefill_paged_\(tag)_sparse_pair_q8")
+            self.psoSparseQ4 = try hal.pipeline(
+                hd128 ? "qwg_attn_prefill_paged_\(tag)_sparse_pair_hd128_q4" : "qwg_attn_prefill_paged_\(tag)_sparse_pair_q4")
+        } else {
+            self.psoF16 = nil
+            self.psoQ8 = nil
+            self.psoQ4 = nil
+            self.psoSparseF16 = nil
+            self.psoSparseQ8 = nil
+            self.psoSparseQ4 = nil
+        }
     }
 
     /// Encode paged FlashAttention over the KV cache.
@@ -68,11 +79,14 @@ public final class QWAttnPagedPrefill: Sendable {
             throw QWAttnPagedPrefillError.badShape("page table too short: needed=\(neededPages) k=\(kv.k.table.shape.elementCount) v=\(kv.v.table.shape.elementCount)")
         }
 
-        let pso: any MTLComputePipelineState
+        let maybePSO: (any MTLComputePipelineState)?
         switch kv.k.mode {
-        case .f16: pso = psoF16
-        case .q8:  pso = psoQ8
-        case .q4:  pso = psoQ4
+        case .f16: maybePSO = psoF16
+        case .q8:  maybePSO = psoQ8
+        case .q4:  maybePSO = psoQ4
+        }
+        guard let pso = maybePSO else {
+            throw QWAttnPagedPrefillError.badShape("Paged prefill requires Apple7+ simdgroup or Apple10+ NAX hardware")
         }
 
         enc.setComputePipelineState(pso)
@@ -127,11 +141,14 @@ public final class QWAttnPagedPrefill: Sendable {
             throw QWAttnPagedPrefillError.badShape("page table too short: needed=\(neededPages)")
         }
 
-        let pso: any MTLComputePipelineState
+        let maybePSO: (any MTLComputePipelineState)?
         switch kv.k.mode {
-        case .f16: pso = psoSparseF16
-        case .q8:  pso = psoSparseQ8
-        case .q4:  pso = psoSparseQ4
+        case .f16: maybePSO = psoSparseF16
+        case .q8:  maybePSO = psoSparseQ8
+        case .q4:  maybePSO = psoSparseQ4
+        }
+        guard let pso = maybePSO else {
+            throw QWAttnPagedPrefillError.badShape("Sparse paged prefill requires Apple7+ simdgroup or Apple10+ NAX hardware")
         }
 
         enc.setComputePipelineState(pso)

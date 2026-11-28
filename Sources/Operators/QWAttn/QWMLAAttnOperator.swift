@@ -36,6 +36,13 @@ public final class QWMLAAttnOperator: @unchecked Sendable {
     public let windowTokens: Int
     public let useFastHadamard: Bool
     public let ropeMscale: Float
+    public let alphaQ: Float
+    public let alphaKV: Float
+    public let indexerKNormIsRMS: Bool
+    public let softmaxScaleOverride: Float?
+    public let denseOnly: Bool
+    public let oGateInQKV: Bool
+    public let mtpDenseOnly: Bool
     public let topKPools: Int
     public let listStride: Int
     public let ringCap: Int
@@ -216,7 +223,14 @@ public final class QWMLAAttnOperator: @unchecked Sendable {
                                      maxContext: Int,
                                      maxPrefillChunk: Int = 512,
                                      lsaConfig: QWLSAConfig = QWLSAConfig(),
-                                     extraAttnLayers: Int = 0) throws -> QWMLAAttnOperator? {
+                                     extraAttnLayers: Int = 0,
+                                     alphaQ: Float = 1.0,
+                                     alphaKV: Float = 1.0,
+                                     indexerKNormIsRMS: Bool = false,
+                                     softmaxScaleOverride: Float? = nil,
+                                     denseOnly: Bool = false,
+                                     oGateInQKV: Bool = false,
+                                     mtpDenseOnly: Bool = false) throws -> QWMLAAttnOperator? {
         let hasMLA = geometry.usesAnyMLA && !attnLayers.isEmpty
         guard hasMLA else { return nil }
         return try QWMLAAttnOperator(
@@ -225,7 +239,14 @@ public final class QWMLAAttnOperator: @unchecked Sendable {
             numAttnLayers: attnLayers.count + max(0, extraAttnLayers),
             maxContext: maxContext,
             maxPrefillChunk: maxPrefillChunk,
-            lsaConfig: lsaConfig
+            lsaConfig: lsaConfig,
+            alphaQ: alphaQ,
+            alphaKV: alphaKV,
+            indexerKNormIsRMS: indexerKNormIsRMS,
+            softmaxScaleOverride: softmaxScaleOverride,
+            denseOnly: denseOnly,
+            oGateInQKV: oGateInQKV,
+            mtpDenseOnly: mtpDenseOnly
         )
     }
 
@@ -234,9 +255,23 @@ public final class QWMLAAttnOperator: @unchecked Sendable {
                 numAttnLayers: Int,
                 maxContext: Int,
                 maxPrefillChunk: Int = 512,
-                lsaConfig: QWLSAConfig = QWLSAConfig()) throws {
+                lsaConfig: QWLSAConfig = QWLSAConfig(),
+                alphaQ: Float = 1.0,
+                alphaKV: Float = 1.0,
+                indexerKNormIsRMS: Bool = false,
+                softmaxScaleOverride: Float? = nil,
+                denseOnly: Bool = false,
+                oGateInQKV: Bool = false,
+                mtpDenseOnly: Bool = false) throws {
         self.hal = hal
         self.geometry = geometry
+        self.alphaQ = alphaQ
+        self.alphaKV = alphaKV
+        self.indexerKNormIsRMS = indexerKNormIsRMS
+        self.softmaxScaleOverride = softmaxScaleOverride
+        self.denseOnly = denseOnly
+        self.oGateInQKV = oGateInQKV
+        self.mtpDenseOnly = mtpDenseOnly
         let mla = geometry.mlaConfig
         let hmla = geometry.hybridMLAConfig
         let dsa = geometry.usesDecoupledRopeMLA
@@ -244,6 +279,7 @@ public final class QWMLAAttnOperator: @unchecked Sendable {
         self.maxContext = max(512, maxContext)
         self.maxPrefillChunk = max(32, maxPrefillChunk)
 
+        let rawHasIndexer: Bool
         if let mla {
             self.qHeads = mla.qHeads
             self.qLoraRank = mla.qLoraRank
@@ -251,7 +287,7 @@ public final class QWMLAAttnOperator: @unchecked Sendable {
             self.nopeDim = mla.qkNopeHeadDim
             self.ropeDim = mla.qkRopeHeadDim
             self.vHeadDim = mla.vHeadDim
-            self.hasIndexer = mla.hasIndexer
+            rawHasIndexer = mla.hasIndexer
             self.isDirectQ = mla.isDirectQ
             self.outputGateMode = mla.outputGateMode
             self.poolShift = geometry.indexerPoolShift
@@ -266,7 +302,7 @@ public final class QWMLAAttnOperator: @unchecked Sendable {
             self.nopeDim = hmla.qkNopeHeadDim
             self.ropeDim = hmla.qkRopeHeadDim
             self.vHeadDim = hmla.vHeadDim
-            self.hasIndexer = geometry.indexerHeads > 0
+            rawHasIndexer = geometry.indexerHeads > 0
             self.isDirectQ = hmla.qLoraRank <= 0
             self.outputGateMode = geometry.attnOutputGate ? .elementWiseFromQLora : .none
             self.poolShift = geometry.indexerPoolShift
@@ -281,7 +317,7 @@ public final class QWMLAAttnOperator: @unchecked Sendable {
             self.nopeDim = geometry.qkNopeHeadDim > 0 ? geometry.qkNopeHeadDim : geometry.headDim
             self.ropeDim = 0
             self.vHeadDim = geometry.vHeadDim > 0 ? geometry.vHeadDim : geometry.headDim
-            self.hasIndexer = geometry.indexerHeads > 0 || geometry.usesNoPEMLA
+            rawHasIndexer = geometry.indexerHeads > 0 || geometry.usesNoPEMLA
             self.isDirectQ = geometry.qLoraRank <= 0
             self.outputGateMode = geometry.attnOutputGate ? .elementWiseFromQLora : .none
             self.poolShift = 2
@@ -290,6 +326,7 @@ public final class QWMLAAttnOperator: @unchecked Sendable {
             self.ropeInterleave = geometry.ropeInterleave
             self.mropeLayout = .none1D
         }
+        self.hasIndexer = denseOnly ? false : rawHasIndexer
 
         if self.hasIndexer {
             self.idxHeads = max(1, geometry.indexerHeads)
@@ -302,17 +339,22 @@ public final class QWMLAAttnOperator: @unchecked Sendable {
         let requestedBudget = (lsaConfig.budget != QWLSAConfig.defaultBudget)
             ? lsaConfig.alignedBudget
             : modelBudget
+        let gateInQKVCols = oGateInQKV
+            ? ((self.outputGateMode == .headWiseFromHidden) ? self.qHeads : (self.qHeads * self.vHeadDim))
+            : 0
         if !self.hasIndexer {
             self.topKPools = 0
             self.listStride = 1
-            self.latentStride = self.qLoraRank + self.kvLoraRank + self.ropeDim
+            self.latentStride = self.qLoraRank + self.kvLoraRank + self.ropeDim + gateInQKVCols
             self.qRopeOffset = self.qHeads * self.nopeDim
-            self.oGateOffset = self.qHeads * (self.nopeDim + self.ropeDim)
-            let hasInlineGate = (self.outputGateMode == .elementWiseFromQLora)
-                || (mla == nil && geometry.attnOutputGate)
+            self.oGateOffset = oGateInQKV
+                ? (self.qLoraRank + self.kvLoraRank + self.ropeDim)
+                : (self.qHeads * (self.nopeDim + self.ropeDim))
+            let hasInlineGate = !oGateInQKV && ((self.outputGateMode == .elementWiseFromQLora)
+                || (mla == nil && geometry.attnOutputGate))
             self.qChannels = self.qHeads * (self.nopeDim + self.ropeDim + (hasInlineGate ? self.vHeadDim : 0))
             self.qFullStride = self.qChannels
-            self.maxBlocks = self.maxContext
+            self.maxBlocks = max(128, self.maxContext)
         } else if dsa {
             let budgetTok = min(2048, max(1, requestedBudget))
             guard budgetTok + self.windowTokens <= 2560 else {
@@ -322,11 +364,13 @@ public final class QWMLAAttnOperator: @unchecked Sendable {
             }
             self.topKPools = budgetTok
             self.listStride = max(512, ((budgetTok + self.windowTokens + 127) & ~127))
-            self.latentStride = self.qLoraRank + self.kvLoraRank + self.ropeDim + self.idxDim
+            self.latentStride = self.qLoraRank + self.kvLoraRank + self.ropeDim + self.idxDim + gateInQKVCols
             self.qRopeOffset = self.qHeads * self.nopeDim
-            self.oGateOffset = self.qHeads * (self.nopeDim + self.ropeDim)
-            let hasInlineGate = (self.outputGateMode == .elementWiseFromQLora)
-                || (mla == nil && geometry.attnOutputGate)
+            self.oGateOffset = oGateInQKV
+                ? (self.qLoraRank + self.kvLoraRank + self.ropeDim + self.idxDim)
+                : (self.qHeads * (self.nopeDim + self.ropeDim))
+            let hasInlineGate = !oGateInQKV && ((self.outputGateMode == .elementWiseFromQLora)
+                || (mla == nil && geometry.attnOutputGate))
             self.qChannels = self.qHeads * (self.nopeDim + self.ropeDim + (hasInlineGate ? self.vHeadDim : 0))
             self.qFullStride = self.qChannels + self.idxHeads * self.idxDim
             self.maxBlocks = max(128, self.maxContext >> self.poolShift)
@@ -334,9 +378,11 @@ public final class QWMLAAttnOperator: @unchecked Sendable {
             let budgetTok = min(4096, max(128, requestedBudget))
             self.topKPools = max(1, min(1024, budgetTok / 4))
             self.listStride = max(512, self.topKPools)
-            self.latentStride = self.qLoraRank + self.kvLoraRank + self.idxDim
+            self.latentStride = self.qLoraRank + self.kvLoraRank + self.idxDim + gateInQKVCols
             self.qRopeOffset = self.qHeads * self.nopeDim
-            self.oGateOffset = self.qHeads * self.nopeDim
+            self.oGateOffset = oGateInQKV
+                ? (self.qLoraRank + self.kvLoraRank + self.idxDim)
+                : (self.qHeads * self.nopeDim)
             self.qChannels = self.qHeads * self.nopeDim
             self.qFullStride = self.qChannels + self.idxHeads * self.idxDim
             self.maxBlocks = max(128, (self.maxContext + 3) / 4)
@@ -407,11 +453,14 @@ public final class QWMLAAttnOperator: @unchecked Sendable {
         self.psoDSASparseAttnNAXH64 = naxOK ? try hal.pipeline("qwg_mla_dsa_sparse_attn_nax_h64") : nil
         self.psoSparseAttnNAXH32 = naxOK ? try hal.pipeline("qwg_mla_sparse_attn_nax_h32") : nil
         let splits = Int(ProcessInfo.processInfo.environment["QW_MLA_ATTN_SPLIT"] ?? "") ?? 16
-        self.attnSplits = (naxOK && self.kvLoraRank == 512) ? max(0, min(64, splits)) : 0
+        let splitOK = hal.caps.supportsSimdgroupMMA
+            && ProcessInfo.processInfo.environment["QW_MLA_ATTN_NAX"] != "0"
+        self.attnSplits = (splitOK && self.kvLoraRank == 512) ? max(0, min(64, splits)) : 0
+        let splitKind = naxOK ? "nax" : "mma"
         self.psoSparseAttnSplit = self.attnSplits > 1
-            ? (try hal.pipeline("qwg_mla_sparse_attn_nax_split"), try hal.pipeline("qwg_mla_sparse_attn_combine")) : nil
+            ? (try hal.pipeline("qwg_mla_sparse_attn_\(splitKind)_split"), try hal.pipeline("qwg_mla_sparse_attn_combine")) : nil
         self.psoDSASparseAttnSplit = self.attnSplits > 1
-            ? (try hal.pipeline("qwg_mla_dsa_sparse_attn_nax_split"), try hal.pipeline("qwg_mla_dsa_sparse_attn_combine")) : nil
+            ? (try hal.pipeline("qwg_mla_dsa_sparse_attn_\(splitKind)_split"), try hal.pipeline("qwg_mla_dsa_sparse_attn_combine")) : nil
         self.psoProjUV = try hal.pipeline("qwg_mla_proj_uv")
         self.psoProjUVSub2 = try hal.pipeline("qwg_mla_proj_uv_sub2")
         self.psoProjUVMMA = try hal.pipeline("qwg_mla_proj_uv_mma")
@@ -443,16 +492,18 @@ public final class QWMLAAttnOperator: @unchecked Sendable {
 
         let candCap = dsa ? Self.dsaEmeansCandCap : Self.emeansCandCap
         let maxMacros = useCoarse ? QWCoarsePoolIndex.maxMacros(forMaxContext: self.maxContext, poolShift: self.poolShift) : 0
-        var layerOffs: [(kPend: Int, gatePend: Int, pooled: Int, kPe: Int, csr: QWCoarseSelectionPipeline.CSROffsets)] = []
+        var layerOffs: [(kPend: Int, gatePend: Int, pooled: Int, kPe: Int, hasIdx: Bool, csr: QWCoarseSelectionPipeline.CSROffsets)] = []
         layerOffs.reserveCapacity(numAttnLayers)
-        for _ in 0..<numAttnLayers {
-            let kOff = (dsa || !self.hasIndexer) ? 0 : reserve(self.ringCap * self.idxDim * 2)
-            let gOff = (dsa || !self.hasIndexer) ? 0 : reserve(self.ringCap * self.idxDim * 2)
-            let pOff = self.hasIndexer ? reserve(((self.maxBlocks + 7) & ~7) * self.idxDim * 2) : reserve(0)
-            let peOff = (dsa && self.ropeDim > 0) ? reserve(((self.maxBlocks + 7) & ~7) * self.ropeDim * 2) : 0
+        for i in 0..<numAttnLayers {
+            let layerHasIdx = self.hasIndexer && !(mtpDenseOnly && numAttnLayers > 0 && i == numAttnLayers - 1)
+            let kOff = (dsa || !layerHasIdx) ? 0 : reserve(self.ringCap * self.idxDim * 2)
+            let gOff = (dsa || !layerHasIdx) ? 0 : reserve(self.ringCap * self.idxDim * 2)
+            let pOff = layerHasIdx ? reserve(((self.maxBlocks + 7) & ~7) * self.idxDim * 2) : reserve(0)
+            let peRows = dsa ? max(self.maxBlocks, self.maxContext) : 0
+            let peOff = (dsa && self.ropeDim > 0) ? reserve(((peRows + 7) & ~7) * self.ropeDim * 2) : 0
             let csr = QWCoarseSelectionPipeline.CSROffsets.reserve(
-                enabled: useCoarse, maxMacros: maxMacros, indexDim: self.idxDim, reserve: reserve)
-            layerOffs.append((kOff, gOff, pOff, peOff, csr))
+                enabled: useCoarse && layerHasIdx, maxMacros: maxMacros, indexDim: self.idxDim, reserve: reserve)
+            layerOffs.append((kOff, gOff, pOff, peOff, layerHasIdx, csr))
         }
 
         let maxT = self.maxPrefillChunk
@@ -460,7 +511,11 @@ public final class QWMLAAttnOperator: @unchecked Sendable {
             ? min(maxT, max(Self.minSelectBatchRows, Self.selectScratchBudgetBytes / max(1, self.maxBlocks * 4)))
             : 1
         self.selectBatchRows = selectBatch
-        let latentOff = reserve(maxT * self.latentStride * 2)
+        let maxLatentCols = max(
+            self.latentStride,
+            self.qLoraRank + self.kvLoraRank + self.ropeDim + self.idxDim + self.qHeads * self.vHeadDim
+        )
+        let latentOff = reserve(maxT * maxLatentCols * 2)
         let qResidCols = max(1, self.qLoraRank)
         let qResidOff = reserve(self.qLoraRank > 0 ? maxT * self.qLoraRank * 2 : 0)
         let qFullOff = reserve(maxT * self.qFullStride * 2)
@@ -470,12 +525,13 @@ public final class QWMLAAttnOperator: @unchecked Sendable {
         let flashWSelOff = reserve(hasFlashScratch ? maxT * Self.flashIndexerSelHeads * 4 : 0)
         let qAbsOff = reserve(maxT * self.qHeads * self.kvLoraRank * 2)
         let uLatOff = reserve(maxT * self.qHeads * self.kvLoraRank * 2)
-        let yVhaNeeded = dsa || self.outputGateMode != .none || geometry.attnOutputGate || (mla?.useVHA == true)
+        let yVhaNeeded = dsa || self.outputGateMode != .none || geometry.attnOutputGate || (mla?.useVHA == true) || oGateInQKV
         let yVhaOff = reserve(yVhaNeeded ? maxT * self.qHeads * self.vHeadDim * 2 : 0)
         let oGateCols = self.outputGateMode == .headWiseFromHidden
             ? self.qHeads
-            : (self.outputGateMode == .elementWiseFromHidden ? self.qHeads * self.vHeadDim : 1)
-        let hasExternalGate = self.outputGateMode == .headWiseFromHidden || self.outputGateMode == .elementWiseFromHidden
+            : (dsa ? max(1, self.qHeads * self.vHeadDim)
+                   : (self.outputGateMode == .elementWiseFromHidden ? self.qHeads * self.vHeadDim : 1))
+        let hasExternalGate = dsa || self.outputGateMode == .headWiseFromHidden || self.outputGateMode == .elementWiseFromHidden
         let oGateOff = reserve(hasExternalGate ? maxT * oGateCols * 2 : 0)
         let invFreqCount = max(1, invFreqArr.count)
         let invFreqOff = reserve(invFreqCount * 4)
@@ -524,22 +580,24 @@ public final class QWMLAAttnOperator: @unchecked Sendable {
         var builtLayers: [LayerState] = []
         builtLayers.reserveCapacity(numAttnLayers)
         let storedIdxCols = max(1, self.idxDim)
-        let storedPooledRows = self.hasIndexer ? self.maxBlocks : 1
+        let peCapRows = max(self.maxBlocks, self.maxContext)
         for i in 0..<numAttnLayers {
             let o = layerOffs[i]
-            let csr: QWCoarsePoolIndex.LayerCSR? = useCoarse
+            let csr: QWCoarsePoolIndex.LayerCSR? = (useCoarse && o.hasIdx)
                 ? o.csr.makeLayerCSR(region: reg, maxMacros: maxMacros, indexDim: self.idxDim)
                 : nil
             let kPe: QWTensorValue? = (dsa && self.ropeDim > 0)
-                ? QWTensorValue(region: reg, offset: o.kPe, shape: QWTensorShape([self.maxBlocks, self.ropeDim], .f16))
+                ? QWTensorValue(region: reg, offset: o.kPe, shape: QWTensorShape([peCapRows, self.ropeDim], .f16))
                 : nil
+            let storedPooledRows = o.hasIdx ? self.maxBlocks : 1
             builtLayers.append(LayerState(
                 fullAttentionIndex: i,
-                kPending: QWTensorValue(region: reg, offset: o.kPend, shape: QWTensorShape([dsa || !self.hasIndexer ? 1 : self.ringCap, storedIdxCols], .f16)),
-                gatePending: QWTensorValue(region: reg, offset: o.gatePend, shape: QWTensorShape([dsa || !self.hasIndexer ? 1 : self.ringCap, storedIdxCols], .f16)),
+                kPending: QWTensorValue(region: reg, offset: o.kPend, shape: QWTensorShape([dsa || !o.hasIdx ? 1 : self.ringCap, storedIdxCols], .f16)),
+                gatePending: QWTensorValue(region: reg, offset: o.gatePend, shape: QWTensorShape([dsa || !o.hasIdx ? 1 : self.ringCap, storedIdxCols], .f16)),
                 pooledKeys: QWTensorValue(region: reg, offset: o.pooled, shape: QWTensorShape([storedPooledRows, storedIdxCols], .f16)),
                 kPeCache: kPe,
-                coarseCSR: csr
+                coarseCSR: csr,
+                hasIndexer: o.hasIdx
             ))
         }
         self.layers = builtLayers

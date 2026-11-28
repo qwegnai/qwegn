@@ -314,7 +314,7 @@ extension QWGemm {
                                       x: QWTensorValue, y: QWTensorValue, rows: Int,
                                       epi: UInt32 = 0, scale: Float = 1) throws {
         let smallRows = rows == 32 || (rows > 32 && rows < 64 && weight.k / 2 >= weight.n)
-        let smallEligible = smallRows && epi <= 3 && hal.caps.familyApple10
+        let smallEligible = smallRows && epi <= 3 && hal.caps.supportsSimdgroupMMA
         let bm32Name: String? = switch weight.containerKind {
         case .incumbentHQ4G32 where smallEligible:
             "qwg_gemm_q4g_f32_bm32"
@@ -370,25 +370,32 @@ extension QWGemm {
         precondition((weight.n % 64 == 0 || !weight.isIncumbentContainer) && weight.k % 64 == 0,
                      "dense NAX needs K multiple of 64 (and N multiple of 64 for incumbent HQ4)")
         // BM64 measures faster than BM128 at every M for both containers (M5 Max: 60-64 vs 26-56 TFLOPS).
+        let useNAX = hal.caps.isMetal4TensorCapable
         let name: String
         switch weight.containerKind {
         case .incumbentHQ4G32:
-            name = "qwg_gemm_q4g_nax_f32"
+            name = useNAX ? "qwg_gemm_q4g_nax_f32" : "qwg_gemm_q4g_sg_f32"
         case .shvq(let bits, let group), .rotatedHQ(let bits, let group), .nativeAffine(let bits, let group):
-            guard let aqName = QWGemmAQ.naxF32KernelName(bits: bits, group: group,
-                                                         isSHVQ: weight.containerKind.isSHVQ) else {
-                throw QWGemmError.badWeights("no affine-quantised nax f32 kernel for \(bits)-bit group \(group)")
+            if useNAX, rows <= 16, weight.n >= 32768,
+               let tg16Name = QWGemmAQ.naxTG16F32KernelName(bits: bits, group: group, isSHVQ: weight.containerKind.isSHVQ) {
+                name = tg16Name
+            } else {
+                guard let aqName = QWGemmAQ.naxF32KernelName(bits: bits, group: group,
+                                                             isSHVQ: weight.containerKind.isSHVQ,
+                                                             useNAX: useNAX) else {
+                    throw QWGemmError.badWeights("no affine-quantised nax f32 kernel for \(bits)-bit group \(group)")
+                }
+                name = aqName
             }
-            name = aqName
         }
         enc.setComputePipelineState(try hal.pipeline(name))
         enc.bindTensors(weight.blocks, x16, y16, y32, startIndex: 0)
         let outBytes = (y32.shape.dtype == .f16 || y32.shape.dtype == .bf16) ? 2 : 4
         let flag = y32.shape.dtype == .f16 ? Int(bitPattern: 0x8000_0000)
             : (y32.shape.dtype == .bf16 ? 0x1000_0000 : 0)
-        let useSmallTile = hal.caps.isMetal4TensorCapable
+        let useSmallTile = hal.caps.supportsSimdgroupMMA
         enc.setUInt32s(weight.n, weight.k, startIndex: 5)
-        let chunk = naxRowChunk(rows: rows, k: weight.k)
+        let chunk = naxRowChunk(rows: rows, k: weight.k, gpuCores: hal.caps.gpuCores)
         let nTiles = (weight.n + 63) / 64
         var r0 = 0
         while r0 < rows {
@@ -407,12 +414,22 @@ extension QWGemm {
     }
 
     /// Row chunk that keeps the f16 activation panel re-read by every column tile resident in the SLC.
-    /// Unchunked, M x K panels beyond ~24 MB thrash to DRAM (M5 Max, M=8192: K=17408 25 -> 62 TFLOPS,
-    /// K=6144 42 -> 62 TFLOPS chunked).
-    public static func naxRowChunk(rows: Int, k: Int) -> Int {
-        let budget = 24 << 20
+    /// Scales cache budget by GPU tier: 24 MiB (>=25c Max/Ultra), 12 MiB (13..24c Pro), 6 MiB (<13c Base).
+    public static func naxRowChunk(rows: Int, k: Int, gpuCores: Int = 40) -> Int {
+        let budget: Int
+        let minChunk: Int
+        if gpuCores >= 25 {
+            budget = 24 << 20
+            minChunk = 512
+        } else if gpuCores >= 13 {
+            budget = 12 << 20
+            minChunk = 256
+        } else {
+            budget = 6 << 20
+            minChunk = 128
+        }
         guard rows * k * 2 > budget else { return rows }
-        return max(512, (budget / (k * 2)) / 64 * 64)
+        return max(minChunk, (budget / (k * 2)) / 64 * 64)
     }
 
     /// Unified dense HQ4 projection over `rows` f32 activations, automatically selecting Single-Pass NAX (`rows >= minNaxRows`),
@@ -423,8 +440,7 @@ extension QWGemm {
                                           rows: Int, epi: UInt32 = 0, scale: Float = 1,
                                           x16Precast: QWTensorValue? = nil,
                                           minNaxRows: Int = 64) throws {
-        let effectiveMinNax = hal.caps.isMetal4TensorCapable ? minNaxRows : max(64, minNaxRows)
-        if rows >= effectiveMinNax && epi == 0 && scale == 1 &&
+        if hal.caps.supportsSimdgroupMMA && rows >= minNaxRows && epi == 0 && scale == 1 &&
            weight.n % 64 == 0 && weight.k % 64 == 0 && weight.k <= maxTileWidth {
             let count = rows * weight.k
             if let precast = x16Precast {

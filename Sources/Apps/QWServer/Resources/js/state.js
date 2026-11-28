@@ -407,6 +407,7 @@ function openMemoryPackModalWithInspection(info, fromSettings = false) {
   renderMemoryPackProgressFrame({ phase: "discovering", progressFraction: 0, processedFiles: 0, totalFiles: info.candidateFileCount || 0, message: "Ready" });
   renderMemoryPackActionsBar(info);
   setMemoryPackControlsDisabled(false);
+  if (typeof refreshMountedVaultPacksInModal === "function") refreshMountedVaultPacksInModal();
   if (typeof dialog.showModal === "function" && !dialog.open) dialog.showModal();
 }
 

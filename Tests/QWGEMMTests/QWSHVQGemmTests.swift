@@ -38,28 +38,41 @@ final class QWSHVQGemmTests: XCTestCase {
     private func unpackBankRows(bits: Int, group: Int, n: Int, k: Int, bank: Data) -> [[Float]] {
         let groups = k / group
         let gBytes = QWSHVQBlock.bytes(bits: bits, group: group)
-        var rows = [[Float]]()
-        rows.reserveCapacity(n)
-        for r in 0..<n {
-            var row = [Float]()
-            row.reserveCapacity(k)
+        return bank.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> [[Float]] in
+            guard let base = raw.baseAddress else { return [] }
+            var rows = [[Float]]()
+            rows.reserveCapacity(n)
             var tmp = [Float]()
-            for g in 0..<groups {
-                let off = (r * groups + g) * gBytes
-                let sub = bank.subdata(in: off..<(off + gBytes))
-                sub.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in QWSHVQBlock.unpack(group: raw, bits: bits, group: group, into: &tmp) }
-                row.append(contentsOf: tmp)
+            var r = 0
+            while r < n {
+                var row = [Float]()
+                row.reserveCapacity(k)
+                var g = 0
+                while g < groups {
+                    let off = (r * groups + g) * gBytes
+                    let sub = UnsafeRawBufferPointer(start: base.advanced(by: off), count: gBytes)
+                    QWSHVQBlock.unpack(group: sub, bits: bits, group: group, into: &tmp)
+                    row.append(contentsOf: tmp)
+                    g += 1
+                }
+                rows.append(row)
+                r += 1
             }
-            rows.append(row)
+            return rows
         }
-        return rows
     }
 
     private func makeActivations(count: Int, seedInit: UInt32 = 0x5EED_C0DE) -> [Float] {
         var seed = seedInit
-        return (0..<count).map { _ in
-            seed = seed &* 1664525 &+ 1013904223
-            return Float(Int32(truncatingIfNeeded: seed >> 8) % 512) / 512.0 - 0.5
+        return [Float](unsafeUninitializedCapacity: count) { dst, initialized in
+            guard let dp = dst.baseAddress else { initialized = 0; return }
+            var i = 0
+            while i < count {
+                seed = seed &* 1664525 &+ 1013904223
+                dp[i] = Float(Int32(truncatingIfNeeded: seed >> 8) % 512) / 512.0 - 0.5
+                i += 1
+            }
+            initialized = count
         }
     }
 
@@ -72,15 +85,25 @@ final class QWSHVQGemmTests: XCTestCase {
     }
 
     private func dotRef(w: [Float], x: ArraySlice<Float>, roundWeightsToF16: Bool = false) -> (val: Float, mag: Float) {
-        var acc: Float = 0
-        var mag: Float = 0
-        for (wi, xi) in zip(w, x) {
-            let ww = roundWeightsToF16 ? Float(Float16(wi)) : wi
-            let p = ww * xi
-            acc += p
-            mag += abs(p)
+        w.withUnsafeBufferPointer { wBuf in
+            x.withUnsafeBufferPointer { xBuf in
+                guard let wp = wBuf.baseAddress, let xp = xBuf.baseAddress else { return (0, 0) }
+                let cnt = min(wBuf.count, xBuf.count)
+                var acc: Float = 0, mag: Float = 0, i = 0
+                if roundWeightsToF16 {
+                    while i < cnt {
+                        let p = Float(Float16(wp[i])) * xp[i]
+                        acc += p; mag += abs(p); i += 1
+                    }
+                } else {
+                    while i < cnt {
+                        let p = wp[i] * xp[i]
+                        acc += p; mag += abs(p); i += 1
+                    }
+                }
+                return (acc, mag)
+            }
         }
-        return (acc, mag)
     }
 
     func testDecodeT4AndMultiRowMatchHostAcrossAll12Pairs() throws {
@@ -233,6 +256,7 @@ final class QWSHVQGemmTests: XCTestCase {
             let n = 64, k = 256
             let bank = makeSHVQBank(bits: bits, group: group, n: n, k: k)
             let wRows = unpackBankRows(bits: bits, group: group, n: n, k: k, bank: bank)
+            let wRows16 = wRows.map { row in row.map { Float(Float16($0)) } }
             let arena = try QWArena(hal: Self.hal, weights: bank.count + (2 << 20),
                                     activations: (8 << 20), kv: 0, gdnStates: 0)
             let wBuf = try arena.weightsRegion().allocate(QWTensorShape([(bank.count + 1) / 2], .f16))
@@ -242,6 +266,7 @@ final class QWSHVQGemmTests: XCTestCase {
             let act = arena.activationsRegion()
             for m in [3, 64] {
                 let x = makeActivations(count: m * k, seedInit: UInt32(0x4242 + m + bits * 17))
+                let xNarrow = x.map { Float(Float16($0)) }
                 let x32 = try act.allocate(QWTensorShape([m * k], .f32))
                 let x16 = try act.allocate(QWTensorShape([m * k], .f16))
                 let y16 = try act.allocate(QWTensorShape([m * n], .f16))
@@ -255,9 +280,9 @@ final class QWSHVQGemmTests: XCTestCase {
                 }
                 let got32 = arena.read(y32, as: Float.self, count: m * n)
                 for t in 0..<m {
-                    let xSlice = x[(t * k)..<((t + 1) * k)].map { Float(Float16($0)) }[...]
+                    let xSlice = xNarrow[(t * k)..<((t + 1) * k)]
                     for r in 0..<n {
-                        let ref = dotRef(w: wRows[r], x: xSlice, roundWeightsToF16: true)
+                        let ref = dotRef(w: wRows16[r], x: xSlice)
                         let denom = max(Double(abs(ref.val)), Double(ref.mag), 1e-5)
                         let rel = abs(Double(got32[t * n + r]) - Double(ref.val)) / denom
                         XCTAssertLessThan(rel, 1e-3,
@@ -287,9 +312,9 @@ final class QWSHVQGemmTests: XCTestCase {
                     }
                     let got16 = arena.read(y16, as: Float16.self, count: m * n).map { Float($0) }
                     for t in 0..<m {
-                        let xSlice = x[(t * k)..<((t + 1) * k)].map { Float(Float16($0)) }[...]
+                        let xSlice = xNarrow[(t * k)..<((t + 1) * k)]
                         for r in 0..<n {
-                            let ref = dotRef(w: wRows[r], x: xSlice, roundWeightsToF16: true)
+                            let ref = dotRef(w: wRows16[r], x: xSlice)
                             let denom = max(Double(abs(ref.val)), Double(ref.mag), 1e-5)
                             let rel = abs(Double(got16[t * n + r]) - Double(ref.val)) / denom
                             XCTAssertLessThan(rel, 1.5e-3, "\(kName) t=\(t) r=\(r): rel=\(rel)")

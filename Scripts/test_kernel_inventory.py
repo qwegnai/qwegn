@@ -48,6 +48,12 @@ class KernelInventoryTests(unittest.TestCase):
             problems = lint_kernels.door_problems(available)
         self.assertTrue(any("STALE KERNEL INVENTORY" in problem for problem in problems))
 
+    def test_stale_nax_registry_is_reported(self):
+        nax_names = gen_kernel_inventory.load_nax_manifest()
+        with patch.object(gen_kernel_inventory, "render_nax_registry", return_value="stale"):
+            problems = lint_kernels.nax_registry_problems(set(nax_names))
+        self.assertTrue(any("STALE NAX REGISTRY" in problem for problem in problems))
+
 
 if __name__ == "__main__":
     unittest.main()

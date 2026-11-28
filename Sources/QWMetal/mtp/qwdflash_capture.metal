@@ -5,6 +5,8 @@
 #include "include/qw_dequant.metalh"
 using namespace metal;
 
+constant bool FC_DRAFTER_ROTATED [[function_constant(236)]];
+
 struct DFlashCapH8 { half v[8]; } __attribute__((__packed__, __aligned__(16)));
 static inline DFlashCapH8 asDFlashCapH8(uint4 w) { return *(thread DFlashCapH8*)&w; }
 static inline float dflash_cap_bf16_to_f32(ushort b) { return as_type<float>(uint(b) << 16u); }
@@ -26,7 +28,7 @@ kernel void qwg_dflash_capture_target_hidden(
     device uint4* yr = dst + (size_t)(dstRowOffset + tg) * rowStrideU4 + (size_t)slot * hiddenU4;
     for (uint u = ti; u < hiddenU4; u += 32u) {
         DFlashCapH8 hv = asDFlashCapH8(xr[u]);
-        fwht32_inplace(hv.v, ti);
+        if (FC_DRAFTER_ROTATED) { fwht32_inplace(hv.v, ti); }
         yr[u] = *(thread uint4*)&hv;
     }
 }
@@ -97,7 +99,11 @@ kernel void qwg_dflash_capture_hc_hidden(
             f[4] = sum1.x; f[5] = sum1.y; f[6] = sum1.z; f[7] = sum1.w;
         }
         DFlashCapH8 rv;
-        fwht32_f32_to_h8(f, rv.v, ti);
+        if (FC_DRAFTER_ROTATED) {
+            fwht32_f32_to_h8(f, rv.v, ti);
+        } else {
+            for (int h = 0; h < 8; ++h) rv.v[h] = half(f[h]);
+        }
         yr[u] = *(thread uint4*)&rv;
     }
 }

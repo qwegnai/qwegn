@@ -574,7 +574,7 @@ public final class QWArena: @unchecked Sendable {
         withExtendedLifetime(t.region.buffer) {
             d.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
                 guard let base = raw.baseAddress else { return }
-                memcpy(dst, base, raw.count)
+                dst.copyMemory(from: base, byteCount: raw.count)
             }
         }
     }
@@ -592,7 +592,7 @@ public final class QWArena: @unchecked Sendable {
         withExtendedLifetime(t.region.buffer) {
             array.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
                 guard let base = raw.baseAddress else { return }
-                memcpy(dst, base, byteCount)
+                dst.copyMemory(from: base, byteCount: byteCount)
             }
         }
     }

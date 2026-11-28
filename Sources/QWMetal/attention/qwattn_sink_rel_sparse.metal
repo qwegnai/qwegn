@@ -2,6 +2,12 @@
 // for LSA / e-means-4096 with optional sink, banded relative position bias, and output gate.
 #include <metal_stdlib>
 #include <metal_simdgroup>
+#include "qw_attn_sink_rel.metalh"
+#include "inkling2/qw_ink2_common.metalh"
+
+using namespace metal;
+
+#if !defined(QW_DISABLE_NAX)
 #include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
 #if !defined(__ENVIRONMENT_OS_VERSION_MIN_REQUIRED__) || __ENVIRONMENT_OS_VERSION_MIN_REQUIRED__ < 260200
 #error "NAX cooperative_tensor kernels require -mmacosx-version-min=26.2 or newer (Apple MPP operand_index ABI)."
@@ -9,10 +15,7 @@
 #include "mlx/backend/metal/kernels/steel/defines.h"
 #include "mlx/backend/metal/kernels/steel/utils/integral_constant.h"
 #include "mlx/backend/metal/kernels/steel/gemm/nax.h"
-#include "qw_attn_sink_rel.metalh"
-#include "inkling2/qw_ink2_common.metalh"
 
-using namespace metal;
 using namespace mlx::steel;
 
 #define QW_SRS_BM        32u
@@ -20,6 +23,7 @@ using namespace mlx::steel;
 #define QW_SRS_KU        16u
 #define QW_SRS_HDIM      128u
 #define QW_SRS_KV_STRIDE 136u
+#endif // !defined(QW_DISABLE_NAX)
 
 struct QWSinkRelSparseMeta {
     uint listStride;
@@ -70,6 +74,7 @@ METAL_FUNC void qwg_sr_write_out(
         qw_ink2_bf16(o4.x), qw_ink2_bf16(o4.y), qw_ink2_bf16(o4.z), qw_ink2_bf16(o4.w));
 }
 
+#if !defined(QW_DISABLE_NAX)
 METAL_FUNC void qwg_sr_load_q_frag(
     device const bfloat* qBF16, uint rowBase, uint head, uint nH, uint T,
     uint colBase, short2 sc, thread BaseNAXFrag::dtype_frag_t<half>& dst
@@ -312,6 +317,7 @@ METAL_FUNC void qwg_attn_prefill_sink_rel_sparse_nax_body(
         }
     }
 }
+#endif // !defined(QW_DISABLE_NAX)
 
 METAL_FUNC void qwg_sr_dec_score_tok(
     uint dist, uint gCount, bool mayRel, float qkScale,
@@ -469,6 +475,7 @@ METAL_FUNC void qwg_attn_decode_sink_rel_sparse_gqa_body(
     }
 }
 
+#if !defined(QW_DISABLE_NAX)
 #define QW_SR_PREFILL_SPARSE_ENTRY(SFX, MODE) \
 kernel void qwg_attn_prefill_sink_rel_sparse_nax##SFX( \
     device const bfloat* qBF16 [[buffer(0)]], device const bfloat* rBF16 [[buffer(1)]], \
@@ -491,6 +498,7 @@ QW_SR_PREFILL_SPARSE_ENTRY(_f16, 0u)
 QW_SR_PREFILL_SPARSE_ENTRY(_q8, 1u)
 QW_SR_PREFILL_SPARSE_ENTRY(_q4, 2u)
 #undef QW_SR_PREFILL_SPARSE_ENTRY
+#endif // !defined(QW_DISABLE_NAX)
 
 #define QW_SR_DECODE_SPARSE_ENTRY(SFX, MODE) \
 kernel void qwg_attn_decode_sink_rel_sparse_gqa##SFX( \

@@ -342,25 +342,36 @@ public struct QWRouteTurnResult: Codable, Sendable, Equatable {
 public struct QWCognitiveRails: Sendable {
     public typealias DecideFn = @Sendable (QWDecisionRequest) async throws -> QWDecisionResponse
     public typealias DecideBatchFn = @Sendable ([QWDecisionRequest]) async throws -> [QWDecisionResponse]
+    public typealias RerankFn = @Sendable (String, [String]) async throws -> [QWRerankPairScore]
 
     let decideFn: DecideFn?
     let decideBatchFn: DecideBatchFn?
+    let rerankFn: RerankFn?
 
     public init(runner: QWDecisionRunner?) {
         if let runner {
             self.decideFn = { req in try await runner.decide(req) }
             self.decideBatchFn = { reqs in try await runner.decideBatch(reqs) }
+            let cfg = runner.backend.decisionConfig
+            if case .sequencePair = cfg.framing, case .pooledClassifier = cfg.head {
+                self.rerankFn = { query, docs in try await runner.rerank(query: query, documents: docs).scores }
+            } else {
+                self.rerankFn = nil
+            }
         } else {
             self.decideFn = nil
             self.decideBatchFn = nil
+            self.rerankFn = nil
         }
     }
 
     public init(
         decideFn: DecideFn?,
-        decideBatchFn: DecideBatchFn? = nil
+        decideBatchFn: DecideBatchFn? = nil,
+        rerankFn: RerankFn? = nil
     ) {
         self.decideFn = decideFn
+        self.rerankFn = rerankFn
         if let decideBatchFn {
             self.decideBatchFn = decideBatchFn
         } else if let decideFn {

@@ -29,11 +29,11 @@ static_assert(sizeof(Block_HQ4_G32) == 20, "Block_HQ4_G32 must be 20 bytes");
 
 template <uint LS = 32u, typename T>
 METAL_FUNC T qwg_simd_reduce_down(T v) {
-    if constexpr (LS == 32u) v += simd_shuffle_down(v, 16);
-    v += simd_shuffle_down(v, 8);
-    v += simd_shuffle_down(v, 4);
-    v += simd_shuffle_down(v, 2);
-    v += simd_shuffle_down(v, 1);
+    if constexpr (LS >= 32u) v += simd_shuffle_down(v, 16);
+    if constexpr (LS >= 16u) v += simd_shuffle_down(v, 8);
+    if constexpr (LS >= 8u)  v += simd_shuffle_down(v, 4);
+    if constexpr (LS >= 4u)  v += simd_shuffle_down(v, 2);
+    if constexpr (LS >= 2u)  v += simd_shuffle_down(v, 1);
     return v;
 }
 

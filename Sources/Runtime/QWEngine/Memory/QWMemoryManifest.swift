@@ -1,4 +1,4 @@
-// QWMemoryManifest.swift — Manifest and error types for QWMemoryPack.
+// QWMemoryManifest.swift — Manifest v2 and error types for QWMemoryPack & Cognitive Vault v2.
 import CryptoKit
 import Foundation
 import QWCore
@@ -21,7 +21,34 @@ public enum QWMemoryPackError: LocalizedError, Sendable {
 }
 
 public struct QWMemoryManifest: Codable, Sendable, Equatable {
-    public static let currentSchemaVersion = 1
+    public static let currentSchemaVersion = 2
+
+    public enum SourceKind: String, Codable, Sendable, Equatable {
+        case code
+        case markdown
+        case pdfPageSpan = "pdf_page_span"
+
+        public static func infer(from relativePath: String) -> SourceKind {
+            let ext = (relativePath.lowercased() as NSString).pathExtension
+            if ext == "pdf" { return .pdfPageSpan }
+            if ext == "md" || ext == "mdx" || ext == "rst" || ext == "adoc" { return .markdown }
+            return .code
+        }
+    }
+
+    public struct SpanAnchor: Codable, Sendable, Equatable {
+        public let label: String
+        public let startLine: Int
+        public let endLine: Int
+        public let pageNumber: Int?
+
+        public init(label: String, startLine: Int, endLine: Int, pageNumber: Int? = nil) {
+            self.label = label
+            self.startLine = startLine
+            self.endLine = endLine
+            self.pageNumber = pageNumber
+        }
+    }
 
     public struct FileEntry: Codable, Sendable, Equatable {
         public let relativePath: String
@@ -33,6 +60,8 @@ public struct QWMemoryManifest: Codable, Sendable, Equatable {
         public let tokenCount: Int
         public let inCortex: Bool
         public let symbols: [String]
+        public let sourceKind: SourceKind
+        public let spanAnchors: [SpanAnchor]
 
         public init(
             relativePath: String,
@@ -43,7 +72,9 @@ public struct QWMemoryManifest: Codable, Sendable, Equatable {
             tokenOffset: Int,
             tokenCount: Int,
             inCortex: Bool = true,
-            symbols: [String] = []
+            symbols: [String] = [],
+            sourceKind: SourceKind? = nil,
+            spanAnchors: [SpanAnchor] = []
         ) {
             self.relativePath = relativePath
             self.tier = tier
@@ -54,15 +85,19 @@ public struct QWMemoryManifest: Codable, Sendable, Equatable {
             self.tokenCount = tokenCount
             self.inCortex = inCortex
             self.symbols = symbols
+            self.sourceKind = sourceKind ?? SourceKind.infer(from: relativePath)
+            self.spanAnchors = spanAnchors
         }
 
         private enum CodingKeys: String, CodingKey {
-            case relativePath, tier, sha256, mtimeEpochSec, byteCount, tokenOffset, tokenCount, inCortex, symbols
+            case relativePath, tier, sha256, mtimeEpochSec, byteCount
+            case tokenOffset, tokenCount, inCortex, symbols, sourceKind, spanAnchors
         }
 
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
-            self.relativePath = try c.decode(String.self, forKey: .relativePath)
+            let rel = try c.decode(String.self, forKey: .relativePath)
+            self.relativePath = rel
             self.tier = try c.decode(Int.self, forKey: .tier)
             self.sha256 = try c.decode(String.self, forKey: .sha256)
             self.mtimeEpochSec = try c.decode(Int64.self, forKey: .mtimeEpochSec)
@@ -71,6 +106,8 @@ public struct QWMemoryManifest: Codable, Sendable, Equatable {
             self.tokenCount = try c.decode(Int.self, forKey: .tokenCount)
             self.inCortex = try c.decodeIfPresent(Bool.self, forKey: .inCortex) ?? true
             self.symbols = try c.decodeIfPresent([String].self, forKey: .symbols) ?? []
+            self.sourceKind = try c.decodeIfPresent(SourceKind.self, forKey: .sourceKind) ?? SourceKind.infer(from: rel)
+            self.spanAnchors = try c.decodeIfPresent([SpanAnchor].self, forKey: .spanAnchors) ?? []
         }
     }
 
@@ -117,6 +154,9 @@ public struct QWMemoryManifest: Codable, Sendable, Equatable {
     public var files: [FileEntry]
     public var caches: [CacheArtifact]
     public var semanticIndex: QWMemorySemanticIndex?
+    public var denseVectorFile: String?
+    public var denseVectorDim: Int?
+    public var symbolGraphFile: String?
 
     public init(
         schemaVersion: Int = Self.currentSchemaVersion,
@@ -127,7 +167,10 @@ public struct QWMemoryManifest: Codable, Sendable, Equatable {
         includeTests: Bool = false,
         files: [FileEntry] = [],
         caches: [CacheArtifact] = [],
-        semanticIndex: QWMemorySemanticIndex? = nil
+        semanticIndex: QWMemorySemanticIndex? = nil,
+        denseVectorFile: String? = nil,
+        denseVectorDim: Int? = nil,
+        symbolGraphFile: String? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.packName = packName
@@ -138,6 +181,9 @@ public struct QWMemoryManifest: Codable, Sendable, Equatable {
         self.files = files
         self.caches = caches
         self.semanticIndex = semanticIndex
+        self.denseVectorFile = denseVectorFile
+        self.denseVectorDim = denseVectorDim
+        self.symbolGraphFile = symbolGraphFile
     }
 
     public static func qwgDirectoryURL(in rootURL: URL) -> URL {
@@ -146,6 +192,14 @@ public struct QWMemoryManifest: Codable, Sendable, Equatable {
 
     public static func manifestURL(in rootURL: URL) -> URL {
         qwgDirectoryURL(in: rootURL).appendingPathComponent("manifest.json", isDirectory: false)
+    }
+
+    public static func denseVectorsURL(in rootURL: URL, fileName: String = "dense_vectors.qvec") -> URL {
+        qwgDirectoryURL(in: rootURL).appendingPathComponent(fileName, isDirectory: false)
+    }
+
+    public static func symbolGraphURL(in rootURL: URL, fileName: String = "symbol_graph.json") -> URL {
+        qwgDirectoryURL(in: rootURL).appendingPathComponent(fileName, isDirectory: false)
     }
 
     public static func load(from rootURL: URL) throws -> QWMemoryManifest {

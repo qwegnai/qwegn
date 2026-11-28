@@ -31,15 +31,6 @@ extension QWInkling2Runtime {
         var failedError: (any Error)? = nil
     }
 
-    private func resetSharedAuxOperators() {
-        dspark?.reset()
-        if let lsa = lsaOperator {
-            lsa.setPinnedBaseState(nil, position: 0)
-            _ = lsa.restoreIndexerState(Data(), position: 0)
-            lsa.stateOwner = nil
-        }
-    }
-
     private func validateWaveRequest(_ req: QWGenerationRequest) -> (any Error)? {
         if req.usePrefixCache && !hasPrefixCacheTier {
             return QWEngineDriverError.state("the request wants a prefix cache this engine does not have")
@@ -106,46 +97,9 @@ extension QWInkling2Runtime {
     ) throws -> WaveSlotState? {
         let req = job.request
         let prefillStart = clock.now
-        let canUseCache = req.usePrefixCache && prefixCache.isEnabled
-        var cacheHit = false
-        var matchedTokens = 0
-        var pos = 0
-        var restored = false
-        var restoredExactFinalNorm: Data? = nil
-
-        if canUseCache, req.prompt.count >= 1,
-           let entry = prefixCache.matchLongestPrefix(
-               tokens: req.prompt, salt: req.cacheSalt, limit: req.prompt.count, allowExact: true
-           ) {
-            let outcome = QWInkling2PrefixCache.restore(
-                entry: entry, into: slot, kvModeRaw: session.kvModeRaw,
-                dspark: nil, lsaOperator: nil, stateOwner: nil
-            )
-            if outcome.baseOk {
-                pos = entry.key.tokens.count
-                if pos == req.prompt.count { restoredExactFinalNorm = entry.finalNormRow }
-                cacheHit = true
-                matchedTokens = pos
-                restored = true
-                onCacheEvent?(.hit(tier: "warm", matchedTokens: pos, totalTokens: req.prompt.count))
-            }
-        }
-        if !restored {
-            slot.resetConvStates()
-            if canUseCache {
-                onCacheEvent?(.miss(totalTokens: req.prompt.count))
-            }
-        }
-
-        let retainTarget: Int? = if canUseCache {
-            if let explicitLen = req.retainPrefixLength, explicitLen > 0, explicitLen <= req.prompt.count {
-                explicitLen
-            } else {
-                req.prompt.count
-            }
-        } else {
-            nil
-        }
+        let prefix = preparePrefixState(for: req, slot: slot, allowAuxOperators: false)
+        var pos = prefix.pos
+        let retainTarget = prefix.retainTarget
 
         let V = ink2.unpaddedVocabSize
         let logitsPtr = session.logitsF32Buf.contents().assumingMemoryBound(to: Float.self)
@@ -166,15 +120,10 @@ extension QWInkling2Runtime {
                 onPrefillProgress: { done, _ in req.onPrefillProgress?(startPos + done, req.prompt.count) }
             )
             pos = retainLen
-            let snap = QWInkling2PrefixCache.capture(
-                slot: slot, kvModeRaw: session.kvModeRaw, dspark: nil, lsaOperator: nil,
-                tokens: Array(req.prompt.prefix(retainLen)), salt: req.cacheSalt,
-                slidingWindow: ink2.slidingWindowSize
-            )
-            prefixCache.store(entry: snap)
+            storePrefixSnapshot(slot: slot, tokens: Array(req.prompt.prefix(retainLen)), salt: req.cacheSalt)
         }
 
-        if let normRow = restoredExactFinalNorm {
+        if let normRow = prefix.restoredExactFinalNorm {
             try forwardPass.runHeadFromFinalNorm(
                 finalNormRow: normRow, greedyHead: canUseGreedyHead, profiler: prefillProfiler
             )
@@ -189,30 +138,21 @@ extension QWInkling2Runtime {
             )
             pos = req.prompt.count
             if let retainLen = retainTarget, pos == retainLen {
-                let normRow = QWInkling2PrefixCache.captureFinalNormRow(
-                    session: session, lastChunkRows: lastChunkRows, hidden: descriptor.hidden
+                storePrefixSnapshot(
+                    slot: slot, tokens: Array(req.prompt.prefix(retainLen)),
+                    salt: req.cacheSalt, lastChunkRowsForFinalNorm: lastChunkRows
                 )
-                let snap = QWInkling2PrefixCache.capture(
-                    slot: slot, kvModeRaw: session.kvModeRaw, dspark: nil, lsaOperator: nil,
-                    tokens: Array(req.prompt.prefix(retainLen)), salt: req.cacheSalt,
-                    slidingWindow: ink2.slidingWindowSize, finalNormRow: normRow
-                )
-                prefixCache.store(entry: snap)
             }
         }
 
         let prefillSec = elapsedSeconds(prefillStart.duration(to: clock.now))
         let effectiveMaxNew = min(max(0, req.maxNew), max(0, slot.capacity - pos))
         let decodeStart = clock.now
-        let cacheAnswer: QWCacheAnswer? = canUseCache
-            ? QWCacheAnswer(hit: cacheHit, matchedTokens: matchedTokens,
-                            totalTokens: req.prompt.count, tier: cacheHit ? "warm" : nil)
-            : nil
         var state = WaveSlotState(
             slot: slot, job: job, sampler: sampler, lpSampler: lpSampler, topKCount: topKCount,
             usePenalty: usePenalty, canUseGreedyHead: canUseGreedyHead, effectiveMaxNew: effectiveMaxNew,
             decodeStart: decodeStart, prefillSec: prefillSec, firstTokenSec: prefillSec,
-            cacheAnswer: cacheAnswer, pos: pos, pendingToken: 0
+            cacheAnswer: prefix.cacheAnswer, pos: pos, pendingToken: 0
         )
 
         guard effectiveMaxNew > 0 else {
@@ -221,41 +161,29 @@ extension QWInkling2Runtime {
             return nil
         }
 
-        var allowedScratch: [Int] = []
-        let tok0: Int
-        if canUseGreedyHead {
-            tok0 = Int(headTokPtr[0])
-        } else {
-            let row0 = UnsafeBufferPointer(start: logitsPtr, count: V)
-            tok0 = try sampleToken(
-                sampler: sampler, logitsRow: row0, penaltyHistory: [],
-                constraint: req.constraint, allowedScratch: &allowedScratch
-            )
-        }
+        let tok0 = try sampleRowToken(
+            row: 0, vocab: V, useGreedyHead: canUseGreedyHead,
+            logitsPtr: logitsPtr, headTokPtr: headTokPtr,
+            sampler: sampler, penaltyHistory: [],
+            constraint: req.constraint, allowedScratch: &state.allowedScratch
+        )
         state.firstTokenSec = elapsedSeconds(prefillStart.duration(to: clock.now))
-        if req.stopIDs.contains(tok0) {
-            state.stopTokenID = tok0
+        let emit0 = try consumeEmittedToken(
+            tok0, row: 0, vocab: V, logitsPtr: logitsPtr,
+            stopIDs: req.stopIDs, constraint: req.constraint,
+            lpSampler: lpSampler, topKCount: topKCount, usePenalty: usePenalty,
+            recentGeneratedForPenalty: &state.recentGeneratedForPenalty,
+            penaltyHistory: &state.penaltyHistory, generated: &state.generated,
+            collectedLogprobs: &state.collectedLogprobs, stopTokenID: &state.stopTokenID,
+            onTokenLogprob: req.onTokenLogprob, onStopToken: nil, onToken: job.onToken
+        )
+        if emit0 == .stopped {
             state.finished = true
             completeWaveSlot(state, clock: clock)
             return nil
         }
-        try req.constraint?.accept(tok0)
-        if let lpSampler {
-            let row0 = UnsafeBufferPointer(start: logitsPtr, count: V)
-            let lp = lpSampler.computeTokenLogprob(logits: row0, chosenToken: tok0, topK: topKCount)
-            state.collectedLogprobs.append(lp)
-            req.onTokenLogprob?(lp)
-        }
-        state.generated.append(tok0)
         state.pendingToken = tok0
-        if usePenalty {
-            Self.recordGeneratedTokenForPenalty(
-                tok0, vocab: V,
-                recentGenerated: &state.recentGeneratedForPenalty,
-                activeLoopTokens: &state.penaltyHistory
-            )
-        }
-        if job.onToken?(tok0) == false || state.generated.count >= effectiveMaxNew {
+        if emit0 == .cancelled || state.generated.count >= effectiveMaxNew {
             state.finished = true
             completeWaveSlot(state, clock: clock)
             return nil
@@ -273,41 +201,30 @@ extension QWInkling2Runtime {
         headTokPtr: UnsafeMutablePointer<Int32>
     ) {
         do {
-            let tok: Int
-            if usedGreedyHead {
-                tok = Int(headTokPtr[row])
-            } else {
-                let rowBuf = UnsafeBufferPointer(start: logitsPtr.advanced(by: row * V), count: V)
-                tok = try sampleToken(
-                    sampler: state.sampler, logitsRow: rowBuf, penaltyHistory: state.penaltyHistory,
-                    constraint: state.job.request.constraint, allowedScratch: &state.allowedScratch
-                )
-            }
+            let tok = try sampleRowToken(
+                row: row, vocab: V, useGreedyHead: usedGreedyHead,
+                logitsPtr: logitsPtr, headTokPtr: headTokPtr,
+                sampler: state.sampler, penaltyHistory: state.penaltyHistory,
+                constraint: state.job.request.constraint, allowedScratch: &state.allowedScratch
+            )
             state.stepMs.append(elapsedMs)
-            if state.job.request.stopIDs.contains(tok) {
+            let outcome = try consumeEmittedToken(
+                tok, row: row, vocab: V, logitsPtr: logitsPtr,
+                stopIDs: state.job.request.stopIDs, constraint: state.job.request.constraint,
+                lpSampler: state.lpSampler, topKCount: state.topKCount, usePenalty: state.usePenalty,
+                recentGeneratedForPenalty: &state.recentGeneratedForPenalty,
+                penaltyHistory: &state.penaltyHistory, generated: &state.generated,
+                collectedLogprobs: &state.collectedLogprobs, stopTokenID: &state.stopTokenID,
+                onTokenLogprob: state.job.request.onTokenLogprob, onStopToken: nil, onToken: state.job.onToken
+            )
+            if outcome == .stopped {
                 state.stepCounts.append(0)
-                state.stopTokenID = tok
                 state.finished = true
                 return
             }
-            try state.job.request.constraint?.accept(tok)
-            if let lpSampler = state.lpSampler {
-                let rowBuf = UnsafeBufferPointer(start: logitsPtr.advanced(by: row * V), count: V)
-                let lp = lpSampler.computeTokenLogprob(logits: rowBuf, chosenToken: tok, topK: state.topKCount)
-                state.collectedLogprobs.append(lp)
-                state.job.request.onTokenLogprob?(lp)
-            }
             state.stepCounts.append(1)
-            state.generated.append(tok)
             state.pendingToken = tok
-            if state.usePenalty {
-                Self.recordGeneratedTokenForPenalty(
-                    tok, vocab: V,
-                    recentGenerated: &state.recentGeneratedForPenalty,
-                    activeLoopTokens: &state.penaltyHistory
-                )
-            }
-            if state.job.onToken?(tok) == false || state.generated.count >= state.effectiveMaxNew {
+            if outcome == .cancelled || state.generated.count >= state.effectiveMaxNew {
                 state.finished = true
             }
         } catch {

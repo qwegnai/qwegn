@@ -42,3 +42,4 @@ Follow these five steps on every Qwegn engineering task to prevent scope creep, 
 | Parallel `swift test` `.build` lock contention or GPU failure | Run `swift test --no-parallel` strictly one SwiftPM invocation per checkout (`Law 13`). |
 | Same experiment/build fix failed twice (`Law 21`) | Stop, run `python3 Scripts/log_papercut.py log ...`, and escalate or switch strategy — never attempt a 3rd identical retry. |
 | Leftover `.venv-oracle` or `Scripts/spike/out` symlink blocks commit | Run `rm -f .venv-oracle Scripts/spike/out out/vision_decision_oracle` before `git commit` or `git worktree remove`. |
+| `QWChatTemplateGoldenTests` / `QWAttn*` golden tests fail in worktree (`Scripts/spike/out` missing) | Untracked golden fixtures live only in the primary checkout; run golden-fixture suites on `master` post-merge (or symlink `Scripts/spike/out` temporarily and clean up before commit). |

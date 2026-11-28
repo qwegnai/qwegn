@@ -5,6 +5,7 @@ import Foundation
 import QWAlloc
 import QWAttn
 import QWCore
+import QWDecision
 import QWGEMM
 import QWHAL
 import QWHead
@@ -31,6 +32,7 @@ public final class QWHyperStreamRuntime: @unchecked Sendable {
     public let hal: QWHal
     let stateLock = NSLock()
     var _onCacheEvent: (@Sendable (QWPrefixCacheEvent) -> Void)?
+    var _gpuTurnArbitrator: QWGPUTurnArbitrator?
     var _prefixCacheHit: Bool = false
     var _prefixCacheMatchedTokens: Int = 0
     var _prefixCacheTier: FNPrefixCacheTier?
@@ -121,9 +123,12 @@ public final class QWHyperStreamRuntime: @unchecked Sendable {
         perTokenBytes: Int,
         availableBytes: Int
     ) -> Int {
-        let headroomCap = alignedCap + 1024
-        let fitsHeadroom = fixedBytes + headroomCap * perTokenBytes <= availableBytes
-        return (alignedCap >= 4096 && fitsHeadroom) ? headroomCap : alignedCap
+        QWCapacityBudget.resolveKVCapacity(
+            alignedCap: alignedCap,
+            fixedBytes: fixedBytes,
+            perTokenBytes: perTokenBytes,
+            availableBytes: availableBytes
+        )
     }
     public lazy var batchScheduler = FNGPUBatchScheduler(engine: self)
 
@@ -246,7 +251,7 @@ public final class QWHyperStreamRuntime: @unchecked Sendable {
         self.gpuPLETable = gpuPLE
         let ngramCacheBytes = (desc.pleModuleIndices.isEmpty || resolvedPLE.residentBytes > 0) ? 0 : QWHyperStreamRuntime.ngramRowCacheBytes
         let rows = FNNgramCachedRows(backing: resolvedPLE.rows, capacityBytes: ngramCacheBytes)
-        let admission = QWResidencyAdmission.planFlashNext(
+        let admission = QWResidencyAdmission.planHyperStream(
             weightsEstimate: fnWeightsEstimate, packDiskBytes: packDiskBytes, gpuPLEBytes: resolvedPLE.residentBytes,
             ngramRowCacheBytes: ngramCacheBytes, baseScratchBytes: fnFixedScratchEstimate,
             retainedPrefillBytes: retainedPrefillBytes, lsaClusterBytes: 0, minKVBytes: minKVBytes,
@@ -555,6 +560,103 @@ public final class QWHyperStreamRuntime: @unchecked Sendable {
                 if let lp = session.tokenLogprobs.last { out.append(lp) }
             }
             return out
+        }
+    }
+
+    /// Validates decision evaluation inputs and returns an early output when no GPU work is needed.
+    static func prepareDecisionEvaluation(
+        tokens: [Int],
+        positions: [Int],
+        candidateTokenIds: [Int],
+        vocab: Int,
+        activeCapacity: Int
+    ) throws -> [QWDecisionSlotOutput]? {
+        guard !tokens.isEmpty else {
+            throw QWDecisionError.invalidQuestion("decision sequence must contain at least one token")
+        }
+        if positions.isEmpty { return [] }
+        let maxTokensLimit = FNGPUDFlash.maxFittingContext(activeCapacity: activeCapacity)
+        guard tokens.count <= maxTokensLimit else {
+            throw QWDecisionError.contextOverflow(tokens: tokens.count, limit: maxTokensLimit)
+        }
+        for tok in tokens where tok < 0 || tok >= vocab {
+            throw QWEngineDriverError.badToken(tok)
+        }
+        for pos in positions where pos < 0 || pos >= tokens.count {
+            throw QWDecisionError.invalidQuestion("slot position \(pos) outside sequence 0..<\(tokens.count)")
+        }
+        if !candidateTokenIds.isEmpty,
+           !candidateTokenIds.contains(where: { (0..<vocab).contains($0) }) {
+            return positions.map { _ in QWDecisionSlotOutput(tokenLogits: [:]) }
+        }
+        return nil
+    }
+
+    /// Evaluates single-pass decision logits at `positions` inside `tokens` using an ephemeral session.
+    public func evaluateDecisionLogits(
+        tokens: [Int],
+        positions: [Int],
+        candidateTokenIds: [Int],
+        visualSpans: [QWVisualSpan] = []
+    ) throws -> [QWDecisionSlotOutput] {
+        try batchScheduler.runExclusive {
+            if let early = try Self.prepareDecisionEvaluation(
+                tokens: tokens,
+                positions: positions,
+                candidateTokenIds: candidateTokenIds,
+                vocab: vocab,
+                activeCapacity: activeCapacity
+            ) {
+                return early
+            }
+            wipeSessionState()
+            defer {
+                wipeSessionState()
+                evictPrefillScratchIfNeeded()
+            }
+
+            let sortedPositions = Array(Set(positions)).sorted()
+            let prefixTokens = tokens.map(Int64.init)
+            var session = FNGPUSessionData(
+                history: [],
+                sampler: QWSampler(config: .greedy),
+                useSpec: false,
+                collectLogprobs: false,
+                visualSpans: visualSpans,
+                usePrefixCache: false
+            )
+            beginSession(&session, maxNew: 0)
+            try preparePrefill(forTokenCount: tokens.count)
+
+            var capturedByPosition: [Int: QWDecisionSlotOutput] = [:]
+            capturedByPosition.reserveCapacity(sortedPositions.count)
+
+            for targetPos in sortedPositions {
+                let targetEnd = targetPos + 1
+                session.history.append(contentsOf: prefixTokens[session.history.count..<targetEnd])
+                session.prefillStepChunk = 0
+                var cur = session.prefillPos
+                let chunkCap = dynamicPrefillChunkRows(forTotalTokens: targetEnd - cur)
+                while cur < targetEnd {
+                    let end = min(targetEnd, cur + chunkCap)
+                    _ = try encodePrefillChunk(
+                        &session,
+                        chunk: cur..<end,
+                        runsHead: end == targetEnd
+                    )
+                    cur = end
+                }
+                let logitsPtr = arena.cpuPointer(of: head.logits).assumingMemoryBound(to: Float.self)
+                let slotOut = withExtendedLifetime(arena) {
+                    QWTrunkRuntimeSupport.extractDecisionSlotOutput(
+                        logitsRow: logitsPtr,
+                        vocab: vocab,
+                        candidateTokenIds: candidateTokenIds
+                    )
+                }
+                capturedByPosition[targetPos] = slotOut
+            }
+            return positions.map { capturedByPosition[$0] ?? QWDecisionSlotOutput() }
         }
     }
 

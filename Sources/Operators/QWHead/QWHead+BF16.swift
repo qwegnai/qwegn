@@ -90,9 +90,11 @@ extension QWHead {
         keysLo: QWTensorValue,
         tokens: QWTensorValue,
         slots: Int,
-        rows: Int
+        rows: Int,
+        softcap: Float = 0.0
     ) throws {
-        let pso = try hal.pipeline("qwg_head_argmax_batched_fin")
+        let psoName = (softcap > 0) ? "qwg_head_argmax_batched_fin_softcap" : "qwg_head_argmax_batched_fin"
+        let pso = try hal.pipeline(psoName)
         enc.setComputePipelineState(pso)
         keysHi.bind(enc, index: 0)
         keysLo.bind(enc, index: 1)
@@ -101,6 +103,10 @@ extension QWHead {
         var mU = UInt32(rows)
         enc.setBytes(&nTGU, length: 4, index: 3)
         enc.setBytes(&mU, length: 4, index: 4)
+        if softcap > 0 {
+            var cap = softcap
+            enc.setBytes(&cap, length: 4, index: 5)
+        }
         enc.dispatchThreadgroups(MTLSize(width: rows, height: 1, depth: 1),
                                  threadsPerThreadgroup: MTLSize(width: 1024, height: 1, depth: 1))
     }
@@ -162,6 +168,7 @@ extension QWHead {
         }
 
         let stage1Slots: Int
+        var finSoftcap: Float = 0.0
         switch storage {
         case .bf16(let w):
             guard w.shape.dtype == .bf16, w.shape.elementCount >= vocabN * hidden,
@@ -253,6 +260,7 @@ extension QWHead {
             } else if view.isSHVQ && M > 8,
                       let m16Name = QWGemmAQ.headArgmaxM16KernelName(bits: view.bits, group: view.groupSize, isSHVQ: true) {
                 stage1Slots = (vocabN + 15) / 16
+                finSoftcap = softcap
                 guard keysHi.shape.elementCount >= M * stage1Slots,
                       keysLo.shape.elementCount >= M * stage1Slots else {
                     throw QWHeadError.badShape("argmax keysHi/keysLo require >= \(M * stage1Slots) elements")
@@ -285,14 +293,18 @@ extension QWHead {
                 tokens.bind(enc, index: 3)
                 var kU = UInt32(hidden)
                 enc.setBytes(&kU, length: 4, index: 5)
+                finSoftcap = softcap
                 if view.isSHVQ && M >= 2 && vocabN < (1 << 24) {
                     let psoM4 = QWGemmAQ.headArgmaxM4KernelName(bits: view.bits, group: view.groupSize, isSHVQ: true)
                         .flatMap { try? hal.pipeline($0) }
                     var activeIsM4 = false
                     var rowOffset = 0
                     while rowOffset < M {
-                        let chunk = min(8, M - rowOffset)
-                        let useM4 = (chunk <= 4) && (psoM4 != nil)
+                        let rem = M - rowOffset
+                        let chunk = (psoM4 != nil)
+                            ? ((rem > 4 && rem - 4 == 1) ? 3 : min(4, rem))
+                            : min(8, rem)
+                        let useM4 = (chunk >= 2 && chunk <= 4) && (psoM4 != nil)
                         if useM4 != activeIsM4 {
                             if let m4 = psoM4, useM4 {
                                 enc.setComputePipelineState(m4)
@@ -333,7 +345,8 @@ extension QWHead {
 
         enc.memoryBarrier(scope: .buffers)
         try encodeBatchedArgmaxFin(enc, hal: hal, keysHi: keysHi, keysLo: keysLo,
-                                   tokens: tokens, slots: stage1Slots, rows: M)
+                                   tokens: tokens, slots: stage1Slots, rows: M,
+                                   softcap: finSoftcap)
     }
 
     public func encodeBatchedGreedyArgmax(

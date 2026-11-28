@@ -175,7 +175,8 @@ final class QWStandardWeightLoadingTests: XCTestCase {
     ) {
         var L = try makeLoader(geometry: geometry, planes: standardPlanes(geometry))
         _ = try L.q4(Pack.head, n: geometry.vocab, k: geometry.hidden)
-        return try L.loadDecoderWeights(geometry: geometry)
+        let decoded = try L.loadDecoderWeights(geometry: geometry)
+        return (decoded.layers, decoded.finalNorm)
     }
 
     private func bytes(_ t: QWTensorValue, count: Int) -> [UInt8] {
@@ -277,7 +278,7 @@ final class QWStandardWeightLoadingTests: XCTestCase {
         planes[Pack.kNorm] = .raw(gammaVector(geometry.headDim))
         var L = try makeLoader(geometry: geometry, planes: planes)
         _ = try L.q4(Pack.head, n: geometry.vocab, k: geometry.hidden)
-        let (layers, _) = try L.loadDecoderWeights(geometry: geometry)
+        let (layers, _, _) = try L.loadDecoderWeights(geometry: geometry)
         let attn = try XCTUnwrap(layers[0].attn)
         let wq = try XCTUnwrap(attn.wq)
         let wk = try XCTUnwrap(attn.wkTiled)
@@ -339,7 +340,7 @@ final class QWStandardWeightLoadingTests: XCTestCase {
         ]
         var (L, plan, wsub) = try makeLoader(geometry: geometry, planes: planes, resolvePackFormat: true)
         _ = try L.q4(Pack.head, n: geometry.vocab, k: h)
-        let (layers, _) = try L.loadDecoderWeights(geometry: geometry)
+        let (layers, _, _) = try L.loadDecoderWeights(geometry: geometry)
         if let ropeShape = plan.shapes.last { _ = try L.allocateWeight(ropeShape) }
         try plan.finish(requests: L.weightRequest, usedBytes: wsub.usedBytes)
 
@@ -389,7 +390,7 @@ final class QWStandardWeightLoadingTests: XCTestCase {
         ]
         var (L, plan, wsub) = try makeLoader(geometry: geometry, planes: planes, resolvePackFormat: true)
         _ = try L.q4(Pack.head, n: geometry.vocab, k: h)
-        let (layers, _) = try L.loadDecoderWeights(geometry: geometry)
+        let (layers, _, _) = try L.loadDecoderWeights(geometry: geometry)
         if let ropeShape = plan.shapes.last { _ = try L.allocateWeight(ropeShape) }
         try plan.finish(requests: L.weightRequest, usedBytes: wsub.usedBytes)
 
@@ -448,7 +449,7 @@ final class QWStandardWeightLoadingTests: XCTestCase {
 
         var (L, plan, wsub) = try makeLoader(geometry: geometry, planes: planes, resolvePackFormat: true)
         _ = try L.q4(Pack.head, n: geometry.vocab, k: h)
-        let (layers, _) = try L.loadDecoderWeights(geometry: geometry)
+        let (layers, _, _) = try L.loadDecoderWeights(geometry: geometry)
         if let ropeShape = plan.shapes.last { _ = try L.allocateWeight(ropeShape) }
         try plan.finish(requests: L.weightRequest, usedBytes: wsub.usedBytes)
 

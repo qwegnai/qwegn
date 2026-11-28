@@ -651,29 +651,3 @@ public func qwInterleaveX0(
         }
     }
 }
-
-/// End-to-end multimodal image patch encoding through a vision backend.
-/// Ingests normalized float RGB pixels, forms the C19 patch slab, evaluates grid
-/// geometry, position IDs, and interpolation taps in-memory, and encodes visual tokens.
-public func qwEncodeVision(
-    normalizedRGB: [Float],
-    height: Int,
-    width: Int,
-    grid: QWVisionGrid,
-    backend: any QWVisionBackend
-) async throws -> [Float] {
-    let patches = try qwBuildPatchSlab(normalizedRGB: normalizedRGB, height: height, width: width, grid: grid)
-    return try await backend.encode(patches: patches, grid: grid.plan, bins: grid.interpBins, posIds: grid.ropePositions)
-}
-
-/// End-to-end multimodal image patch encoding through a vision backend from UInt8 RGB bytes [0, 255].
-public func qwEncodeVision(
-    imageRGB: [UInt8],
-    height: Int,
-    width: Int,
-    grid: QWVisionGrid,
-    backend: any QWVisionBackend
-) async throws -> [Float] {
-    let patches = try qwBuildPatchSlab(imageRGB: imageRGB, height: height, width: width, grid: grid)
-    return try await backend.encode(patches: patches, grid: grid.plan, bins: grid.interpBins, posIds: grid.ropePositions)
-}

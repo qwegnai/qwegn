@@ -28,7 +28,7 @@ enum DSparkSource {
     }
 
     func containerKind(of name: String) throws -> QWWeightView.ContainerKind? {
-        guard let e = try entry(of: name), e.rawOff == nil, e.hq4Off != nil else { return nil }
+        guard let e = try entry(of: name), PlaneLayout.resolve(e) == .hq4 else { return nil }
         let rotated = e.hq?.vq != "aq"
         if e.isSHVQ {
             guard rotated else { return nil }
@@ -43,7 +43,7 @@ enum DSparkSource {
         case .safetensors: return true
         case .qwp(let pack):
             let e = try pack.entry(name)
-            return e.rawOff != nil && e.kind != "f32"
+            return PlaneLayout.resolve(e) == .raw && e.kind != "f32"
         }
     }
 
@@ -105,7 +105,7 @@ extension QWInkling2DSpark {
             guard let base = raw.baseAddress else {
                 throw QWInkling2Error.badState("empty bytes for \(name)")
             }
-            if let e, e.rawOff == nil {
+            if let e, PlaneLayout.resolve(e) == .hq4 {
                 if e.isIncumbentHQ4 {
                     return QWQuant.Pack.dequantHQ4Slab(base: base, nRows: nRows, kCols: kCols)
                 }

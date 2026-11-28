@@ -7,16 +7,22 @@
 // Powered by Apple Silicon Neural Accelerator Extensions (NAX) / MetalPerformancePrimitives.
 #include <metal_stdlib>
 #include <metal_simdgroup>
-#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
-#include "mlx/backend/metal/kernels/utils.h"
-#include "mlx/backend/metal/kernels/steel/gemm/gemm.h"
-#include "mlx/backend/metal/kernels/steel/gemm/nax.h"
-#include "mlx/backend/metal/kernels/steel/gemm/loader.h"
 #include "include/qw_dequant.metalh"
 #include "include/qw_moe_tile.metalh"
 #include "include/qw_geometry_constants.metalh"
 
 using namespace metal;
+
+#if !defined(QW_DISABLE_NAX)
+#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
+#if !defined(__ENVIRONMENT_OS_VERSION_MIN_REQUIRED__) || __ENVIRONMENT_OS_VERSION_MIN_REQUIRED__ < 260200
+#error "NAX cooperative_tensor kernels require -mmacosx-version-min=26.2 or newer (Apple MPP operand_index ABI)."
+#endif
+#include "mlx/backend/metal/kernels/utils.h"
+#include "mlx/backend/metal/kernels/steel/gemm/gemm.h"
+#include "mlx/backend/metal/kernels/steel/gemm/nax.h"
+#include "mlx/backend/metal/kernels/steel/gemm/loader.h"
+
 using namespace mlx::steel;
 
 #include "include/qw_gemm_nax.metalh"
@@ -50,6 +56,7 @@ kernel void qwg_gemm_q4g_h16_gdn_inproj(device const Block_HQ4_G32* blocks [[buf
     qmm_t_nax_tgp_dual_impl<half, half, false, 64, 64, 64, 2, 2, true, true>(
         (const device char*)blocks, x, qkv16, y32, nullptr, int(K), int(N), int(M), tg, lid, simd_gid, simd_lid, z16);
 }
+#endif // !defined(QW_DISABLE_NAX)
 
 
 // ── Batched MLP SiLU × Up epilogue + fused FWHT-32 rotation ──
@@ -242,6 +249,7 @@ kernel void qwg_zero_pad_attn_f16(device half*   q  [[buffer(0)]],
     }
 }
 
+#if !defined(QW_DISABLE_NAX)
 kernel void qwg_moe_nax_gemm(device const Block_HQ4_G32* w [[buffer(0)]],
                              device const half* x [[buffer(1)]],
                              device half* y [[buffer(2)]],
@@ -294,3 +302,4 @@ kernel void qwg_moe_nax_split_f32(device const Block_HQ4_G32* w [[buffer(0)]],
         (device const char*)w, xh, xl, y32, expertOff, tileE, tileR, tileCount,
         p, tileBlock, (device const char*)coldW, tg, simd_gid);
 }
+#endif // !defined(QW_DISABLE_NAX)

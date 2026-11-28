@@ -36,9 +36,22 @@ final class QWNormTests: XCTestCase {
     /// the packer reader uses, so the test proves engine↔packer agreement).
     static func f16(_ bits: UInt16) -> Float { QWQuant.f16tof32Bits(bits) }
     static func floats(_ d: Data) -> [Float] { d.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in Array(raw.bindMemory(to: Float.self)) } }
+    static func decodeF16Buffer(_ src: UnsafePointer<UInt16>, count: Int) -> [Float] {
+        [Float](unsafeUninitializedCapacity: count) { dst, initialized in
+            guard let dp = dst.baseAddress else { initialized = 0; return }
+            var i = 0
+            while i < count {
+                dp[i] = Float(Float16(bitPattern: src[i]))
+                i += 1
+            }
+            initialized = count
+        }
+    }
     static func f16Vals(_ d: Data) -> [Float] {
-        d.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-            (0..<d.count / 2).map { f16(raw.load(fromByteOffset: $0 * 2, as: UInt16.self)) }
+        let count = d.count / 2
+        return d.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            guard let ptr = raw.baseAddress?.assumingMemoryBound(to: UInt16.self) else { return [] }
+            return decodeF16Buffer(ptr, count: count)
         }
     }
 
@@ -79,33 +92,43 @@ final class QWNormTests: XCTestCase {
     }
     func readF16(_ io: IO, _ n: Int) -> [Float] {
         let p = io.arena.cpuPointer(of: io.y).assumingMemoryBound(to: UInt16.self)
-        return (0..<n).map { Self.f16(p[$0]) }
+        return Self.decodeF16Buffer(p, count: n)
     }
     func readResF16(_ io: IO, _ n: Int) -> [Float] {
         let p = io.arena.cpuPointer(of: io.res).assumingMemoryBound(to: UInt16.self)
-        return (0..<n).map { Self.f16(p[$0]) }
+        return Self.decodeF16Buffer(p, count: n)
     }
     /// Count elements of (got, ref) that exceed absTol AND are not 1-ulp f16
     /// adjacent; returns (violations, worstAbsDiff, worstIdx, worstRatio).
     /// f16-out parity law (spec 06): fp32 sumsq ordering drift ~1e-5 flips
     static func parityViolations(_ got: [Float], _ ref: [Float], absTol: Float = 1e-3)
         -> (violations: Int, worstAbs: Double, worstIdx: Int, worstRatio: Double) {
-        func f16Spacing(_ v: Float) -> Double {    // spacing of |v|'s f16 binade
-            let e = Int((v.bitPattern >> 23) & 0xFF) - 127 - 10   // spacing exponent
+        func f16Spacing(_ v: Float) -> Double {
+            let e = Int((v.bitPattern >> 23) & 0xFF) - 127 - 10
             return e >= 0 ? Double(1 << e) : 1.0 / Double(1 << -e)
         }
-        var viol = 0, worst = -1, worstAbs = 0.0, worstRatio = 0.0
-        for i in 0..<got.count {
-            let d = abs(Double(got[i]) - Double(ref[i]))
-            if d > worstAbs { worstAbs = d; worst = i }
-            guard d > Double(absTol) else { continue }
-            // both sides exact f16 values → 1-ulp adjacency ⇔ d ≤ binade spacing
-            let sp = min(f16Spacing(got[i]), f16Spacing(ref[i]))
-            let r = d / sp
-            worstRatio = max(worstRatio, r)
-            if r > 1.0001 { viol += 1 }
+        let tolD = Double(absTol)
+        return got.withUnsafeBufferPointer { gBuf in
+            ref.withUnsafeBufferPointer { rBuf in
+                guard let gp = gBuf.baseAddress, let rp = rBuf.baseAddress else { return (0, 0.0, -1, 0.0) }
+                let n = gBuf.count
+                var viol = 0, worst = -1, worstAbs = 0.0, worstRatio = 0.0, i = 0
+                while i < n {
+                    let gv = gp[i], rv = rp[i]
+                    if !(gv.isFinite && rv.isFinite) { viol += 1; i += 1; continue }
+                    let d = abs(Double(gv) - Double(rv))
+                    if d > worstAbs { worstAbs = d; worst = i }
+                    if d > tolD {
+                        let sp = min(f16Spacing(gv), f16Spacing(rv))
+                        let r = d / sp
+                        if r > worstRatio { worstRatio = r }
+                        if r > 1.0001 { viol += 1 }
+                    }
+                    i += 1
+                }
+                return (viol, worstAbs, worst, worstRatio)
+            }
         }
-        return (viol, worstAbs, worst, worstRatio)
     }
 
     func readScales(_ io: IO, _ n: Int) -> [Float] {
@@ -135,9 +158,17 @@ final class QWNormTests: XCTestCase {
         let yRef = Self.floats(Self.fixture("rms_N\(R)_res_y.bin"))   // f32 fixture
         let resGot = readResF16(io, R * Self.H)
         let resRef = Self.f16Vals(Self.fixture("rms_N\(R)_res_out.bin"))  // f16 fixture
-        var mR = 0.0
-        for i in 0..<yGot.count {
-            mR = max(mR, abs(Double(resGot[i]) - Double(resRef[i])))
+        let mR = resGot.withUnsafeBufferPointer { gB in
+            resRef.withUnsafeBufferPointer { rB -> Double in
+                guard let gp = gB.baseAddress, let rp = rB.baseAddress else { return 0 }
+                var mx = 0.0, i = 0
+                while i < gB.count {
+                    let d = abs(Double(gp[i]) - Double(rp[i]))
+                    if d > mx { mx = d }
+                    i += 1
+                }
+                return mx
+            }
         }
         let v = Self.parityViolations(yGot, yRef)
         XCTAssertEqual(v.violations, 0,
@@ -195,24 +226,40 @@ final class QWNormTests: XCTestCase {
         // 1. Fused residual update is bit-exact
         let resGot = readResF16(io, R * Self.H)
         let resRef = Self.f16Vals(Self.fixture("rms_N\(R)_res_out.bin"))
-        var mR = 0.0
-        for i in 0..<resGot.count {
-            mR = max(mR, abs(Double(resGot[i]) - Double(resRef[i])))
+        let mR = resGot.withUnsafeBufferPointer { gB in
+            resRef.withUnsafeBufferPointer { rB -> Double in
+                guard let gp = gB.baseAddress, let rp = rB.baseAddress else { return 0 }
+                var mx = 0.0, i = 0
+                while i < gB.count {
+                    let d = abs(Double(gp[i]) - Double(rp[i]))
+                    if d > mx { mx = d }
+                    i += 1
+                }
+                return mx
+            }
         }
         XCTAssertEqual(mR, 0, "residual update in variant 4 must be BIT-exact f16 add")
 
         // 2. Row scales match rstd of the updated residual
         let scGot = readScales(io, R)
-        var maxRelScale = 0.0
-        for r in 0..<R {
-            var sumSq: Float = 0
-            for c in 0..<Self.H {
-                let v = resRef[r * Self.H + c]
-                sumSq += v * v
+        let maxRelScale = resRef.withUnsafeBufferPointer { rB -> Double in
+            guard let rp = rB.baseAddress else { return 0 }
+            var mx = 0.0, r = 0
+            while r < R {
+                var sumSq: Float = 0
+                let rowBase = rp + (r * Self.H)
+                var c = 0
+                while c < Self.H {
+                    let v = rowBase[c]
+                    sumSq += v * v
+                    c += 1
+                }
+                let rstdRef = 1.0 / sqrt(sumSq / Float(Self.H) + 1e-6)
+                let rel = abs(Double(scGot[r]) - Double(rstdRef)) / Double(rstdRef)
+                if rel > mx { mx = rel }
+                r += 1
             }
-            let rstdRef = 1.0 / sqrt(sumSq / Float(Self.H) + 1e-6)
-            let rel = abs(Double(scGot[r]) - Double(rstdRef)) / Double(rstdRef)
-            maxRelScale = max(maxRelScale, rel)
+            return mx
         }
         XCTAssertLessThanOrEqual(maxRelScale, 5e-4, "variant 4 row-scale relative error vs residual rstd")
 

@@ -15,7 +15,7 @@ final class QWMTPNextNParityTests: XCTestCase {
     override func setUpWithError() throws {
         try XCTSkipUnless(
             ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] != "true"
-                && QWDeviceCaps.current?.familyApple9 == true,
+                && QWDeviceCaps.current?.supportsSimdgroupMMA == true,
             "MTP NextN GPU parity tests require bare-metal Apple Silicon GPU"
         )
     }

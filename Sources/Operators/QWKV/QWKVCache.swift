@@ -588,7 +588,7 @@ public final class QWKVCache: @unchecked Sendable {
             if byteCount > 0 {
                 ids.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
                     guard let addr = raw.baseAddress else { return }
-                    _ = memcpy(dstBase, addr, byteCount)
+                    dstBase.copyMemory(from: addr, byteCount: byteCount)
                 }
             }
             if byteCount < Self.tableSlotBytes {

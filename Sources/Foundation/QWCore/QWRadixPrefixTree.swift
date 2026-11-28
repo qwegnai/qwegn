@@ -149,20 +149,6 @@ public final class QWRadixPrefixTree<Key: Hashable & Sendable>: @unchecked Senda
         }
     }
 
-    public func clearSharedBase(in mode: String? = nil) {
-        lock.withLock {
-            let keysToRemove: [Key] = keyPaths.keys.filter { k in
-                guard let info = keyPaths[k] else { return false }
-                if let mode, info.mode != mode { return false }
-                guard let node = nodeAtPathLocked(mode: info.mode, edges: info.edges) else { return false }
-                return node.checkpoints.contains { $0.key == k && $0.isSharedBase }
-            }
-            for k in keysToRemove {
-                removeLocked(key: k)
-            }
-        }
-    }
-
     /// Finds the longest valid checkpoint prefix (`< tokens.count` or `<= tokens.count` when `allowExact`) in `O(pages)`.
     public func lookupLongestCheckpoint(
         tokens: [Int],

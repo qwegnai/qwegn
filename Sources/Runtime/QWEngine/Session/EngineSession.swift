@@ -48,6 +48,7 @@ public final class QWEngineSession: @unchecked Sendable {
     /// MLA indexer pools captured while another session owned the operator.
     var mlaIndexerStash: (data: Data, position: Int)?
     var mlaLiveStash: (data: Data, trunkPosition: Int, mtpPosition: Int)?
+    var mlaBatchState: QWMLAAttnOperator.SessionState?
     var batchedDecodeTouched = false
     var stateFailed = false
     var verificationPending = false

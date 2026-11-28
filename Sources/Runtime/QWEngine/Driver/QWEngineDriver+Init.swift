@@ -47,9 +47,9 @@ extension QWEngineDriver {
         let psoRMSNormResidualMoE: any MTLComputePipelineState
         let psoRMSNormResidualMoEWide: any MTLComputePipelineState
         let psoHeadF16: any MTLComputePipelineState
-        let psoGemmBatchedH16: any MTLComputePipelineState
-        let psoGemmBatchedH16SwiGLU: any MTLComputePipelineState
-        let psoGemmBatchedH16GdnInProj: any MTLComputePipelineState
+        let psoGemmBatchedH16: (any MTLComputePipelineState)?
+        let psoGemmBatchedH16SwiGLU: (any MTLComputePipelineState)?
+        let psoGemmBatchedH16GdnInProj: (any MTLComputePipelineState)?
         let psoSiluMulF16: any MTLComputePipelineState
         let psoKVPagedWrite: any MTLComputePipelineState
         let psoKVPagedWriteGeneral: any MTLComputePipelineState
@@ -188,7 +188,12 @@ extension QWEngineDriver {
             pack: pack, geometry: rawGeometry, mtpWeightDrafts: mtpWeightDrafts)
         let resolvedCfg = try cfg.resolvingHead(
             isQ4g: headSpec.isQ4g, format: headSpec.format, moeRouterIsBF16: moeRouterIsBF16)
-        let prelimHal = try QWHal(geometry: rawGeometry, weightBasis: choice.format.basis)
+        let prelimHal = try QWHal(
+            geometry: rawGeometry,
+            weightBasis: choice.format.basis,
+            gdnNormSigmoid: rawGeometry.gdnGatingConfig.map { $0.outputNormAct == .sigmoid },
+            gdnGateScale: rawGeometry.gdnGatingConfig?.outputGateScale ?? 1.0
+        )
         let allowExpertReduction = (explicitResE == nil && rawGeometry.numExperts > 0)
         let (geometry, plannedChunk) = try Self.planResidencyAndChunk(
             raw: rawGeometry, cfg: resolvedCfg, hal: prelimHal, format: choice.format, tuning: tuning,
@@ -219,9 +224,14 @@ extension QWEngineDriver {
         let psoRMSNormResidualMoE = try hal.pipeline("qwg_rmsnorm_residual_moe")
         let psoRMSNormResidualMoEWide = try hal.pipeline("qwg_rmsnorm_residual_moe_wide")
         let psoHeadF16 = try hal.pipeline("qwg_gemv_f16_v4")
-        let psoGemmBatchedH16 = try hal.pipeline(Self.gemmKernelName(format: weightFormat))
-        let psoGemmBatchedH16SwiGLU = try hal.pipeline(Self.swigluGemmKernelName(format: weightFormat))
-        let psoGemmBatchedH16GdnInProj = try hal.pipeline(Self.gdnInProjPrefillKernelName(format: weightFormat))
+        let useNAX = hal.caps.isMetal4TensorCapable
+        let canSG = hal.caps.supportsSimdgroupMMA
+        let psoGemmBatchedH16 = canSG
+            ? try hal.pipeline(Self.gemmKernelName(format: weightFormat, useNAX: useNAX)) : nil
+        let psoGemmBatchedH16SwiGLU = canSG
+            ? try hal.pipeline(Self.swigluGemmKernelName(format: weightFormat, useNAX: useNAX)) : nil
+        let psoGemmBatchedH16GdnInProj = canSG
+            ? try hal.pipeline(Self.gdnInProjPrefillKernelName(format: weightFormat, useNAX: useNAX)) : nil
         let psoSiluMulF16 = try hal.pipeline("qwg_silu_mul_f16")
         let psoKVPagedWrite = try hal.pipeline("qwg_kv_paged_write")
         let psoKVPagedWriteGeneral = try hal.pipeline("qwg_kv_paged_write_general")
@@ -419,8 +429,7 @@ extension QWEngineDriver {
                 _ = try hal.pipeline("qwg_head_q4g_rp_m\(m)", isAQ4: headAQ4)
             }
         }
-        guard !hasMLA && geometry.hcaConfig == nil && geometry.hybridMLAConfig == nil
-                && geometry.blockSparseGQAConfig == nil else {
+        guard geometry.hcaConfig == nil && geometry.blockSparseGQAConfig == nil else {
             return
         }
         for m in 2...8 {
@@ -437,12 +446,15 @@ extension QWEngineDriver {
         var seenAqDecode = Set<String>()
         var seenAqSilu = Set<String>()
         func prewarmWeight(_ w: QWWeightView) throws {
+            let useNAX = hal.caps.isMetal4TensorCapable
+            guard hal.caps.supportsSimdgroupMMA else { return }
             switch w.containerKind {
             case .incumbentHQ4G32:
                 return
             case .shvq(let bits, let group), .rotatedHQ(let bits, let group), .nativeAffine(let bits, let group):
                 guard let name = QWGemmAQ.gemmKernelName(bits: bits, group: group,
-                                                         isSHVQ: w.containerKind.isSHVQ),
+                                                         isSHVQ: w.containerKind.isSHVQ,
+                                                         useNAX: useNAX),
                       seenGemms.insert(name).inserted else { return }
                 _ = try hal.pipeline(name)
             }
@@ -489,6 +501,12 @@ extension QWEngineDriver {
                 try prewarmWeight(a.o)
                 try prewarmBatchedProj(a.qkvProj)
                 try prewarmBatchedProj(a.o)
+                if let mla = a.mla {
+                    try prewarmWeight(mla.qBProj)
+                    try prewarmWeight(mla.kvBProj)
+                    try prewarmBatchedProj(mla.qBProj)
+                    try prewarmBatchedProj(mla.kvBProj)
+                }
             }
             if let g = lw.gdn {
                 try prewarmWeight(g.inProj)
@@ -563,8 +581,10 @@ extension QWEngineDriver {
         _ = try hal.pipeline("qwg_mtp_argmax_target_checked")
         let needsNeuralScratch = mtpWeights != nil || echoWeights != nil
         let partials = QWMRegion(buffer: gsub.region.buffer, base: gsub.region.base + mtpPartialsOff, length: pCarveBytes)
+        let mtpDenseInter = (mtpWeights != nil && mtpWeights?.moe == nil) ? mtpWeights?.down.k : nil
         let mtpScratch = needsNeuralScratch
-            ? try MTPScratch(geometry: geometry, allocator: asub, partials: partials)
+            ? try MTPScratch(geometry: geometry, allocator: asub, partials: partials,
+                             intermediate: mtpDenseInter)
             : nil
         let mtpPromptEmbeddings = needsNeuralScratch
             ? try asub.allocate(QWTensorShape([maxT * geometry.hidden], .f16))

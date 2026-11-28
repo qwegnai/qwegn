@@ -4,9 +4,13 @@
 // qw_kv_paged.metalh; online INT8 Q·K^T for long contexts (pos + T >= 192).
 // Law: see docs/KERNEL_NOTES.md#qwattn_paged_nax_metal.
 
+#if !defined(QW_DISABLE_NAX)
 #include <metal_stdlib>
 #include <metal_simdgroup>
 #include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
+#if !defined(__ENVIRONMENT_OS_VERSION_MIN_REQUIRED__) || __ENVIRONMENT_OS_VERSION_MIN_REQUIRED__ < 260200
+#error "NAX cooperative_tensor kernels require -mmacosx-version-min=26.2 or newer (Apple MPP operand_index ABI)."
+#endif
 #include "mlx/backend/metal/kernels/steel/defines.h"
 #include "mlx/backend/metal/kernels/steel/utils/integral_constant.h"
 #include "mlx/backend/metal/kernels/steel/gemm/nax.h"
@@ -756,3 +760,4 @@ QW_PAGED_PREFILL_ENTRY(, 0)
 QW_PAGED_PREFILL_ENTRY(_q8, 1)
 QW_PAGED_PREFILL_ENTRY(_q4, 2)
 #undef QW_PAGED_PREFILL_ENTRY
+#endif // !defined(QW_DISABLE_NAX)

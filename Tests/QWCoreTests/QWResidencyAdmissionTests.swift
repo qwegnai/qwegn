@@ -17,7 +17,7 @@ final class QWResidencyAdmissionTests: XCTestCase {
         let qwpDiskBytes = 68 * GiB
         let pleBytes = 27 * GiB
         let scratchBytes = 2244 * MiB
-        let admission = QWResidencyAdmission.planFlashNext(
+        let admission = QWResidencyAdmission.planHyperStream(
             weightsEstimate: 3500 * MiB,
             packDiskBytes: qwpDiskBytes,
             gpuPLEBytes: pleBytes,

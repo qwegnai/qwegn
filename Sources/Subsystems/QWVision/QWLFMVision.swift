@@ -351,6 +351,7 @@ public final class QWLFM3VisionWeights: @unchecked Sendable {
         self.fc1B = try loadOptionalTensor(ck, keys: ["merger.linear_fc1.bias"], want: [projMid])
         self.fc2W = try ck.f32("merger.linear_fc2.weight", want: [outDim, projMid])
         self.fc2B = try loadOptionalTensor(ck, keys: ["merger.linear_fc2.bias"], want: [outDim])
+        ck.releaseBacking()
     }
 }
 

@@ -117,28 +117,31 @@ extension QWEngineDriver {
                 guard let tmp = hl.device.makeBuffer(length: chunk * 2, options: .storageModeShared) else {
                     throw QWEngineDriverError.state("bf16 conversion staging buffer allocation failed")
                 }
-                var done = 0
-                while done < total {
-                    let n = min(chunk, total - done)
-                    try loadChunk(done, n, tmp.contents())
-                    guard let (cb, enc) = hl.begin() else { throw QWEngineDriverError.state("cmdbuffer") }
-                    var start = UInt32(0), nn = UInt32(n)
-                    enc.setComputePipelineState(psoCvt)
-                    enc.setBuffer(tmp, offset: 0, index: 0)          // bf16 bytes (ushort)
-                    enc.setBuffer(dst.region.buffer,
-                                  offset: dst.region.base + dst.offset + done * 2, index: 1)
-                    enc.setBytes(&start, length: 4, index: 2)
-                    enc.setBytes(&nn, length: 4, index: 3)
-                    enc.dispatchThreadgroups(MTLSize(width: (n + 255) / 256, height: 1, depth: 1),
-                                             threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
-                    hl.end(cb, enc); cb.waitUntilCompleted()
-                    if let e = cb.error { throw QWEngineDriverError.state("bf16→f16 cb: \(e.localizedDescription)") }
-                    done += n
+                let tmpPtr = tmp.contents()
+                try withExtendedLifetime(tmp) {
+                    var done = 0
+                    while done < total {
+                        let n = min(chunk, total - done)
+                        try loadChunk(done, n, tmpPtr)
+                        guard let (cb, enc) = hl.begin() else { throw QWEngineDriverError.state("cmdbuffer") }
+                        var start = UInt32(0), nn = UInt32(n)
+                        enc.setComputePipelineState(psoCvt)
+                        enc.setBuffer(tmp, offset: 0, index: 0)          // bf16 bytes (ushort)
+                        enc.setBuffer(dst.region.buffer,
+                                      offset: dst.region.base + dst.offset + done * 2, index: 1)
+                        enc.setBytes(&start, length: 4, index: 2)
+                        enc.setBytes(&nn, length: 4, index: 3)
+                        enc.dispatchThreadgroups(MTLSize(width: (n + 255) / 256, height: 1, depth: 1),
+                                                 threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
+                        hl.end(cb, enc); cb.waitUntilCompleted()
+                        if let e = cb.error { throw QWEngineDriverError.state("bf16→f16 cb: \(e.localizedDescription)") }
+                        done += n
+                    }
                 }
             }
             if let pk, let io {
                 let e = try pk.entry(name)
-                guard e.rawOff != nil else {
+                guard PlaneLayout.resolve(e) == .raw else {
                     throw QWEngineDriverError.weightMissing(name, "not a bf16 raw plane")
                 }
                 let total = e.shape.reduce(1, *)
@@ -166,11 +169,13 @@ extension QWEngineDriver {
                 }
             case .f16:
                 let dstPtr = dst.region.buffer.contents().advanced(by: dst.region.base + dst.offset)
-                try reader.withBytes { raw in
-                    guard raw.count >= total * 2, let base = raw.baseAddress else {
-                        throw QWEngineDriverError.weightMissing(name, "f16 tensor byte length mismatch")
+                try withExtendedLifetime(dst.region.buffer) {
+                    try reader.withBytes { raw in
+                        guard raw.count >= total * 2, let base = raw.baseAddress else {
+                            throw QWEngineDriverError.weightMissing(name, "f16 tensor byte length mismatch")
+                        }
+                        dstPtr.copyMemory(from: base, byteCount: total * 2)
                     }
-                    dstPtr.copyMemory(from: base, byteCount: total * 2)
                 }
             case .f32:
                 let floats = try st.readFloats(name, expectedElementCount: total)
@@ -335,7 +340,7 @@ extension QWEngineDriver {
                 throw QWEngineDriverError.weightMissing(name, "bf16wRaw requires QWP pack")
             }
             let e = try pk.entry(resolved)
-            guard e.rawOff != nil, (e.kind == nil || e.kind == "bf16"),
+            guard PlaneLayout.resolve(e) == .raw, (e.kind == nil || e.kind == "bf16"),
                   e.shape.reduce(1, *) == elems else {
                 throw QWEngineDriverError.weightMissing(name, "expected raw bf16[\(elems)]")
             }
@@ -349,10 +354,13 @@ extension QWEngineDriver {
             let src: [Float]
             if let pk {
                 let e = try pk.entry(resolved)
-                if e.rawOff != nil {
+                switch PlaneLayout.resolve(e) {
+                case .raw:
                     src = try pk.rawBf16(resolved)
-                } else {
+                case .hq4:
                     src = try pk.dequantQ4g(resolved)
+                case nil:
+                    throw QWEngineDriverError.weightMissing(name, "unsupported plane layout")
                 }
                 guard src.count == elems else {
                     throw QWEngineDriverError.weightMissing(name, "shape \(src.count) ≠ \(elems)")
@@ -370,7 +378,8 @@ extension QWEngineDriver {
         }
         // ── W3: plane concatenation helper (pure plumbing, zero math change) ──
         func resolvedPlaneLayout(_ firstName: String?, k: Int) -> (bits: Int, group: Int, incumbent: Bool, shvq: Bool, rowBytes: Int) {
-            if let firstName, let pk, let entry = try? pk.entry(resolveName(firstName)), entry.hq4Off != nil {
+            if let firstName, let pk, let entry = try? pk.entry(resolveName(firstName)),
+               PlaneLayout.resolve(entry) == .hq4 {
                 return (entry.hqBits, entry.hqGroup, entry.isIncumbentHQ4, entry.isSHVQ,
                         (k / entry.hqGroup) * entry.hqBlockBytes)
             }
@@ -405,7 +414,7 @@ extension QWEngineDriver {
                 for (name, n) in tensors {
                     let resolved = resolveName(name)
                     let entry = try pk.entry(resolved)
-                    guard entry.rawOff == nil, entry[keyPath: key] != nil else {
+                    guard PlaneLayout.resolve(entry) == .hq4, entry[keyPath: key] != nil else {
                         throw QWEngineDriverError.weightMissing(name, "needs hq4_off plane")
                     }
                     batch.append((name: resolved, dst: p.advanced(by: curByteOffset)))
@@ -457,13 +466,14 @@ extension QWEngineDriver {
             }
             return (bigView, subViews)
         }
-        mutating func packedGU(_ blk: String) throws -> QWMLPWeight {
+        mutating func packedGU(_ blk: String, intermediate: Int? = nil) throws -> QWMLPWeight {
+            let inter = intermediate ?? geometry.intermediate
             let useBlockSparse = !hasTensor(blk + "mlp.gate_proj.weight")
                 && hasTensor(blk + "block_sparse_moe.w1.weight")
             let gate = blk + (useBlockSparse ? "block_sparse_moe.w1.weight" : "mlp.gate_proj.weight")
             let up = blk + (useBlockSparse ? "block_sparse_moe.w3.weight" : "mlp.up_proj.weight")
-            let (bigView, _) = try concatQ4([(gate, geometry.intermediate), (up, geometry.intermediate)], k: geometry.hidden)
-            guard let v = QWMLPWeight(blocks: bigView.blocks, n: 2 * geometry.intermediate, k: geometry.hidden,
+            let (bigView, _) = try concatQ4([(gate, inter), (up, inter)], k: geometry.hidden)
+            guard let v = QWMLPWeight(blocks: bigView.blocks, n: 2 * inter, k: geometry.hidden,
                                     bits: bigView.bits, groupSize: bigView.groupSize,
                                     isRotated: bigView.isRotated,
                                     isIncumbentContainer: bigView.isIncumbentContainer,

@@ -97,19 +97,17 @@ public struct QWMemorySemanticIndex: Codable, Sendable, Equatable {
             paths.append(entry.relativePath)
             let anchorText = entry.relativePath + " " + entry.symbols.joined(separator: " ")
             var bodyCode = ""
-            if let rootURL {
-                let url = rootURL.appendingPathComponent(entry.relativePath, isDirectory: false)
-                if let body = try? String(contentsOf: url, encoding: .utf8), !body.isEmpty {
-                    var kept: [Substring] = []
-                    for line in body.prefix(6144).split(whereSeparator: \.isNewline) {
-                        let t = line.drop(while: { $0 == " " || $0 == "\t" })
-                        if t.hasPrefix("//") || t.hasPrefix("/*") || t.hasPrefix("*") || t.hasPrefix("--") {
-                            continue
-                        }
-                        kept.append(t)
+            if let rootURL,
+               let body = QWDocumentIngestor.readFormattedText(for: entry, rootURL: rootURL), !body.isEmpty {
+                var kept: [Substring] = []
+                for line in body.prefix(6144).split(whereSeparator: \.isNewline) {
+                    let t = line.drop(while: { $0 == " " || $0 == "\t" })
+                    if t.hasPrefix("//") || t.hasPrefix("/*") || t.hasPrefix("*") || t.hasPrefix("--") {
+                        continue
                     }
-                    bodyCode = kept.joined(separator: " ")
+                    kept.append(t)
                 }
+                bodyCode = kept.joined(separator: " ")
             }
             var weights = extractWeightedTerms(anchorText, scale: 3.0)
             let bodyWeights = extractWeightedTerms(bodyCode, scale: 1.0)

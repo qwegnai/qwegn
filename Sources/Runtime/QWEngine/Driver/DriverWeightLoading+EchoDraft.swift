@@ -1,4 +1,4 @@
-// DriverWeightLoading+Maxwell.swift — Dedicated mHC-MTP draft layer weight loader.
+// DriverWeightLoading+EchoDraft.swift — Dedicated mHC-MTP draft layer weight loader.
 
 import QWAlloc
 import QWCore
@@ -25,7 +25,7 @@ extension QWEngineDriver.WeightLoader {
         let attn = try loadGQAAttn(dblk, geometry: geometry, includeMBSA: false)
         let mhcW: MHCLayerWeights?
         if let mhc = geometry.mhcConfig {
-            mhcW = try loadMHCOrErnieHC(dblk, mhc: mhc)
+            mhcW = try loadMHCOrContractedHC(dblk, mhc: mhc)
         } else {
             mhcW = nil
         }

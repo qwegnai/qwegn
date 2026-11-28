@@ -123,8 +123,12 @@ final class FlashNextModuleTests: XCTestCase {
         let conformance = try String(contentsOf: Self.repoRoot
             .appendingPathComponent("Sources/Runtime/QWEngine/Generation/QWEngineDriverConformance.swift"),
             encoding: .utf8)
-        XCTAssertTrue(conformance.contains("hyper.runGeneration("),
-                      "QWEngineDriver conformance must route HyperStream through runGeneration")
+        XCTAssertTrue(conformance.contains("trunkExecutor.runGeneration("),
+                      "QWEngineDriver conformance must route all trunks through QWTrunkExecutor")
+        XCTAssertFalse(conformance.contains("hyperRuntime"),
+                       "QWEngineDriver conformance must not name hyperRuntime")
+        XCTAssertFalse(conformance.contains("inkling2Runtime"),
+                       "QWEngineDriver conformance must not name inkling2Runtime")
         let generation = try String(contentsOf: Self.repoRoot
             .appendingPathComponent("Sources/Runtime/QWEngine/Driver/HyperStream/QWHyperStreamRuntime+Generation.swift"),
             encoding: .utf8)
@@ -147,8 +151,8 @@ final class FlashNextModuleTests: XCTestCase {
         let session = try String(contentsOf: Self.repoRoot
             .appendingPathComponent("Sources/Runtime/QWEngine/Driver/HyperStream/FNGPUSession.swift"),
             encoding: .utf8)
-        XCTAssertTrue(generation.contains("QWSamplerConfig("),
-                      "generation must build the shared sampler contract")
+        XCTAssertTrue(generation.contains("request.sampling"),
+                      "generation must forward the shared sampler contract")
         XCTAssertTrue(session.contains("sampler: QWSampler"),
                       "HyperStream session's sampler must be the shared one")
     }
