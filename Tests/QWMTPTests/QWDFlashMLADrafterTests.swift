@@ -196,15 +196,26 @@ final class QWDFlashMLADrafterTests: XCTestCase {
         XCTAssertEqual(drafter.config.swigluLimit, 10.0)
 
         let dev = hal.device
-        let embedBuf = try sharedBuffer(dev, makeBF16([V, H], scale: 0.25))
-        let headBuf = try sharedBuffer(dev, makeBF16([V, H], scale: 0.25).map { Float16(Self.bf16ToF32($0)).bitPattern })
+        let embedBF16 = makeBF16([V, H], scale: 0.25)
+        let embedBuf = try sharedBuffer(dev, embedBF16)
+        let headRawBF16 = makeBF16([V, H], scale: 0.25)
+        var headF16Bits = [UInt16](repeating: 0, count: headRawBF16.count)
+        for i in 0..<headRawBF16.count {
+            headF16Bits[i] = Float16(Self.bf16ToF32(headRawBF16[i])).bitPattern
+        }
+        let headBuf = try sharedBuffer(dev, headF16Bits)
         let headStorage = QWHeadStorage.f16(QWTensorValue(
             region: QWMRegion(buffer: headBuf, base: 0, length: headBuf.length),
             offset: 0, shape: QWTensorShape([V * H], .f16)
         ))
 
         let ctxRows = 4
-        let tapBuf = try sharedBuffer(dev, (0..<(ctxRows * H)).map { Float((($0 * 5 + 1) % 7) - 3) * 0.25 })
+        var tapVals = [Float](repeating: 0, count: ctxRows * H)
+        for i in 0..<tapVals.count {
+            let bucket = ((i * 5 + 1) % 7) - 3
+            tapVals[i] = Float(bucket) * 0.25
+        }
+        let tapBuf = try sharedBuffer(dev, tapVals)
         let tapTensor = QWTensorValue(
             region: QWMRegion(buffer: tapBuf, base: 0, length: tapBuf.length),
             offset: 0, shape: QWTensorShape([ctxRows * H], .f32)
@@ -368,11 +379,14 @@ final class QWDFlashMLADrafterTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let parentCheckout = repoRoot.deletingLastPathComponent().deletingLastPathComponent()
-        let pyCandidates = [
-            ProcessInfo.processInfo.environment["QW_ORACLE_PYTHON"],
-            repoRoot.appendingPathComponent(".venv-oracle/bin/python3").path,
-            parentCheckout.appendingPathComponent(".venv-oracle/bin/python3").path,
-        ].compactMap { $0 }
+        let repoVenvPy: String = repoRoot.appendingPathComponent(".venv-oracle/bin/python3").path
+        let parentVenvPy: String = parentCheckout.appendingPathComponent(".venv-oracle/bin/python3").path
+        var pyCandidates: [String] = []
+        if let envPy = ProcessInfo.processInfo.environment["QW_ORACLE_PYTHON"] {
+            pyCandidates.append(envPy)
+        }
+        pyCandidates.append(repoVenvPy)
+        pyCandidates.append(parentVenvPy)
         guard let py = pyCandidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
             throw XCTSkip("Oracle Python (.venv-oracle/bin/python3) not installed on this host")
         }

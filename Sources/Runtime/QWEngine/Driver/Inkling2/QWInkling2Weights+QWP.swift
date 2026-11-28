@@ -395,11 +395,7 @@ private func buildQWPExperts(
         guard gs2.length == s2Bytes, us2.length == s2Bytes else {
             throw QWInkling2Error.badState("\(sw) scales2 size mismatch")
         }
-        let s2Dst = guS2.buffer.contents().advanced(by: guS2.offset)
-        withExtendedLifetime(guS2.buffer) {
-            s2Dst.copyMemory(from: gs2.buffer.contents().advanced(by: gs2.offset), byteCount: s2Bytes)
-            s2Dst.advanced(by: s2Bytes).copyMemory(from: us2.buffer.contents().advanced(by: us2.offset), byteCount: s2Bytes)
-        }
+        guS2.copyConcatenated([gs2, us2])
 
         let (dw, _) = try bump.copyQWP("\(sw)down_proj.weight", from: pack)
         let (ds, _) = try bump.copyQWP("\(sw)down_proj.scales", from: pack)

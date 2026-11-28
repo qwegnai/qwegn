@@ -251,9 +251,20 @@ final class QWDFlashMLATests: XCTestCase {
         let psoSiluRot = try hal.pipeline("qwg_dflash_silu_mul_f16", fcDrafterRotated: true, fcHeadRotated: true)
 
         let H = 2560, convGroups = 160, M = 4
-        let xVals = (0..<(M * H)).map { Float16((Float((($0 * 7) % 12) - 6) + 0.5) * 0.125).bitPattern }
-        let baseVals = (0..<(4 * H)).map { Float16((Float((($0 * 3 + 1) % 8) - 4) + 0.5) * 0.25).bitPattern }
-        let dynVals = (0..<(M * 4 * convGroups)).map { (Float((($0 * 5 + 2) % 10) - 5) + 0.5) * 0.0625 }
+        var xVals = [UInt16](repeating: 0, count: M * H)
+        for i in 0..<xVals.count {
+            let v = (Float(((i * 7) % 12) - 6) + 0.5) * 0.125
+            xVals[i] = Float16(v).bitPattern
+        }
+        var baseVals = [UInt16](repeating: 0, count: 4 * H)
+        for i in 0..<baseVals.count {
+            let v = (Float(((i * 3 + 1) % 8) - 4) + 0.5) * 0.25
+            baseVals[i] = Float16(v).bitPattern
+        }
+        var dynVals = [Float](repeating: 0, count: M * 4 * convGroups)
+        for i in 0..<dynVals.count {
+            dynVals[i] = (Float(((i * 5 + 2) % 10) - 5) + 0.5) * 0.0625
+        }
 
         let xBuf = try sharedBuffer(dev, xVals), dynBuf = try sharedBuffer(dev, dynVals), baseBuf = try sharedBuffer(dev, baseVals)
         let out2Buf = try zeroBuffer(dev, byteCount: M * H * 2)
@@ -368,28 +379,37 @@ final class QWDFlashMLATests: XCTestCase {
         let mAll = 0.1 * Foundation.log(32.0) + 1.0
         let softmaxScale = Float((1.0 / 192.0.squareRoot()) * mAll * mAll)
 
-        let kvCtxIn = (0..<(S * (kvLora + ropeDim))).map {
-            Float16((Float((($0 * 5 + 1) % 8) - 4) + 0.5) * 0.5).bitPattern
+        var kvCtxIn = [UInt16](repeating: 0, count: S * (kvLora + ropeDim))
+        for i in 0..<kvCtxIn.count {
+            let v = (Float(((i * 5 + 1) % 8) - 4) + 0.5) * 0.5
+            kvCtxIn[i] = Float16(v).bitPattern
         }
         var qkvProp = [UInt16](repeating: 0, count: M * qkvStride)
         for m in 0..<M {
             let base = m * qkvStride
             for i in 0..<(qLora + kvLora + ropeDim) {
-                qkvProp[base + i] = Float16((Float(((m * 13 + i * 7 + 2) % 8) - 4) + 0.5) * 0.5).bitPattern
+                let v = (Float(((m * 13 + i * 7 + 2) % 8) - 4) + 0.5) * 0.5
+                qkvProp[base + i] = Float16(v).bitPattern
             }
             for i in 0..<gateDim {
                 qkvProp[base + qLora + kvLora + ropeDim + i] = Float16(0.0).bitPattern
             }
         }
-        let qFullInit = (0..<(M * qFullStride)).map { Float16((Float((($0 * 3 + 4) % 8) - 4) + 0.5) * 0.25).bitPattern }
-        let qNW = (0..<qLora).map { Self.bf16Bits(1.0 + Float($0 % 3) * 0.25) }
-        let qGU = (0..<(normRank * qLora)).map { Self.bf16Bits(Float((($0 * 3) % 5) - 2) * 0.0625) }
-        let qGD = (0..<(qLora * normRank)).map { Self.bf16Bits(Float((($0 * 7) % 5) - 2) * 0.0625) }
-        let kvNW = (0..<kvLora).map { Self.bf16Bits(1.25 + Float($0 % 4) * 0.25) }
-        let kvGU = (0..<(normRank * kvLora)).map { Self.bf16Bits(Float((($0 * 5) % 5) - 2) * 0.0625) }
-        let kvGD = (0..<(kvLora * normRank)).map { Self.bf16Bits(Float((($0 * 9) % 5) - 2) * 0.0625) }
-        let kvB = (0..<(qHeads * (nopeDim + vDim) * kvLora)).map {
-            Self.bf16Bits((Float((($0 * 11 + 3) % 4) - 2) + 0.5) * 0.25)
+        var qFullInit = [UInt16](repeating: 0, count: M * qFullStride)
+        for i in 0..<qFullInit.count {
+            let v = (Float(((i * 3 + 4) % 8) - 4) + 0.5) * 0.25
+            qFullInit[i] = Float16(v).bitPattern
+        }
+        let qNW: [UInt16] = (0..<qLora).map { Self.bf16Bits(1.0 + Float($0 % 3) * 0.25) }
+        let qGU: [UInt16] = (0..<(normRank * qLora)).map { Self.bf16Bits(Float((($0 * 3) % 5) - 2) * 0.0625) }
+        let qGD: [UInt16] = (0..<(qLora * normRank)).map { Self.bf16Bits(Float((($0 * 7) % 5) - 2) * 0.0625) }
+        let kvNW: [UInt16] = (0..<kvLora).map { Self.bf16Bits(1.25 + Float($0 % 4) * 0.25) }
+        let kvGU: [UInt16] = (0..<(normRank * kvLora)).map { Self.bf16Bits(Float((($0 * 5) % 5) - 2) * 0.0625) }
+        let kvGD: [UInt16] = (0..<(kvLora * normRank)).map { Self.bf16Bits(Float((($0 * 9) % 5) - 2) * 0.0625) }
+        var kvB = [UInt16](repeating: 0, count: qHeads * (nopeDim + vDim) * kvLora)
+        for i in 0..<kvB.count {
+            let v = (Float(((i * 11 + 3) % 4) - 2) + 0.5) * 0.25
+            kvB[i] = Self.bf16Bits(v)
         }
 
         let kvCtxBuf = try sharedBuffer(dev, kvCtxIn), qkvBuf = try sharedBuffer(dev, qkvProp)

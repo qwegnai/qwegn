@@ -96,10 +96,11 @@ extension QWDFlashDrafter {
         let partBytes = R * C * 2
         let dstBase = packedGatePrev.region.buffer.contents()
             .advanced(by: packedGatePrev.region.base + packedGatePrev.offset)
-        withExtendedLifetime(packedGatePrev.region.buffer) {
-            for (idx, part) in [gateW, predGateW, prevW].enumerated() {
-                let srcPtr = part.region.buffer.contents().advanced(by: part.region.base + part.offset)
-                dstBase.advanced(by: idx * partBytes).copyMemory(from: srcPtr, byteCount: partBytes)
+        let bridgeParts = [gateW, predGateW, prevW]
+        let srcPtrs = bridgeParts.map { $0.region.buffer.contents().advanced(by: $0.region.base + $0.offset) }
+        withExtendedLifetime((packedGatePrev.region.buffer, gateW.region.buffer, predGateW.region.buffer, prevW.region.buffer)) {
+            for idx in 0..<srcPtrs.count {
+                dstBase.advanced(by: idx * partBytes).copyMemory(from: srcPtrs[idx], byteCount: partBytes)
             }
         }
 

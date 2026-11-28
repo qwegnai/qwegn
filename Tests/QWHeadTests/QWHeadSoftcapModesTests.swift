@@ -74,11 +74,17 @@ final class QWHeadSoftcapModesTests: XCTestCase {
     }
 
     private func makeActivationRows(count m: Int, scale: Float = 1.0) -> [[Float16]] {
-        (0..<m).map { r in
-            (0..<hidden).map { c in
-                Float16((Float((c * 7 + r * 13) % 29 - 14) / 8.0) * scale)
+        var rows: [[Float16]] = []
+        rows.reserveCapacity(m)
+        for r in 0..<m {
+            var row = [Float16](repeating: .zero, count: hidden)
+            for c in 0..<hidden {
+                let centered = (c * 7 + r * 13) % 29 - 14
+                row[c] = Float16((Float(centered) / 8.0) * scale)
             }
+            rows.append(row)
         }
+        return rows
     }
 
     private func makeAQ8Bank() -> Data {

@@ -7,4 +7,4 @@ repository-code: "https://github.com/qwegnai/qwegn"
 authors:
   - name: "QwegnAI"
 date-released: "2026-11-28"
-version: "0.44.0"
+version: "0.44.1"

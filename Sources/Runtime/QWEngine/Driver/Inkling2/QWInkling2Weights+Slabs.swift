@@ -45,6 +45,18 @@ extension Ink2Slice {
     func bf16Bank(n: Int, k: Int) -> QWGemmFP.BF16Bank {
         QWGemmFP.BF16Bank(weights: fpSlice, n: n, k: k)
     }
+
+    @inline(never)
+    func copyConcatenated(_ parts: [Ink2Slice]) {
+        let dstBase = buffer.contents().advanced(by: offset)
+        var off = 0
+        for p in parts {
+            let src = p.buffer.contents().advanced(by: p.offset)
+            dstBase.advanced(by: off).copyMemory(from: src, byteCount: p.length)
+            off += p.length
+        }
+        withExtendedLifetime((buffer, parts)) {}
+    }
 }
 
 extension QWSubAllocator {
@@ -79,15 +91,7 @@ extension QWSubAllocator {
             let kS = try copy(kName, from: st)
             let vS = try copy(vName, from: st)
             let slab = try allocateBytes(layout.qGateRSinkRows * rowBytes, label: "\(sa)qgrsSlab")
-            let dst = slab.buffer.contents().advanced(by: slab.offset)
-            let parts = [qS, gS, rS, sS]
-            var off = 0
-            withExtendedLifetime(slab.buffer) {
-                for p in parts {
-                    dst.advanced(by: off).copyMemory(from: p.buffer.contents().advanced(by: p.offset), byteCount: p.length)
-                    off += p.length
-                }
-            }
+            slab.copyConcatenated([qS, gS, rS, sS])
             return Ink2AttnProjLoad(
                 layout: layout, qProj: qS, gateProj: gS, rProj: rS, sinkProj: sS, kProj: kS, vProj: vS,
                 qgrsBank: slab.bf16Bank(n: layout.qGateRSinkRows, k: hidden), qgrskvBank: nil
@@ -284,11 +288,7 @@ extension QWSubAllocator {
         let forget = try copy("\(cp)forget_weight", from: st)
         let gain = try copy("\(cp)gain_weight", from: st)
         let fgSlab = try allocateBytes(2 * partBytes, label: "\(cp)fgSlab")
-        let dst = fgSlab.buffer.contents().advanced(by: fgSlab.offset)
-        withExtendedLifetime(fgSlab.buffer) {
-            dst.copyMemory(from: forget.buffer.contents().advanced(by: forget.offset), byteCount: partBytes)
-            dst.advanced(by: partBytes).copyMemory(from: gain.buffer.contents().advanced(by: gain.offset), byteCount: partBytes)
-        }
+        fgSlab.copyConcatenated([forget, gain])
         return QWInkling2Weights.ControllerW(
             down: down, forget: forget, gain: gain,
             downW: .bf16(downBank), forgetGainW: .bf16(fgSlab.bf16Bank(n: 2 * hidden, k: rank))

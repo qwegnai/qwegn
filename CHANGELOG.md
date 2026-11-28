@@ -14,13 +14,13 @@ release-preparation commit, which renames `[Unreleased]` to the new
 
 ## [Unreleased]
 
-## [0.44.0] - 2026-11-28
+## [0.44.1] - 2026-11-28
 
 Adds end-to-end support for `GigaChat4-37B-A4B` with 5-layer Matrix-Absorbed MLA `DFlash 2` speculation, a unified M1–M6 (`Apple7`–`Apple11`) Metal 3.2/4 runtime, `Inkling-2-Mini` `DFlash 2` drafting, Cognitive Vault v2 with native cross-encoder `/v1/rerank`, and a unified `QWTrunkExecutor` control plane.
 
 ### Performance Improvements
 
-| Workload (Apple M5 Max, 128 GB UMA, `q4` KV) | Baseline | v0.44.0 | Gain / Impact |
+| Workload (Apple M5 Max, 128 GB UMA, `q4` KV) | Baseline | v0.44.1 | Gain / Impact |
 | :--- | :--- | :--- | :--- |
 | `GigaChat4-37B-A4B-shvq4g32` `code128` & `QWServer` decode | `98.8 tok/s` (serial) | **`137.2 tok/s`** CLI · **`164.4 tok/s`** SSE | **`+38.8%` CLI** · **`323.8 tok/s`** pred (`7.38 tok/step`) |
 | `GigaChat4-37B-A4B-shvq4g32` `4K` prefill & `16K`/`32K`/`1M` ctx | — | **`4,770 tok/s`** (`4,833` `hq8g32`) · **`124.9` / `130.2 tok/s`** | **`28.4x` cache** (`15 ms`) · **`1M` ctx in `< 27 GiB`** (`3/3` at `300K`) |
@@ -42,7 +42,7 @@ Adds end-to-end support for `GigaChat4-37B-A4B` with 5-layer Matrix-Absorbed MLA
 
 ### Fixed
 - **Deterministic `q4` MLA KV Reduction & Apple9 DSA Scaling**: Eliminated a cross-SIMDgroup threadgroup-SRAM race in `q4` MLA KV scale reduction (`qwattn_mla_dsa_prep.metal`, `qwattn_mla_indexer.metal`, restoring `0.000000000` logprob variance) and honored `p.softmaxScale` in `qwattn_mla_mma_split.metal`.
-- **`DFlash 2`, Loader `PlaneLayout`, & AArch64 `swifterror` Hardening**: Isolated `DFlash 2` rotation/function-constant flags and `vocabRows` slicing from target basis, enforced `PlaneLayout.resolve(e)` precedence across weight loaders, and hoisted `MTLBuffer.contents()` pointers outside throwing closures (`Law 25`).
+- **`DFlash 2`, Loader `PlaneLayout`, & AArch64 `swifterror` Hardening**: Isolated `DFlash 2` rotation/function-constant flags and `vocabRows` slicing from target basis, enforced `PlaneLayout.resolve(e)` precedence across weight loaders, and eliminated `[UNSAVED_X21_TAIL]` `swifterror` tail-call clobbers via `Ink2Slice.copyConcatenated` and hoisted `MTLBuffer.contents()` pointers (`Law 25`).
 - **MCP Streamable HTTP Session Retention**: Returned `405 Method Not Allowed` (`Allow: POST, OPTIONS`) on `GET` and `DELETE /mcp` so MCP 2025-03-26 clients retain stateless `POST /mcp` sessions cleanly.
 
 ## [0.43.2] - 2026-11-26
